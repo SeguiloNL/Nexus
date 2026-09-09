@@ -1,0 +1,183 @@
+"use client";
+
+import Link from "next/link";
+import type { ColumnDef } from "@tanstack/react-table";
+import { MoreHorizontal, Plus, Trash2, Edit, Upload, CreditCard } from "lucide-react";
+import { DataTable } from "@/components/data-table/data-table";
+import { Button } from "@/components/ui/button";
+import { SimStatusBadge } from "@/components/ui/status-badges";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import type { SIM, SimStatus } from "@prisma/client";
+import { formatIccid } from "@/lib/formatters";
+
+type ListSim = SIM;
+
+interface SimListProps {
+  sims: ListSim[];
+  canCreate: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
+  canImport: boolean;
+  onImportClick?: () => void;
+}
+
+export function SimList({
+  sims,
+  canCreate,
+  canEdit,
+  canDelete,
+  canImport,
+  onImportClick,
+}: SimListProps) {
+  const columns: ColumnDef<ListSim>[] = [
+    {
+      accessorKey: "iccid",
+      header: "ICCID",
+      cell: ({ row }) => (
+        <Link
+          className="font-mono text-xs underline-offset-4 hover:underline"
+          href={`/sims/${row.original.id}`}
+        >
+          {formatIccid(row.getValue<string>("iccid"))}
+        </Link>
+      ),
+    },
+    {
+      accessorKey: "msisdn",
+      header: "MSISDN",
+      cell: ({ row }) => {
+        const v = row.getValue<string | null>("msisdn");
+        return v ? (
+          <span className="font-mono text-xs">{v}</span>
+        ) : (
+          <span className="text-slate-400">—</span>
+        );
+      },
+    },
+    {
+      accessorKey: "provider",
+      header: "Provider",
+      cell: ({ row }) => (
+        <div>
+          <div className="font-medium">
+            <Link
+              href={`/sims/${row.original.id}`}
+              className="underline-offset-4 hover:underline"
+            >
+              {row.getValue("provider")}
+            </Link>
+          </div>
+          {row.original.simType ? (
+            <div className="text-xs text-slate-500">{row.original.simType}</div>
+          ) : null}
+        </div>
+      ),
+    },
+    {
+      accessorKey: "imsi",
+      header: "IMSI",
+      cell: ({ row }) => {
+        const v = row.original.imsi;
+        return v ? (
+          <span className="font-mono text-xs">{v}</span>
+        ) : (
+          <span className="text-slate-400">—</span>
+        );
+      },
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }) => (
+        <SimStatusBadge status={row.getValue<SimStatus>("status")} />
+      ),
+    },
+    {
+      id: "actions",
+      enableHiding: false,
+      cell: ({ row }) => {
+        const id = row.original.id;
+        return (
+          <div className="flex justify-end">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                  <span className="sr-only">Open menu</span>
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuLabel>Acties</DropdownMenuLabel>
+                <DropdownMenuItem asChild>
+                  <Link href={`/sims/${id}`}>Details bekijken</Link>
+                </DropdownMenuItem>
+                {canEdit ? (
+                  <DropdownMenuItem asChild>
+                    <Link href={`/sims/${id}?tab=edit`}>
+                      <Edit className="mr-2 h-4 w-4" /> Bewerken
+                    </Link>
+                  </DropdownMenuItem>
+                ) : null}
+                <DropdownMenuSeparator />
+                {canDelete ? (
+                  <DropdownMenuItem
+                    className="text-red-600 focus:bg-red-50 focus:text-red-700"
+                    asChild
+                  >
+                    <Link
+                      className="flex items-center"
+                      href={`/sims/${id}?tab=delete`}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" /> Verwijderen
+                    </Link>
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        );
+      },
+    },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">SIM-kaarten</h1>
+          <p className="text-sm text-slate-500">
+            Beheer SIM-kaarten, providers en toewijzingen.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {canImport ? (
+            <Button variant="outline" onClick={onImportClick}>
+              <Upload className="mr-2 h-4 w-4" /> CSV importeren
+            </Button>
+          ) : null}
+          {canCreate ? (
+            <Button asChild>
+              <Link href="/sims/new">
+                <Plus className="h-4 w-4" /> Nieuwe SIM
+              </Link>
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      <DataTable
+        columns={columns}
+        data={sims}
+        searchColumnAccessor="iccid"
+        searchPlaceholder="Zoek SIM (ICCID, MSISDN, IMSI, provider…)"
+      />
+    </div>
+  );
+}

@@ -1,0 +1,363 @@
+// Prisma schema voor Seguilo Basic Telematics - Activation & Subscription Manager
+// Zie .trae/specs/spec.md §3 voor volledige documentatie
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------
+// Enums
+// ------------------------------
+
+enum UserRole {
+  ADMIN
+  EMPLOYEE
+  VIEWER
+}
+
+enum CustomerStatus {
+  PROSPECT
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+enum SubscriptionStatus {
+  DRAFT
+  PENDING_ACTIVATION
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+  TERMINATED
+}
+
+enum TrackerStatus {
+  IN_STOCK
+  RESERVED
+  ACTIVE
+  SUSPENDED
+  DEFECTIVE
+  RMA
+  RETIRED
+  LOST
+}
+
+enum SimStatus {
+  IN_STOCK
+  RESERVED
+  ACTIVE
+  SUSPENDED
+  BLOCKED
+  CANCELLED
+  RETIRED
+}
+
+enum ActivationOrderStatus {
+  DRAFT
+  READY
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum BillingCycle {
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+enum AssignmentReason {
+  INITIAL
+  REPLACEMENT
+  REMOVED
+  RMA
+  UPGRADE
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  ACTIVATE
+  SUSPEND
+  RESUME
+  CANCEL
+  TERMINATE
+  ASSIGN_TRACKER
+  UNASSIGN_TRACKER
+  ASSIGN_SIM
+  UNASSIGN_SIM
+  REPLACE_TRACKER
+  REPLACE_SIM
+  COMPLETE_ACTIVATION
+  FAIL_ACTIVATION
+}
+
+// ------------------------------
+// Models
+// ------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String
+  passwordHash  String
+  role          UserRole  @default(EMPLOYEE)
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  auditLogs     AuditLog[]
+  createdActivationOrders ActivationOrder[] @relation("CreatedOrders")
+  createdTrackerAssignments TrackerAssignment[] @relation("CreatedTrackers")
+  createdSimAssignments     SimAssignment[]     @relation("CreatedSims")
+
+  @@map("users")
+}
+
+model Customer {
+  id                String     @id @default(cuid())
+  customerNumber    String     @unique
+  companyName       String
+  parentCustomerId  String?
+  parentCustomer    Customer?  @relation("CustomerHierarchy", fields: [parentCustomerId], references: [id], onDelete: SetNull)
+  subCustomers      Customer[] @relation("CustomerHierarchy")
+  address           String?
+  postalCode        String?
+  city              String?
+  country           String?    @default("NL")
+  contactPerson     String?
+  phone             String?
+  email             String?
+  status            CustomerStatus @default(ACTIVE)
+  notes             String?    @db.Text
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  deletedAt         DateTime?
+
+  subscriptions     Subscription[]
+  vehicles          Vehicle[]
+  activationOrders  ActivationOrder[] @relation("CustomerOrders")
+  subCustomerOrders ActivationOrder[] @relation("SubCustomerOrders")
+
+  @@index([status])
+  @@index([parentCustomerId])
+  @@map("customers")
+}
+
+model Product {
+  id           String         @id @default(cuid())
+  name         String
+  productCode  String         @unique
+  description  String?        @db.Text
+  monthlyPrice Decimal        @db.Decimal(10, 2)
+  currency     String         @default("EUR") @db.VarChar(3)
+  isActive     Boolean        @default(true)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  subscriptions    Subscription[]
+  activationOrders ActivationOrder[]
+
+  @@map("products")
+}
+
+model Subscription {
+  id                 String              @id @default(cuid())
+  subscriptionNumber String              @unique
+  customerId         String
+  customer           Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  productId          String
+  product            Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
+  startDate          DateTime            @db.Date
+  endDate            DateTime?           @db.Date
+  status             SubscriptionStatus  @default(DRAFT)
+  monthlyPrice       Decimal             @db.Decimal(10, 2)
+  billingCycle       BillingCycle        @default(MONTHLY)
+  notes              String?             @db.Text
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  deletedAt          DateTime?
+
+  trackerAssignments TrackerAssignment[]
+  simAssignments     SimAssignment[]
+  activationOrders   ActivationOrder[]
+
+  @@index([customerId])
+  @@index([productId])
+  @@index([status])
+  @@map("subscriptions")
+}
+
+model Tracker {
+  id              String        @id @default(cuid())
+  serialNumber    String        @unique
+  imei            String        @unique @db.VarChar(15)
+  brand           String
+  model           String
+  hardwareType    String?
+  firmwareVersion String?
+  purchaseDate    DateTime?     @db.Date
+  supplier        String?
+  status          TrackerStatus @default(IN_STOCK)
+  notes           String?       @db.Text
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  deletedAt       DateTime?
+
+  assignments       TrackerAssignment[]
+  activationOrders  ActivationOrder[]
+
+  @@index([status])
+  @@index([brand, model])
+  @@map("trackers")
+}
+
+model SIM {
+  id                       String    @id @default(cuid())
+  iccid                    String    @unique @db.VarChar(20)
+  msisdn                   String?   @unique
+  imsi                     String?
+  provider                 String
+  simType                  String?
+  apn                      String?
+  status                   SimStatus @default(IN_STOCK)
+  providerActivationDate   DateTime? @db.Date
+  providerDeactivationDate DateTime? @db.Date
+  notes                    String?   @db.Text
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+  deletedAt                DateTime?
+
+  assignments       SimAssignment[]
+  activationOrders  ActivationOrder[]
+
+  @@index([status])
+  @@index([provider])
+  @@map("sims")
+}
+
+model Vehicle {
+  id          String   @id @default(cuid())
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  licensePlate String?  @unique
+  vin         String?   @unique @db.VarChar(17)
+  brand       String?
+  model       String?
+  description String?   @db.Text
+  notes       String?   @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  trackerAssignments TrackerAssignment[]
+  activationOrders   ActivationOrder[]
+
+  @@index([customerId])
+  @@map("vehicles")
+}
+
+model TrackerAssignment {
+  id             String            @id @default(cuid())
+  subscriptionId String
+  subscription   Subscription      @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  trackerId      String
+  tracker        Tracker           @relation(fields: [trackerId], references: [id], onDelete: Restrict)
+  vehicleId      String?
+  vehicle        Vehicle?          @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  startAt        DateTime          @db.Timestamptz
+  endAt          DateTime?         @db.Timestamptz
+  reason         AssignmentReason?
+  createdById    String
+  createdBy      User              @relation("CreatedTrackers", fields: [createdById], references: [id])
+
+  // Opmerking: Een tracker kan maximaal 1 ACTIVE assignment hebben (endAt IS NULL)
+  // Deze partial unique unique index wordt aangemaakt via raw SQL in de init migration
+  @@index([subscriptionId])
+  @@index([trackerId])
+  @@index([vehicleId])
+  @@map("tracker_assignments")
+}
+
+model SimAssignment {
+  id             String            @id @default(cuid())
+  subscriptionId String
+  subscription   Subscription      @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  simId          String
+  sim            SIM               @relation(fields: [simId], references: [id], onDelete: Restrict)
+  startAt        DateTime          @db.Timestamptz
+  endAt          DateTime?         @db.Timestamptz
+  reason         AssignmentReason?
+  createdById    String
+  createdBy      User              @relation("CreatedSims", fields: [createdById], references: [id])
+
+  // Opmerking: Een SIM kan maximaal 1 ACTIVE assignment hebben (endAt IS NULL)
+  // Deze partial unique unique index wordt aangemaakt via raw SQL in de init migration
+  @@index([subscriptionId])
+  @@index([simId])
+  @@map("sim_assignments")
+}
+
+model ActivationOrder {
+  id                 String                 @id @default(cuid())
+  orderNumber        String                 @unique
+  customerId         String
+  customer           Customer               @relation("CustomerOrders", fields: [customerId], references: [id], onDelete: Restrict)
+  subCustomerId      String?
+  subCustomer        Customer?              @relation("SubCustomerOrders", fields: [subCustomerId], references: [id], onDelete: SetNull)
+  productId          String
+  product            Product                @relation(fields: [productId], references: [id], onDelete: Restrict)
+  subscriptionId     String?
+  subscription       Subscription?          @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  trackerId          String?
+  tracker            Tracker?               @relation(fields: [trackerId], references: [id], onDelete: SetNull)
+  simId              String?
+  sim                SIM?                   @relation(fields: [simId], references: [id], onDelete: SetNull)
+  vehicleId          String?
+  vehicle            Vehicle?               @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  desiredStartDate   DateTime               @db.Date
+  monthlyPrice       Decimal                @db.Decimal(10, 2)
+  billingCycle       BillingCycle           @default(MONTHLY)
+  status             ActivationOrderStatus  @default(DRAFT)
+  internalNotes      String?                @db.Text
+  failureReason      String?                @db.Text
+  createdById        String
+  createdBy          User                   @relation("CreatedOrders", fields: [createdById], references: [id])
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+
+  @@index([customerId])
+  @@index([subCustomerId])
+  @@index([productId])
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([trackerId])
+  @@index([simId])
+  @@map("activation_orders")
+}
+
+model AuditLog {
+  id         String      @id @default(cuid())
+  userId     String
+  user       User        @relation(fields: [userId], references: [id])
+  timestamp  DateTime    @default(now()) @db.Timestamptz
+  entityType String
+  entityId   String
+  action     AuditAction
+  oldValues  Json?
+  newValues  Json?
+  metadata   Json?
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([action])
+  @@index([timestamp])
+  @@map("audit_logs")
+}
