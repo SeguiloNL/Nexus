@@ -5,10 +5,8 @@ const {
   PrismaClient,
   UserRole,
   CustomerStatus,
-  ProductBillingCycle,
   TrackerStatus,
   SimStatus,
-  SimType,
 } = pkg;
 
 const prisma = new PrismaClient();
@@ -64,60 +62,56 @@ async function main() {
       customerNumber: "C-2025-0001",
       companyName: "Van der Transport B.V.",
       status: CustomerStatus.ACTIVE,
-      contactName: "Piet van der Transport",
+      contactPerson: "Piet van der Transport",
       email: "info@vandertransport.test",
       phone: "+31612345678",
-      street: "Hoofdstraat 12",
+      address: "Hoofdstraat 12",
       postalCode: "1234 AB",
       city: "Amsterdam",
       country: "NL",
-      chamberOfCommerce: "12345678",
-      vatNumber: "NL123456789B01",
+      notes: "Seed demo-klant. Transport en logistiek.",
     },
   });
   console.log(`  ✅ CUSTOMER: ${demoCustomer.companyName}`);
 
   const prodBasic = await prisma.product.upsert({
-    where: { code: "TRK-BASIC" },
+    where: { productCode: "TRK-BASIC" },
     update: {},
     create: {
-      code: "TRK-BASIC",
+      productCode: "TRK-BASIC",
       name: "Basic Tracking",
       description:
-        "Standaard voertuig volgen met elke 3 minuten een positie update.",
+        "Standaard voertuig volgen met elke 3 minuten een positie update en dagelijkse rapportages.",
       monthlyPrice: new Prisma.Decimal("9.95"),
-      setupFee: new Prisma.Decimal("19.95"),
-      billingCycle: ProductBillingCycle.MONTHLY,
+      currency: "EUR",
       isActive: true,
     },
   });
 
   const prodPro = await prisma.product.upsert({
-    where: { code: "TRK-PRO" },
+    where: { productCode: "TRK-PRO" },
     update: {},
     create: {
-      code: "TRK-PRO",
+      productCode: "TRK-PRO",
       name: "Pro Tracking",
       description:
-        "Geavanceerd volgen met 30 seconde interval, rijgedrag rapportages en geofencing.",
+        "Geavanceerd volgen met 30 seconde interval, rijgedrag rapportages en geofencing alerts.",
       monthlyPrice: new Prisma.Decimal("19.95"),
-      setupFee: new Prisma.Decimal("49.00"),
-      billingCycle: ProductBillingCycle.MONTHLY,
+      currency: "EUR",
       isActive: true,
     },
   });
 
   const prodPremium = await prisma.product.upsert({
-    where: { code: "TRK-PREMIUM" },
+    where: { productCode: "TRK-PREMIUM" },
     update: {},
     create: {
-      code: "TRK-PREMIUM",
+      productCode: "TRK-PREMIUM",
       name: "Premium Fleet",
       description:
-        "Compleet fleet management pakket met API toegang, SLA en dedicated support.",
+        "Compleet fleet management pakket met API toegang, SLA 99.9% en dedicated support.",
       monthlyPrice: new Prisma.Decimal("49.00"),
-      setupFee: new Prisma.Decimal("149.00"),
-      billingCycle: ProductBillingCycle.YEARLY,
+      currency: "EUR",
       isActive: true,
     },
   });
@@ -134,6 +128,7 @@ async function main() {
       brand: "Teltonika",
       model: "FMB920",
       status: TrackerStatus.IN_STOCK,
+      notes: "Op voorraad, demo-ready.",
     },
   });
 
@@ -152,32 +147,28 @@ async function main() {
     `  ✅ TRACKERS IN STOCK: ${tracker1.serialNumber}, ${tracker2.serialNumber}`
   );
 
-  const sim1 = await prisma.sim.upsert({
+  const sim1 = await prisma.sIM.upsert({
     where: { iccid: "8931041012345678901" },
     update: {},
     create: {
       iccid: "8931041012345678901",
       imsi: "204081234567890",
       msisdn: "31681234567",
-      pin: "0000",
-      puk: "12345678",
-      type: SimType.M2M,
-      operator: "KPN IoT",
+      provider: "KPN IoT",
+      simType: "M2M",
       status: SimStatus.IN_STOCK,
     },
   });
 
-  const sim2 = await prisma.sim.upsert({
+  const sim2 = await prisma.sIM.upsert({
     where: { iccid: "8931041012345678902" },
     update: {},
     create: {
       iccid: "8931041012345678902",
       imsi: "204081234567891",
       msisdn: "31681234568",
-      pin: "0000",
-      puk: "12345679",
-      type: SimType.M2M,
-      operator: "KPN IoT",
+      provider: "KPN IoT",
+      simType: "M2M",
       status: SimStatus.IN_STOCK,
     },
   });
@@ -193,7 +184,7 @@ async function main() {
       brand: "Volkswagen",
       model: "Crafter L3H3",
       description: "Bestelbus, Euro 6, 2024, 90.000 km",
-      notes: "Eerste volgsysteem demo.",
+      notes: "Eerste volgsysteem demo voertuig.",
     },
   });
 
@@ -206,7 +197,7 @@ async function main() {
       vin: "VF1VF000051234567",
       brand: "Renault",
       model: "Master",
-      description: "Koelwagen -18°C, 2022",
+      description: "Koelwagen -18°C, bouwjaar 2022",
     },
   });
   console.log(

@@ -97,7 +97,7 @@ export default function DashboardPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
           <p className="text-sm text-slate-500">
-            Overzicht van je Seguilo STM werkvoorraad.
+            Overzicht van je Nexus werkvoorraad.
           </p>
         </div>
         <div className="text-xs text-slate-400">

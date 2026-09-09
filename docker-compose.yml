@@ -1,0 +1,72 @@
+services:
+  nexus-db:
+    image: postgres:16-alpine
+    container_name: nexus-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nexus}
+      POSTGRES_USER: ${POSTGRES_USER:-nexus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      TZ: Europe/Amsterdam
+    volumes:
+      - nexus-db-data:/var/lib/postgresql/data
+    networks:
+      - nexus-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexus} -d ${POSTGRES_DB:-nexus}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  nexus-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexus-app
+    restart: unless-stopped
+    depends_on:
+      nexus-db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      TZ: Europe/Amsterdam
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD}@nexus-db:5432/${POSTGRES_DB:-nexus}?schema=public
+      AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET is required}
+      AUTH_URL: ${AUTH_URL:-http://localhost:3000/api/auth}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+    networks:
+      - nexus-net
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: nexus-caddy
+    restart: unless-stopped
+    depends_on:
+      - nexus-app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - nexus-net
+    environment:
+      NEXUS_DOMAIN: ${NEXUS_DOMAIN:-localhost}
+      NEXUS_APP_URL: nexus-app:3000
+
+volumes:
+  nexus-db-data:
+    name: nexus-db-data
+  caddy-data:
+    name: nexus-caddy-data
+  caddy-config:
+    name: nexus-caddy-config
+
+networks:
+  nexus-net:
+    name: nexus-net
+    driver: bridge

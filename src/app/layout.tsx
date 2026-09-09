@@ -3,8 +3,8 @@ import "./globals.css";
 import { SessionProvider } from "@/components/providers/session-provider";
 
 export const metadata: Metadata = {
-  title: "Seguilo STM - Activation & Subscription Manager",
-  description: "Seguilo Basic Telematics Activation & Subscription Manager",
+  title: "Nexus - Activation & Subscription Manager",
+  description: "Nexus Activation & Subscription Manager",
 };
 
 export default function RootLayout({

@@ -1,6 +1,7 @@
 {
-  "name": "seguilo-stm",
+  "name": "nexus",
   "version": "0.1.0",
+  "description": "Nexus - Activation & Subscription Manager",
   "private": true,
   "type": "module",
   "scripts": {

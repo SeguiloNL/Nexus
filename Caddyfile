@@ -1,0 +1,24 @@
+{
+	# Stel NEXUS_DOMAIN in op je publieke domein (bijv. nexus.jouwdomein.nl)
+	# voor automatische HTTPS via Let's Encrypt.
+	# Laat op localhost (geen publiek domein), dan werkt :80 zonder TLS.
+
+	{$NEXUS_DOMAIN:localhost} {
+		encode gzip zstd
+
+		header {
+			# Security headers
+			X-Content-Type-Options nosniff
+			X-Frame-Options SAMEORIGIN
+			Referrer-Policy strict-origin-when-cross-origin
+			Permissions-Policy "geolocation=(), microphone=(), camera=()"
+			-Server
+		}
+
+		reverse_proxy {$NEXUS_APP_URL:nexus-app:3000} {
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+}
