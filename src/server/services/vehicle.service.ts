@@ -189,29 +189,3 @@ export async function softDeleteVehicle(
     return updated;
   });
 }
-
-export async function listVehicleOptions(customerId?: string) {
-  const where: any = { deletedAt: null };
-  if (customerId) where.customerId = customerId;
-  return prisma.vehicle
-    .findMany({
-      where,
-      select: {
-        id: true,
-        licensePlate: true,
-        vin: true,
-        brand: true,
-        model: true,
-      },
-      orderBy: { licensePlate: "asc" as const },
-    })
-    .then((rows) =>
-      rows.map((r) => ({
-        id: r.id,
-        label:
-          [r.licensePlate, `${r.brand} ${r.model}`, r.vin]
-            .filter(Boolean)
-            .join(" · ") || r.id,
-      }))
-    );
-}

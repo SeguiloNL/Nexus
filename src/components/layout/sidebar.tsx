@@ -125,14 +125,14 @@ export function Sidebar({ userRole }: SidebarProps) {
     <aside className="hidden w-64 flex-shrink-0 border-r border-slate-200 bg-white md:block">
       <div className="flex h-16 items-center gap-2 border-b border-slate-200 px-5">
         <div className="flex h-8 w-8 items-center justify-center rounded-md bg-sky-600 text-white font-bold">
-          N
+          S
         </div>
         <div>
           <div className="text-sm font-semibold leading-tight">
-            Nexus
+            Seguilo STM
           </div>
           <div className="text-[11px] text-slate-500 leading-tight">
-            Subscription &amp; Activation Manager
+            Telematics Manager
           </div>
         </div>
       </div>

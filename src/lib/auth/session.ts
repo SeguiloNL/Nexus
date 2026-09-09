@@ -1,6 +1,5 @@
 import { auth } from "@/auth";
 import { PermissionError, can, requirePermission } from "@/lib/rbac";
-export { PermissionError, requirePermission } from "@/lib/rbac";
 import type {
   ResourceAction,
   ResourceType,

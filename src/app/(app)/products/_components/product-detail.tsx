@@ -164,14 +164,7 @@ export function ProductDetail({
             <ProductForm
               mode="edit"
               productId={productId}
-              initial={{
-                name: product.name,
-                productCode: product.productCode,
-                description: product.description,
-                monthlyPrice: Number(product.monthlyPrice),
-                currency: product.currency,
-                isActive: product.isActive,
-              }}
+              initial={product}
               action={async (prev, form) =>
                 updateAction(productId, prev, form)
               }

@@ -225,18 +225,3 @@ export async function listParentCustomers() {
       }))
     );
 }
-
-export async function listCustomerOptions() {
-  return prisma.customer
-    .findMany({
-      where: { deletedAt: null },
-      select: { id: true, companyName: true, customerNumber: true },
-      orderBy: { companyName: "asc" },
-    })
-    .then((rows) =>
-      rows.map((r) => ({
-        id: r.id,
-        label: `${r.companyName} (${r.customerNumber})`,
-      }))
-    );
-}
