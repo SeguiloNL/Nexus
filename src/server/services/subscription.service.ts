@@ -137,7 +137,7 @@ export async function findManySubscriptions(
   const where: Prisma.SubscriptionWhereInput = {};
   if (customerId) where.customerId = customerId;
   if (productId) where.productId = productId;
-  if (status) where.status = status as Prisma.SubscriptionStatusFilter;
+  if (status) where.status = status;
 
   if (search) {
     const s = search.trim();
@@ -228,9 +228,9 @@ export async function createSubscription(
         productId: input.productId,
         startDate: input.startDate,
         endDate: input.endDate ?? null,
-        status: (input.status ?? SubscriptionStatus.DRAFT) as Prisma.SubscriptionStatus,
+        status: (input.status ?? SubscriptionStatus.DRAFT) as any,
         monthlyPrice: input.monthlyPrice,
-        billingCycle: (input.billingCycle ?? BillingCycle.MONTHLY) as Prisma.BillingCycle,
+        billingCycle: (input.billingCycle ?? BillingCycle.MONTHLY) as any,
         notes: input.notes ?? null,
       },
     });
@@ -311,13 +311,13 @@ export async function updateSubscriptionStatus(
 
     const updated = await tx.subscription.update({
       where: { id },
-      data: { status: newStatus as Prisma.SubscriptionStatus },
+      data: { status: newStatus as any },
     });
 
     await logAudit(tx, {
       entityType: "subscription",
       entityId: updated.id,
-      action: AuditAction.STATUS_CHANGE,
+      action: AuditAction.UPDATE,
       userId: ctx.userId,
       oldValues: { status: String(current) },
       newValues: { status: String(newStatus) },

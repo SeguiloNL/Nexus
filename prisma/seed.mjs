@@ -15,15 +15,15 @@ const BCRYPT_ROUNDS = 10;
 const PASSWORD = "Test1234!";
 
 async function main() {
-  console.log("🌱 Seeding Seguilo STM development database...");
+  console.log("🌱 Seeding Nexus development database...");
 
   const pwd = await bcrypt.hash(PASSWORD, BCRYPT_ROUNDS);
 
   const admin = await prisma.user.upsert({
-    where: { email: "admin@seguilo.test" },
+    where: { email: "admin@nexus.local" },
     update: {},
     create: {
-      email: "admin@seguilo.test",
+      email: "admin@nexus.local",
       name: "Administrator",
       passwordHash: pwd,
       role: UserRole.ADMIN,
@@ -32,11 +32,11 @@ async function main() {
   console.log(`  ✅ ADMIN: ${admin.email} / ${PASSWORD}`);
 
   const employee = await prisma.user.upsert({
-    where: { email: "medewerker@seguilo.test" },
+    where: { email: "medewerker@nexus.local" },
     update: {},
     create: {
-      email: "medewerker@seguilo.test",
-      name: "Medewerker Seguilo",
+      email: "medewerker@nexus.local",
+      name: "Medewerker Nexus",
       passwordHash: pwd,
       role: UserRole.EMPLOYEE,
     },
@@ -44,10 +44,10 @@ async function main() {
   console.log(`  ✅ EMPLOYEE: ${employee.email} / ${PASSWORD}`);
 
   const viewer = await prisma.user.upsert({
-    where: { email: "viewer@seguilo.test" },
+    where: { email: "viewer@nexus.local" },
     update: {},
     create: {
-      email: "viewer@seguilo.test",
+      email: "viewer@nexus.local",
       name: "Viewer Account",
       passwordHash: pwd,
       role: UserRole.VIEWER,
