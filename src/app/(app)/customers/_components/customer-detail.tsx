@@ -16,6 +16,9 @@ import {
   AlertTriangle,
   Trash2,
   Info,
+  Cpu,
+  CreditCard,
+  FileText,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -26,11 +29,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { CustomerStatusBadge } from "@/components/ui/status-badges";
+import { CustomerStatusBadge, TrackerStatusBadge, SimStatusBadge, ActivationOrderStatusBadge } from "@/components/ui/status-badges";
 import { CustomerForm } from "./customer-form";
-import { formatDate } from "@/lib/formatters";
+import { formatDate, formatImei, formatIccid, formatMsisdn } from "@/lib/formatters";
 import { canUserRole } from "@/lib/auth/session";
-import type { UserRole } from "@/types/enums";
+import type { UserRole, AuditAction } from "@/types/enums";
 import type { Customer, CustomerStatus } from "@prisma/client";
 
 type DetailCustomer = Customer & {
@@ -45,9 +48,38 @@ type DetailCustomer = Customer & {
     id: string;
     subscriptionNumber: string;
     status: string;
-    monthlyPrice: number;
+    monthlyPrice: any;
     startDate: Date;
     endDate: Date | null;
+    trackerAssignments: Array<{
+      id: string;
+      startAt: Date;
+      tracker: {
+        id: string;
+        serialNumber: string;
+        imei: string;
+        brand: string;
+        model: string;
+        status: string;
+      };
+      vehicle: {
+        id: string;
+        licensePlate: string | null;
+        brand: string | null;
+        model: string | null;
+      } | null;
+    }>;
+    simAssignments: Array<{
+      id: string;
+      startAt: Date;
+      sim: {
+        id: string;
+        iccid: string;
+        msisdn: string | null;
+        provider: string;
+        status: string;
+      };
+    }>;
   }>;
   vehicles: Array<{
     id: string;
@@ -56,7 +88,50 @@ type DetailCustomer = Customer & {
     brand: string | null;
     model: string | null;
   }>;
+  activationOrders: Array<{
+    id: string;
+    orderNumber: string;
+    status: string;
+    createdAt: Date;
+    completedAt: Date | null;
+    failedAt: Date | null;
+    tracker: {
+      id: string;
+      serialNumber: string;
+      imei: string;
+      brand: string;
+      model: string;
+      status: string;
+    } | null;
+    sim: {
+      id: string;
+      iccid: string;
+      msisdn: string | null;
+      provider: string;
+      status: string;
+    } | null;
+    subscription: {
+      id: string;
+      subscriptionNumber: string;
+      status: string;
+    } | null;
+    vehicle: {
+      id: string;
+      licensePlate: string | null;
+    } | null;
+  }>;
 };
+
+type AuditLogForDetail = Array<{
+  id: string;
+  timestamp: Date;
+  action: AuditAction;
+  entityType: string;
+  entityId: string;
+  oldValues: any;
+  newValues: any;
+  user: { name: string | null; email: string } | null;
+}>;
 
 type CustomerDetailProps = {
   customer: DetailCustomer;
@@ -69,6 +144,7 @@ type CustomerDetailProps = {
   ) => Promise<any>;
   deleteAction: (customerId: string) => Promise<void>;
   customerId: string;
+  auditLogs?: AuditLogForDetail;
 };
 
 export function CustomerDetail({
@@ -78,6 +154,7 @@ export function CustomerDetail({
   updateAction,
   deleteAction,
   customerId,
+  auditLogs = [],
 }: CustomerDetailProps) {
   const canEdit = canUserRole(role, "edit", "customer");
   const canDelete = canUserRole(role, "delete", "customer");
@@ -86,6 +163,35 @@ export function CustomerDetail({
     async (p: unknown) => deleteAction(customerId),
     undefined
   );
+
+  const uniqueTrackers = Array.from(
+    new Map(
+      customer.subscriptions
+        .flatMap((s) => s.trackerAssignments.map((a) => a.tracker))
+        .concat(customer.activationOrders.flatMap((o) => (o.tracker ? [o.tracker] : [])))
+        .map((t) => [t.id, t])
+    ).values()
+  );
+
+  const uniqueSims = Array.from(
+    new Map(
+      customer.subscriptions
+        .flatMap((s) => s.simAssignments.map((a) => a.sim))
+        .concat(customer.activationOrders.flatMap((o) => (o.sim ? [o.sim] : [])))
+        .map((s) => [s.id, s])
+    ).values()
+  );
+
+  const ACTION_LABEL: Record<string, string> = {
+    CREATE: "Aangemaakt",
+    UPDATE: "Gewijzigd",
+    DELETE: "Verwijderd",
+    ACTIVATE: "Geactiveerd",
+    SUSPEND: "Gepauzeerd",
+    CANCEL: "Geannuleerd",
+    EXPIRE: "Verlopen",
+    RESUME: "Hervat",
+  };
 
   return (
     <div className="space-y-6">
@@ -154,9 +260,21 @@ export function CustomerDetail({
             <Receipt className="mr-1.5 h-4 w-4" />
             Abonnementen ({customer.subscriptions.length})
           </TabsTrigger>
+          <TabsTrigger value="trackers">
+            <Cpu className="mr-1.5 h-4 w-4" />
+            Trackers ({uniqueTrackers.length})
+          </TabsTrigger>
+          <TabsTrigger value="sims">
+            <CreditCard className="mr-1.5 h-4 w-4" />
+            SIM-kaarten ({uniqueSims.length})
+          </TabsTrigger>
           <TabsTrigger value="vehicles">
             <Car className="mr-1.5 h-4 w-4" />
             Voertuigen ({customer.vehicles.length})
+          </TabsTrigger>
+          <TabsTrigger value="activations">
+            <FileText className="mr-1.5 h-4 w-4" />
+            Activaties ({customer.activationOrders.length})
           </TabsTrigger>
           {customer.subCustomers.length ? (
             <TabsTrigger value="subcustomers">
@@ -166,7 +284,7 @@ export function CustomerDetail({
           ) : null}
           <TabsTrigger value="history">
             <History className="mr-1.5 h-4 w-4" />
-            Geschiedenis
+            Geschiedenis ({auditLogs.length})
           </TabsTrigger>
         </TabsList>
 
@@ -315,6 +433,120 @@ export function CustomerDetail({
           </Card>
         </TabsContent>
 
+        <TabsContent value="trackers" className="mt-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Trackers</CardTitle>
+              <CardDescription>
+                Unieke trackers die via abonnementen of activaties aan deze
+                klant zijn gekoppeld.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <EmptyOrList
+                rows={uniqueTrackers}
+                emptyTitle="Nog geen trackers"
+              >
+                <div className="overflow-hidden rounded-md border">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2">Type</th>
+                        <th className="px-3 py-2">Serienr.</th>
+                        <th className="px-3 py-2">IMEI</th>
+                        <th className="px-3 py-2">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {uniqueTrackers.map((t) => (
+                        <tr
+                          key={t.id}
+                          className="border-t hover:bg-slate-50"
+                        >
+                          <td className="px-3 py-2">
+                            <Link
+                              href={`/trackers/${t.id}`}
+                              className="font-medium underline-offset-4 hover:underline"
+                            >
+                              {t.brand} {t.model}
+                            </Link>
+                          </td>
+                          <td className="px-3 py-2 font-mono text-xs">
+                            {t.serialNumber}
+                          </td>
+                          <td className="px-3 py-2 font-mono text-xs">
+                            {formatImei(t.imei)}
+                          </td>
+                          <td className="px-3 py-2">
+                            <TrackerStatusBadge status={t.status as any} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </EmptyOrList>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="sims" className="mt-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">SIM-kaarten</CardTitle>
+              <CardDescription>
+                Unieke SIM-kaarten die via abonnementen of activaties aan deze
+                klant zijn gekoppeld.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <EmptyOrList
+                rows={uniqueSims}
+                emptyTitle="Nog geen SIM-kaarten"
+              >
+                <div className="overflow-hidden rounded-md border">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2">Provider</th>
+                        <th className="px-3 py-2">ICCID</th>
+                        <th className="px-3 py-2">MSISDN</th>
+                        <th className="px-3 py-2">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {uniqueSims.map((s) => (
+                        <tr
+                          key={s.id}
+                          className="border-t hover:bg-slate-50"
+                        >
+                          <td className="px-3 py-2">
+                            <Link
+                              href={`/sims/${s.id}`}
+                              className="font-medium underline-offset-4 hover:underline"
+                            >
+                              {s.provider}
+                            </Link>
+                          </td>
+                          <td className="px-3 py-2 font-mono text-xs">
+                            {formatIccid(s.iccid)}
+                          </td>
+                          <td className="px-3 py-2 font-mono text-xs">
+                            {s.msisdn ? formatMsisdn(s.msisdn) : "—"}
+                          </td>
+                          <td className="px-3 py-2">
+                            <SimStatusBadge status={s.status as any} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </EmptyOrList>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="vehicles" className="mt-6">
           <Card>
             <CardHeader>
@@ -349,6 +581,90 @@ export function CustomerDetail({
                       ) : null}
                     </Link>
                   ))}
+                </div>
+              </EmptyOrList>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="activations" className="mt-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Activatieorders</CardTitle>
+              <CardDescription>
+                Recente activatieorders voor deze klant.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <EmptyOrList
+                rows={customer.activationOrders}
+                emptyTitle="Nog geen activatieorders"
+              >
+                <div className="overflow-hidden rounded-md border">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2">Ordernr.</th>
+                        <th className="px-3 py-2">Status</th>
+                        <th className="px-3 py-2">Tracker</th>
+                        <th className="px-3 py-2">SIM</th>
+                        <th className="px-3 py-2">Voertuig</th>
+                        <th className="px-3 py-2">Aangemaakt</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {customer.activationOrders.map((o) => (
+                        <tr
+                          key={o.id}
+                          className="border-t hover:bg-slate-50"
+                        >
+                          <td className="px-3 py-2">
+                            <Link
+                              href={`/activations/${o.id}`}
+                              className="font-medium underline-offset-4 hover:underline"
+                            >
+                              {o.orderNumber}
+                            </Link>
+                          </td>
+                          <td className="px-3 py-2">
+                            <ActivationOrderStatusBadge status={o.status as any} />
+                          </td>
+                          <td className="px-3 py-2">
+                            {o.tracker ? (
+                              <Link
+                                href={`/trackers/${o.tracker.id}`}
+                                className="underline-offset-4 hover:underline"
+                              >
+                                {o.tracker.brand} {o.tracker.model}
+                              </Link>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td className="px-3 py-2">
+                            {o.sim ? (
+                              <Link
+                                href={`/sims/${o.sim.id}`}
+                                className="underline-offset-4 hover:underline"
+                              >
+                                {formatIccid(o.sim.iccid)}
+                              </Link>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td className="px-3 py-2">
+                            {o.vehicle
+                              ? o.vehicle.licensePlate ?? "Geen kenteken"
+                              : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-slate-600 whitespace-nowrap">
+                            {formatDate(o.createdAt)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </EmptyOrList>
             </CardContent>
@@ -391,22 +707,75 @@ export function CustomerDetail({
                 Wijzigingsgeschiedenis
               </CardTitle>
               <CardDescription>
-                Wordt gevuld door de auditlog service (klik Auditlog in het
-                menu om alles te bekijken).
+                Auditlog van wijzigingen op deze klant en gerelateerde
+                resources.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="flex items-start gap-3 rounded-md border border-dashed border-slate-200 p-4 text-sm text-slate-500">
-                <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-500" />
-                <div>
-                  Auditlog regels voor deze entiteit laden via de
-                  <code className="mx-1 rounded bg-slate-100 px-1">
-                    AuditService
-                  </code>
-                  met <code>entityType=customer</code>. Zodra de database
-                  beschikbaar is wordt deze lijst automatisch gevuld.
-                </div>
-              </div>
+              <EmptyOrList
+                rows={auditLogs}
+                emptyTitle="Nog geen wijzigingen gelogd"
+              >
+                <ul className="space-y-4">
+                  {auditLogs.map((log) => (
+                    <li
+                      key={log.id}
+                      className="flex items-start gap-3 border-b border-slate-100 pb-4 last:border-b-0"
+                    >
+                      <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+                        <History className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-medium">
+                            {ACTION_LABEL[log.action] ?? log.action}
+                          </span>
+                          <span className="text-xs uppercase tracking-wide text-slate-500">
+                            {log.entityType}
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            {formatDate(log.timestamp)}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-600">
+                          {log.user
+                            ? `${log.user.name ?? "Onbekend"} (${log.user.email})`
+                            : "Systeem"}
+                        </div>
+                        {log.oldValues || log.newValues ? (
+                          <details className="mt-2 text-xs">
+                            <summary className="cursor-pointer text-slate-500 hover:text-slate-700">
+                              Details bekijken
+                            </summary>
+                            <div className="mt-2 grid grid-cols-1 gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2">
+                              {log.oldValues ? (
+                                <div>
+                                  <div className="mb-1 font-semibold text-red-700">
+                                    Oude waarden
+                                  </div>
+                                  <pre className="overflow-auto rounded bg-white p-2 text-[11px] text-red-900">
+                                    {JSON.stringify(log.oldValues, null, 2)}
+                                  </pre>
+                                </div>
+                              ) : null}
+                              {log.newValues ? (
+                                <div>
+                                  <div className="mb-1 font-semibold text-emerald-700">
+                                    Nieuwe waarden
+                                  </div>
+                                  <pre className="overflow-auto rounded bg-white p-2 text-[11px] text-emerald-900">
+                                    {JSON.stringify(log.newValues, null, 2)}
+                                  </pre>
+                                </div>
+                              ) : null}
+                            </div>
+                          </details>
+                        ) : null}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </EmptyOrList>
             </CardContent>
           </Card>
         </TabsContent>

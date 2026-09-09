@@ -25,7 +25,7 @@ export type OrderActionState = {
 
 export async function createOrderAction(_prev: OrderActionState, formData: FormData) {
   const user = await getCurrentUser();
-  requirePermission(user.role, "create", "activationOrder");
+  requirePermission(user.role, "create", "activation_order");
 
   const raw: any = {
     customerId: formData.get("customerId") || undefined,
@@ -56,7 +56,7 @@ export async function createOrderAction(_prev: OrderActionState, formData: FormD
 
 export async function updateOrderAction(orderId: string, _prev: OrderActionState, formData: FormData) {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "activationOrder");
+  requirePermission(user.role, "edit", "activation_order");
 
   const raw: any = {};
   for (const [k, v] of Array.from(formData.entries())) {
@@ -84,7 +84,7 @@ export async function updateOrderAction(orderId: string, _prev: OrderActionState
 
 export async function markReadyAction(orderId: string) {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "activationOrder");
+  requirePermission(user.role, "edit", "activation_order");
   const ctx = { userId: user.id, userRole: user.role };
   try {
     await markReady(orderId, ctx);
@@ -99,7 +99,7 @@ export async function markReadyAction(orderId: string) {
 
 export async function cancelOrderAction(orderId: string, _prev: any, formData: FormData) {
   const user = await getCurrentUser();
-  requirePermission(user.role, "delete", "activationOrder");
+  requirePermission(user.role, "delete", "activation_order");
   const reason = (formData.get("reason") as string) || undefined;
   const ctx = { userId: user.id, userRole: user.role };
   await cancelOrder(orderId, ctx, reason);
@@ -110,7 +110,7 @@ export async function cancelOrderAction(orderId: string, _prev: any, formData: F
 
 export async function retryFailedAction(orderId: string) {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "activationOrder");
+  requirePermission(user.role, "edit", "activation_order");
   const ctx = { userId: user.id, userRole: user.role };
   await retryFailed(orderId, ctx);
   revalidatePath(`/activations/${orderId}`);
@@ -119,7 +119,7 @@ export async function retryFailedAction(orderId: string) {
 
 export async function completeActivationAction(orderId: string) {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "activationOrder");
+  requirePermission(user.role, "edit", "activation_order");
   const ctx = { userId: user.id, userRole: user.role };
   const result = await completeActivation(orderId, ctx);
   revalidatePath(`/activations/${orderId}`);

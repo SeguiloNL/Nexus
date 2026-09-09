@@ -20,6 +20,11 @@ export default async function ProductDetailPage({
   const product = await findProductById(params.id);
   if (!product) notFound();
 
+  const productForForm = {
+    ...product,
+    monthlyPrice: Number(product.monthlyPrice),
+  };
+
   const updateAction: any = async (
     prev: any,
     formData: FormData
@@ -28,6 +33,7 @@ export default async function ProductDetailPage({
   return (
     <ProductDetail
       product={product as any}
+      initialProduct={productForForm as any}
       role={session.user.role}
       updateAction={updateAction}
       productId={params.id}

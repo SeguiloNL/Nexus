@@ -267,6 +267,11 @@ export interface UpdateSubscriptionInput {
   notes?: string | null;
 }
 
+export interface UpdateSubscriptionStatusInput {
+  status: SubscriptionStatus;
+  reason?: string;
+}
+
 // ------------------------------
 // Activation Order
 // ------------------------------

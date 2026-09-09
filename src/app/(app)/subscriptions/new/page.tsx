@@ -21,7 +21,7 @@ export default async function NewSubscriptionPage() {
     }),
     prisma.product.findMany({
       where: { isActive: true },
-      select: { id: true, productCode: true, name: true, monthlyPrice: true, billingCycle: true },
+      select: { id: true, productCode: true, name: true, monthlyPrice: true },
       orderBy: { name: "asc" },
     }),
   ]);
@@ -37,7 +37,7 @@ export default async function NewSubscriptionPage() {
         id: p.id,
         label: `${p.name} (${p.productCode} · €${String(p.monthlyPrice)}/mnd)`,
         defaultMonthlyPrice: String(p.monthlyPrice),
-        billingCycle: p.billingCycle,
+        billingCycle: "MONTHLY",
       }))}
       action={createSubscriptionAction as any}
     />

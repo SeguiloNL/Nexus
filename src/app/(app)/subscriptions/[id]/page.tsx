@@ -40,7 +40,7 @@ export default async function SubscriptionDetailPage({
     }),
     prisma.product.findMany({
       where: { isActive: true },
-      select: { id: true, productCode: true, name: true, monthlyPrice: true, billingCycle: true },
+      select: { id: true, productCode: true, name: true, monthlyPrice: true },
       orderBy: { name: "asc" },
     }),
     prisma.tracker.findMany({
@@ -66,7 +66,12 @@ export default async function SubscriptionDetailPage({
         id: c.id,
         label: `${c.companyName} (${c.customerNumber})`,
       }))}
-      productOptions={products}
+      productOptions={products.map((p) => ({
+        id: p.id,
+        label: `${p.name} (${p.productCode} · €${String(p.monthlyPrice)}/mnd)`,
+        defaultMonthlyPrice: String(p.monthlyPrice),
+        billingCycle: "MONTHLY",
+      }))}
       trackerStockOptions={trackersStock.map((t) => ({
         id: t.id,
         label: `${t.serialNumber} · IMEI ${t.imei} · ${t.brand ?? ""} ${t.model ?? ""}`,

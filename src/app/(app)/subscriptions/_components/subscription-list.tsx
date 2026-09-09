@@ -157,7 +157,7 @@ export function SubscriptionList({
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Abonnementen</h1>
           <p className="text-sm text-slate-500">
-            Overzicht van alle telematics abonnementen.
+            Overzicht van alle abonnementen.
           </p>
         </div>
         {canCreate ? (

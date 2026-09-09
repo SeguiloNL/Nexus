@@ -32,6 +32,8 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
+export type { ColumnDef } from "@tanstack/react-table";
+
 export interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];

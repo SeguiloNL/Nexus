@@ -1,13 +1,16 @@
 import { prisma } from "./prisma";
+import type { Prisma } from "@prisma/client";
+
+type TxLike = Prisma.TransactionClient | typeof prisma;
 
 /**
  * Genereert een klantnummer in het formaat K-YYYY-NNNNN
  */
-export async function generateCustomerNumber(): Promise<string> {
+export async function generateCustomerNumber(tx: TxLike = prisma): Promise<string> {
   const year = new Date().getFullYear();
   const prefix = `K-${year}-`;
 
-  const latest = await prisma.customer.findFirst({
+  const latest = await tx.customer.findFirst({
     where: { customerNumber: { startsWith: prefix } },
     orderBy: { customerNumber: "desc" },
     select: { customerNumber: true },
@@ -26,11 +29,11 @@ export async function generateCustomerNumber(): Promise<string> {
 /**
  * Genereert een abonnementnummer in het formaat SUB-YYYY-NNNNNN
  */
-export async function generateSubscriptionNumber(): Promise<string> {
+export async function generateSubscriptionNumber(tx: TxLike = prisma): Promise<string> {
   const year = new Date().getFullYear();
   const prefix = `SUB-${year}-`;
 
-  const latest = await prisma.subscription.findFirst({
+  const latest = await tx.subscription.findFirst({
     where: { subscriptionNumber: { startsWith: prefix } },
     orderBy: { subscriptionNumber: "desc" },
     select: { subscriptionNumber: true },
@@ -49,11 +52,11 @@ export async function generateSubscriptionNumber(): Promise<string> {
 /**
  * Genereert een activatie-ordernummer in het formaat ACT-YYYY-NNNNNN
  */
-export async function generateOrderNumber(): Promise<string> {
+export async function generateOrderNumber(tx: TxLike = prisma): Promise<string> {
   const year = new Date().getFullYear();
   const prefix = `ACT-${year}-`;
 
-  const latest = await prisma.activationOrder.findFirst({
+  const latest = await tx.activationOrder.findFirst({
     where: { orderNumber: { startsWith: prefix } },
     orderBy: { orderNumber: "desc" },
     select: { orderNumber: true },

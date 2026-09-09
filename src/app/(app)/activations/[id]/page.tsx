@@ -1,7 +1,7 @@
 import { auth } from "@/auth";
 import { notFound, redirect } from "next/navigation";
 import { findActivationOrderById } from "@/server/services/activation-order.service";
-import { ActivationOrderDetail } from "./_components/activation-detail";
+import { ActivationOrderDetail } from "../_components/activation-detail";
 import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
 import {
@@ -9,7 +9,7 @@ import {
   cancelOrderAction,
   retryFailedAction,
   completeActivationAction,
-} from "./actions";
+} from "../actions";
 
 export default async function ActivationDetailPage({
   params,
@@ -20,7 +20,7 @@ export default async function ActivationDetailPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "activationOrder")) {
+  if (!canUserRole(session.user.role, "view", "activation_order")) {
     throw new PermissionError("Je mag geen activatie orders bekijken.");
   }
 

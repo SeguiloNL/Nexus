@@ -105,4 +105,5 @@ export type ResourceType =
   | "activation_order"
   | "user"
   | "audit_log"
-  | "setting";
+  | "setting"
+  | "dashboard";

@@ -29,6 +29,7 @@ const RBAC_MATRIX: PermissionMatrix = {
       "user",
       "audit_log",
       "setting",
+      "dashboard",
     ],
     create: [...ALL_WRITE],
     edit: [...ALL_WRITE],
@@ -64,6 +65,7 @@ const RBAC_MATRIX: PermissionMatrix = {
       "product",
       "activation_order",
       "audit_log",
+      "dashboard",
     ],
     create: [
       "customer",
@@ -104,6 +106,7 @@ const RBAC_MATRIX: PermissionMatrix = {
       "product",
       "activation_order",
       "audit_log",
+      "dashboard",
     ],
   },
 };

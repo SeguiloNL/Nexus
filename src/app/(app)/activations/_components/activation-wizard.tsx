@@ -98,7 +98,7 @@ interface Props {
   productOptions: ProductOption[];
   trackerStock: TrackerOption[];
   simStock: SimOption[];
-  customerVehicles: (customerId: string) => VehicleOption[];
+  vehiclesByCustomerMap: Record<string, VehicleOption[]>;
   initialOrder?: null | {
     id: string;
     customerId: string;
@@ -142,7 +142,7 @@ export function ActivationWizard({
   productOptions,
   trackerStock,
   simStock,
-  customerVehicles,
+  vehiclesByCustomerMap,
   initialOrder,
   createAction,
   updateAction,
@@ -208,7 +208,7 @@ export function ActivationWizard({
   );
   const selectedSim = simStock.find((s) => s.id === form.simId);
   const vehiclesOfCustomer = form.customerId
-    ? customerVehicles(form.customerId)
+    ? vehiclesByCustomerMap[form.customerId] ?? []
     : [];
   const selectedVehicle = vehiclesOfCustomer.find(
     (v) => v.id === form.vehicleId
@@ -315,7 +315,7 @@ export function ActivationWizard({
                 <>
                   Status:{" "}
                   <ActivationOrderStatusBadge
-                    status={initialOrder.status as any}
+                    status={initialOrder!.status as any}
                   />
                 </>
               ) : (
@@ -1055,7 +1055,7 @@ function StepReview({
       {form.internalNotes ? (
         <InfoCard
           title="Interne opmerkingen"
-          rows={[["Notities", <p className="whitespace-pre-wrap text-sm">{form.internalNotes}</p>]]}
+          rows={[["Notities", <p key="notes" className="whitespace-pre-wrap text-sm">{form.internalNotes}</p>]]}
         />
       ) : null}
 

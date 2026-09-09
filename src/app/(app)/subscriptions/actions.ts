@@ -82,7 +82,11 @@ export async function updateSubscriptionStatusAction(
   }
 
   const ctx = { userId: user.id, userRole: user.role };
-  await updateSubscriptionStatus(subscriptionId, validated.data, ctx);
+  const statusInput = {
+    status: validated.data.status,
+    ...(validated.data.reason != null ? { reason: validated.data.reason } : {}),
+  };
+  await updateSubscriptionStatus(subscriptionId, statusInput as any, ctx);
   revalidatePath(`/subscriptions/${subscriptionId}`);
   revalidatePath("/subscriptions");
   redirect(`/subscriptions/${subscriptionId}`);

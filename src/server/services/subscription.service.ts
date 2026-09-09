@@ -6,8 +6,10 @@ import type {
   CreateSubscriptionInput,
   UpdateSubscriptionStatusInput,
 } from "@/types/domain";
-import type { UserRole, SubscriptionStatus } from "@/types/enums";
-import type { Prisma, Subscription as PrismaSub } from "@prisma/client";
+import type { UserRole } from "@/types/enums";
+import type { Prisma, Subscription as PrismaSub, $Enums } from "@prisma/client";
+
+type SubscriptionStatus = $Enums.SubscriptionStatus;
 
 type Ctx = { userId: string; userRole: UserRole };
 

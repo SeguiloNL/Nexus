@@ -44,6 +44,14 @@ type DetailProduct = Product & {
 
 type ProductDetailProps = {
   product: DetailProduct;
+  initialProduct?: Partial<{
+    name: string;
+    productCode: string;
+    description: string | null;
+    monthlyPrice: number;
+    currency: string;
+    isActive: boolean;
+  }>;
   role: UserRole;
   updateAction: (
     productId: string,
@@ -55,6 +63,7 @@ type ProductDetailProps = {
 
 export function ProductDetail({
   product,
+  initialProduct,
   role,
   updateAction,
   productId,
@@ -164,7 +173,7 @@ export function ProductDetail({
             <ProductForm
               mode="edit"
               productId={productId}
-              initial={product}
+              initial={initialProduct}
               action={async (prev, form) =>
                 updateAction(productId, prev, form)
               }

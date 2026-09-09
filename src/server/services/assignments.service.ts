@@ -6,8 +6,8 @@ import type {
   SimAssignment,
   Tracker,
   SIM,
-  TrackerStatus,
-  SimStatus,
+  TrackerStatus as TrackerStatusEnum,
+  SimStatus as SimStatusEnum,
   AssignmentReason,
 } from "@prisma/client";
 import type { UserRole } from "@/types/enums";
@@ -58,7 +58,7 @@ export async function assignTracker(
 
     const updated = await tx.tracker.update({
       where: { id: trackerId },
-      data: { status: "ACTIVE" as TrackerStatus.ACTIVE },
+      data: { status: "ACTIVE" as TrackerStatusEnum },
     });
 
     const assignment = await tx.trackerAssignment.create({
@@ -92,7 +92,7 @@ export async function assignTracker(
 export async function unassignTracker(
   trackerId: string,
   ctx: Ctx,
-  opts: { newStatus?: TrackerStatus; reason?: string } = {}
+  opts: { newStatus?: TrackerStatusEnum; reason?: string } = {}
 ): Promise<TrackerAssignment> {
   return prisma.$transaction(async (tx) => {
     const active: any = await findActiveTrackerAssignment(tx, trackerId);
@@ -132,7 +132,7 @@ export async function replaceTracker(
   subscriptionId: string,
   oldTrackerId: string,
   newTrackerId: string,
-  oldTrackerStatus: TrackerStatus,
+  oldTrackerStatus: TrackerStatusEnum,
   ctx: Ctx,
   reason?: AssignmentReason
 ): Promise<{ old: TrackerAssignment; replacement: TrackerAssignment }> {
@@ -165,12 +165,12 @@ export async function replaceTracker(
 
     await tx.tracker.update({
       where: { id: oldTrackerId },
-      data: { status: oldTrackerStatus as TrackerStatus },
+      data: { status: oldTrackerStatus },
     });
 
     const newAssigned = await tx.tracker.update({
       where: { id: newTrackerId },
-      data: { status: "ACTIVE" as TrackerStatus },
+      data: { status: "ACTIVE" as TrackerStatusEnum },
     });
 
     const newAssignment = await tx.trackerAssignment.create({
@@ -232,7 +232,7 @@ export async function assignSim(
 
     await tx.sIM.update({
       where: { id: simId },
-      data: { status: "ACTIVE" as SimStatus.ACTIVE },
+      data: { status: "ACTIVE" as SimStatusEnum },
     });
 
     const assignment = await tx.simAssignment.create({
@@ -264,7 +264,7 @@ export async function assignSim(
 export async function unassignSim(
   simId: string,
   ctx: Ctx,
-  opts: { newStatus?: SimStatus; reason?: string } = {}
+  opts: { newStatus?: SimStatusEnum; reason?: string } = {}
 ): Promise<SimAssignment> {
   return prisma.$transaction(async (tx) => {
     const active: any = await findActiveSimAssignment(tx, simId);
@@ -304,7 +304,7 @@ export async function replaceSim(
   subscriptionId: string,
   oldSimId: string,
   newSimId: string,
-  oldSimStatus: SimStatus,
+  oldSimStatus: SimStatusEnum,
   ctx: Ctx,
   reason?: AssignmentReason
 ): Promise<{ old: SimAssignment; replacement: SimAssignment }> {
@@ -333,11 +333,11 @@ export async function replaceSim(
     });
     await tx.sIM.update({
       where: { id: oldSimId },
-      data: { status: oldSimStatus as SimStatus },
+      data: { status: oldSimStatus },
     });
     await tx.sIM.update({
       where: { id: newSimId },
-      data: { status: "ACTIVE" as SimStatus },
+      data: { status: "ACTIVE" as SimStatusEnum },
     });
     const newAssignment = await tx.simAssignment.create({
       data: {

@@ -46,7 +46,7 @@ export function SubscriptionForm({
   subscriptionId,
   onCancel,
 }: Props) {
-  const [state, formAction] = useFormState(action as any, { message: null });
+  const [state, formAction] = useFormState(action as any, { message: null } as SubActionState);
 
   useEffect(() => {
     if (state?.message && !state.errors) toast.error(state.message);

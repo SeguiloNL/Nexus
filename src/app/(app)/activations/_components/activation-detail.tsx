@@ -105,8 +105,8 @@ export function ActivationOrderDetail({
   completeAction,
   actionError,
 }: Props) {
-  const canEdit = canUserRole(role, "edit", "activationOrder");
-  const canDelete = canUserRole(role, "delete", "activationOrder");
+  const canEdit = canUserRole(role, "edit", "activation_order");
+  const canDelete = canUserRole(role, "delete", "activation_order");
   const router = useRouter();
   const [busy, setBusy] = useState(false);
 

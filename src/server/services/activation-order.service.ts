@@ -160,7 +160,7 @@ export async function createDraftOrder(
       },
     });
     await logAudit(tx, {
-      entityType: "activationOrder",
+      entityType: "activation_order",
       entityId: order.id,
       action: "CREATE",
       userId: ctx.userId,
@@ -195,7 +195,7 @@ export async function updateOrder(
     );
     if (oldValues || newValues) {
       await logAudit(tx, {
-        entityType: "activationOrder",
+        entityType: "activation_order",
         entityId: updated.id,
         action: "UPDATE",
         userId: ctx.userId,
@@ -244,7 +244,7 @@ export async function markReady(id: string, ctx: Ctx): Promise<ActivationOrder> 
       data: { status: "READY" as any },
     });
     await logAudit(tx, {
-      entityType: "activationOrder",
+      entityType: "activation_order",
       entityId: updated.id,
       action: "UPDATE",
       userId: ctx.userId,
@@ -275,7 +275,7 @@ export async function cancelOrder(
       },
     });
     await logAudit(tx, {
-      entityType: "activationOrder",
+      entityType: "activation_order",
       entityId: updated.id,
       action: "CANCEL",
       userId: ctx.userId,
@@ -301,7 +301,7 @@ export async function retryFailed(id: string, ctx: Ctx): Promise<ActivationOrder
       },
     });
     await logAudit(tx, {
-      entityType: "activationOrder",
+      entityType: "activation_order",
       entityId: updated.id,
       action: "UPDATE",
       userId: ctx.userId,
@@ -327,7 +327,7 @@ async function markFailed(
     },
   });
   await logAudit(tx, {
-    entityType: "activationOrder",
+    entityType: "activation_order",
     entityId: updated.id,
     action: "FAIL_ACTIVATION",
     userId,
@@ -470,7 +470,7 @@ export async function completeActivation(id: string, ctx: Ctx) {
         } as any,
       });
       await logAudit(tx, {
-        entityType: "activationOrder",
+        entityType: "activation_order",
         entityId: completed.id,
         action: "COMPLETE_ACTIVATION",
         userId: ctx.userId,

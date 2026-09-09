@@ -1,4 +1,4 @@
-// Prisma schema voor Seguilo Basic Telematics - Activation & Subscription Manager
+// Prisma schema voor Nexus - Activation & Subscription Manager
 // Zie .trae/specs/spec.md §3 voor volledige documentatie
 
 generator client {
@@ -328,6 +328,8 @@ model ActivationOrder {
   status             ActivationOrderStatus  @default(DRAFT)
   internalNotes      String?                @db.Text
   failureReason      String?                @db.Text
+  failedAt           DateTime?              @db.Timestamptz
+  completedAt        DateTime?              @db.Timestamptz
   createdById        String
   createdBy          User                   @relation("CreatedOrders", fields: [createdById], references: [id])
   createdAt          DateTime               @default(now())

@@ -1,7 +1,7 @@
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
-import { ActivationWizard } from "./_components/activation-wizard";
+import { ActivationWizard } from "../_components/activation-wizard";
 import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
@@ -10,7 +10,7 @@ import {
   updateOrderAction,
   markReadyAction,
   completeActivationAction,
-} from "./actions";
+} from "../actions";
 import { findActivationOrderById } from "@/server/services/activation-order.service";
 
 type WizardPageProps = {
@@ -22,8 +22,8 @@ export default async function ActivationWizardPage({
 }: WizardPageProps) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "create", "activationOrder")) {
-    if (!canUserRole(session.user.role, "edit", "activationOrder")) {
+  if (!canUserRole(session.user.role, "create", "activation_order")) {
+    if (!canUserRole(session.user.role, "edit", "activation_order")) {
       throw new PermissionError("Je mag geen activatie orders aanmaken of bewerken.");
     }
   }
@@ -117,18 +117,36 @@ export default async function ActivationWizardPage({
     }
   }
 
-  const vehiclesByCustomer = (customerId: string) =>
-    vehicles.filter((v) => v.customerId === customerId);
+  const productOptions = products.map((p) => ({
+    id: p.id,
+    productCode: p.productCode,
+    name: p.name,
+    monthlyPrice: Number(p.monthlyPrice),
+    description: p.description,
+  }));
+
+  const vehiclesByCustomer: Record<string, any[]> = {};
+  for (const v of vehicles) {
+    if (!vehiclesByCustomer[v.customerId]) vehiclesByCustomer[v.customerId] = [];
+    vehiclesByCustomer[v.customerId].push({
+      id: v.id,
+      licensePlate: v.licensePlate,
+      vin: v.vin,
+      brand: v.brand,
+      model: v.model,
+      description: v.description,
+    });
+  }
 
   return (
     <Suspense fallback={<div>Laden...</div>}>
       <ActivationWizard
         role={session.user.role as any}
         customerOptions={customers as any}
-        productOptions={products as any}
+        productOptions={productOptions}
         trackerStock={trackersStock as any}
         simStock={simsStock as any}
-        customerVehicles={vehiclesByCustomer as any}
+        vehiclesByCustomerMap={vehiclesByCustomer}
         initialOrder={initial}
         createAction={createOrderAction as any}
         updateAction={updateOrderAction as any}

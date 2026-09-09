@@ -27,13 +27,99 @@ function includeDetail(): Prisma.CustomerInclude {
       where: { deletedAt: null },
       orderBy: { createdAt: "desc" as const },
       take: 10,
-      select: { id: true, subscriptionNumber: true, status: true, monthlyPrice: true, startDate: true, endDate: true },
+      include: {
+        trackerAssignments: {
+          where: { endAt: null },
+          select: {
+            id: true,
+            startAt: true,
+            tracker: {
+              select: {
+                id: true,
+                serialNumber: true,
+                imei: true,
+                brand: true,
+                model: true,
+                status: true,
+              },
+            },
+            vehicle: {
+              select: {
+                id: true,
+                licensePlate: true,
+                brand: true,
+                model: true,
+              },
+            },
+          },
+        },
+        simAssignments: {
+          where: { endAt: null },
+          select: {
+            id: true,
+            startAt: true,
+            sim: {
+              select: {
+                id: true,
+                iccid: true,
+                msisdn: true,
+                provider: true,
+                status: true,
+              },
+            },
+          },
+        },
+      },
     },
     vehicles: {
       where: { deletedAt: null },
       orderBy: { createdAt: "desc" as const },
       take: 10,
       select: { id: true, licensePlate: true, vin: true, brand: true, model: true },
+    },
+    activationOrders: {
+      orderBy: { createdAt: "desc" as const },
+      take: 10,
+      select: {
+        id: true,
+        orderNumber: true,
+        status: true,
+        createdAt: true,
+        completedAt: true,
+        failedAt: true,
+        tracker: {
+          select: {
+            id: true,
+            serialNumber: true,
+            imei: true,
+            brand: true,
+            model: true,
+            status: true,
+          },
+        },
+        sim: {
+          select: {
+            id: true,
+            iccid: true,
+            msisdn: true,
+            provider: true,
+            status: true,
+          },
+        },
+        subscription: {
+          select: {
+            id: true,
+            subscriptionNumber: true,
+            status: true,
+          },
+        },
+        vehicle: {
+          select: {
+            id: true,
+            licensePlate: true,
+          },
+        },
+      },
     },
   };
 }

@@ -76,10 +76,10 @@ export default function LoginPage() {
       <div className="w-full max-w-md">
         <div className="mb-8 text-center">
           <h1 className="text-3xl font-bold tracking-tight text-gray-900">
-            Seguilo STM
+            Nexus
           </h1>
           <p className="mt-2 text-sm text-gray-600">
-            Basic Telematics Activation &amp; Subscription Manager
+            Activation &amp; Subscription Manager
           </p>
         </div>
 
@@ -94,7 +94,7 @@ export default function LoginPage() {
           Neem contact op met je beheerder voor accountgegevens.
         </p>
         <p className="mt-2 text-center text-xs text-gray-400">
-          Seed credentials (na db seeden): admin@seguilo.test / Test1234!
+          Seed credentials (na db seeden): admin@nexus.local / Test1234!
         </p>
       </div>
     </div>

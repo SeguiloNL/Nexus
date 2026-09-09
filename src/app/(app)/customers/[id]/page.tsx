@@ -4,6 +4,7 @@ import {
   findCustomerById,
   listParentCustomers,
 } from "@/server/services/customer.service";
+import { findManyAuditLogs } from "@/server/services/audit.service";
 import { CustomerDetail } from "../_components/customer-detail";
 import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
@@ -23,27 +24,47 @@ export default async function CustomerDetailPage({
     throw new PermissionError("Je mag geen klanten bekijken.");
   }
 
-  const [customer, parentOptions] = await Promise.all([
+  const [customer, parentOptions, auditResult] = await Promise.all([
     findCustomerById(params.id),
     listParentCustomers(),
+    findManyAuditLogs({
+      entityType: "customer",
+      perPage: 50,
+      order: "desc",
+      viewerUserId: session.user.id,
+      viewerRole: session.user.role,
+    }).then((r) =>
+      Promise.all(
+        r.data.map(async (log: any) => {
+          const u = log.user
+            ? { name: log.user.name, email: log.user.email }
+            : null;
+          return {
+            id: log.id,
+            timestamp: log.timestamp,
+            action: log.action,
+            entityType: log.entityType,
+            entityId: log.entityId,
+            oldValues: log.oldValues,
+            newValues: log.newValues,
+            user: u,
+          };
+        })
+      )
+    ),
   ]);
 
   if (!customer) notFound();
-
-  const deleteAction: any = deleteCustomerAction.bind(null, params.id);
-  const updateAction: any = async (
-    prev: any,
-    formData: FormData
-  ) => updateCustomerAction(params.id, prev, formData);
 
   return (
     <CustomerDetail
       customer={customer as any}
       parentOptions={parentOptions}
       role={session.user.role}
-      updateAction={updateAction}
-      deleteAction={deleteAction}
+      updateAction={updateCustomerAction}
+      deleteAction={deleteCustomerAction}
       customerId={params.id}
+      auditLogs={auditResult as any}
     />
   );
 }

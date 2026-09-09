@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import {
   LogOut,
   UserCircle,
@@ -42,6 +44,19 @@ const ROLE_VARIANT: Record<UserRole, "success" | "info" | "muted"> = {
 };
 
 export function Header({ userName, userEmail, userRole }: HeaderProps) {
+  const router = useRouter();
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        router.push("/search");
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [router]);
+
   const initials = userName
     ? userName
         .split(" ")
