@@ -1,5 +1,13 @@
 FROM node:20-alpine AS base
-RUN apk add --no-cache libc6-compat
+# libc6-compat voor bepaalde glibc binary shims.
+# Prisma 5.22 musl engine (library mode) linkt tegen libssl1.1 → ALPINE 3.20 / node:20-alpine heeft standaard openssl 3.x.
+# Workaround:
+#   1) zorg dat openssl 3 shared lib bestaat,
+#   2) plaats een symlink libssl.so.1.1 → libssl.so.3 EN libcrypto.so.1.1 → libcrypto.so.3 (ABI compat op niveau dat Prisma nodig heeft: TLS 1.2/1.3 verbinding met Postgres).
+#   3) anders fallback in builder laag: PRISMA_CLIENT_ENGINE_TYPE=binary.
+RUN apk add --no-cache libc6-compat openssl ca-certificates \
+    && ln -sf /lib/libssl.so.3    /lib/libssl.so.1.1 \
+    && ln -sf /lib/libcrypto.so.3 /lib/libcrypto.so.1.1
 WORKDIR /app
 
 # ----------
@@ -35,7 +43,6 @@ FROM base AS runner
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
-
 # Non-root gebruiker aanmaken (node:20-alpine heeft al standaard "node" gebruiker, id 1000)
 RUN addgroup --system --gid 1001 nodejs || true
 RUN adduser  --system --uid 1001 nextjs || true

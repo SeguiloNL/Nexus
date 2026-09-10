@@ -1,0 +1,76 @@
+# ==============================================================
+# docker-compose.prod.yml — STM productie (VPS met 1 app + 1 PG16)
+#
+# Gebruik:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Draai achteraf nog 1x: caddy reload (als Caddy op host draait)
+# ==============================================================
+
+services:
+  # ----------------------------------------------------------
+  # STM App (Next.js standalone, op poort 3000 INTERNAL)
+  # ----------------------------------------------------------
+  stm-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stm-app
+    restart: unless-stopped
+    depends_on:
+      stm-db:
+        condition: service_healthy
+    networks:
+      - stm-net
+    environment:
+      - NODE_ENV=production
+      # App server instellingen
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      # Auth.js v5 — BELANGRIJK! Caddy zet X-Forwarded-Host.
+      - AUTH_TRUST_HOST=true
+      - AUTH_URL=${AUTH_URL:-http://localhost:3000}
+      - AUTH_SECRET=${AUTH_SECRET:?AUTH_SECRET verplicht! Kopieer .env.example naar .env}
+      # Postgres — verwijst naar de compose-service "stm-db"
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-stm}:${POSTGRES_PASSWORD:-changeme}@stm-db:5432/${POSTGRES_DB:-stm}?schema=public&connect_timeout=10&pool_timeout=10
+    ports:
+      # Alleen 127.0.0.1, dus NIET direct naar internet. Caddy (host of container) reverse-proxy naar deze port.
+      - "127.0.0.1:3000:3000"
+    volumes:
+      # (optioneel) mount eigen public/uploads folder als je uploads implementeert
+      - app-public:/app/public/uploads
+
+  # ----------------------------------------------------------
+  # PostgreSQL 16 (data in named volume, healthcheck)
+  # ----------------------------------------------------------
+  stm-db:
+    image: postgres:16-alpine
+    container_name: stm-db
+    restart: unless-stopped
+    shm_size: 128m
+    networks:
+      - stm-net
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-stm}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - POSTGRES_DB=${POSTGRES_DB:-stm}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - stm-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stm} -d ${POSTGRES_DB:-stm}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    # Expose NIET naar host (of alleen 127.0.0.1 als je van buiten DB met DBeaver wilt inloggen)
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+
+volumes:
+  stm-db-data:
+  app-public:
+
+networks:
+  stm-net:
+    driver: bridge

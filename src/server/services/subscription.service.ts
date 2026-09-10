@@ -8,6 +8,7 @@ import type {
 } from "@/types/domain";
 import type { UserRole } from "@/types/enums";
 import type { Prisma, Subscription as PrismaSub, $Enums } from "@prisma/client";
+import { syncSubscriptionToInserve } from "./inserve-sync.service";
 
 type SubscriptionStatus = $Enums.SubscriptionStatus;
 
@@ -225,19 +226,33 @@ async function transitionStatus(
 }
 
 export async function suspendSubscription(id: string, ctx: Ctx, reason?: string) {
-  return transitionStatus(id, "SUSPENDED" as any, ctx, "SUSPEND", reason);
+  const updated = await transitionStatus(id, "SUSPENDED" as any, ctx, "SUSPEND", reason);
+  queueSync(updated.id, ctx);
+  return updated;
 }
 
 export async function resumeSubscription(id: string, ctx: Ctx) {
-  return transitionStatus(id, "ACTIVE" as any, ctx, "RESUME");
+  const updated = await transitionStatus(id, "ACTIVE" as any, ctx, "RESUME");
+  queueSync(updated.id, ctx);
+  return updated;
 }
 
 export async function cancelSubscription(id: string, ctx: Ctx, reason?: string) {
-  return transitionStatus(id, "CANCELLED" as any, ctx, "CANCEL", reason);
+  const updated = await transitionStatus(id, "CANCELLED" as any, ctx, "CANCEL", reason);
+  queueSync(updated.id, ctx);
+  return updated;
 }
 
 export async function terminateSubscription(id: string, ctx: Ctx, reason?: string) {
-  return transitionStatus(id, "TERMINATED" as any, ctx, "TERMINATE", reason);
+  const updated = await transitionStatus(id, "TERMINATED" as any, ctx, "TERMINATE", reason);
+  queueSync(updated.id, ctx);
+  return updated;
+}
+
+function queueSync(subscriptionId: string, ctx: Ctx): void {
+  Promise.resolve()
+    .then(() => syncSubscriptionToInserve(subscriptionId, ctx))
+    .catch((e) => console.error("[Inserve-queueSync] onverwachte fout:", e));
 }
 
 export async function updateSubscriptionStatus(

@@ -26,6 +26,8 @@ type ProductFormProps = {
     description: string | null;
     monthlyPrice: number;
     currency: string;
+    btwPercentage: number | null;
+    inserveArticleId: number | null;
     isActive: boolean;
   }>;
   action: (
@@ -172,6 +174,51 @@ export function ProductForm({
                     maxLength={3}
                     defaultValue={initial?.currency ?? "EUR"}
                   />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="btwPercentage">BTW %</Label>
+                  <Input
+                    id="btwPercentage"
+                    name="btwPercentage"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    defaultValue={
+                      initial?.btwPercentage !== undefined && initial?.btwPercentage !== null
+                        ? String(initial.btwPercentage)
+                        : "21"
+                    }
+                  />
+                  {state?.errors?.btwPercentage ? (
+                    <p className="text-xs text-red-600">
+                      {state.errors.btwPercentage.join(", ")}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="inserveArticleId">Inserve Artikel-ID</Label>
+                  <Input
+                    id="inserveArticleId"
+                    name="inserveArticleId"
+                    type="number"
+                    defaultValue={
+                      initial?.inserveArticleId !== undefined && initial?.inserveArticleId !== null
+                        ? String(initial.inserveArticleId)
+                        : ""
+                    }
+                  />
+                  <p className="text-xs text-slate-500">
+                    Wordt automatisch aangemaakt in Inserve bij sync indien leeg.
+                  </p>
+                  {state?.errors?.inserveArticleId ? (
+                    <p className="text-xs text-red-600">
+                      {state.errors.inserveArticleId.join(", ")}
+                    </p>
+                  ) : null}
                 </div>
               </div>
 

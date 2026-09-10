@@ -41,6 +41,9 @@ type CustomerFormProps = {
     contactPerson: string | null;
     phone: string | null;
     email: string | null;
+    kvkNr: string | null;
+    btwNr: string | null;
+    inserveCompanyId: number | null;
     status: CustomerStatus;
     notes: string | null;
   }>;
@@ -286,6 +289,72 @@ export function CustomerForm({
                   placeholder="Optionele notities (niet zichtbaar voor de klant)."
                   defaultValue={initial?.notes ?? ""}
                 />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="lg:col-span-1">
+            <CardHeader>
+              <CardTitle>Facturatie (Inserve)</CardTitle>
+              <CardDescription>
+                Deze gegevens worden naar Inserve gestuurd voor de facturatie.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="kvkNr">KvK-nummer</Label>
+                <Input
+                  id="kvkNr"
+                  name="kvkNr"
+                  placeholder="12345678"
+                  defaultValue={initial?.kvkNr ?? ""}
+                />
+                <p className="text-xs text-slate-500">(8 cijfers, bijv. 12345678)</p>
+                {state?.errors?.kvkNr ? (
+                  <p className="text-xs text-red-600">
+                    {state.errors.kvkNr.join(", ")}
+                  </p>
+                ) : null}
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="btwNr">BTW-nummer</Label>
+                <Input
+                  id="btwNr"
+                  name="btwNr"
+                  placeholder="NL123456789B01"
+                  defaultValue={initial?.btwNr ?? ""}
+                />
+                <p className="text-xs text-slate-500">(bijv. NL123456789B01)</p>
+                {state?.errors?.btwNr ? (
+                  <p className="text-xs text-red-600">
+                    {state.errors.btwNr.join(", ")}
+                  </p>
+                ) : null}
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="inserveCompanyId">Inserve Bedrijf-ID</Label>
+                <Input
+                  id="inserveCompanyId"
+                  name="inserveCompanyId"
+                  type="number"
+                  defaultValue={
+                    initial?.inserveCompanyId !== undefined && initial?.inserveCompanyId !== null
+                      ? String(initial.inserveCompanyId)
+                      : ""
+                  }
+                  disabled={
+                    initial?.inserveCompanyId !== undefined &&
+                    initial?.inserveCompanyId !== null
+                  }
+                />
+                <p className="text-xs text-slate-500">
+                  Wordt automatisch gevuld na sync naar Inserve, of handmatig overnemen.
+                </p>
+                {state?.errors?.inserveCompanyId ? (
+                  <p className="text-xs text-red-600">
+                    {state.errors.inserveCompanyId.join(", ")}
+                  </p>
+                ) : null}
               </div>
             </CardContent>
           </Card>

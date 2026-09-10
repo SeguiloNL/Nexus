@@ -13,6 +13,8 @@ export const CreateProductSchema = z.object({
     .toUpperCase()
     .length(3, "Valuta moet 3 letters zijn (ISO 4217)")
     .optional(),
+  btwPercentage: z.coerce.number().min(0).max(100).optional(),
+  inserveArticleId: z.coerce.number().int().nullable().optional(),
   isActive: z.boolean().optional(),
 });
 

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useTransition } from "react";
 import { useFormState } from "react-dom";
 import {
   ArrowLeft,
@@ -14,7 +15,12 @@ import {
   AlertTriangle,
   RotateCcw,
   ArrowRightLeft,
+  RefreshCw,
+  CheckCircle,
+  Clock,
+  XCircle,
 } from "lucide-react";
+import { toast } from "sonner";
 import {
   Tabs,
   TabsContent,
@@ -65,8 +71,23 @@ import {
   formatLicensePlate,
 } from "@/lib/formatters";
 import type { AssignmentReason, Subscription } from "@prisma/client";
+import {
+  syncSubscriptionToInserveAction,
+  type InserveSyncState,
+} from "../actions";
+
+type InserveSyncStatus =
+  | "PENDING"
+  | "IN_PROGRESS"
+  | "SYNCED"
+  | "FAILED"
+  | "SKIPPED";
 
 type SubDetail = Subscription & {
+  inserveSyncStatus: InserveSyncStatus;
+  inserveSyncError: string | null;
+  inserveSubscriptionId: number | null;
+  inserveLastSyncedAt: Date | string | null;
   customer: { id: string; customerNumber: string; companyName: string };
   product: { id: string; productCode: string; name: string };
   trackerAssignments: Array<{
@@ -279,19 +300,27 @@ export function SubscriptionDetail({
                 </Info>
               </CardContent>
             </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle>Systeem</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm">
-                <Info label="Aangemaakt">
-                  {formatDate(subscription.createdAt)}
-                </Info>
-                <Info label="Bijgewerkt">
-                  {formatDate(subscription.updatedAt)}
-                </Info>
-              </CardContent>
-            </Card>
+
+            <div className="space-y-6">
+              <InserveSyncCard
+                subscription={subscription}
+                canSync={canEdit}
+              />
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Systeem</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3 text-sm">
+                  <Info label="Aangemaakt">
+                    {formatDate(subscription.createdAt)}
+                  </Info>
+                  <Info label="Bijgewerkt">
+                    {formatDate(subscription.updatedAt)}
+                  </Info>
+                </CardContent>
+              </Card>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
@@ -618,6 +647,156 @@ function AssignTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function InserveSyncCard({
+  subscription,
+  canSync,
+}: {
+  subscription: SubDetail;
+  canSync: boolean;
+}) {
+  const [isPending, startTransition] = useTransition();
+
+  const statusConfig: Record<
+    InserveSyncStatus,
+    { label: string; variant: any; icon: any }
+  > = {
+    PENDING: {
+      label: "Wachten",
+      variant: "muted",
+      icon: Clock,
+    },
+    IN_PROGRESS: {
+      label: "Bezig",
+      variant: "info",
+      icon: RefreshCw,
+    },
+    SYNCED: {
+      label: "Gesynchroniseerd",
+      variant: "success",
+      icon: CheckCircle,
+    },
+    FAILED: {
+      label: "Mislukt",
+      variant: "destructive",
+      icon: XCircle,
+    },
+    SKIPPED: {
+      label: "Overgeslagen",
+      variant: "warning",
+      icon: AlertTriangle,
+    },
+  };
+
+  const cfg = statusConfig[subscription.inserveSyncStatus];
+  const StatusIcon = cfg.icon;
+
+  const handleSync = () => {
+    startTransition(async () => {
+      const result: InserveSyncState = await syncSubscriptionToInserveAction(
+        subscription.id
+      );
+      if (result.ok) {
+        toast.success(result.message ?? "Synchronisatie succesvol.");
+      } else {
+        toast.error(result.error ?? "Synchronisatie mislukt.");
+      }
+    });
+  };
+
+  const inserveSubdomain =
+    typeof process !== "undefined"
+      ? (process.env as any).NEXT_PUBLIC_INSERVE_SUBDOMAIN ??
+        (process.env as any).INSERVE_SUBDOMAIN
+      : undefined;
+
+  const contractHref =
+    inserveSubdomain && subscription.inserveSubscriptionId
+      ? `https://${inserveSubdomain}.inserve.nl/contracten/${subscription.inserveSubscriptionId}`
+      : undefined;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <FileText className="h-4 w-4" />
+          Facturatie (Inserve)
+        </CardTitle>
+        <CardDescription>
+          Status van de synchronisatie met Inserve voor facturatie.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        <div className="flex items-center gap-2">
+          <Badge variant={cfg.variant as any} className="gap-1.5">
+            <StatusIcon className="h-3 w-3" />
+            {cfg.label}
+          </Badge>
+        </div>
+
+        <div className="space-y-2.5">
+          <Info label="Inserve Contract-ID">
+            {subscription.inserveSubscriptionId ? (
+              contractHref ? (
+                <a
+                  href={contractHref}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="font-mono underline-offset-4 hover:underline"
+                >
+                  {subscription.inserveSubscriptionId}
+                </a>
+              ) : (
+                <span className="font-mono">
+                  {subscription.inserveSubscriptionId}
+                </span>
+              )
+            ) : (
+              <span className="text-slate-400">Nog niet aangemaakt</span>
+            )}
+          </Info>
+
+          <Info label="Laatste sync">
+            {subscription.inserveLastSyncedAt ? (
+              formatDate(subscription.inserveLastSyncedAt)
+            ) : (
+              <span className="text-slate-400">Nooit</span>
+            )}
+          </Info>
+        </div>
+
+        {subscription.inserveSyncStatus === "FAILED" &&
+        subscription.inserveSyncError ? (
+          <details className="rounded-md border border-red-200 bg-red-50 p-3">
+            <summary className="flex cursor-pointer items-center gap-2 text-xs font-medium text-red-700">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Foutdetails bekijken
+            </summary>
+            <pre className="mt-2 max-h-40 overflow-auto rounded border border-red-200 bg-white p-2 font-mono text-[11px] text-red-800 whitespace-pre-wrap">
+              {subscription.inserveSyncError}
+            </pre>
+          </details>
+        ) : null}
+
+        {canSync ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleSync}
+            disabled={isPending}
+            className="w-full"
+          >
+            <RefreshCw
+              className={`mr-2 h-3.5 w-3.5 ${isPending ? "animate-spin" : ""}`}
+            />
+            {isPending ? "Synchroniseren..." : "Sync met Inserve"}
+          </Button>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }
 

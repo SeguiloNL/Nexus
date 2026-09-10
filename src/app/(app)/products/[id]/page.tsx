@@ -23,6 +23,10 @@ export default async function ProductDetailPage({
   const productForForm = {
     ...product,
     monthlyPrice: Number(product.monthlyPrice),
+    btwPercentage:
+      product.btwPercentage !== null && product.btwPercentage !== undefined
+        ? Number(product.btwPercentage)
+        : null,
   };
 
   const updateAction: any = async (

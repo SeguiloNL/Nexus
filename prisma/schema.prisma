@@ -97,6 +97,16 @@ enum AuditAction {
   REPLACE_SIM
   COMPLETE_ACTIVATION
   FAIL_ACTIVATION
+  INSERVE_SYNCED
+  INSERVE_SYNC_FAILED
+}
+
+enum InserveSyncStatus {
+  PENDING
+  IN_PROGRESS
+  SYNCED
+  FAILED
+  SKIPPED
 }
 
 // ------------------------------
@@ -135,6 +145,9 @@ model Customer {
   contactPerson     String?
   phone             String?
   email             String?
+  kvkNr             String?
+  btwNr             String?
+  inserveCompanyId  Int?       @unique
   status            CustomerStatus @default(ACTIVE)
   notes             String?    @db.Text
   createdAt         DateTime   @default(now())
@@ -148,19 +161,22 @@ model Customer {
 
   @@index([status])
   @@index([parentCustomerId])
+  @@index([kvkNr])
   @@map("customers")
 }
 
 model Product {
-  id           String         @id @default(cuid())
-  name         String
-  productCode  String         @unique
-  description  String?        @db.Text
-  monthlyPrice Decimal        @db.Decimal(10, 2)
-  currency     String         @default("EUR") @db.VarChar(3)
-  isActive     Boolean        @default(true)
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  id              String         @id @default(cuid())
+  name            String
+  productCode     String         @unique
+  description     String?        @db.Text
+  monthlyPrice    Decimal        @db.Decimal(10, 2)
+  currency        String         @default("EUR") @db.VarChar(3)
+  btwPercentage   Decimal?       @db.Decimal(4, 2) @default(21)
+  isActive        Boolean        @default(true)
+  inserveArticleId Int?          @unique
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
 
   subscriptions    Subscription[]
   activationOrders ActivationOrder[]
@@ -169,21 +185,25 @@ model Product {
 }
 
 model Subscription {
-  id                 String              @id @default(cuid())
-  subscriptionNumber String              @unique
-  customerId         String
-  customer           Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  productId          String
-  product            Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
-  startDate          DateTime            @db.Date
-  endDate            DateTime?           @db.Date
-  status             SubscriptionStatus  @default(DRAFT)
-  monthlyPrice       Decimal             @db.Decimal(10, 2)
-  billingCycle       BillingCycle        @default(MONTHLY)
-  notes              String?             @db.Text
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  deletedAt          DateTime?
+  id                   String              @id @default(cuid())
+  subscriptionNumber   String              @unique
+  customerId           String
+  customer             Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  productId            String
+  product              Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
+  startDate            DateTime            @db.Date
+  endDate              DateTime?           @db.Date
+  status               SubscriptionStatus  @default(DRAFT)
+  monthlyPrice         Decimal             @db.Decimal(10, 2)
+  billingCycle         BillingCycle        @default(MONTHLY)
+  inserveSyncStatus    InserveSyncStatus   @default(PENDING)
+  inserveSyncError     String?             @db.Text
+  inserveSubscriptionId Int?               @unique
+  inserveLastSyncedAt  DateTime?
+  notes                String?             @db.Text
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  deletedAt            DateTime?
 
   trackerAssignments TrackerAssignment[]
   simAssignments     SimAssignment[]
@@ -192,6 +212,7 @@ model Subscription {
   @@index([customerId])
   @@index([productId])
   @@index([status])
+  @@index([inserveSyncStatus])
   @@map("subscriptions")
 }
 

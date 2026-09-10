@@ -36,6 +36,10 @@ export async function createProductAction(
       ? Number(formData.get("monthlyPrice"))
       : undefined,
     currency: formData.get("currency") || undefined,
+    btwPercentage: formData.get("btwPercentage")
+      ? Number(formData.get("btwPercentage"))
+      : undefined,
+    inserveArticleId: formData.get("inserveArticleId") || null,
     isActive: isActive === "on" || isActive === "true",
   };
 
@@ -72,6 +76,10 @@ export async function updateProductAction(
       ? Number(formData.get("monthlyPrice"))
       : undefined,
     currency: (formData.get("currency") as string) || undefined,
+    btwPercentage: formData.get("btwPercentage")
+      ? Number(formData.get("btwPercentage"))
+      : undefined,
+    inserveArticleId: formData.get("inserveArticleId") || null,
     isActive: isActive !== null ? isActive === "on" || isActive === "true" : undefined,
   };
 

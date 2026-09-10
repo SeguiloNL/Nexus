@@ -156,6 +156,25 @@ export function ProductDetail({
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
                 <div className="flex justify-between">
+                  <span className="text-slate-500">BTW %</span>
+                  <span className="tabular-nums font-medium">
+                    {product.btwPercentage !== null &&
+                    product.btwPercentage !== undefined
+                      ? `${Number(product.btwPercentage)}%`
+                      : "—"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Inserve Artikel-ID</span>
+                  <span className="font-mono">
+                    {product.inserveArticleId !== null &&
+                    product.inserveArticleId !== undefined
+                      ? product.inserveArticleId
+                      : "—"}
+                  </span>
+                </div>
+                <div className="my-2 h-px bg-slate-100" />
+                <div className="flex justify-between">
                   <span className="text-slate-500">Aangemaakt</span>
                   <span>{formatDate(product.createdAt)}</span>
                 </div>

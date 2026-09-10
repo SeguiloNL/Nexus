@@ -327,6 +327,26 @@ export function CustomerDetail({
                       .join(", ") || null
                   }
                 />
+                <InfoRow
+                  icon={<FileText className="h-4 w-4" />}
+                  label="KvK"
+                  value={customer.kvkNr}
+                />
+                <InfoRow
+                  icon={<FileText className="h-4 w-4" />}
+                  label="BTW"
+                  value={customer.btwNr}
+                />
+                <InfoRow
+                  icon={<FileText className="h-4 w-4" />}
+                  label="Inserve ID"
+                  value={
+                    customer.inserveCompanyId !== null &&
+                    customer.inserveCompanyId !== undefined
+                      ? String(customer.inserveCompanyId)
+                      : null
+                  }
+                />
               </CardContent>
             </Card>
             <Card>

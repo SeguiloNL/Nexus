@@ -20,7 +20,15 @@ import {
 } from "@/server/services/subscription.service";
 import type { SubscriptionStatus } from "@/types/enums";
 import { replaceSim, replaceTracker, unassignSim, unassignTracker } from "@/server/services/assignments.service";
+import { syncSubscriptionToInserve } from "@/server/services/inserve-sync.service";
 import type { SimStatus, TrackerStatus } from "@prisma/client";
+
+export type InserveSyncState = {
+  ok: boolean;
+  message?: string | null;
+  error?: string | null;
+  status?: string | null;
+};
 
 export type SubActionState = {
   errors?: Partial<Record<keyof CreateSubscriptionInput, string[]>>;
@@ -204,4 +212,39 @@ export async function replaceSimAction(
   );
   revalidatePath(`/subscriptions/${subscriptionId}`);
   redirect(`/subscriptions/${subscriptionId}`);
+}
+
+export async function syncSubscriptionToInserveAction(
+  subscriptionId: string
+): Promise<InserveSyncState> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "edit", "subscription");
+
+  const ctx = { userId: user.id, userRole: user.role };
+  const result = await syncSubscriptionToInserve(subscriptionId, ctx);
+
+  revalidatePath(`/subscriptions/${subscriptionId}`);
+  revalidatePath("/subscriptions");
+
+  if (result.status === "SYNCED") {
+    return {
+      ok: true,
+      status: "SYNCED",
+      message:
+        result.details ??
+        "Abonnement succesvol gesynchroniseerd met Inserve.",
+    };
+  }
+  if (result.status === "SKIPPED") {
+    return {
+      ok: true,
+      status: "SKIPPED",
+      message: result.details ?? "Sync overgeslagen (geen actie nodig).",
+    };
+  }
+  return {
+    ok: false,
+    status: "FAILED",
+    error: result.error ?? "Onbekende fout bij synchronisatie met Inserve.",
+  };
 }

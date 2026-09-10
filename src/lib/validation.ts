@@ -155,6 +155,11 @@ export function validateKvkNr(input: string): boolean {
   return /^\d{8}$/.test(digits);
 }
 
+export function validateBtwNr(input: string): boolean {
+  const normalized = input.replace(/\s/g, "").toUpperCase();
+  return /^[A-Z]{2}[A-Za-z0-9]{2,14}$/.test(normalized);
+}
+
 // ============================================================
 // Datum validatie
 // ============================================================

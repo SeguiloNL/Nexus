@@ -39,6 +39,9 @@ export async function createCustomerAction(
     contactPerson: formData.get("contactPerson") || null,
     phone: formData.get("phone") || null,
     email: formData.get("email") || null,
+    kvkNr: formData.get("kvkNr") || null,
+    btwNr: formData.get("btwNr") || null,
+    inserveCompanyId: formData.get("inserveCompanyId") || null,
     status: (formData.get("status") as CreateCustomerInput["status"]) ??
       undefined,
     notes: formData.get("notes") || null,
@@ -82,6 +85,9 @@ export async function updateCustomerAction(
     contactPerson?: string | null;
     phone?: string | null;
     email?: string | null;
+    kvkNr?: string | null;
+    btwNr?: string | null;
+    inserveCompanyId?: number | string | null;
     status?: CreateCustomerInput["status"];
     notes?: string | null;
   } = {
@@ -94,6 +100,9 @@ export async function updateCustomerAction(
     contactPerson: (formData.get("contactPerson") as string) ?? null,
     phone: (formData.get("phone") as string) ?? null,
     email: (formData.get("email") as string) ?? null,
+    kvkNr: (formData.get("kvkNr") as string) ?? null,
+    btwNr: (formData.get("btwNr") as string) ?? null,
+    inserveCompanyId: (formData.get("inserveCompanyId") as string) ?? null,
     status: (formData.get("status") as CreateCustomerInput["status"]) ??
       undefined,
     notes: (formData.get("notes") as string) ?? null,
