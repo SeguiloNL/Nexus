@@ -13,6 +13,7 @@ import {
   FileKey2,
   History,
   Settings,
+  FileText,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -24,7 +25,7 @@ type NavItem = {
   href: string;
   icon: LucideIcon;
   action: "view";
-  resource: "dashboard" | "customer" | "tracker" | "sim" | "vehicle" | "product" | "subscription" | "activation_order" | "user" | "audit_log" | "setting";
+  resource: "dashboard" | "customer" | "tracker" | "sim" | "vehicle" | "product" | "subscription" | "invoice" | "activation_order" | "user" | "audit_log" | "setting";
 };
 
 const NAV_ITEMS: NavItem[] = [
@@ -70,6 +71,13 @@ const NAV_ITEMS: NavItem[] = [
     icon: Receipt,
     action: "view",
     resource: "subscription",
+  },
+  {
+    label: "Facturen",
+    href: "/invoices",
+    icon: FileText,
+    action: "view",
+    resource: "invoice",
   },
   {
     label: "Activaties",

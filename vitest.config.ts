@@ -15,7 +15,7 @@ export default defineConfig({
     globals: false,
     environment: "node",
     include: ["tests/**/*.{test,spec}.{ts,tsx}", "tests/**/*.test.{ts,tsx}"],
-    exclude: ["node_modules", ".next"],
+    exclude: ["node_modules", ".next", "tests/e2e/**"],
     coverage: {
       provider: "v8",
       reporter: ["text", "html"],

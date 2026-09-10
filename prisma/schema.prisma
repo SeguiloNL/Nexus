@@ -109,6 +109,14 @@ enum InserveSyncStatus {
   SKIPPED
 }
 
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
 // ------------------------------
 // Models
 // ------------------------------
@@ -158,6 +166,7 @@ model Customer {
   vehicles          Vehicle[]
   activationOrders  ActivationOrder[] @relation("CustomerOrders")
   subCustomerOrders ActivationOrder[] @relation("SubCustomerOrders")
+  invoices          Invoice[]
 
   @@index([status])
   @@index([parentCustomerId])
@@ -208,12 +217,41 @@ model Subscription {
   trackerAssignments TrackerAssignment[]
   simAssignments     SimAssignment[]
   activationOrders   ActivationOrder[]
+  invoices           Invoice[]
 
   @@index([customerId])
   @@index([productId])
   @@index([status])
   @@index([inserveSyncStatus])
   @@map("subscriptions")
+}
+
+model Invoice {
+  id               String        @id @default(cuid())
+  invoiceNumber    String        @unique
+  subscriptionId   String
+  subscription     Subscription  @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  customerId       String
+  customer         Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  periodStart      DateTime      @db.Date
+  periodEnd        DateTime      @db.Date
+  issueDate        DateTime      @db.Date
+  dueDate          DateTime      @db.Date
+  subtotal         Decimal       @db.Decimal(10, 2)
+  vatRate          Decimal       @db.Decimal(5, 2)
+  vatAmount        Decimal       @db.Decimal(10, 2)
+  total            Decimal       @db.Decimal(10, 2)
+  status           InvoiceStatus @default(DRAFT)
+  paidAt           DateTime?     @db.Timestamptz
+  note             String?       @db.Text
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@unique([subscriptionId, periodStart, periodEnd], map: "idx_invoice_sub_period_unique")
+  @@index([customerId])
+  @@index([status])
+  @@index([issueDate])
+  @@map("invoices")
 }
 
 model Tracker {

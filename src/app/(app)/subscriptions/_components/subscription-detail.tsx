@@ -60,6 +60,7 @@ import {
   SubscriptionStatusBadge,
   TrackerStatusBadge,
   SimStatusBadge,
+  InvoiceStatusBadge,
 } from "@/components/ui/status-badges";
 import { canUserRole } from "@/lib/auth/session";
 import type { UserRole } from "@/types/enums";
@@ -133,6 +134,7 @@ interface Props {
   productOptions: any[];
   trackerStockOptions: { id: string; label: string }[];
   simStockOptions: { id: string; label: string }[];
+  invoices: Array<any>;
   suspendAction: (id: string, prev: any, form: FormData) => any;
   resumeAction: (id: string) => any;
   cancelAction: (id: string, prev: any, form: FormData) => any;
@@ -143,6 +145,9 @@ interface Props {
   unassignSimAction: (sid: string, simId: string) => any;
   replaceTrackerAction: (sid: string, prev: any, form: FormData) => any;
   replaceSimAction: (sid: string, prev: any, form: FormData) => any;
+  markInvoicePaidAction: (invoiceId: string) => any;
+  deleteInvoiceAction: (invoiceId: string) => any;
+  updateInvoiceStatusAction: (invoiceId: string, prev: any, form: FormData) => any;
   subscriptionId: string;
 }
 
@@ -153,6 +158,7 @@ export function SubscriptionDetail({
   productOptions,
   trackerStockOptions,
   simStockOptions,
+  invoices,
   suspendAction,
   resumeAction,
   cancelAction,
@@ -163,10 +169,16 @@ export function SubscriptionDetail({
   unassignSimAction,
   replaceTrackerAction,
   replaceSimAction,
+  markInvoicePaidAction,
+  deleteInvoiceAction,
+  updateInvoiceStatusAction,
   subscriptionId,
 }: Props) {
   const canEdit = canUserRole(role, "edit", "subscription");
   const canDelete = canUserRole(role, "delete", "subscription");
+  const canViewInvoices = canUserRole(role, "view", "invoice");
+  const canEditInvoices = canUserRole(role, "edit", "invoice");
+  const canDeleteInvoices = canUserRole(role, "delete", "invoice");
 
   const [, deleteFormAction] = useFormState(
     async () => deleteAction(subscriptionId),
@@ -261,6 +273,7 @@ export function SubscriptionDetail({
           {canEdit ? <TabsTrigger value="edit">Bewerken</TabsTrigger> : null}
           <TabsTrigger value="tracker">Tracker</TabsTrigger>
           <TabsTrigger value="sim">SIM</TabsTrigger>
+          {canViewInvoices ? <TabsTrigger value="invoices">Facturen</TabsTrigger> : null}
           <TabsTrigger value="history">Geschiedenis</TabsTrigger>
         </TabsList>
 
@@ -550,6 +563,84 @@ export function SubscriptionDetail({
             </CardContent>
           </Card>
         </TabsContent>
+
+        {canViewInvoices ? (
+          <TabsContent value="invoices" className="mt-6">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <FileText className="h-4 w-4" /> Facturen
+                  </CardTitle>
+                  <CardDescription>
+                    Alle facturen voor dit abonnement, van nieuw naar oud.
+                  </CardDescription>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {!invoices || invoices.length === 0 ? (
+                  <EmptyHint text="Nog geen facturen voor dit abonnement." />
+                ) : (
+                  <div className="overflow-hidden rounded-md border">
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2">Factuurnummer</th>
+                          <th className="px-3 py-2">Periode</th>
+                          <th className="px-3 py-2">Factuurdatum</th>
+                          <th className="px-3 py-2">Vervaldatum</th>
+                          <th className="px-3 py-2 text-right">Subtotaal</th>
+                          <th className="px-3 py-2 text-right">BTW</th>
+                          <th className="px-3 py-2 text-right">Totaal</th>
+                          <th className="px-3 py-2">Status</th>
+                          {(canEditInvoices || canDeleteInvoices) ? (
+                            <th className="px-3 py-2 text-right">Acties</th>
+                          ) : null}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {invoices.map((inv: any, i: number) => (
+                          <tr key={inv.id ?? i} className="border-t hover:bg-slate-50">
+                            <td className="px-3 py-2 font-mono">{inv.invoiceNumber}</td>
+                            <td className="px-3 py-2 whitespace-nowrap text-slate-600">
+                              {formatDate(inv.periodStart)} → {formatDate(inv.periodEnd)}
+                            </td>
+                            <td className="px-3 py-2 whitespace-nowrap">{formatDate(inv.issueDate)}</td>
+                            <td className="px-3 py-2 whitespace-nowrap">{formatDate(inv.dueDate)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(String(inv.subtotal))}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-xs text-slate-500">{formatCurrency(String(inv.vatAmount))} ({Number(inv.vatRate)}%)</td>
+                            <td className="px-3 py-2 text-right tabular-nums font-semibold">{formatCurrency(String(inv.total))}</td>
+                            <td className="px-3 py-2"><InvoiceStatusBadge status={String(inv.status)} /></td>
+                            {canEditInvoices || canDeleteInvoices ? (
+                              <td className="px-3 py-2 text-right">
+                                <div className="inline-flex gap-1 justify-end">
+                                  {canEditInvoices && inv.status !== "PAID" ? (
+                                    <form action={async () => markInvoicePaidAction(inv.id)}>
+                                      <Button size="sm" variant="outline" type="submit">
+                                        <CheckCircle className="h-3.5 w-3.5" /> Betaald
+                                      </Button>
+                                    </form>
+                                  ) : null}
+                                  {canDeleteInvoices && inv.status !== "PAID" && inv.status !== "CANCELLED" ? (
+                                    <form action={async () => deleteInvoiceAction(inv.id)}>
+                                      <Button size="sm" variant="outline" className="text-red-600" type="submit">
+                                        <Ban className="h-3.5 w-3.5" /> Annuleren
+                                      </Button>
+                                    </form>
+                                  ) : null}
+                                </div>
+                              </td>
+                            ) : null}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ) : null}
 
         <TabsContent value="history" className="mt-6">
           <Card>

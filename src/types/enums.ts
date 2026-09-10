@@ -59,6 +59,14 @@ export enum BillingCycle {
   YEARLY = "YEARLY",
 }
 
+export enum InvoiceStatus {
+  DRAFT = "DRAFT",
+  SENT = "SENT",
+  PAID = "PAID",
+  OVERDUE = "OVERDUE",
+  CANCELLED = "CANCELLED",
+}
+
 export enum AssignmentReason {
   INITIAL = "INITIAL",
   REPLACEMENT = "REPLACEMENT",
@@ -84,6 +92,9 @@ export enum AuditAction {
   REPLACE_SIM = "REPLACE_SIM",
   COMPLETE_ACTIVATION = "COMPLETE_ACTIVATION",
   FAIL_ACTIVATION = "FAIL_ACTIVATION",
+  GENERATE_INVOICES = "GENERATE_INVOICES",
+  MARK_INVOICE_PAID = "MARK_INVOICE_PAID",
+  SEND_INVOICE = "SEND_INVOICE",
 }
 
 export type ResourceAction =
@@ -103,6 +114,7 @@ export type ResourceType =
   | "subscription"
   | "product"
   | "activation_order"
+  | "invoice"
   | "user"
   | "audit_log"
   | "setting"

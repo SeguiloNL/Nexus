@@ -20,6 +20,7 @@ export default async function TrackersPage() {
   const canEdit = canUserRole(session.user.role, "edit", "tracker");
   const canDelete = canUserRole(session.user.role, "delete", "tracker");
   const canImport = canUserRole(session.user.role, "import", "tracker");
+  const canExport = canUserRole(session.user.role, "export", "tracker");
 
   return (
     <TrackerListWithImport
@@ -28,6 +29,7 @@ export default async function TrackersPage() {
       canEdit={canEdit}
       canDelete={canDelete}
       canImport={canImport}
+      canExport={canExport}
     />
   );
 }

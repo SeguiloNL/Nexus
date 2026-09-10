@@ -11,6 +11,7 @@ import type {
 } from "@/types/domain";
 import type { CustomerStatus, UserRole } from "@/types/enums";
 import type { Prisma, Customer as PrismaCustomer } from "@prisma/client";
+import { CreateCustomerSchema } from "@/server/validators/customer";
 
 type Ctx = { userId: string; userRole: UserRole };
 
@@ -310,4 +311,94 @@ export async function listParentCustomers() {
         label: `${r.companyName} (${r.customerNumber})`,
       }))
     );
+}
+
+export interface CustomerCsvImportRow {
+  customerNumber?: string;
+  companyName: string;
+  parentCustomerId?: string;
+  address?: string;
+  postalCode?: string;
+  city?: string;
+  country?: string;
+  contactPerson?: string;
+  phone?: string;
+  email?: string;
+  kvkNr?: string;
+  btwNr?: string;
+  inserveCompanyId?: string | number;
+  status?: string;
+  notes?: string;
+}
+
+export interface CustomerCsvImportPreviewResult {
+  valid: Array<{ row: number; data: CreateCustomerInput }>;
+  invalid: Array<{ row: number; errors: Record<string, string[]>; raw: any }>;
+  total: number;
+}
+
+export function previewCustomerCsvImport(
+  rows: CustomerCsvImportRow[]
+): CustomerCsvImportPreviewResult {
+  const valid: CustomerCsvImportPreviewResult["valid"] = [];
+  const invalid: CustomerCsvImportPreviewResult["invalid"] = [];
+
+  rows.forEach((raw, idx) => {
+    const rowNum = idx + 2;
+    const result = CreateCustomerSchema.safeParse(raw);
+    if (result.success) {
+      valid.push({ row: rowNum, data: result.data });
+    } else {
+      invalid.push({
+        row: rowNum,
+        errors: result.error.flatten().fieldErrors as any,
+        raw,
+      });
+    }
+  });
+
+  return { valid, invalid, total: rows.length };
+}
+
+export async function bulkImportCustomers(
+  validRows: CustomerCsvImportPreviewResult["valid"],
+  ctx: Ctx
+): Promise<{ count: number; ids: string[] }> {
+  const ids: string[] = [];
+  await prisma.$transaction(async (tx) => {
+    for (const { row, data } of validRows) {
+      const customerNumber =
+        data.customerNumber ?? (await generateCustomerNumber(tx as any));
+      const raw = data as any;
+      const created = await tx.customer.create({
+        data: {
+          customerNumber,
+          companyName: data.companyName.trim(),
+          parentCustomerId: data.parentCustomerId ?? null,
+          address: data.address ?? null,
+          postalCode: data.postalCode ?? null,
+          city: data.city ?? null,
+          country: data.country ?? null,
+          contactPerson: data.contactPerson ?? null,
+          phone: data.phone ?? null,
+          email: data.email ?? null,
+          kvkNr: raw.kvkNr ?? null,
+          btwNr: raw.btwNr ?? null,
+          inserveCompanyId: raw.inserveCompanyId ?? null,
+          status: (data.status ?? "ACTIVE") as CustomerStatus,
+          notes: data.notes ?? null,
+        },
+      });
+      ids.push(created.id);
+      await logAudit(tx as any, {
+        entityType: "customer",
+        entityId: created.id,
+        action: "CREATE",
+        userId: ctx.userId,
+        newValues: created as unknown as Record<string, unknown>,
+        metadata: { importRow: row, bulkImport: true },
+      });
+    }
+  });
+  return { count: ids.length, ids };
 }

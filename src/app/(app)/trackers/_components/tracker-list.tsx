@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ColumnDef } from "@tanstack/react-table";
-import { MoreHorizontal, Plus, Trash2, Edit, Upload } from "lucide-react";
+import { MoreHorizontal, Plus, Trash2, Edit, Upload, Download } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { Button } from "@/components/ui/button";
 import { TrackerStatusBadge } from "@/components/ui/status-badges";
@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { Tracker, TrackerStatus } from "@prisma/client";
 import { formatImei } from "@/lib/formatters";
+import { exportTrackersCsvAction } from "../actions";
 
 type ListTracker = Tracker;
 
@@ -25,6 +26,7 @@ interface TrackerListProps {
   canEdit: boolean;
   canDelete: boolean;
   canImport: boolean;
+  canExport: boolean;
   onImportClick?: () => void;
 }
 
@@ -34,6 +36,7 @@ export function TrackerList({
   canEdit,
   canDelete,
   canImport,
+  canExport,
   onImportClick,
 }: TrackerListProps) {
   const columns: ColumnDef<ListTracker>[] = [
@@ -151,6 +154,13 @@ export function TrackerList({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {canExport ? (
+            <form action={exportTrackersCsvAction as any}>
+              <Button variant="outline" type="submit">
+                <Download className="mr-2 h-4 w-4" /> Exporteer CSV
+              </Button>
+            </form>
+          ) : null}
           {canImport ? (
             <Button variant="outline" onClick={onImportClick}>
               <Upload className="mr-2 h-4 w-4" /> CSV importeren

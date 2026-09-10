@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/session";
 import { requirePermission } from "@/lib/rbac";
+import { prisma } from "@/lib/prisma";
+import { buildCsv, csvDownloadResponse, filenameTimestamp } from "@/lib/csv";
 import {
   CreateSimSchema,
   UpdateSimSchema,
@@ -154,6 +156,52 @@ export async function commitSimCsvAction(
 
   revalidatePath("/sims");
   return { ...prev, committed: result };
+}
+
+export async function exportSimsCsvAction(): Promise<Response> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "export", "sim");
+
+  const rows = await prisma.sIM.findMany({
+    where: { deletedAt: null },
+    orderBy: { iccid: "asc" },
+  });
+
+  const headers = [
+    "iccid",
+    "imsi",
+    "msisdn",
+    "provider",
+    "simType",
+    "apn",
+    "status",
+    "providerActivationDate",
+    "providerDeactivationDate",
+    "createdAt",
+    "notes",
+  ];
+
+  const csvRows: Array<Array<unknown>> = rows.map((s) => [
+    s.iccid,
+    s.imsi ?? "",
+    s.msisdn ?? "",
+    s.provider ?? "",
+    s.simType ?? "",
+    s.apn ?? "",
+    s.status,
+    s.providerActivationDate instanceof Date
+      ? s.providerActivationDate.toISOString().slice(0, 10)
+      : s.providerActivationDate ?? "",
+    s.providerDeactivationDate instanceof Date
+      ? s.providerDeactivationDate.toISOString().slice(0, 10)
+      : s.providerDeactivationDate ?? "",
+    s.createdAt instanceof Date ? s.createdAt.toISOString() : s.createdAt,
+    s.notes ?? "",
+  ]);
+
+  const csv = buildCsv(headers, csvRows);
+  const filename = `sims-${filenameTimestamp()}.csv`;
+  return csvDownloadResponse(filename, csv);
 }
 
 function parseCsv(text: string): SimCsvImportRow[] {

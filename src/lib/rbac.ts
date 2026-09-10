@@ -14,6 +14,7 @@ const ALL_WRITE: ResourceType[] = [
   "subscription",
   "product",
   "activation_order",
+  "invoice",
 ];
 
 const RBAC_MATRIX: PermissionMatrix = {
@@ -26,6 +27,7 @@ const RBAC_MATRIX: PermissionMatrix = {
       "subscription",
       "product",
       "activation_order",
+      "invoice",
       "user",
       "audit_log",
       "setting",
@@ -41,6 +43,7 @@ const RBAC_MATRIX: PermissionMatrix = {
       "subscription",
       "product",
       "activation_order",
+      "invoice",
       "user",
     ],
     import: ["tracker", "sim", "customer"],
@@ -51,6 +54,7 @@ const RBAC_MATRIX: PermissionMatrix = {
       "vehicle",
       "subscription",
       "activation_order",
+      "invoice",
       "audit_log",
     ],
     override_price: ["subscription", "product", "activation_order"],
@@ -64,6 +68,7 @@ const RBAC_MATRIX: PermissionMatrix = {
       "subscription",
       "product",
       "activation_order",
+      "invoice",
       "audit_log",
       "dashboard",
     ],
@@ -84,6 +89,7 @@ const RBAC_MATRIX: PermissionMatrix = {
       "subscription",
       "product",
       "activation_order",
+      "invoice",
     ],
     delete: [],
     import: ["tracker", "sim", "customer"],
@@ -94,6 +100,7 @@ const RBAC_MATRIX: PermissionMatrix = {
       "vehicle",
       "subscription",
       "activation_order",
+      "invoice",
     ],
   },
   VIEWER: {
@@ -105,6 +112,7 @@ const RBAC_MATRIX: PermissionMatrix = {
       "subscription",
       "product",
       "activation_order",
+      "invoice",
       "audit_log",
       "dashboard",
     ],

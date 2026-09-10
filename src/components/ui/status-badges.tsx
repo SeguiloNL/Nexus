@@ -147,6 +147,22 @@ export function BillingCycleLabel({ cycle }: { cycle: string }) {
 }
 
 // -------------------
+// InvoiceStatus
+// -------------------
+const INVOICE_STATUS: StatusMap<string> = {
+  DRAFT: { label: "Concept", variant: "muted" },
+  SENT: { label: "Verzonden", variant: "info" },
+  PAID: { label: "Betaald", variant: "success" },
+  OVERDUE: { label: "Achterstallig", variant: "destructive" },
+  CANCELLED: { label: "Geannuleerd", variant: "secondary" },
+};
+
+export function InvoiceStatusBadge({ status }: { status: string }) {
+  const s = INVOICE_STATUS[status] ?? { label: status, variant: "muted" as const };
+  return <Badge variant={s.variant}>{s.label}</Badge>;
+}
+
+// -------------------
 // AuditAction
 // -------------------
 const AUDIT_ACTION_VARIANT: Record<string, BadgeVariant> = {

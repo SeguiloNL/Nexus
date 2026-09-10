@@ -20,6 +20,7 @@ export default async function SimsPage() {
   const canEdit = canUserRole(session.user.role, "edit", "sim");
   const canDelete = canUserRole(session.user.role, "delete", "sim");
   const canImport = canUserRole(session.user.role, "import", "sim");
+  const canExport = canUserRole(session.user.role, "export", "sim");
 
   return (
     <SimListWithImport
@@ -28,6 +29,7 @@ export default async function SimsPage() {
       canEdit={canEdit}
       canDelete={canDelete}
       canImport={canImport}
+      canExport={canExport}
     />
   );
 }

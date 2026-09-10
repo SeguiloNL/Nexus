@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ColumnDef } from "@tanstack/react-table";
-import { MoreHorizontal, Plus, Trash2, Edit } from "lucide-react";
+import { MoreHorizontal, Plus, Trash2, Edit, Download, Upload } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { Button } from "@/components/ui/button";
 import { CustomerStatusBadge } from "@/components/ui/status-badges";
@@ -15,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { Customer, CustomerStatus } from "@prisma/client";
+import { exportCustomersCsvAction } from "../actions";
 
 type ListCustomer = Customer & {
   parentCustomer: { id: string; companyName: string } | null;
@@ -25,6 +26,8 @@ interface CustomerListProps {
   canCreate: boolean;
   canEdit: boolean;
   canDelete: boolean;
+  canExport: boolean;
+  canImport: boolean;
   viewerRoleCanEdit?: boolean;
 }
 
@@ -33,6 +36,8 @@ export function CustomerList({
   canCreate,
   canEdit,
   canDelete,
+  canExport,
+  canImport,
 }: CustomerListProps) {
   const columns: ColumnDef<ListCustomer>[] = [
     {
@@ -156,13 +161,29 @@ export function CustomerList({
             Beheer je klanten, subklanten en contactgegevens.
           </p>
         </div>
-        {canCreate ? (
-          <Button asChild>
-            <Link href="/customers/new">
-              <Plus className="h-4 w-4" /> Nieuwe klant
-            </Link>
-          </Button>
-        ) : null}
+        <div className="flex flex-wrap gap-2">
+          {canExport ? (
+            <form action={exportCustomersCsvAction as any}>
+              <Button variant="outline" type="submit">
+                <Download className="mr-2 h-4 w-4" /> Exporteer CSV
+              </Button>
+            </form>
+          ) : null}
+          {canImport ? (
+            <Button variant="outline" asChild>
+              <Link href="/customers/import">
+                <Upload className="mr-2 h-4 w-4" /> CSV importeren
+              </Link>
+            </Button>
+          ) : null}
+          {canCreate ? (
+            <Button asChild>
+              <Link href="/customers/new">
+                <Plus className="h-4 w-4" /> Nieuwe klant
+              </Link>
+            </Button>
+          ) : null}
+        </div>
       </div>
 
       <DataTable

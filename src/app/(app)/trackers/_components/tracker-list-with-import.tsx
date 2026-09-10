@@ -11,6 +11,7 @@ type TrackerListClientProps = {
   canEdit: boolean;
   canDelete: boolean;
   canImport: boolean;
+  canExport: boolean;
 };
 
 export function TrackerListWithImport(props: TrackerListClientProps) {

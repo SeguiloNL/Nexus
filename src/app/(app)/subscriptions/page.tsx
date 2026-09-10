@@ -4,6 +4,7 @@ import { SubscriptionList } from "./_components/subscription-list";
 import { canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { PermissionError } from "@/lib/rbac";
+import { generateMonthlyInvoicesAction } from "./actions";
 
 export default async function SubscriptionsPage() {
   const session = await auth();
@@ -23,6 +24,8 @@ export default async function SubscriptionsPage() {
       canCreate={canUserRole(session.user.role, "create", "subscription")}
       canEdit={canUserRole(session.user.role, "edit", "subscription")}
       canDelete={canUserRole(session.user.role, "delete", "subscription")}
+      canGenerateInvoices={canUserRole(session.user.role, "create", "invoice")}
+      generateMonthlyInvoicesAction={generateMonthlyInvoicesAction}
     />
   );
 }

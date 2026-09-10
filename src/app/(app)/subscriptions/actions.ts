@@ -18,7 +18,13 @@ import {
   cancelSubscription,
   terminateSubscription,
 } from "@/server/services/subscription.service";
-import type { SubscriptionStatus } from "@/types/enums";
+import {
+  generateMonthly,
+  markInvoicePaid,
+  updateInvoiceStatus,
+  softDeleteInvoice,
+} from "@/server/services/invoice.service";
+import type { InvoiceStatus, SubscriptionStatus } from "@/types/enums";
 import { replaceSim, replaceTracker, unassignSim, unassignTracker } from "@/server/services/assignments.service";
 import { syncSubscriptionToInserve } from "@/server/services/inserve-sync.service";
 import type { SimStatus, TrackerStatus } from "@prisma/client";
@@ -247,4 +253,101 @@ export async function syncSubscriptionToInserveAction(
     status: "FAILED",
     error: result.error ?? "Onbekende fout bij synchronisatie met Inserve.",
   };
+}
+
+export type GenerateInvoicesState = {
+  ok?: boolean;
+  message?: string | null;
+  error?: string | null;
+  periodStart?: string;
+  periodEnd?: string;
+  created?: number;
+  skipped?: number;
+  failed?: number;
+  errors?: Array<{ subscriptionId: string; subscriptionNumber?: string; error: string }>;
+};
+
+export async function generateMonthlyInvoicesAction(
+  _prev: GenerateInvoicesState,
+  formData: FormData
+): Promise<GenerateInvoicesState> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "create", "invoice");
+
+  const yearRaw = formData.get("year");
+  const monthRaw = formData.get("month");
+  const year = yearRaw ? parseInt(String(yearRaw), 10) : new Date().getFullYear();
+  const month = monthRaw ? parseInt(String(monthRaw), 10) : new Date().getMonth() + 1;
+
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+    return { ok: false, error: `Ongeldig jaar: ${year}` };
+  }
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
+    return { ok: false, error: `Ongeldige maand: ${month}` };
+  }
+
+  const ctx = { userId: user.id, userRole: user.role };
+  const result = await generateMonthly(year, month, ctx);
+
+  revalidatePath("/subscriptions");
+  revalidatePath(`/subscriptions`, "layout");
+
+  if (result.failed > 0) {
+    return {
+      ok: false,
+      periodStart: result.periodStart,
+      periodEnd: result.periodEnd,
+      created: result.created,
+      skipped: result.skipped,
+      failed: result.failed,
+      errors: result.errors,
+      error: `${result.failed} factuur(ren) konden niet gegenereerd worden.`,
+      message: `Facturatie ${result.periodStart} → ${result.periodEnd}: ${result.created} aangemaakt, ${result.skipped} overgeslagen, ${result.failed} gefaald.`,
+    };
+  }
+
+  return {
+    ok: true,
+    periodStart: result.periodStart,
+    periodEnd: result.periodEnd,
+    created: result.created,
+    skipped: result.skipped,
+    failed: result.failed,
+    message: `Facturatie ${result.periodStart} → ${result.periodEnd} succesvol: ${result.created} aangemaakt, ${result.skipped} overgeslagen.`,
+  };
+}
+
+export async function markInvoicePaidAction(invoiceId: string) {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "edit", "invoice");
+  const ctx = { userId: user.id, userRole: user.role };
+  const inv = await markInvoicePaid(invoiceId, ctx);
+  revalidatePath(`/subscriptions/${inv.subscriptionId}`);
+  revalidatePath("/subscriptions");
+}
+
+export async function updateInvoiceStatusAction(
+  invoiceId: string,
+  _prev: any,
+  formData: FormData
+) {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "edit", "invoice");
+  const status = formData.get("status") as InvoiceStatus;
+  const note = (formData.get("note") as string) || undefined;
+  const ctx = { userId: user.id, userRole: user.role };
+  const inv = await updateInvoiceStatus(invoiceId, status, ctx, note);
+  revalidatePath(`/subscriptions/${inv.subscriptionId}`);
+  revalidatePath("/subscriptions");
+  redirect(`/subscriptions/${inv.subscriptionId}`);
+}
+
+export async function deleteInvoiceAction(invoiceId: string) {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "delete", "invoice");
+  const ctx = { userId: user.id, userRole: user.role };
+  const inv = await softDeleteInvoice(invoiceId, ctx);
+  revalidatePath(`/subscriptions/${inv.subscriptionId}`);
+  revalidatePath("/subscriptions");
+  redirect(`/subscriptions/${inv.subscriptionId}`);
 }

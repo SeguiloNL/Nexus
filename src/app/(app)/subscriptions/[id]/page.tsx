@@ -1,6 +1,7 @@
 import { auth } from "@/auth";
 import { notFound, redirect } from "next/navigation";
 import { findSubscriptionById } from "@/server/services/subscription.service";
+import { findInvoicesBySubscriptionId } from "@/server/services/invoice.service";
 import { SubscriptionDetail } from "../_components/subscription-detail";
 import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
@@ -16,6 +17,9 @@ import {
   unassignSimAction,
   replaceTrackerAction,
   replaceSimAction,
+  markInvoicePaidAction,
+  deleteInvoiceAction,
+  updateInvoiceStatusAction,
 } from "../actions";
 
 export default async function SubscriptionDetailPage({
@@ -37,7 +41,7 @@ export default async function SubscriptionDetailPage({
     monthlyPrice: Number(raw.monthlyPrice),
   };
 
-  const [customers, products, trackersStock, simsStock] = await Promise.all([
+  const [customers, products, trackersStock, simsStock, invoices] = await Promise.all([
     prisma.customer.findMany({
       where: { deletedAt: null },
       select: { id: true, companyName: true, customerNumber: true },
@@ -58,6 +62,12 @@ export default async function SubscriptionDetailPage({
       select: { id: true, iccid: true, imsi: true, msisdn: true, provider: true },
       orderBy: { iccid: "asc" },
     }),
+    canUserRole(session.user.role, "view", "invoice")
+      ? findInvoicesBySubscriptionId(params.id, {
+          userId: session.user.id,
+          userRole: session.user.role,
+        })
+      : Promise.resolve([]),
   ]);
 
   return (
@@ -82,6 +92,7 @@ export default async function SubscriptionDetailPage({
         id: s.id,
         label: `${s.iccid.slice(0, 8)}… · ${s.msisdn ?? "geen nummer"} · ${s.provider ?? ""}`,
       }))}
+      invoices={invoices as any[]}
       suspendAction={suspendSubscriptionAction as any}
       resumeAction={resumeSubscriptionAction as any}
       cancelAction={cancelSubscriptionAction as any}
@@ -92,6 +103,9 @@ export default async function SubscriptionDetailPage({
       unassignSimAction={unassignSimAction as any}
       replaceTrackerAction={replaceTrackerAction as any}
       replaceSimAction={replaceSimAction as any}
+      markInvoicePaidAction={markInvoicePaidAction as any}
+      deleteInvoiceAction={deleteInvoiceAction as any}
+      updateInvoiceStatusAction={updateInvoiceStatusAction as any}
       subscriptionId={params.id}
     />
   );

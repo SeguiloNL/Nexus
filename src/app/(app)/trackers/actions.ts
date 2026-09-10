@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/session";
 import { requirePermission } from "@/lib/rbac";
+import { prisma } from "@/lib/prisma";
+import { buildCsv, csvDownloadResponse, filenameTimestamp } from "@/lib/csv";
 import {
   CreateTrackerSchema,
   UpdateTrackerSchema,
@@ -155,6 +157,48 @@ export async function commitTrackerCsvAction(
 
   revalidatePath("/trackers");
   return { ...prev, committed: result };
+}
+
+export async function exportTrackersCsvAction(): Promise<Response> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "export", "tracker");
+
+  const rows = await prisma.tracker.findMany({
+    where: { deletedAt: null },
+    orderBy: { serialNumber: "asc" },
+  });
+
+  const headers = [
+    "serialNumber",
+    "imei",
+    "brand",
+    "model",
+    "hardwareType",
+    "firmwareVersion",
+    "purchaseDate",
+    "supplier",
+    "status",
+    "createdAt",
+    "notes",
+  ];
+
+  const csvRows: Array<Array<unknown>> = rows.map((t) => [
+    t.serialNumber,
+    t.imei,
+    t.brand ?? "",
+    t.model ?? "",
+    t.hardwareType ?? "",
+    t.firmwareVersion ?? "",
+    t.purchaseDate instanceof Date ? t.purchaseDate.toISOString().slice(0, 10) : t.purchaseDate ?? "",
+    t.supplier ?? "",
+    t.status,
+    t.createdAt instanceof Date ? t.createdAt.toISOString() : t.createdAt,
+    t.notes ?? "",
+  ]);
+
+  const csv = buildCsv(headers, csvRows);
+  const filename = `trackers-${filenameTimestamp()}.csv`;
+  return csvDownloadResponse(filename, csv);
 }
 
 function parseCsv(text: string): CsvImportRow[] {

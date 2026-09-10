@@ -71,3 +71,26 @@ export async function generateOrderNumber(tx: TxLike = prisma): Promise<string> 
 
   return `${prefix}${next.toString().padStart(6, "0")}`;
 }
+
+/**
+ * Genereert een factuurnummer in het formaat FAC-YYYY-NNNNNN
+ */
+export async function generateInvoiceNumber(tx: TxLike = prisma): Promise<string> {
+  const year = new Date().getFullYear();
+  const prefix = `FAC-${year}-`;
+
+  const latest = await tx.invoice.findFirst({
+    where: { invoiceNumber: { startsWith: prefix } },
+    orderBy: { invoiceNumber: "desc" },
+    select: { invoiceNumber: true },
+  });
+
+  let next = 1;
+  if (latest?.invoiceNumber) {
+    const suffix = latest.invoiceNumber.slice(prefix.length);
+    const num = parseInt(suffix, 10);
+    if (!Number.isNaN(num)) next = num + 1;
+  }
+
+  return `${prefix}${next.toString().padStart(6, "0")}`;
+}

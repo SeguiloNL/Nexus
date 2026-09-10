@@ -19,6 +19,8 @@ export default async function CustomersPage() {
   const canCreate = canUserRole(session.user.role, "create", "customer");
   const canEdit = canUserRole(session.user.role, "edit", "customer");
   const canDelete = canUserRole(session.user.role, "delete", "customer");
+  const canExport = canUserRole(session.user.role, "export", "customer");
+  const canImport = canUserRole(session.user.role, "import", "customer");
 
   return (
     <CustomerList
@@ -26,6 +28,8 @@ export default async function CustomersPage() {
       canCreate={canCreate}
       canEdit={canEdit}
       canDelete={canDelete}
+      canExport={canExport}
+      canImport={canImport}
     />
   );
 }

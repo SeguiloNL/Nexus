@@ -31,23 +31,41 @@ export async function authenticate(
   }
 
   try {
-    await signIn("credentials", {
+    // In useFormState Server Actions gooit signIn() GEEN NEXT_REDIRECT,
+    // dus: redirect: false, daarna zelf redirect() aanroepen.
+    const signInResult = await signIn("credentials", {
       email: validatedFields.data.email,
       password: validatedFields.data.password,
       redirect: false,
     });
-  } catch (error) {
-    if (error instanceof AuthError) {
-      switch (error.type) {
-        case "CredentialsSignin":
-          return { message: "Onjuiste inloggegevens." };
-        default:
-          return { message: "Er is iets misgegaan. Probeer het opnieuw." };
-      }
+    // signIn() met redirect: false geeft bij succes: null, bij AuthError: throw.
+    // Dus: als we hier komen → login SUCCES.
+    if (signInResult && typeof signInResult === "object" && "error" in signInResult) {
+      return {
+        message: `signIn() error: ${JSON.stringify(signInResult).slice(0, 200)}`,
+      };
     }
-    throw error;
+  } catch (error) {
+    // Next.js redirect() / Auth.js NEXT_REDIRECT: doorgooien (geen error!)
+    const strError = String(error);
+    const isNextRedirect =
+      (error instanceof Error && "digest" in error) ||
+      strError.includes("NEXT_REDIRECT") ||
+      strError.includes("DIGEST");
+    if (isNextRedirect) {
+      throw error;
+    }
+    if (error instanceof AuthError) {
+      return {
+        message: `AuthError type=${error.type || "?"} — ${error.message || "Geen details"}`,
+      };
+    }
+    return {
+      message: `signIn() fail: [${error instanceof Error ? error.name : typeof error}] ${strError.slice(0, 250)}`,
+    };
   }
 
+  // We komen hier ALLEEN als login SUCCES was (geen throw).
   redirect("/dashboard");
 }
 

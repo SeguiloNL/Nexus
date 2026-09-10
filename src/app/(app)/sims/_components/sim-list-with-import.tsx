@@ -11,6 +11,7 @@ type SimListClientProps = {
   canEdit: boolean;
   canDelete: boolean;
   canImport: boolean;
+  canExport: boolean;
 };
 
 export function SimListWithImport(props: SimListClientProps) {

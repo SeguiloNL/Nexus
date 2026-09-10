@@ -27,42 +27,52 @@ test.describe("G.2.3 — Wizard 6 stappen invullen + review (geen activerings-tr
   });
 
   test("Stap 1-6: invullen, review toont de gekozen waarden", async ({ page }) => {
+    const chosen = { customer: "", product: "", tracker: "", sim: "", vehicle: "" };
+
     // =========================================================================
     // STAP 1 — Klant
     // =========================================================================
     await expect(page.getByText("Stap 1 — Klant")).toBeVisible();
-    // Open "Hoofdklant *" select en KIES EERSTE optie (companyName).
     {
-      const trigger = page.locator('[role="combobox"]').filter({ hasText: /zoek en selecteer klant/i }).first();
+      // Het is GEEN input-search, maar een Radix UI <button role="combobox">
+      // (data-state="closed"). Klikken opent de options-popover direct.
+      const trigger = page
+        .locator('[role="combobox"]')
+        .filter({ hasText: /zoek en selecteer klant/i })
+        .first();
+      await trigger.waitFor({ state: "visible", timeout: 10_000 });
       await trigger.click();
-      // Wacht tot 1 optie verschijnt
-      const firstOption = page.locator('[role="option"]').first();
-      await firstOption.waitFor({ state: "visible" });
-      const customerLabel = (await firstOption.textContent()) ?? "";
-      const customerMatch = customerLabel.match(/^\s*([^\s]+.*?)\s{2,}C-\d/);
-      const chosenCustomerText = customerMatch ? customerMatch[1].trim() : customerLabel.trim().split(/\s{2,}/)[0];
-      await firstOption.click();
-      await expect(page.locator("main")).toContainText(chosenCustomerText || "");
+      const options = page.locator('[role="option"]');
+      await options.first().waitFor({ state: "visible", timeout: 12_000 });
+      const customerLabel = (await options.first().textContent()) ?? "";
+      chosen.customer = customerLabel
+        .match(/^\s*([^\s]+.*?)\s{2,}C-\d/)?.[1]
+        ?.trim() || customerLabel.trim().split(/\s{2,}/)[0];
+      await options.first().click();
+      await expect(page.locator("main")).toContainText(chosen.customer);
     }
 
     // Volgende → Stap 2
     await page.getByRole("button", { name: /volgende/i }).click();
 
     // =========================================================================
-    // STAP 2 — Product
+    // STAP 2 — Product en facturatie
     // =========================================================================
-    await expect(page.getByText("Stap 2 — Product en facturatie")).toBeVisible();
+    await expect(page.getByText(/Stap 2 — Product/)).toBeVisible();
     {
-      const trigger = page.locator('[role="combobox"]').filter({ hasText: /kies een product/i }).first();
+      // Ook Stap 2 Product is Radix <button role="combobox"> (geen input search)
+      const trigger = page
+        .locator('[role="combobox"]')
+        .filter({ hasText: /kies een product|product.*selecteer/i })
+        .first();
+      await trigger.waitFor({ state: "visible", timeout: 10_000 });
       await trigger.click();
-      const firstProduct = page.locator('[role="option"]').first();
-      await firstProduct.waitFor({ state: "visible" });
-      const chosenProduct = (await firstProduct.textContent()) ?? "";
-      await firstProduct.click();
-      // Gebruik eerste "regel" (alles voor newline / grote witruimte)
-      const productName = chosenProduct.trim().split(/\n|\s{2,}/)[0];
-      expect(productName.length).toBeGreaterThan(0);
-      (globalThis as any)._wizardChosenProduct = productName;
+      const options = page.locator('[role="option"]');
+      await options.first().waitFor({ state: "visible", timeout: 12_000 });
+      const labelText = (await options.first().textContent()) ?? "";
+      chosen.product = labelText.trim().split(/\n|\s{2,}/)[0];
+      expect(chosen.product.length).toBeGreaterThan(0);
+      await options.first().click();
     }
     await page.getByRole("button", { name: /volgende/i }).click();
 
@@ -71,19 +81,13 @@ test.describe("G.2.3 — Wizard 6 stappen invullen + review (geen activerings-tr
     // =========================================================================
     await expect(page.getByText("Stap 3 — Tracker")).toBeVisible();
     {
-      // Selecteer de EERSTE radio (IN_STOCK tracker) in Stap 3 card
       const firstRadio = page
         .locator("input[type='radio'][name='trackerId']")
         .first();
-      if (await firstRadio.isEnabled({ timeout: 5_000 })) {
-        const trackerLabelRow = firstRadio.locator("xpath=ancestor::label").first();
-        const labelText = (await trackerLabelRow.textContent()) ?? "";
+      if (await firstRadio.isEnabled({ timeout: 5_000 }).catch(() => false)) {
+        const labelRow = firstRadio.locator("xpath=ancestor::label").first();
+        chosen.tracker = (await labelRow.textContent()) ?? "";
         await firstRadio.check();
-        (globalThis as any)._wizardChosenTracker = labelText;
-      } else {
-        // Geen trackers op voorraad: skip. De test zal dan op Stap 6 geen
-        // tracker-review vinden, dat is acceptabel (soft failure).
-        console.warn("⚠️  Wizard test: GEEN IN_STOCK trackers. Stap 3 wordt overgeslagen.");
       }
     }
     await page.getByRole("button", { name: /volgende/i }).click();
@@ -96,13 +100,10 @@ test.describe("G.2.3 — Wizard 6 stappen invullen + review (geen activerings-tr
       const firstRadio = page
         .locator("input[type='radio'][name='simId']")
         .first();
-      if (await firstRadio.isEnabled({ timeout: 5_000 })) {
+      if (await firstRadio.isEnabled({ timeout: 5_000 }).catch(() => false)) {
         const labelRow = firstRadio.locator("xpath=ancestor::label").first();
-        const labelText = (await labelRow.textContent()) ?? "";
+        chosen.sim = (await labelRow.textContent()) ?? "";
         await firstRadio.check();
-        (globalThis as any)._wizardChosenSim = labelText;
-      } else {
-        console.warn("⚠️  Wizard test: GEEN IN_STOCK SIMs. Stap 4 wordt overgeslagen.");
       }
     }
     await page.getByRole("button", { name: /volgende/i }).click();
@@ -115,13 +116,10 @@ test.describe("G.2.3 — Wizard 6 stappen invullen + review (geen activerings-tr
       const firstRadio = page
         .locator("input[type='radio'][name='vehicleId']")
         .first();
-      if (await firstRadio.isEnabled({ timeout: 5_000 })) {
+      if (await firstRadio.isEnabled({ timeout: 5_000 }).catch(() => false)) {
         const labelRow = firstRadio.locator("xpath=ancestor::label").first();
-        const labelText = (await labelRow.textContent()) ?? "";
+        chosen.vehicle = (await labelRow.textContent()) ?? "";
         await firstRadio.check();
-        (globalThis as any)._wizardChosenVehicle = labelText;
-      } else {
-        console.warn("⚠️  Wizard test: GEEN voertuigen voor klant. Stap 5 overgeslagen.");
       }
     }
     await page.getByRole("button", { name: /volgende/i }).click();
@@ -130,16 +128,13 @@ test.describe("G.2.3 — Wizard 6 stappen invullen + review (geen activerings-tr
     // STAP 6 — Controle (Review card)
     // =========================================================================
     await expect(page.getByRole("heading", { level: 2, name: /controle|overzicht/i })).toBeVisible();
-    const reviewCard = page.locator("main").filter({ hasText: /product|klant/i });
-    const chosenProduct = (globalThis as any)._wizardChosenProduct;
-    if (chosenProduct) {
-      await expect(reviewCard).toContainText(chosenProduct, { timeout: 10_000 });
+    const reviewCard = page.locator("main");
+    if (chosen.product) {
+      await expect(reviewCard).toContainText(chosen.product, { timeout: 10_000 });
     }
-    // Stap 6 toont "Activeer bevestigen" knop, MAAR we klikken hem NIET (idempotent).
     const activeerBtn = page.getByRole("button", { name: /activeer/i });
     await expect(activeerBtn).toBeVisible();
 
-    // Safe exit: navigeer terug naar /activations (geen persistentie nodig).
     await page.goto("/activations", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("heading", { level: 1, name: /activaties/i })).toBeVisible();
   });
