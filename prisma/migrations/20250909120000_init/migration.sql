@@ -1,4 +1,4 @@
--- Initial migration for Nexus
+-- Initial migration for Seguilo STM
 -- Gegenereerd op basis van prisma/schema.prisma + aanvullende database-specifieke constraints
 -- Volledige compatibiliteit: PostgreSQL 14+
 

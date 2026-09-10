@@ -225,8 +225,12 @@ export function ActivationWizard({
 
   const stepErrors: Record<number, string[]> = {};
   if (!form.customerId) stepErrors[1] = ["Kies een klant."];
-  if (!form.productId) stepErrors[2] = stepErrors[2] ?? []; stepErrors[2].push("Kies product.");
-  if (!form.desiredStartDate) stepErrors[2] = stepErrors[2] ?? []; stepErrors[2].push("Gewenste startdatum ontbreekt.");
+
+  stepErrors[2] = [];
+  if (!form.productId) stepErrors[2].push("Kies product.");
+  if (!form.desiredStartDate) stepErrors[2].push("Gewenste startdatum ontbreekt.");
+  if (stepErrors[2].length === 0) delete stepErrors[2];
+
   if (!form.trackerId) stepErrors[3] = ["Kies tracker (IN_STOCK/RESERVED)."];
   if (!form.simId) stepErrors[4] = ["Kies SIM (IN_STOCK/RESERVED)."];
 

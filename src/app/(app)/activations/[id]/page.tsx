@@ -24,18 +24,25 @@ export default async function ActivationDetailPage({
     throw new PermissionError("Je mag geen activatie orders bekijken.");
   }
 
-  const order = await findActivationOrderById(params.id);
-  if (!order) notFound();
+  const raw = await findActivationOrderById(params.id);
+  if (!raw) notFound();
+
+  const order: any = {
+    ...raw,
+    monthlyPrice: Number(raw.monthlyPrice),
+    subscription: raw.subscription
+      ? { ...raw.subscription, monthlyPrice: Number(raw.subscription.monthlyPrice) }
+      : null,
+  };
 
   let actionError: string | null = null;
   if (searchParams?.action === "cancel") {
-    // server side cancel trigger kan via separate action (zie actions)
     actionError = null;
   }
 
   return (
     <ActivationOrderDetail
-      order={order as any}
+      order={order}
       role={session.user.role}
       markReadyAction={markReadyAction as any}
       cancelAction={cancelOrderAction as any}

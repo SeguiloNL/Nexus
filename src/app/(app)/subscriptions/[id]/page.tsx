@@ -29,8 +29,13 @@ export default async function SubscriptionDetailPage({
     throw new PermissionError("Je mag geen abonnementen bekijken.");
   }
 
-  const sub = await findSubscriptionById(params.id);
-  if (!sub) notFound();
+  const raw = await findSubscriptionById(params.id);
+  if (!raw) notFound();
+
+  const subscription: any = {
+    ...raw,
+    monthlyPrice: Number(raw.monthlyPrice),
+  };
 
   const [customers, products, trackersStock, simsStock] = await Promise.all([
     prisma.customer.findMany({
@@ -55,12 +60,9 @@ export default async function SubscriptionDetailPage({
     }),
   ]);
 
-  const updateAction: any = async (id: string, prev: any, f: FormData) =>
-    createSubscriptionAction(prev, f);
-
   return (
     <SubscriptionDetail
-      subscription={sub as any}
+      subscription={subscription}
       role={session.user.role}
       customerOptions={customers.map((c) => ({
         id: c.id,
@@ -68,8 +70,8 @@ export default async function SubscriptionDetailPage({
       }))}
       productOptions={products.map((p) => ({
         id: p.id,
-        label: `${p.name} (${p.productCode} · €${String(p.monthlyPrice)}/mnd)`,
-        defaultMonthlyPrice: String(p.monthlyPrice),
+        label: `${p.name} (${p.productCode} · €${Number(p.monthlyPrice)}/mnd)`,
+        defaultMonthlyPrice: String(Number(p.monthlyPrice)),
         billingCycle: "MONTHLY",
       }))}
       trackerStockOptions={trackersStock.map((t) => ({
@@ -85,7 +87,7 @@ export default async function SubscriptionDetailPage({
       cancelAction={cancelSubscriptionAction as any}
       terminateAction={terminateSubscriptionAction as any}
       deleteAction={deleteSubscriptionAction as any}
-      updateAction={updateAction}
+      updateAction={createSubscriptionAction as any}
       unassignTrackerAction={unassignTrackerAction as any}
       unassignSimAction={unassignSimAction as any}
       replaceTrackerAction={replaceTrackerAction as any}

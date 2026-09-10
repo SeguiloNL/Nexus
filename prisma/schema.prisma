@@ -1,4 +1,4 @@
-// Prisma schema voor Nexus - Activation & Subscription Manager
+// Prisma schema voor Seguilo Basic Telematics - Activation & Subscription Manager
 // Zie .trae/specs/spec.md §3 voor volledige documentatie
 
 generator client {
