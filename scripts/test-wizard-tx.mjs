@@ -23,7 +23,7 @@ async function main() {
     process.exit(1);
   }
 
-  const viewer = { id: "seed_admin", role: "ADMIN", name: "Administrator", email: "admin@seguilo.test" };
+  const viewer = { id: "seed_admin", role: "ADMIN", name: "Administrator", email: "admin@nexus.local" };
 
   console.log("\n=== Step 1: createActivationOrder (DRAFT) ===");
   const order1 = await createActivationOrder({

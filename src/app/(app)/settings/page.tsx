@@ -40,7 +40,7 @@ export default async function SettingsPage() {
           <CardContent className="space-y-2 text-sm">
             <div className="flex items-center justify-between border-b py-2 last:border-0">
               <span className="text-slate-500">Applicatie</span>
-              <span className="font-medium">Seguilo STM</span>
+              <span className="font-medium">Nexus</span>
             </div>
             <div className="flex items-center justify-between border-b py-2 last:border-0">
               <span className="text-slate-500">Versie</span>
@@ -142,7 +142,7 @@ export default async function SettingsPage() {
             </div>
             <div className="flex items-center justify-between border-b py-2 last:border-0">
               <span className="text-slate-500">E-mail afzender</span>
-              <span className="font-mono text-xs">noreply@seguilo.test</span>
+              <span className="font-mono text-xs">noreply@nexus.local</span>
             </div>
             <div className="flex items-center justify-between border-b py-2 last:border-0">
               <span className="text-slate-500">Webhook URL</span>

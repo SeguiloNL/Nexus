@@ -1,24 +1,61 @@
-{
-	# Stel NEXUS_DOMAIN in op je publieke domein (bijv. nexus.jouwdomein.nl)
-	# voor automatische HTTPS via Let's Encrypt.
-	# Laat op localhost (geen publiek domein), dan werkt :80 zonder TLS.
+# ==============================================================
+# Nexus – Caddyfile
+# (Wordt gebruikt in combinatie met docker-compose.yml caddy-service)
+# ==============================================================
+# Configuratie gebeurt via ENVIRONMENT VARIABLES (geen hard-coded domein):
+#   NEXUS_DOMAIN  = Je publieke domein (bijv. nexus.jouwdomein.nl)
+#                   Laat leeg of "localhost" voor lokale test zonder TLS.
+#   NEXUS_APP_URL = De interne hostname + port van de Next.js app
+#                   (default: nexus-app:3000  — binnen het docker netwerk)
+#
+# Wordt door Caddy in de compose container automatisch geladen van:
+#   ./Caddyfile  ->  /etc/caddy/Caddyfile (read-only)
+#
+# HTTPS (Let's Encrypt / ZeroSSL):
+#   - Zodra NEXUS_DOMAIN een ECHT domein is (A/AAAA-record naar VPS IP),
+#     vraagt Caddy AUTOMATISCH een TLS-certificaat aan en verlengt deze.
+#   - Voor localhost/IP: self-signed / plain HTTP (geen fouten).
+# ==============================================================
 
-	{$NEXUS_DOMAIN:localhost} {
-		encode gzip zstd
+(common_headers) {
+	header {
+		# Security headers
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options    "nosniff"
+		X-Frame-Options           "SAMEORIGIN"
+		Referrer-Policy           "strict-origin-when-cross-origin"
+		Permissions-Policy        "camera=(), microphone=(), geolocation=()"
 
-		header {
-			# Security headers
-			X-Content-Type-Options nosniff
-			X-Frame-Options SAMEORIGIN
-			Referrer-Policy strict-origin-when-cross-origin
-			Permissions-Policy "geolocation=(), microphone=(), camera=()"
-			-Server
-		}
+		# Belangrijk voor Next.js Image optimization / caching
+		Cache-Control "public, max-age=0, must-revalidate"
 
-		reverse_proxy {$NEXUS_APP_URL:nexus-app:3000} {
-			header_up X-Forwarded-Proto {scheme}
-			header_up X-Forwarded-Host {host}
-			header_up X-Real-IP {remote_host}
+		# Verberg Caddy Server header
+		-Server
+	}
+	encode gzip zstd
+}
+
+# -------------------- PROD / LOKAAL DOMEIN --------------------
+{$NEXUS_DOMAIN:localhost} {
+	import common_headers
+
+	reverse_proxy {$NEXUS_APP_URL:nexus-app:3000} {
+		# X-Forwarded-* headers — AUTH_TRUST_HOST=true in Next.js
+		header_up X-Forwarded-For    {remote_host}
+		header_up X-Forwarded-Proto  {scheme}
+		header_up X-Forwarded-Host   {host}
+		header_up X-Real-IP          {remote_host}
+
+		# keep-alive met Next.js standalone server
+		transport http {
+			keepalive   32
+			keepalive_interval 30s
+			timeout     120s
 		}
 	}
 }
+
+# ---------- OPTIONEEL: www -> non-www 301 redirect ----------
+# www.{$NEXUS_DOMAIN:localhost} {
+# 	redir https://{$NEXUS_DOMAIN:localhost}{uri} permanent
+# }
