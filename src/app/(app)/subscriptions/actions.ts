@@ -21,6 +21,7 @@ import {
 import {
   generateMonthly,
   markInvoicePaid,
+  markInvoiceSent,
   updateInvoiceStatus,
   softDeleteInvoice,
 } from "@/server/services/invoice.service";
@@ -317,13 +318,30 @@ export async function generateMonthlyInvoicesAction(
   };
 }
 
-export async function markInvoicePaidAction(invoiceId: string) {
+export async function markInvoicePaidAction(_prev: any, formData: FormData) {
   const user = await getCurrentUser();
   requirePermission(user.role, "edit", "invoice");
+  const id = String(formData.get("id") || "");
+  if (!id) return { error: "Ontbrekend id" };
   const ctx = { userId: user.id, userRole: user.role };
-  const inv = await markInvoicePaid(invoiceId, ctx);
+  const inv = await markInvoicePaid(id, ctx);
   revalidatePath(`/subscriptions/${inv.subscriptionId}`);
   revalidatePath("/subscriptions");
+  revalidatePath("/invoices");
+  return { ok: true, id: inv.id, status: inv.status };
+}
+
+export async function sendInvoiceAction(_prev: any, formData: FormData) {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "edit", "invoice");
+  const id = String(formData.get("id") || "");
+  if (!id) return { error: "Ontbrekend id" };
+  const ctx = { userId: user.id, userRole: user.role };
+  const inv = await markInvoiceSent(id, ctx);
+  revalidatePath(`/subscriptions/${inv.subscriptionId}`);
+  revalidatePath("/subscriptions");
+  revalidatePath("/invoices");
+  return { ok: true, id: inv.id, status: inv.status };
 }
 
 export async function updateInvoiceStatusAction(
@@ -342,12 +360,15 @@ export async function updateInvoiceStatusAction(
   redirect(`/subscriptions/${inv.subscriptionId}`);
 }
 
-export async function deleteInvoiceAction(invoiceId: string) {
+export async function deleteInvoiceAction(_prev: any, formData: FormData) {
   const user = await getCurrentUser();
   requirePermission(user.role, "delete", "invoice");
+  const id = String(formData.get("id") || "");
+  if (!id) return { error: "Ontbrekend id" };
   const ctx = { userId: user.id, userRole: user.role };
-  const inv = await softDeleteInvoice(invoiceId, ctx);
+  const inv = await softDeleteInvoice(id, ctx);
   revalidatePath(`/subscriptions/${inv.subscriptionId}`);
   revalidatePath("/subscriptions");
-  redirect(`/subscriptions/${inv.subscriptionId}`);
+  revalidatePath("/invoices");
+  return { ok: true, id: inv.id, status: inv.status };
 }

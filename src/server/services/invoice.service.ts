@@ -311,6 +311,9 @@ export async function markInvoicePaid(
   requirePermission(ctx.userRole, "edit", "invoice");
   return prisma.$transaction(async (tx) => {
     const existing = await tx.invoice.findUniqueOrThrow({ where: { id } });
+    if (existing.status === "PAID" || existing.status === "CANCELLED") {
+      return existing as PrismaInvoice;
+    }
     const paidAtDate = paidAt ?? new Date();
     const updated = await tx.invoice.update({
       where: { id },
@@ -326,6 +329,37 @@ export async function markInvoicePaid(
       userId: ctx.userId,
       oldValues: { status: existing.status, paidAt: existing.paidAt } as any,
       newValues: { status: updated.status, paidAt: updated.paidAt } as any,
+    });
+    return updated as PrismaInvoice;
+  });
+}
+
+export async function markInvoiceSent(
+  id: string,
+  ctx: Ctx,
+  sentAt?: Date
+): Promise<PrismaInvoice> {
+  requirePermission(ctx.userRole, "edit", "invoice");
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.invoice.findUniqueOrThrow({ where: { id } });
+    if (existing.status !== "DRAFT") {
+      return existing as PrismaInvoice;
+    }
+    const sentAtDate = sentAt ?? new Date();
+    const updated = await tx.invoice.update({
+      where: { id },
+      data: {
+        status: "SENT" as any,
+      },
+    });
+    await logAudit(tx, {
+      entityType: "invoice",
+      entityId: updated.id,
+      action: "SEND_INVOICE",
+      userId: ctx.userId,
+      oldValues: { status: existing.status } as any,
+      newValues: { status: updated.status, sentAt: sentAtDate.toISOString() } as any,
+      metadata: { sentAt: sentAtDate.toISOString() },
     });
     return updated as PrismaInvoice;
   });

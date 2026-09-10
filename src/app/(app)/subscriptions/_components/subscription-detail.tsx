@@ -19,6 +19,7 @@ import {
   CheckCircle,
   Clock,
   XCircle,
+  Send,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -145,8 +146,9 @@ interface Props {
   unassignSimAction: (sid: string, simId: string) => any;
   replaceTrackerAction: (sid: string, prev: any, form: FormData) => any;
   replaceSimAction: (sid: string, prev: any, form: FormData) => any;
-  markInvoicePaidAction: (invoiceId: string) => any;
-  deleteInvoiceAction: (invoiceId: string) => any;
+  markInvoicePaidAction: (prev: any, form: FormData) => any;
+  deleteInvoiceAction: (prev: any, form: FormData) => any;
+  sendInvoiceAction: (prev: any, form: FormData) => any;
   updateInvoiceStatusAction: (invoiceId: string, prev: any, form: FormData) => any;
   subscriptionId: string;
 }
@@ -171,6 +173,7 @@ export function SubscriptionDetail({
   replaceSimAction,
   markInvoicePaidAction,
   deleteInvoiceAction,
+  sendInvoiceAction,
   updateInvoiceStatusAction,
   subscriptionId,
 }: Props) {
@@ -188,6 +191,10 @@ export function SubscriptionDetail({
     async () => resumeAction(subscriptionId),
     undefined
   );
+
+  const [, paidFormAction] = useFormState(markInvoicePaidAction, undefined);
+  const [, sendFormAction] = useFormState(sendInvoiceAction, undefined);
+  const [, cancelInvFormAction] = useFormState(deleteInvoiceAction, undefined);
 
   const activeTracker = subscription.trackerAssignments.find(
     (a) => a.endAt === null
@@ -613,16 +620,26 @@ export function SubscriptionDetail({
                             <td className="px-3 py-2"><InvoiceStatusBadge status={String(inv.status)} /></td>
                             {canEditInvoices || canDeleteInvoices ? (
                               <td className="px-3 py-2 text-right">
-                                <div className="inline-flex gap-1 justify-end">
-                                  {canEditInvoices && inv.status !== "PAID" ? (
-                                    <form action={async () => markInvoicePaidAction(inv.id)}>
+                                <div className="inline-flex gap-1 justify-end flex-wrap">
+                                  {canEditInvoices && inv.status === "DRAFT" ? (
+                                    <form action={sendFormAction}>
+                                      <input type="hidden" name="id" value={inv.id} required />
+                                      <Button size="sm" variant="outline" type="submit">
+                                        <Send className="h-3.5 w-3.5" /> Verzenden
+                                      </Button>
+                                    </form>
+                                  ) : null}
+                                  {canEditInvoices && inv.status !== "PAID" && inv.status !== "CANCELLED" ? (
+                                    <form action={paidFormAction}>
+                                      <input type="hidden" name="id" value={inv.id} required />
                                       <Button size="sm" variant="outline" type="submit">
                                         <CheckCircle className="h-3.5 w-3.5" /> Betaald
                                       </Button>
                                     </form>
                                   ) : null}
                                   {canDeleteInvoices && inv.status !== "PAID" && inv.status !== "CANCELLED" ? (
-                                    <form action={async () => deleteInvoiceAction(inv.id)}>
+                                    <form action={cancelInvFormAction}>
+                                      <input type="hidden" name="id" value={inv.id} required />
                                       <Button size="sm" variant="outline" className="text-red-600" type="submit">
                                         <Ban className="h-3.5 w-3.5" /> Annuleren
                                       </Button>

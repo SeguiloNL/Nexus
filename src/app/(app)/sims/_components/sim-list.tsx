@@ -27,7 +27,6 @@ interface SimListProps {
   canDelete: boolean;
   canImport: boolean;
   canExport: boolean;
-  onImportClick?: () => void;
 }
 
 export function SimList({
@@ -37,7 +36,6 @@ export function SimList({
   canDelete,
   canImport,
   canExport,
-  onImportClick,
 }: SimListProps) {
   const columns: ColumnDef<ListSim>[] = [
     {
@@ -168,8 +166,10 @@ export function SimList({
             </form>
           ) : null}
           {canImport ? (
-            <Button variant="outline" onClick={onImportClick}>
-              <Upload className="mr-2 h-4 w-4" /> CSV importeren
+            <Button variant="outline" asChild>
+              <Link href="/sims/import">
+                <Upload className="mr-2 h-4 w-4" /> CSV importeren
+              </Link>
             </Button>
           ) : null}
           {canCreate ? (

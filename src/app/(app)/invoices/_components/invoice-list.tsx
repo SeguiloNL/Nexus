@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useSession } from "next-auth/react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { FileText, MoreHorizontal, CheckCircle, Ban } from "lucide-react";
+import { FileText, MoreHorizontal, CheckCircle, Ban, Send } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { Button } from "@/components/ui/button";
 import { InvoiceStatusBadge } from "@/components/ui/status-badges";
@@ -20,7 +20,7 @@ import { formatCurrency, formatDate } from "@/lib/formatters";
 import type { PaginatedResult } from "@/types/domain";
 import type { UserRole } from "@/types/enums";
 import { canUserRole } from "@/lib/auth/session";
-import { markInvoicePaidAction, deleteInvoiceAction } from "../../subscriptions/actions";
+import { markInvoicePaidAction, deleteInvoiceAction, sendInvoiceAction } from "../../subscriptions/actions";
 
 type ListInvoice = any;
 
@@ -41,6 +41,7 @@ export function InvoiceList({ result }: Props) {
       const st = row.original;
       const paid = st.status === "PAID";
       const cancelled = st.status === "CANCELLED";
+      const draft = st.status === "DRAFT";
       return (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -51,6 +52,19 @@ export function InvoiceList({ result }: Props) {
           <DropdownMenuContent align="end">
             <DropdownMenuLabel>Factuuracties</DropdownMenuLabel>
             <DropdownMenuSeparator />
+            {canEdit && draft ? (
+              <DropdownMenuItem asChild>
+                <form action={sendInvoiceAction as any} className="w-full">
+                  <input type="hidden" name="id" value={st.id} required />
+                  <button
+                    type="submit"
+                    className="flex items-center w-full text-left"
+                  >
+                    <Send className="mr-2 h-4 w-4" /> Markeer verzonden
+                  </button>
+                </form>
+              </DropdownMenuItem>
+            ) : null}
             {canEdit && !paid && !cancelled ? (
               <DropdownMenuItem asChild>
                 <form

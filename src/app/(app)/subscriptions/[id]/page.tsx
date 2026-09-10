@@ -20,6 +20,7 @@ import {
   markInvoicePaidAction,
   deleteInvoiceAction,
   updateInvoiceStatusAction,
+  sendInvoiceAction,
 } from "../actions";
 
 export default async function SubscriptionDetailPage({
@@ -106,6 +107,7 @@ export default async function SubscriptionDetailPage({
       markInvoicePaidAction={markInvoicePaidAction as any}
       deleteInvoiceAction={deleteInvoiceAction as any}
       updateInvoiceStatusAction={updateInvoiceStatusAction as any}
+      sendInvoiceAction={sendInvoiceAction as any}
       subscriptionId={params.id}
     />
   );

@@ -27,7 +27,6 @@ interface TrackerListProps {
   canDelete: boolean;
   canImport: boolean;
   canExport: boolean;
-  onImportClick?: () => void;
 }
 
 export function TrackerList({
@@ -37,7 +36,6 @@ export function TrackerList({
   canDelete,
   canImport,
   canExport,
-  onImportClick,
 }: TrackerListProps) {
   const columns: ColumnDef<ListTracker>[] = [
     {
@@ -162,8 +160,10 @@ export function TrackerList({
             </form>
           ) : null}
           {canImport ? (
-            <Button variant="outline" onClick={onImportClick}>
-              <Upload className="mr-2 h-4 w-4" /> CSV importeren
+            <Button variant="outline" asChild>
+              <Link href="/trackers/import">
+                <Upload className="mr-2 h-4 w-4" /> CSV importeren
+              </Link>
             </Button>
           ) : null}
           {canCreate ? (
