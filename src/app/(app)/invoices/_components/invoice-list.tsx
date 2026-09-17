@@ -2,10 +2,13 @@
 
 import Link from "next/link";
 import { useSession } from "next-auth/react";
+import { useEffect, useState, useTransition } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
-import { FileText, MoreHorizontal, CheckCircle, Ban, Send } from "lucide-react";
+import { FileText, MoreHorizontal, CheckCircle, Ban, Send, X, Calendar, Filter } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { InvoiceStatusBadge } from "@/components/ui/status-badges";
 import {
   DropdownMenu,
@@ -15,10 +18,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { Invoice, InvoiceStatus } from "@prisma/client";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import type { Invoice, InvoiceStatus as PrismaInvoiceStatus } from "@prisma/client";
 import { formatCurrency, formatDate } from "@/lib/formatters";
 import type { PaginatedResult } from "@/types/domain";
-import type { UserRole } from "@/types/enums";
+import type { UserRole, InvoiceStatus as InvoiceStatusEnum } from "@/types/enums";
 import { canUserRole } from "@/lib/auth/session";
 import { markInvoicePaidAction, deleteInvoiceAction, sendInvoiceAction } from "../../subscriptions/actions";
 
@@ -28,11 +38,59 @@ interface Props {
   result: PaginatedResult<ListInvoice>;
 }
 
+const STATUS_LABELS: Record<string, string> = {
+  DRAFT: "Concept",
+  SENT: "Verzonden",
+  PAID: "Betaald",
+  OVERDUE: "Vervallen",
+  CANCELLED: "Geannuleerd",
+};
+
 export function InvoiceList({ result }: Props) {
   const { data: session } = useSession();
   const role = session?.user?.role;
   const canEdit = canUserRole(role as UserRole, "edit", "invoice");
   const canDelete = canUserRole(role as UserRole, "delete", "invoice");
+
+  const router = useRouter();
+  const sp = useSearchParams();
+  const [isPending, startTransition] = useTransition();
+
+  const [statusFilter, setStatusFilter] = useState<string>(sp?.get("status") || "all");
+  const [fromDate, setFromDate] = useState<string>(sp?.get("issueDateFrom") || "");
+  const [toDate, setToDate] = useState<string>(sp?.get("issueDateTo") || "");
+  const [searchQ, setSearchQ] = useState<string>(sp?.get("search") || "");
+
+  useEffect(() => {
+    setStatusFilter(sp?.get("status") || "all");
+    setFromDate(sp?.get("issueDateFrom") || "");
+    setToDate(sp?.get("issueDateTo") || "");
+    setSearchQ(sp?.get("search") || "");
+  }, [sp]);
+
+  const applyFilters = (patch: Record<string, string | undefined>) => {
+    startTransition(() => {
+      const params = new URLSearchParams(Array.from(sp?.entries() || []));
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === undefined || v === "" || v === "all") {
+          params.delete(k);
+        } else {
+          params.set(k, v);
+        }
+      }
+      params.delete("page");
+      const qs = params.toString();
+      router.push(`/invoices${qs ? `?${qs}` : ""}`);
+    });
+  };
+
+  const resetFilters = () => {
+    startTransition(() => {
+      router.push("/invoices");
+    });
+  };
+
+  const hasAnyFilter = statusFilter !== "all" || !!fromDate || !!toDate || !!searchQ;
 
   const actionsCol = {
     id: "actions",
@@ -188,7 +246,7 @@ export function InvoiceList({ result }: Props) {
       accessorKey: "status",
       header: "Status",
       cell: ({ row }) => (
-        <InvoiceStatusBadge status={row.original.status as InvoiceStatus} />
+        <InvoiceStatusBadge status={row.original.status as InvoiceStatusEnum} />
       ),
     },
   ];
@@ -206,6 +264,95 @@ export function InvoiceList({ result }: Props) {
             Overzicht van alle gegenereerde facturen met doorberekening.
           </p>
         </div>
+        {hasAnyFilter ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={resetFilters}
+            className="text-slate-600"
+          >
+            <X className="mr-2 h-4 w-4" /> Filters wissen
+          </Button>
+        ) : null}
+      </div>
+
+      <div className="rounded-md border bg-slate-50/60 p-3">
+        <div className="flex items-center gap-2 mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+          <Filter className="h-3.5 w-3.5" /> Filters
+        </div>
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-12">
+          <div className="md:col-span-3">
+            <label className="mb-1 block text-xs text-slate-600">Zoeken</label>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                applyFilters({ search: searchQ });
+              }}
+            >
+              <Input
+                value={searchQ}
+                onChange={(e) => setSearchQ(e.target.value)}
+                placeholder="Factuur nr, klant, notitie…"
+                className="w-full"
+              />
+            </form>
+          </div>
+          <div className="md:col-span-3">
+            <label className="mb-1 block text-xs text-slate-600">Status</label>
+            <Select
+              value={statusFilter}
+              onValueChange={(v) => {
+                setStatusFilter(v);
+                applyFilters({ status: v });
+              }}
+            >
+              <SelectTrigger id="invoice-status-filter">
+                <SelectValue placeholder="Alle statussen" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Alle statussen</SelectItem>
+                {(Object.keys(STATUS_LABELS) as Array<keyof typeof STATUS_LABELS>).map((k) => (
+                  <SelectItem key={k} value={k}>
+                    {STATUS_LABELS[k]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="md:col-span-3">
+            <label className="mb-1 block text-xs text-slate-600">Factuurdatum vanaf</label>
+            <div className="relative">
+              <Calendar className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+              <Input
+                type="date"
+                value={fromDate}
+                onChange={(e) => {
+                  setFromDate(e.target.value);
+                  applyFilters({ issueDateFrom: e.target.value || undefined });
+                }}
+                className="pl-9"
+              />
+            </div>
+          </div>
+          <div className="md:col-span-3">
+            <label className="mb-1 block text-xs text-slate-600">Factuurdatum t/m</label>
+            <div className="relative">
+              <Calendar className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+              <Input
+                type="date"
+                value={toDate}
+                onChange={(e) => {
+                  setToDate(e.target.value);
+                  applyFilters({ issueDateTo: e.target.value || undefined });
+                }}
+                className="pl-9"
+              />
+            </div>
+          </div>
+        </div>
+        {isPending ? (
+          <div className="mt-2 text-xs text-slate-500">Filters toepassen…</div>
+        ) : null}
       </div>
 
       <DataTable
