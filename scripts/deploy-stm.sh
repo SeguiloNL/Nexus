@@ -62,6 +62,7 @@ ENV_TEMPLATE="${ROOT_DIR}/.env.production.example"
 SKIP_DOCKER=0
 FORCE_REBUILD=0
 NON_INTERACTIVE=0
+SKIP_BACKUP_INSTALL=0
 SHOW_HELP=0
 
 # ANSI colors (uitschakelbaar via NO_COLOR=1)
@@ -83,11 +84,12 @@ Gebruik:
   $0 [OPTIES]
 
 Opties:
-  --skip-docker       Controle/docker installatie overslaan (je hebt het al).
-  --force-rebuild     Dwing nieuwe Docker rebuild (--no-cache).
-  --non-interactive   Geen prompts; automatische defaults (CI/CD).
-  --skip-preflight    Skips OS / firewall / DNS prereq checks (niet aanbevolen).
-  -h, --help          Toon deze help en sluit af.
+  --skip-docker         Controle/docker installatie overslaan (je hebt het al).
+  --force-rebuild       Dwing nieuwe Docker rebuild (--no-cache).
+  --non-interactive     Geen prompts; automatische defaults (CI/CD).
+  --skip-preflight      Skips OS / firewall / DNS prereq checks (niet aanbevolen).
+  --skip-backup-install Installeer GEEN systemd backup timer (handmatig beheren).
+  -h, --help            Toon deze help en sluit af.
 
 Uitvoer logbestand:
   ${LOG_FILE}
@@ -131,11 +133,12 @@ trap 'on_error "${LINENO}" "${BASH_COMMAND}"' ERR
 SKIP_PREFLIGHT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --skip-docker)     SKIP_DOCKER=1; shift ;;
-    --force-rebuild)   FORCE_REBUILD=1; shift ;;
-    --non-interactive) NON_INTERACTIVE=1; shift ;;
-    --skip-preflight)  SKIP_PREFLIGHT=1; shift ;;
-    -h|--help)         SHOW_HELP=1; shift ;;
+    --skip-docker)          SKIP_DOCKER=1; shift ;;
+    --force-rebuild)        FORCE_REBUILD=1; shift ;;
+    --non-interactive)      NON_INTERACTIVE=1; shift ;;
+    --skip-preflight)       SKIP_PREFLIGHT=1; shift ;;
+    --skip-backup-install)  SKIP_BACKUP_INSTALL=1; shift ;;
+    -h|--help)              SHOW_HELP=1; shift ;;
     *) err "Onbekende optie: $1"; usage; exit 1 ;;
   esac
 done

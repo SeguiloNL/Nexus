@@ -190,14 +190,24 @@ export function ActivationOrderDetail({
                 </Button>
               </form>
             ) : (
-              <form action={formRetry}>
-                <Button type="submit" disabled={busy} variant="outline">
-                  <RotateCcw className="h-4 w-4" /> Opnieuw READY
+              <div className="flex flex-wrap items-center gap-2">
+                <form action={formRetry}>
+                  <Button type="submit" disabled={busy} variant="outline">
+                    <RotateCcw className="h-4 w-4" /> Opnieuw READY
+                  </Button>
+                </form>
+                <Button asChild variant="outline" size="default">
+                  <Link href={`/activations/wizard?orderId=${order.id}`}>
+                    <EditIcon className="h-4 w-4" /> Bewerken
+                  </Link>
                 </Button>
-              </form>
+              </div>
             )
           ) : null}
-          {canDelete && (order.status === "DRAFT" || order.status === "READY") ? (
+          {canDelete &&
+          (order.status === "DRAFT" ||
+            order.status === "READY" ||
+            order.status === "FAILED") ? (
             <CancelDialog
               action={async (p, f) => cancelAction(order.id, p, f)}
             />
@@ -232,10 +242,22 @@ export function ActivationOrderDetail({
         <Card className="border-red-200 bg-red-50/50">
           <CardContent className="flex flex-wrap items-start gap-3 py-4">
             <AlertTriangle className="h-5 w-5 text-red-600 mt-0.5" />
-            <div className="flex-1 min-w-0">
-              <div className="font-medium text-red-800">Activatie mislukt</div>
+            <div className="flex-1 min-w-0 space-y-2">
+              <div>
+                <div className="font-medium text-red-800">Activatie mislukt</div>
+                {order.failedAt ? (
+                  <div className="text-xs text-red-700">
+                    Mislukt op {formatDate(order.failedAt)}.
+                  </div>
+                ) : null}
+              </div>
               <div className="text-sm text-red-700 whitespace-pre-wrap break-words">
-                {order.failureReason}
+                {order.failureReason || "Geen foutdetails geregistreerd."}
+              </div>
+              <div className="text-xs text-red-700/80">
+                Gebruik de acties hierboven om de order <strong>opnieuw READY te
+                zetten</strong> (na correctie van externe configuratie of
+                credentials), of om de order <strong>definitief te annuleren</strong>.
               </div>
             </div>
           </CardContent>

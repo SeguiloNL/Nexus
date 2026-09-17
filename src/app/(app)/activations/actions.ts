@@ -97,23 +97,89 @@ export async function markReadyAction(orderId: string) {
   redirect(`/activations/${orderId}`);
 }
 
-export async function cancelOrderAction(orderId: string, _prev: any, formData: FormData) {
+export type CancelOrderState = {
+  message?: string | null;
+};
+
+function resolveCancelArgs(...args: any[]) {
+  if (args.length >= 3) {
+    return {
+      orderId: args[0] as string,
+      formData: args[2] as FormData,
+    };
+  }
+  if (args.length === 2) {
+    const [a, b] = args;
+    if (typeof a === "string" && b instanceof FormData) {
+      return { orderId: a, formData: b };
+    }
+    if (a && a instanceof FormData) {
+      return {
+        orderId: (a.get("id") as string) ?? "",
+        formData: a,
+      };
+    }
+  }
+  if (args.length === 1) {
+    const a = args[0];
+    if (typeof a === "string") {
+      return { orderId: a, formData: new FormData() };
+    }
+    if (a instanceof FormData) {
+      return {
+        orderId: (a.get("id") as string) ?? "",
+        formData: a,
+      };
+    }
+  }
+  return { orderId: "", formData: new FormData() };
+}
+
+export async function cancelOrderAction(
+  ...args: any[]
+): Promise<CancelOrderState> {
   const user = await getCurrentUser();
   requirePermission(user.role, "delete", "activation_order");
+
+  const { orderId, formData } = resolveCancelArgs(...args);
   const reason = (formData.get("reason") as string) || undefined;
+
   const ctx = { userId: user.id, userRole: user.role };
-  await cancelOrder(orderId, ctx, reason);
+  try {
+    await cancelOrder(orderId, ctx, reason);
+  } catch (e: any) {
+    return { message: e?.message ?? "Annuleren mislukt." };
+  }
   revalidatePath(`/activations/${orderId}`);
   revalidatePath("/activations");
   redirect(`/activations/${orderId}`);
 }
 
-export async function retryFailedAction(orderId: string) {
+function resolveRetryArgs(...args: any[]): string {
+  if (typeof args[0] === "string") return args[0];
+  if (args[0] instanceof FormData) return (args[0].get("id") as string) ?? "";
+  if (args[1] instanceof FormData) return (args[1].get("id") as string) ?? "";
+  return "";
+}
+
+export type RetryOrderState = {
+  message?: string | null;
+};
+
+export async function retryFailedAction(
+  ...args: any[]
+): Promise<RetryOrderState> {
   const user = await getCurrentUser();
   requirePermission(user.role, "edit", "activation_order");
+  const orderId = resolveRetryArgs(...args);
   const ctx = { userId: user.id, userRole: user.role };
-  await retryFailed(orderId, ctx);
+  try {
+    await retryFailed(orderId, ctx);
+  } catch (e: any) {
+    return { message: e?.message ?? "Opnieuw proberen mislukt." };
+  }
   revalidatePath(`/activations/${orderId}`);
+  revalidatePath("/activations");
   redirect(`/activations/${orderId}`);
 }
 

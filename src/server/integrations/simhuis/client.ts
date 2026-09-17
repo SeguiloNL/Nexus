@@ -27,7 +27,7 @@ function envStr(name: string): string {
   return typeof process !== 'undefined' ? (process.env[name] ?? '').trim() : '';
 }
 
-export function buildSimhuisCredentials(): SimhuisCredentials | null {
+export function buildSimhuisCredentialsEnvOnly(): SimhuisCredentials | null {
   const baseUrl = envStr('SIMHUIS_BASE_URL') || 'https://apicontrolcenter.com/v3';
   const authMode = (envStr('SIMHUIS_AUTH_MODE').toLowerCase() || 'basic') === 'bearer' ? 'bearer' : 'basic';
   const username = envStr('SIMHUIS_USERNAME');
@@ -50,6 +50,57 @@ export function buildSimhuisCredentials(): SimhuisCredentials | null {
     },
     source: 'env',
   };
+}
+
+const SIMHUIS_KEYS = {
+  baseUrl: 'simhuis.baseUrl',
+  authMode: 'simhuis.authMode',
+  username: 'simhuis.username',
+  password: 'simhuis.password',
+  resellerId: 'simhuis.resellerId',
+  endpointLogin: 'simhuis.endpoint.login',
+  endpointSims: 'simhuis.endpoint.sims',
+  endpointSimActivate: 'simhuis.endpoint.simActivate',
+  endpointSimDeactivate: 'simhuis.endpoint.simDeactivate',
+} as const;
+
+async function resolveSimhuisCredentials(): Promise<SimhuisCredentials | null> {
+  try {
+    const { prisma } = await import('@/lib/prisma');
+    const keys = Object.values(SIMHUIS_KEYS);
+    const rows = await Promise.all(
+      keys.map((k) => prisma.appSetting.findUnique({ where: { key: k } }).catch(() => null))
+    );
+    const map: Record<string, string | undefined> = {};
+    keys.forEach((k, i) => {
+      map[k] = rows[i]?.value?.trim();
+    });
+
+    const baseUrl = map[SIMHUIS_KEYS.baseUrl];
+    const username = map[SIMHUIS_KEYS.username];
+    const password = map[SIMHUIS_KEYS.password];
+    if (baseUrl && username && password) {
+      const authMode: 'basic' | 'bearer' =
+        map[SIMHUIS_KEYS.authMode]?.toLowerCase() === 'bearer' ? 'bearer' : 'basic';
+      return {
+        baseUrl,
+        authMode,
+        username,
+        password,
+        resellerId: map[SIMHUIS_KEYS.resellerId] || null,
+        endpoints: {
+          login: map[SIMHUIS_KEYS.endpointLogin] || '/auth/login',
+          sims: map[SIMHUIS_KEYS.endpointSims] || '/sims',
+          simActivate: map[SIMHUIS_KEYS.endpointSimActivate] || '/activate',
+          simDeactivate: map[SIMHUIS_KEYS.endpointSimDeactivate] || '/deactivate',
+        },
+        source: 'db',
+      };
+    }
+  } catch {
+    // fall through to env
+  }
+  return buildSimhuisCredentialsEnvOnly();
 }
 
 function buildUrl(
@@ -261,7 +312,7 @@ class SimhuisClientSingleton {
     if (this.initPromise) return this.initPromise;
     this.initPromise = (async () => {
       try {
-        const creds = buildSimhuisCredentials();
+        const creds = await resolveSimhuisCredentials();
         this.instance = creds ? new SimhuisClient(creds) : undefined;
       } catch {
         this.instance = undefined;
@@ -292,6 +343,41 @@ class SimhuisClientSingleton {
     this.instance = undefined;
     this.cacheLoadedAt = 0;
     this.initPromise = undefined;
+  }
+
+  async testConnection(): Promise<{
+    ok: boolean;
+    status?: number;
+    latencyMs?: number;
+    error?: string;
+    endpoint?: string;
+  }> {
+    const client = await this.init();
+    if (!client) {
+      return { ok: false, error: "Simhuis niet geconfigureerd (geen credentials in DB of env)" };
+    }
+    const started = Date.now();
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(new Error("timeout")), 8000);
+      try {
+        const anyClient = client as any;
+        const endpoint = (client as any).creds?.endpoints?.login ?? "/auth/login";
+        const response = await anyClient.request(
+          endpoint,
+          { method: "GET", signal: controller.signal, authBypass: true }
+        );
+        const elapsed = Date.now() - started;
+        return { ok: true, status: 200, latencyMs: elapsed, endpoint: `GET ${endpoint}` };
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (e: any) {
+      const elapsed = Date.now() - started;
+      const msg = e?.message ?? "Onbekende fout";
+      const status = e?.statusCode ?? 500;
+      return { ok: false, status, latencyMs: elapsed, error: msg };
+    }
   }
 }
 

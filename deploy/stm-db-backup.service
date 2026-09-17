@@ -1,0 +1,61 @@
+# ============================================================
+# systemd: STM PostgreSQL backup service
+# Geeft aanroep naar /opt/stm/scripts/backup-stm-db.sh
+# Deployed door deploy-stm.sh (cfr. scripts/deploy-stm.sh)
+#
+# Install:
+#   cp deploy/stm-db-backup.service /etc/systemd/system/stm-db-backup.service
+#   cp deploy/stm-db-backup.timer   /etc/systemd/system/stm-db-backup.timer
+#   systemctl daemon-reload
+#   systemctl enable --now stm-db-backup.timer
+#   # Run onmiddellijk testen:
+#   systemctl start stm-db-backup.service
+# ============================================================
+[Unit]
+Description=STM PostgreSQL Database Backup (daily custom pg_dump)
+Documentation=https://github.com/local/stm
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+# Target user: root of de user die draait onder /opt/stm (deploy-stm.sh default = root + chown)
+# Pas aan als STM onder aparte non-root user draait
+User=root
+Group=root
+WorkingDirectory=/opt/stm
+Environment=TZ=Europe/Amsterdam
+# Optioneel: override defaults via EnvironmentFile:
+# EnvironmentFile=-/opt/stm/.env.backup
+# (mag ook in .env.production via backup script zelf ook al inlaadt)
+ExecStart=/bin/bash -lc 'cd /opt/stm && ./scripts/backup-stm-db.sh'
+# Geen herhaling via Restart= — timer, maar indien falen exit-code 1/2:
+# Loggen naar journal (journalctl -u stm-db-backup.service)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stm-db-backup
+TimeoutStartSec=10min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+# Lees /var/log, backup-dir, pg_dump dirs
+ReadWritePaths=/opt/stm /var/lib/postgresql /var/run/postgresql
+ReadWritePaths=-/opt/stm/backups
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+[Install]
+WantedBy=multi-user.target

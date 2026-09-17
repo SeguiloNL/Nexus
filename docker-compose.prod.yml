@@ -84,17 +84,18 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
-    # Basic HTTP healthcheck (Next.js endpoint) — als Next.js niet reageert → Docker herstart
+    # Healthcheck via /api/health endpoint (DB ping + integrations configured)
+    # Status 200 = OK (db=ok), 503 = DB down of integrations error
     healthcheck:
       test: >
         /bin/sh -c "
-          wget --spider --quiet http://127.0.0.1:3000 2>/dev/null \
-          || curl -sf http://127.0.0.1:3000 >/dev/null 2>&1 \
-          || (echo 'health-fail'; exit 1)
+          (wget -q -O /dev/null --tries=1 --timeout=8 http://127.0.0.1:3000/api/health 2>/dev/null && exit 0) \
+          || (curl -sf -o /dev/null --max-time 8 http://127.0.0.1:3000/api/health >/dev/null 2>&1 && exit 0) \
+          || (echo 'health-fail /api/health'; exit 1)
         "
       interval: 30s
-      timeout: 6s
-      retries: 4
+      timeout: 10s
+      retries: 3
       start_period: 45s
 
   # ----------------------------------------------------------

@@ -283,6 +283,40 @@ class InserveClientSingleton {
     this.cacheLoadedAt = 0;
     this.initPromise = undefined;
   }
+
+  async testConnection(): Promise<{
+    ok: boolean;
+    status?: number;
+    latencyMs?: number;
+    error?: string;
+    endpoint?: string;
+  }> {
+    const client = await this.init();
+    if (!client) {
+      return { ok: false, error: "Inserve niet geconfigureerd (geen credentials in DB of env)" };
+    }
+    const started = Date.now();
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(new Error("timeout")), 8000);
+      try {
+        const anyClient = client as any;
+        const response = await anyClient.request(
+          "invoices?limit=1",
+          { method: "GET", signal: controller.signal }
+        );
+        const elapsed = Date.now() - started;
+        return { ok: true, status: 200, latencyMs: elapsed, endpoint: "GET /invoices?limit=1" };
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (e: any) {
+      const elapsed = Date.now() - started;
+      const msg = e?.message ?? "Onbekende fout";
+      const status = e?.statusCode ?? 500;
+      return { ok: false, status, latencyMs: elapsed, error: msg };
+    }
+  }
 }
 
 export const inserveClient = new InserveClientSingleton();

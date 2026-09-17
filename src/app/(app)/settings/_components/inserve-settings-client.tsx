@@ -1,10 +1,12 @@
 "use client";
 
 import { useFormState } from "react-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition } from "react";
 import {
   saveInserveSettingsAction,
   type InserveSettingsActionState,
+  testInserveConnectionAction,
+  type ConnectionTestResult,
 } from "../actions";
 import type { InserveSettingsMasked } from "@/server/validators/setting";
 import { Button } from "@/components/ui/button";
@@ -19,7 +21,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Cloud, Eye, EyeOff, CheckCircle2, AlertCircle, Info } from "lucide-react";
+import { Cloud, Eye, EyeOff, CheckCircle2, AlertCircle, Info, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface InserveSettingsFormProps {
@@ -34,6 +36,8 @@ export function InserveSettingsForm({ initial, readOnly }: InserveSettingsFormPr
     saveInserveSettingsAction,
     initialState
   );
+  const [isTestPending, startTestTransition] = useTransition();
+  const [connectionResult, setConnectionResult] = useState<ConnectionTestResult | null>(null);
 
   const [subdomain, setSubdomain] = useState(initial.subdomain ?? "");
   const [apiKey, setApiKey] = useState("");
@@ -44,6 +48,14 @@ export function InserveSettingsForm({ initial, readOnly }: InserveSettingsFormPr
       setApiKey("");
     }
   }, [state?.success]);
+
+  const handleTestConnection = () => {
+    setConnectionResult(null);
+    startTestTransition(async () => {
+      const result = await testInserveConnectionAction();
+      setConnectionResult(result);
+    });
+  };
 
   const sourceLabel =
     initial.source === "db"
@@ -201,32 +213,85 @@ export function InserveSettingsForm({ initial, readOnly }: InserveSettingsFormPr
           </div>
         </CardContent>
 
-        {!readOnly && (
-          <CardFooter className="border-t bg-slate-50/50 px-6 py-3">
-            <div className="flex w-full items-center justify-end gap-2">
-              <p className="mr-auto text-xs text-slate-500">
-                Instellingen worden opgeslagen in de database (API-key als
-                geheim veld) en gelogd in het auditlogboek.
-              </p>
+        <CardFooter className="border-t bg-slate-50/50 px-6 py-3">
+          <div className="flex w-full flex-col gap-3">
+            <div className="flex w-full flex-wrap items-center justify-end gap-2">
               <Button
-                type="submit"
-                disabled={isPending}
-                className="bg-indigo-600 text-white hover:bg-indigo-700"
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleTestConnection}
+                disabled={isTestPending}
+                className="mr-auto"
               >
-                {isPending ? "Opslaan…" : "Opslaan"}
+                {isTestPending ? (
+                  <>
+                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                    Testen…
+                  </>
+                ) : (
+                  <>🔌 Verbinding testen</>
+                )}
               </Button>
+              {!readOnly ? (
+                <>
+                  <p className="text-xs text-slate-500">
+                    Instellingen worden opgeslagen in de database (API-key als
+                    geheim veld) en gelogd in het auditlogboek.
+                  </p>
+                  <Button
+                    type="submit"
+                    disabled={isPending}
+                    className="bg-indigo-600 text-white hover:bg-indigo-700"
+                  >
+                    {isPending ? "Opslaan…" : "Opslaan"}
+                  </Button>
+                </>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  Alleen <strong>Beheerders</strong> kunnen de Inserve API-instellingen
+                  wijzigen.
+                </p>
+              )}
             </div>
-          </CardFooter>
-        )}
 
-        {readOnly && (
-          <CardFooter className="border-t bg-slate-50/50 px-6 py-3">
-            <p className="text-xs text-slate-500">
-              Alleen <strong>Beheerders</strong> kunnen de Inserve API-instellingen
-              wijzigen.
-            </p>
-          </CardFooter>
-        )}
+            {connectionResult && (
+              <div
+                className={cn(
+                  "flex items-start gap-2 rounded-md border p-2.5 text-xs",
+                  connectionResult.ok
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    : "border-red-200 bg-red-50 text-red-800"
+                )}
+                role="status"
+              >
+                {connectionResult.ok ? (
+                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                ) : (
+                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                )}
+                <div className="flex-1">
+                  <p className="font-medium">
+                    {connectionResult.ok
+                      ? `Verbinding Inserve gelukt (${connectionResult.latencyMs ?? "-"}ms)`
+                      : connectionResult.message ?? "Verbinding Inserve mislukt."}
+                  </p>
+                  {connectionResult.endpoint && (
+                    <p className="mt-0.5 font-mono text-[11px] opacity-80">
+                      GET {connectionResult.endpoint}
+                      {connectionResult.status ? ` • HTTP ${connectionResult.status}` : ""}
+                    </p>
+                  )}
+                  {!connectionResult.ok && connectionResult.error && (
+                    <p className="mt-0.5 text-[11px] opacity-90">
+                      Fout: {connectionResult.error}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </CardFooter>
       </form>
     </Card>
   );

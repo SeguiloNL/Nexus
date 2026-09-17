@@ -27,7 +27,7 @@ function envNum(name: string): number | null {
   return isFinite(n) ? n : null;
 }
 
-export function buildNavixyCredentials(): NavixyCredentials | null {
+export function buildNavixyCredentialsEnvOnly(): NavixyCredentials | null {
   const baseUrl = envStr('NAVIXY_BASE_URL') || 'https://api.eu.navixy.com/v2';
   const modeRaw = envStr('NAVIXY_AUTH_MODE').toLowerCase() || 'panel';
   let authMode: NavixyAuthMode = 'panel';
@@ -78,6 +78,92 @@ export function buildNavixyCredentials(): NavixyCredentials | null {
     },
     source: 'env',
   };
+}
+
+const NAVIXY_KEYS = {
+  baseUrl: 'navixy.baseUrl',
+  authMode: 'navixy.authMode',
+  panelLogin: 'navixy.panel.login',
+  panelPassword: 'navixy.panel.password',
+  userLogin: 'navixy.user.login',
+  userPassword: 'navixy.user.password',
+  directHash: 'navixy.directHash',
+  createMethod: 'navixy.createMethod',
+  defaultUserId: 'navixy.defaultUserId',
+  defaultTariffId: 'navixy.defaultTariffId',
+  defaultCloneSourceTrackerId: 'navixy.defaultCloneSourceTrackerId',
+  endpointPanelAuth: 'navixy.endpoint.panelAuth',
+  endpointUserAuth: 'navixy.endpoint.userAuth',
+  endpointPanelTracker: 'navixy.endpoint.panelTracker',
+  endpointUserTracker: 'navixy.endpoint.userTracker',
+} as const;
+
+function strToNullableNumber(s: string | undefined): number | null {
+  if (s === undefined || s === '') return null;
+  const n = Number(s);
+  return isFinite(n) ? n : null;
+}
+
+async function resolveNavixyCredentials(): Promise<NavixyCredentials | null> {
+  try {
+    const { prisma } = await import('@/lib/prisma');
+    const keys = Object.values(NAVIXY_KEYS);
+    const rows = await Promise.all(
+      keys.map((k) => prisma.appSetting.findUnique({ where: { key: k } }).catch(() => null))
+    );
+    const map: Record<string, string | undefined> = {};
+    keys.forEach((k, i) => {
+      map[k] = rows[i]?.value?.trim();
+    });
+
+    const baseUrl = map[NAVIXY_KEYS.baseUrl];
+    if (baseUrl) {
+      const authMode: NavixyAuthMode =
+        map[NAVIXY_KEYS.authMode] === 'user'
+          ? 'user'
+          : map[NAVIXY_KEYS.authMode] === 'direct'
+            ? 'direct'
+            : 'panel';
+      const panelLogin = map[NAVIXY_KEYS.panelLogin] || null;
+      const panelPassword = map[NAVIXY_KEYS.panelPassword] || null;
+      const userLogin = map[NAVIXY_KEYS.userLogin] || null;
+      const userPassword = map[NAVIXY_KEYS.userPassword] || null;
+      const directHash = map[NAVIXY_KEYS.directHash] || null;
+      const configuredDirect = authMode === 'direct' && !!directHash;
+      const configuredPanel = authMode === 'panel' && !!panelLogin && !!panelPassword;
+      const configuredUser = authMode === 'user' && !!userLogin && !!userPassword;
+      if (configuredDirect || configuredPanel || configuredUser) {
+        let createMethod: NavixyCreateMethod = 'create';
+        if (map[NAVIXY_KEYS.createMethod] === 'clone') createMethod = 'clone';
+        else if (map[NAVIXY_KEYS.createMethod] === 'register') createMethod = 'register';
+        return {
+          baseUrl,
+          authMode,
+          panelLogin,
+          panelPassword,
+          userLogin,
+          userPassword,
+          directHash,
+          defaultUserId: strToNullableNumber(map[NAVIXY_KEYS.defaultUserId]),
+          defaultTariffId: strToNullableNumber(map[NAVIXY_KEYS.defaultTariffId]),
+          defaultCloneSourceTrackerId: strToNullableNumber(
+            map[NAVIXY_KEYS.defaultCloneSourceTrackerId]
+          ),
+          createMethod,
+          endpoints: {
+            panelAuth: map[NAVIXY_KEYS.endpointPanelAuth] || '/panel/account/auth',
+            userAuth: map[NAVIXY_KEYS.endpointUserAuth] || '/user/session/auth',
+            panelTracker: map[NAVIXY_KEYS.endpointPanelTracker] || '/panel/tracker',
+            userTracker: map[NAVIXY_KEYS.endpointUserTracker] || '/user/tracker',
+          },
+          source: 'db',
+        };
+      }
+    }
+  } catch {
+    // fall through
+  }
+  return buildNavixyCredentialsEnvOnly();
 }
 
 function buildUrl(
@@ -322,7 +408,7 @@ class NavixyClientSingleton {
     if (this.initPromise) return this.initPromise;
     this.initPromise = (async () => {
       try {
-        const creds = buildNavixyCredentials();
+        const creds = await resolveNavixyCredentials();
         this.instance = creds ? new NavixyClient(creds) : undefined;
       } catch {
         this.instance = undefined;
@@ -353,6 +439,53 @@ class NavixyClientSingleton {
     this.instance = undefined;
     this.cacheLoadedAt = 0;
     this.initPromise = undefined;
+  }
+
+  async testConnection(): Promise<{
+    ok: boolean;
+    status?: number;
+    latencyMs?: number;
+    error?: string;
+    endpoint?: string;
+  }> {
+    const client = await this.init();
+    if (!client) {
+      return { ok: false, error: "Navixy niet geconfigureerd (geen credentials in DB of env)" };
+    }
+    const started = Date.now();
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(new Error("timeout")), 8000);
+      try {
+        const anyClient = client as any;
+        const creds = (anyClient.creds ?? (client as any).credentials ?? {}) as any;
+        const authMode: string = creds.authMode ?? "panel";
+        const endpoints = creds.endpoints ?? {};
+        const endpoint =
+          authMode === "direct"
+            ? (endpoints.userTracker ?? "/user/tracker")
+            : authMode === "user"
+              ? (endpoints.userAuth ?? "/user/session/auth")
+              : (endpoints.panelAuth ?? "/panel/account/auth");
+        const response = await anyClient.request(
+          endpoint,
+          {
+            method: "GET",
+            signal: controller.signal,
+            authBypass: authMode !== "direct",
+          }
+        );
+        const elapsed = Date.now() - started;
+        return { ok: true, status: 200, latencyMs: elapsed, endpoint: `GET ${endpoint} (authMode=${authMode})` };
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (e: any) {
+      const elapsed = Date.now() - started;
+      const msg = e?.message ?? "Onbekende fout";
+      const status = e?.statusCode ?? e?.navixyCode ?? 500;
+      return { ok: false, status, latencyMs: elapsed, error: msg };
+    }
   }
 }
 

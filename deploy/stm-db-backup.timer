@@ -1,0 +1,20 @@
+# ============================================================
+# STM DB backup timer: dagelijks om 03:00 (Europe/Amsterdam)
+# Met randomized vertraging (RandomizedDelaySec) om thundering herd te
+# voorkomen op gedeelde infra.
+# ============================================================
+[Unit]
+Description=Dagelijkse STM PostgreSQL backup timer (03:00 Europe/Amsterdam)
+Documentation=https://github.com/local/stm
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Europe/Amsterdam
+Persistent=true
+RandomizedDelaySec=300
+AccuracySec=1min
+# Indien gemiste runs inhalen als VPS was offline was (default true)
+# RandomizedDelaySec=300 betekent: ergens tussen 03:00 en 03:05
+Unit=stm-db-backup.service
+
+[Install]
+WantedBy=timers.target

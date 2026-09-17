@@ -6,7 +6,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Settings as SettingsIcon, Info, Database, Shield, Globe } from "lucide-react";
 import { InserveSettingsForm } from "./_components/inserve-settings-client";
-import { getInserveSettingsMasked } from "@/server/services/app-setting.service";
+import { SimhuisSettingsForm } from "./_components/simhuis-settings-client";
+import { NavixySettingsForm } from "./_components/navixy-settings-client";
+import {
+  getInserveSettingsMasked,
+  getSimhuisSettingsMasked,
+  getNavixySettingsMasked,
+} from "@/server/services/app-setting.service";
 
 export default async function SettingsPage() {
   const session = await auth();
@@ -18,7 +24,11 @@ export default async function SettingsPage() {
   }
 
   const canEdit = canUserRole(session.user.role, "edit", "setting");
-  const inserveSettings = await getInserveSettingsMasked();
+  const [inserveSettings, simhuisSettings, navixySettings] = await Promise.all([
+    getInserveSettingsMasked(),
+    getSimhuisSettingsMasked(),
+    getNavixySettingsMasked(),
+  ]);
 
   return (
     <div className="space-y-6">
@@ -30,6 +40,8 @@ export default async function SettingsPage() {
       </div>
 
       <InserveSettingsForm initial={inserveSettings} readOnly={!canEdit} />
+      <SimhuisSettingsForm initial={simhuisSettings} readOnly={!canEdit} />
+      <NavixySettingsForm initial={navixySettings} readOnly={!canEdit} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card>

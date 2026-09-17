@@ -19,7 +19,7 @@ export interface NavixyCredentials {
     panelTracker: string;
     userTracker: string;
   };
-  source: 'env';
+  source: 'env' | 'db';
 }
 
 export interface NavixyStatus {
