@@ -223,6 +223,30 @@ export function InvoiceList({ result }: Props) {
       cell: ({ row }) => formatDate(row.original.dueDate),
     },
     {
+      accessorKey: "sentAt",
+      header: "Verzonden op",
+      cell: ({ row }) => {
+        const v = (row.original as any).sentAt as Date | undefined | null;
+        return v ? (
+          <span className="tabular-nums">{formatDate(v)}</span>
+        ) : (
+          <span className="text-slate-400">—</span>
+        );
+      },
+    },
+    {
+      accessorKey: "paidAt",
+      header: "Betaald op",
+      cell: ({ row }) => {
+        const v = (row.original as any).paidAt as Date | undefined | null;
+        return v ? (
+          <span className="tabular-nums text-emerald-700">{formatDate(v)}</span>
+        ) : (
+          <span className="text-slate-400">—</span>
+        );
+      },
+    },
+    {
       header: "Periode",
       cell: ({ row }) => (
         <div className="text-xs">

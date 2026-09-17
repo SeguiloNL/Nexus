@@ -99,6 +99,9 @@ enum AuditAction {
   FAIL_ACTIVATION
   INSERVE_SYNCED
   INSERVE_SYNC_FAILED
+  GENERATE_INVOICES
+  MARK_INVOICE_PAID
+  SEND_INVOICE
 }
 
 enum InserveSyncStatus {
@@ -241,16 +244,22 @@ model Invoice {
   vatRate          Decimal       @db.Decimal(5, 2)
   vatAmount        Decimal       @db.Decimal(10, 2)
   total            Decimal       @db.Decimal(10, 2)
-  status           InvoiceStatus @default(DRAFT)
-  paidAt           DateTime?     @db.Timestamptz
-  note             String?       @db.Text
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  status           InvoiceStatus     @default(DRAFT)
+  sentAt           DateTime?         @db.Timestamptz
+  paidAt           DateTime?         @db.Timestamptz
+  note             String?           @db.Text
+  inserveInvoiceId Int?              @unique
+  inserveSyncStatus InserveSyncStatus @default(PENDING)
+  inserveSyncError String?           @db.Text
+  sentToInserveAt  DateTime?         @db.Timestamptz
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 
   @@unique([subscriptionId, periodStart, periodEnd], map: "idx_invoice_sub_period_unique")
   @@index([customerId])
   @@index([status])
   @@index([issueDate])
+  @@index([inserveSyncStatus])
   @@map("invoices")
 }
 

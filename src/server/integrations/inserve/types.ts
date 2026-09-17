@@ -46,6 +46,58 @@ export interface InserveContract {
   updated_at?: string | null;
 }
 
+// ============================================================================
+// Invoices (Plaatsaanwijzers — WACHTEN OP EXACTE API ENDPOINT + VELDEN)
+// TODO: te bevestigen vanuit Inserve API docs (varieert per versie):
+//   - POST /api/invoices? /api/documents? /api/sales_invoices?
+//   - Velden: company_id / debtor_code / date / due_date / reference / lines[]
+// ============================================================================
+export interface InserveInvoiceLine {
+  id?: number;
+  article_id?: number | null;
+  description?: string | null;
+  quantity?: number;
+  price?: number;
+  discount?: number;
+  btw_percentage?: number;
+  total_excl?: number;
+  total_vat?: number;
+  total_incl?: number;
+}
+
+export interface InserveInvoice {
+  id: number;
+  company_id: number;
+  debtor_code?: string | null;
+  date?: string | null;
+  due_date?: string | null;
+  reference?: string | null;
+  description?: string | null;
+  status?: string | null; // draft | sent | paid | cancelled
+  invoice_number?: string | null;
+  total_excl?: number;
+  total_vat?: number;
+  total_incl?: number;
+  lines?: InserveInvoiceLine[] | null;
+  url?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  sent_at?: string | null;
+  paid_at?: string | null;
+}
+
+export type CreateInvoiceLineRequest = Omit<InserveInvoiceLine, 'id' | 'total_excl' | 'total_vat' | 'total_incl'> &
+  Required<Pick<InserveInvoiceLine, 'quantity' | 'price'>>;
+
+export type CreateInvoiceRequest = Partial<Omit<InserveInvoice, 'id' | 'status' | 'invoice_number' | 'lines' | 'total_excl' | 'total_vat' | 'total_incl' | 'created_at' | 'updated_at' | 'sent_at' | 'paid_at' | 'url'>> & {
+  company_id: number;
+  date: string;
+  due_date?: string;
+  reference?: string;
+  lines: CreateInvoiceLineRequest[];
+  status?: string; // meestal 'draft' / 'concept'
+};
+
 export type CreateCompanyRequest = Partial<Omit<InserveCompany, 'id' | 'created_at' | 'updated_at'>> &
   Required<Pick<InserveCompany, 'name'>>;
 

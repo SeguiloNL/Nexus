@@ -350,6 +350,7 @@ export async function markInvoiceSent(
       where: { id },
       data: {
         status: "SENT" as any,
+        sentAt: sentAtDate,
       },
     });
     await logAudit(tx, {
@@ -357,8 +358,8 @@ export async function markInvoiceSent(
       entityId: updated.id,
       action: "SEND_INVOICE",
       userId: ctx.userId,
-      oldValues: { status: existing.status } as any,
-      newValues: { status: updated.status, sentAt: sentAtDate.toISOString() } as any,
+      oldValues: { status: existing.status, sentAt: (existing as any).sentAt } as any,
+      newValues: { status: updated.status, sentAt: (updated as any).sentAt?.toISOString() } as any,
       metadata: { sentAt: sentAtDate.toISOString() },
     });
     return updated as PrismaInvoice;
