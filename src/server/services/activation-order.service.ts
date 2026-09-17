@@ -13,6 +13,23 @@ import type {
 } from "@/server/validators/activationOrder";
 import type { UserRole } from "@/types/enums";
 
+import {
+  activateSim as simhuisActivateSim,
+  getSimStatus as simhuisGetSimStatus,
+  deactivateSim as simhuisDeactivateSim,
+  simhuisClient,
+} from "../integrations/simhuis/service";
+import type { SimhuisSimStatus } from "../integrations/simhuis/types";
+
+import {
+  registerTracker as navixyRegisterTracker,
+  getTracker as navixyGetTracker,
+  suspendTracker as navixySuspendTracker,
+  deleteTracker as navixyDeleteTracker,
+  navixyClient,
+} from "../integrations/navixy/service";
+import type { NavixyTracker } from "../integrations/navixy/types";
+
 type Ctx = { userId: string; userRole: UserRole };
 
 const READY_TRANSITIONS = {
@@ -337,40 +354,159 @@ async function markFailed(
   return updated;
 }
 
-/**
- * De 6-staps transactionele activatie zoals spec.md §5.
- * Isolation level Serializable om races (AC-5) af te vangen.
- */
-export async function completeActivation(id: string, ctx: Ctx) {
-  const result = await prisma.$transaction(async (tx) => {
-    const order: any = await tx.activationOrder.findUnique({
+async function markFailedTx(
+  id: string,
+  reason: string,
+  userId: string
+) {
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.activationOrder.update({
       where: { id },
-      include: {
-        customer: true,
-        product: true,
-        tracker: true,
-        sim: true,
-        vehicle: true,
+      data: {
+        status: "FAILED" as any,
+        failureReason: reason,
+        failedAt: new Date(),
       },
     });
-    if (!order) throw new Error("Order niet gevonden");
-    if (order.status !== "READY" && order.status !== "FAILED") {
-      throw new Error(`Alleen READY of FAILED orders kunnen geactiveerd worden (status ${order.status}).`);
-    }
-    if (!order.tracker || !order.sim || !order.customer || !order.product) {
-      throw new Error(
-        `Incomplete order: ontbreekt ${!order.customer ? "klant " : ""}${!order.product ? "product " : ""}${!order.tracker ? "tracker " : ""}${!order.sim ? "SIM" : ""}`
-      );
-    }
+    await logAudit(tx, {
+      entityType: "activation_order",
+      entityId: updated.id,
+      action: "FAIL_ACTIVATION",
+      userId,
+      newValues: { status: "FAILED", failureReason: reason } as any,
+    });
+    return updated;
+  });
+}
 
-    // 1. Mark order PROCESSING
+function buildDeviceModel(brand: string | null | undefined, model: string | null | undefined): string {
+  const parts = [brand ?? "", model ?? ""].map(p => String(p ?? "").trim()).filter(Boolean);
+  if (parts.length === 0) return "generic";
+  return parts.join(" ");
+}
+
+/**
+ * Saga-patroon completeActivation:
+ *  0. Preflight: order exists + status OK
+ *  1. Markeer PROCESSING (binnen transactie)
+ *  2. Externe stap 1: Activeer SIM bij Simhuis (idempotent, skip indien reeds actief of NIET geconfigureerd)
+ *  3. Externe stap 2: Registreer tracker bij Navixy met device_model (idempotent, skip indien NIET geconfigureerd)
+ *     → Bij falen Navixy: compensatie (deactiveer SIM indien stap 2a geslaagd)
+ *  4. Interne transactie: Re-lock assets, assignments, subscription, COMPLETED
+ *     → Bij falen interne transactie: best-effort compensatie (suspend tracker + deactivate SIM)
+ *  5. Na succes: Inserve sync queue.
+ */
+export async function completeActivation(id: string, ctx: Ctx) {
+  const initial = await prisma.activationOrder.findUnique({
+    where: { id },
+    include: {
+      customer: true,
+      product: true,
+      tracker: true,
+      sim: true,
+      vehicle: true,
+    },
+  });
+  if (!initial) throw new Error("Order niet gevonden");
+  if (initial.status !== "READY" && initial.status !== "FAILED") {
+    throw new Error(`Alleen READY of FAILED orders kunnen geactiveerd worden (status ${initial.status}).`);
+  }
+  if (!initial.tracker || !initial.sim || !initial.customer || !initial.product) {
+    throw new Error(
+      `Incomplete order: ontbreekt ${!initial.customer ? "klant " : ""}${!initial.product ? "product " : ""}${!initial.tracker ? "tracker " : ""}${!initial.sim ? "SIM" : ""}`
+    );
+  }
+
+  // --- STAP 1: Mark order PROCESSING (altijd, zodat UI inzicht heeft) ---
+  await prisma.$transaction(async (tx) => {
     await tx.activationOrder.update({
       where: { id },
       data: { status: "PROCESSING" as any },
     });
+  });
 
-    try {
-      // 2 + 3. Re-lock & re-check assets status + geen actieve assignment
+  const rollbackCtx: {
+    simActivated: SimhuisSimStatus | null;
+    navixyTracker: NavixyTracker | null;
+  } = { simActivated: null, navixyTracker: null };
+
+  try {
+    // --- STAP 2: SIM activeren (Simhuis) ---
+    const simhuisConfigured = await simhuisClient.isConfigured();
+    if (simhuisConfigured) {
+      try {
+        const preStatus = await simhuisGetSimStatus(initial.sim.iccid);
+        if (preStatus.status === "active") {
+          console.info(`[Activation] SIM ${initial.sim.iccid} reeds actief in Simhuis — overslaan`);
+          rollbackCtx.simActivated = preStatus;
+        } else {
+          const activated = await simhuisActivateSim({
+            iccid: initial.sim.iccid,
+            customerRef: initial.customer.customerNumber ?? `${initial.customer.id}`,
+          });
+          rollbackCtx.simActivated = activated;
+        }
+      } catch (simErr: any) {
+        const msg = `Simhuis activatie mislukt voor SIM ${initial.sim.iccid}: ${simErr?.message ?? simErr}`;
+        console.error(`[Activation] ${msg}`);
+        await markFailedTx(id, msg, ctx.userId);
+        throw new Error(msg);
+      }
+    } else {
+      console.info("[Activation] Simhuis niet geconfigureerd (username/password leeg) — skip SIM activatie");
+    }
+
+    // --- STAP 3: Tracker registreren (Navixy) ---
+    const navixyConfigured = await navixyClient.isConfigured();
+    if (navixyConfigured) {
+      try {
+        const deviceModel = buildDeviceModel(initial.tracker.brand, initial.tracker.model);
+        const label = initial.tracker.serialNumber
+          ? `${initial.tracker.serialNumber} (${initial.customer.companyName ?? initial.customerId})`
+          : `${initial.customer.companyName ?? initial.customerId} - ${initial.orderNumber}`;
+
+        const registered = await navixyRegisterTracker({
+          imei: initial.tracker.imei,
+          deviceModel,
+          label,
+        });
+        rollbackCtx.navixyTracker = registered;
+      } catch (navErr: any) {
+        // Compensatie: SIM deactiveren (indien geactiveerd)
+        if (rollbackCtx.simActivated) {
+          console.warn(`[Activation] Navixy registratie mislukt — proberen SIM ${initial.sim.iccid} te deactiveren`);
+          try {
+            await simhuisDeactivateSim(initial.sim.iccid);
+          } catch (rbErr: any) {
+            console.error(`[Activation] ⚠️ Compensatie SIM deactiveren mislukt (Handmatig actie vereist): ${rbErr?.message ?? rbErr}`);
+          }
+        }
+        const msg = `Navixy tracker registratie mislukt (IMEI ${initial.tracker.imei}): ${navErr?.message ?? navErr}`;
+        console.error(`[Activation] ${msg}`);
+        await markFailedTx(id, msg, ctx.userId);
+        throw new Error(msg);
+      }
+    } else {
+      console.info("[Activation] Navixy niet geconfigureerd (credentials leeg) — skip tracker registratie");
+    }
+
+    // --- STAP 4: Interne transactionele stappen (originele flow) ---
+    const result = await prisma.$transaction(async (tx) => {
+      const order: any = await tx.activationOrder.findUnique({
+        where: { id },
+        include: {
+          customer: true,
+          product: true,
+          tracker: true,
+          sim: true,
+          vehicle: true,
+        },
+      });
+      if (!order) throw new Error("Order niet gevonden tijdens interne stap");
+      if (order.status !== "PROCESSING") {
+        throw new Error(`Order onverwachte status in interne stap: ${order.status}`);
+      }
+
       const tracker = await tx.tracker.findUnique({
         where: { id: order.tracker.id, deletedAt: null },
       });
@@ -399,7 +535,6 @@ export async function completeActivation(id: string, ctx: Ctx) {
         throw new Error(`SIM heeft reeds een actieve assignment.`);
       }
 
-      // 4. Maak subscription PENDING_ACTIVATION, direct ACTIVE
       const subNumber = await generateSubscriptionNumber(tx as any);
       const subscription = await tx.subscription.create({
         data: {
@@ -418,7 +553,6 @@ export async function completeActivation(id: string, ctx: Ctx) {
         data: { status: "ACTIVE" as any },
       });
 
-      // 5. Assignments + asset status updates ACTIVE
       const trackerUpdated = await tx.tracker.update({
         where: { id: order.tracker.id },
         data: { status: "ACTIVE" as any },
@@ -449,7 +583,6 @@ export async function completeActivation(id: string, ctx: Ctx) {
         },
       });
 
-      // 6. Mark order COMPLETED, link subscriptionId
       const completed = await tx.activationOrder.update({
         where: { id },
         data: {
@@ -483,18 +616,41 @@ export async function completeActivation(id: string, ctx: Ctx) {
       });
 
       return { order: completed, subscription };
-    } catch (err: any) {
-      await markFailed(
-        tx,
-        id,
-        err?.message ? err.message : "Onbekende fout tijdens activatie.",
-        ctx.userId
-      );
-      throw err;
+    }, { isolationLevel: "Serializable" });
+
+    // --- STAP 5: Async externe syncs (geen blokking) ---
+    enqueueInserveSubscriptionSync(result.subscription.id, ctx);
+    return result;
+  } catch (err: any) {
+    const isAlreadyMarkedFailed = (err?.message ?? "").startsWith("Simhuis")
+      || (err?.message ?? "").startsWith("Navixy");
+
+    // Best-effort compensatie indien interne transactie of onverwachte fout
+    if (!isAlreadyMarkedFailed) {
+      if (rollbackCtx.navixyTracker) {
+        console.warn(`[Activation] Interne stap mislukt — proberen Navixy tracker ${rollbackCtx.navixyTracker.id} te deactiveren`);
+        try {
+          await navixySuspendTracker(rollbackCtx.navixyTracker.id, true);
+        } catch (rbErr: any) {
+          console.error(`[Activation] ⚠️ Compensatie Navixy suspend mislukt: ${rbErr?.message ?? rbErr}`);
+        }
+      }
+      if (rollbackCtx.simActivated && !rollbackCtx.simActivated.status) {
+        console.warn(`[Activation] Interne stap mislukt — proberen SIM ${initial.sim.iccid} te deactiveren`);
+        try {
+          await simhuisDeactivateSim(initial.sim.iccid);
+        } catch (rbErr: any) {
+          console.error(`[Activation] ⚠️ Compensatie SIM deactiveren mislukt: ${rbErr?.message ?? rbErr}`);
+        }
+      }
+
+      const msg = err?.message ? err.message : "Onbekende fout tijdens activatie.";
+      try {
+        await markFailedTx(id, msg, ctx.userId);
+      } catch (markErr) {
+        console.error(`[Activation] konden order niet op FAILED zetten:`, markErr);
+      }
     }
-  }, { isolationLevel: "Serializable" });
-
-  enqueueInserveSubscriptionSync(result.subscription.id, ctx);
-
-  return result;
+    throw err;
+  }
 }
