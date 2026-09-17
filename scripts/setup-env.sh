@@ -10,6 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="$ROOT_DIR/.env"
 ENV_TEMPLATE="$ROOT_DIR/.env.production.example"
+# Template fallbacks: als .env.production.example ontbreekt (oude checkouts), probeer dan de oude.
+[[ ! -f "$ENV_TEMPLATE" ]] && ENV_TEMPLATE="$ROOT_DIR/.env.example"
 FORCE=0
 
 RED="\e[31m"; GRN="\e[32m"; YLW="\e[33m"; CYN="\e[36m"; BLD="\e[1m"; RST="\e[0m"
@@ -131,29 +133,40 @@ PGPASS_DEFAULT="$(rand_b64 24)"
 ensure_var "POSTGRES_PASSWORD" "$PGPASS_DEFAULT" "PostgreSQL wachtwoord (laat leeg voor autogenerate)"
 
 # POSTGRES_DB / POSTGRES_USER (met defaults)
-ensure_var "POSTGRES_DB"   "nexus" "PostgreSQL database naam"
-ensure_var "POSTGRES_USER" "nexus" "PostgreSQL gebruikersnaam"
+ensure_var "POSTGRES_DB"   "stm" "PostgreSQL database naam"
+ensure_var "POSTGRES_USER" "stm" "PostgreSQL gebruikersnaam"
 
 # NEXT_PUBLIC_APP_URL
 DEFAULT_URL="$(detect_default_url)"
-ensure_var "NEXT_PUBLIC_APP_URL" "$DEFAULT_URL" "Publieke App URL (bijv. https://nexus.jouwdomein.nl)"
+ensure_var "NEXT_PUBLIC_APP_URL" "$DEFAULT_URL" "Publieke App URL (bijv. https://stm.jouwdomein.nl)"
 
 # AUTH_URL: default naar NEXT_PUBLIC_APP_URL + /api/auth
 APP_URL="$(grep -E '^NEXT_PUBLIC_APP_URL=' "$ENV_FILE" | cut -d= -f2- | tr -d '"')"
 AUTH_URL_DEFAULT="${APP_URL%/}/api/auth"
 ensure_var "AUTH_URL" "$AUTH_URL_DEFAULT" "Auth callback URL (laat leeg = <APP_URL>/api/auth)"
 
-# NEXUS_DOMAIN: wordt geextraheerd uit NEXT_PUBLIC_APP_URL, tenzij expliciet ingevuld
+# AUTH_TRUST_HOST: VERPLICHT voor productie i.c.m. Caddy reverse proxy.
+ensure_var "AUTH_TRUST_HOST" "true" "Auth.js vertrouwt X-Forwarded headers van reverse proxy (aanbevolen: true)"
+
+# STM_DOMAIN: publiek domein (voor Caddy HTTPS).
 PROTO="$(echo "$APP_URL" | grep -oE '^https?://' || true)"
 DOMAIN_DEFAULT="$(echo "${APP_URL#"$PROTO"}" | cut -d: -f1 | cut -d/ -f1)"
 if [[ "$DOMAIN_DEFAULT" == "localhost" || "$DOMAIN_DEFAULT" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   DOMAIN_DEFAULT=""
 fi
-ensure_var "NEXUS_DOMAIN" "$DOMAIN_DEFAULT" "Publiek domein (voor Caddy HTTPS). Leeg = localhost/IP zonder TLS"
+ensure_var "STM_DOMAIN" "$DOMAIN_DEFAULT" "Publiek domein (voor Caddy HTTPS). Leeg = localhost/IP zonder TLS"
+# Compat oude NEXUS_DOMAIN env var (Caddyfile accepteert ook NEXUS_DOMAIN)
+ensure_var "NEXUS_DOMAIN" "\${STM_DOMAIN:-}" "Compat NEXUS_DOMAIN (laat leeg = gebruikt STM_DOMAIN)"
 
 NODE_ENV_DEFAULT="production"
 ensure_var "NODE_ENV" "$NODE_ENV_DEFAULT" "Node environment"
 
+TZ_DEFAULT="Europe/Amsterdam"
+ensure_var "TZ" "$TZ_DEFAULT" "Tijdzone"
+
 ok ".env configuratie voltooid."
 echo ""
-echo -e "${BLD}Volgende stap:${RST}  ${CYN}bash $ROOT_DIR/scripts/install.sh${RST}"
+echo ""
+echo -e "${BLD}Volgende stap:${RST}"
+echo -e "   ${CYN}bash $ROOT_DIR/scripts/deploy-stm.sh${RST}   (productie, VPS — docker-compose.prod.yml)"
+echo -e "   ${CYN}bash $ROOT_DIR/scripts/install.sh${RST}    (lokaal/dev — docker-compose.dev pattern)"

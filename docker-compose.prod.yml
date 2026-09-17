@@ -1,20 +1,27 @@
 # ==============================================================
-# docker-compose.prod.yml — STM productie (VPS met 1 app + 1 PG16)
+# docker-compose.prod.yml — STM productie (VPS Ubuntu)
+# 1 Next.js standalone app + 1 PostgreSQL 16 + named volumes.
+# Achter Caddy (reverse proxy) voor HTTPS (Caddy op host of container).
 #
 # Gebruik:
 #   docker compose -f docker-compose.prod.yml up -d --build
-#
-# Draai achteraf nog 1x: caddy reload (als Caddy op host draait)
+#   docker compose -f docker-compose.prod.yml ps
+#   docker compose -f docker-compose.prod.yml logs -f stm-app
+# Stoppen:
+#   docker compose -f docker-compose.prod.yml down
 # ==============================================================
 
 services:
   # ----------------------------------------------------------
-  # STM App (Next.js standalone, op poort 3000 INTERNAL)
+  # STM App (Next.js standalone, poort 3000 INTERNAL)
+  # Draait achter 127.0.0.1, NIET naar internet — Caddy reverse proxy.
   # ----------------------------------------------------------
   stm-app:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
     container_name: stm-app
     restart: unless-stopped
     depends_on:
@@ -23,53 +30,100 @@ services:
     networks:
       - stm-net
     environment:
-      - NODE_ENV=production
+      - NODE_ENV=${NODE_ENV:-production}
+      - TZ=${TZ:-Europe/Amsterdam}
       # App server instellingen
       - PORT=3000
       - HOSTNAME=0.0.0.0
-      # Auth.js v5 — BELANGRIJK! Caddy zet X-Forwarded-Host.
-      - AUTH_TRUST_HOST=true
-      - AUTH_URL=${AUTH_URL:-http://localhost:3000}
-      - AUTH_SECRET=${AUTH_SECRET:?AUTH_SECRET verplicht! Kopieer .env.example naar .env}
-      # Postgres — verwijst naar de compose-service "stm-db"
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-stm}:${POSTGRES_PASSWORD:-changeme}@stm-db:5432/${POSTGRES_DB:-stm}?schema=public&connect_timeout=10&pool_timeout=10
+      # Auth.js v5 — VERPLICHT i.c.m. reverse proxy (Caddy zet X-Forwarded-* headers)
+      - AUTH_TRUST_HOST=${AUTH_TRUST_HOST:-true}
+      - AUTH_URL=${AUTH_URL:-}
+      - AUTH_SECRET=${AUTH_SECRET:?AUTH_SECRET verplicht! Kopieer .env.production.example naar .env}
+      # Publieke app URL (server actions, image optim, auth redirect)
+      - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:?NEXT_PUBLIC_APP_URL verplicht!}
+      # Publieke Inserve subdomein (voor "Open in Inserve" links in de UI)
+      - NEXT_PUBLIC_INSERVE_SUBDOMAIN=${NEXT_PUBLIC_INSERVE_SUBDOMAIN:-}
+      # Postgres — connectie interne hostname "stm-db"
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-stm}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD verplicht!}@stm-db:5432/${POSTGRES_DB:-stm}?schema=public&connect_timeout=10&pool_timeout=10
+      # Inserve Integratie
+      - INSERVE_SUBDOMAIN=${INSERVE_SUBDOMAIN:-}
+      - INSERVE_API_KEY=${INSERVE_API_KEY:-}
+      # Simhuis Integratie (P1)
+      - SIMHUIS_BASE_URL=${SIMHUIS_BASE_URL:-https://apicontrolcenter.com/v3}
+      - SIMHUIS_API_KEY=${SIMHUIS_API_KEY:-}
+      - SIMHUIS_RESELLER_ID=${SIMHUIS_RESELLER_ID:-}
+      # Navixy Integratie (P1)
+      - NAVIXY_BASE_URL=${NAVIXY_BASE_URL:-}
+      - NAVIXY_API_KEY=${NAVIXY_API_KEY:-}
     ports:
-      # Alleen 127.0.0.1, dus NIET direct naar internet. Caddy (host of container) reverse-proxy naar deze port.
+      # Alleen 127.0.0.1: nooit direct vanaf internet. Caddy (op host of container) proxy't naar deze port.
       - "127.0.0.1:3000:3000"
     volumes:
       # (optioneel) mount eigen public/uploads folder als je uploads implementeert
       - app-public:/app/public/uploads
+    # Log rotation: container logs nooit groter dan 10 MB × 5 files (voorkomt 50 GB logs na een jaar)
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # Basic HTTP healthcheck (Next.js endpoint) — als Next.js niet reageert → Docker herstart
+    healthcheck:
+      test: >
+        /bin/sh -c "
+          wget --spider --quiet http://127.0.0.1:3000 2>/dev/null \
+          || curl -sf http://127.0.0.1:3000 >/dev/null 2>&1 \
+          || (echo 'health-fail'; exit 1)
+        "
+      interval: 30s
+      timeout: 6s
+      retries: 4
+      start_period: 45s
 
   # ----------------------------------------------------------
   # PostgreSQL 16 (data in named volume, healthcheck)
+  # BELANGRIJK SECURITY: expose NIET naar 0.0.0.0! Alleen toegang via
+  #   docker exec -it stm-db psql -U stm -d stm
+  # OF via SSH tunnel:  ssh -L 5432:localhost:5432 user@VPS -N
+  # (daarna DBeaver / psql naar localhost:5432 op eigen machine)
   # ----------------------------------------------------------
   stm-db:
     image: postgres:16-alpine
     container_name: stm-db
     restart: unless-stopped
-    shm_size: 128m
+    shm_size: 256m
     networks:
       - stm-net
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-stm}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD verplicht!}
       - POSTGRES_DB=${POSTGRES_DB:-stm}
       - PGDATA=/var/lib/postgresql/data/pgdata
+      - TZ=${TZ:-Europe/Amsterdam}
     volumes:
       - stm-db-data:/var/lib/postgresql/data
+    # Log rotation (PG produceert soms ook logs)
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stm} -d ${POSTGRES_DB:-stm}"]
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 20s
-    # Expose NIET naar host (of alleen 127.0.0.1 als je van buiten DB met DBeaver wilt inloggen)
+      start_period: 30s
+    # Expose NIET naar host tenzij je echt GUI-access via SSH-tunnel wilt.
+    # ZIE P0.4 in deploy documentatie.
     # ports:
     #   - "127.0.0.1:5432:5432"
 
 volumes:
   stm-db-data:
+    driver: local
   app-public:
+    driver: local
 
 networks:
   stm-net:

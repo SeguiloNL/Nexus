@@ -56,14 +56,19 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 # Prisma schemabestand + client (nodig voor runtime prisma.* calls in standalone)
+# + Volledige "prisma" npm package (voor CLI — npx prisma ...)
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/prisma ./node_modules/prisma
+
+# Runtime entrypoint: DB connectivity check + migrations + Next.js server
+COPY --chown=nextjs:nodejs entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 
 USER nextjs
 
 EXPOSE 3000
 ENV HOSTNAME=0.0.0.0
 
-# Container start: eerst prisma migrations deployen, daarna standalone Next.js server
-# Je kunt dit ook splitsen met een aparte "migrate" service in docker-compose; dit is 1-service shortcut
-CMD ["sh", "-c", "HOSTNAME=0.0.0.0 node node_modules/prisma/build/index.js migrate deploy && node server.js"]
+# Container start: entrypoint.sh regelt volgorde (zie bestand)
+CMD ["./entrypoint.sh"]

@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { authenticate, type State } from "../actions";
 import { useFormState } from "react-dom";
 
@@ -74,13 +75,15 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-gray-50 px-4 py-12 sm:px-6 lg:px-8">
       <div className="w-full max-w-md">
-        <div className="mb-8 text-center">
-          <h1 className="text-3xl font-bold tracking-tight text-gray-900">
-            Nexus
-          </h1>
-          <p className="mt-2 text-sm text-gray-600">
-            Activation &amp; Subscription Manager
-          </p>
+        <div className="mb-8 flex flex-col items-center">
+          <Image
+            src="/nexus-logo-full.png"
+            alt="Nexus logo"
+            width={2172}
+            height={724}
+            priority
+            className="h-20 w-auto object-contain"
+          />
         </div>
 
         <div className="rounded-xl bg-white px-6 py-8 shadow-sm ring-1 ring-gray-200">

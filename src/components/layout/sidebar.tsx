@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -131,18 +132,15 @@ export function Sidebar({ userRole }: SidebarProps) {
 
   return (
     <aside className="hidden w-64 flex-shrink-0 border-r border-slate-200 bg-white md:block">
-      <div className="flex h-16 items-center gap-2 border-b border-slate-200 px-5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-sky-600 text-white font-bold">
-          N
-        </div>
-        <div>
-          <div className="text-sm font-semibold leading-tight">
-            Nexus
-          </div>
-          <div className="text-[11px] text-slate-500 leading-tight">
-            Subscription &amp; Activation Manager
-          </div>
-        </div>
+      <div className="flex h-20 items-center border-b border-slate-200 px-5">
+        <Image
+          src="/nexus-logo-full.png"
+          alt="Nexus logo"
+          width={2172}
+          height={724}
+          priority
+          className="h-12 w-auto object-contain"
+        />
       </div>
       <nav className="space-y-1 px-3 py-4">
         {visibleItems.map((item) => {

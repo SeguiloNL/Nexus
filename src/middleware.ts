@@ -16,9 +16,9 @@ export const config = {
      * - api (API routes, inclusief /api/auth/*)
      * - _next/static (Next.js static bestanden)
      * - _next/image (image optimization files)
-     * - favicon.ico
+     * - favicon.ico + logo afbeeldingen in public/
      * - login pagina (publiek)
      */
-    "/((?!api|_next/static|_next/image|favicon.ico|login).*)",
+    "/((?!api|_next/static|_next/image|favicon.ico|favicon-32.png|nexus-logo-full.png|nexus-logo-64.png|nexus-logo-128.png|login).*)",
   ],
 };

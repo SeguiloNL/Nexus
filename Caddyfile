@@ -1,20 +1,23 @@
 # ==============================================================
-# Nexus – Caddyfile
-# (Wordt gebruikt in combinatie met docker-compose.yml caddy-service)
+# STM – Caddyfile (voorheen Nexus; compatibel met beide namen)
+# Wordt gebruikt voor HTTPS (Let's Encrypt) + reverse proxy naar Next.js.
 # ==============================================================
 # Configuratie gebeurt via ENVIRONMENT VARIABLES (geen hard-coded domein):
-#   NEXUS_DOMAIN  = Je publieke domein (bijv. nexus.jouwdomein.nl)
+#   STM_DOMAIN    = Je publieke domein (bijv. stm.jouwdomein.nl)
+#   NEXUS_DOMAIN  = (Compat) zelfde als STM_DOMAIN — voor oude omgevingen.
 #                   Laat leeg of "localhost" voor lokale test zonder TLS.
-#   NEXUS_APP_URL = De interne hostname + port van de Next.js app
-#                   (default: nexus-app:3000  — binnen het docker netwerk)
+#   STM_APP_URL   = Interne host:port van de Next.js app.
+#                     · docker-compose.prod.yml :  stm-app:3000
+#                     · Caddy direct op HOST    :  127.0.0.1:3000
+#   NEXUS_APP_URL = (Compat) zelfde als STM_APP_URL.
 #
-# Wordt door Caddy in de compose container automatisch geladen van:
-#   ./Caddyfile  ->  /etc/caddy/Caddyfile (read-only)
+# Caddy laadt dit bestand:
+#   · Container: ./Caddyfile  ->  /etc/caddy/Caddyfile (read-only)
+#   · Host (dpkg): /etc/caddy/Caddyfile
 #
 # HTTPS (Let's Encrypt / ZeroSSL):
-#   - Zodra NEXUS_DOMAIN een ECHT domein is (A/AAAA-record naar VPS IP),
-#     vraagt Caddy AUTOMATISCH een TLS-certificaat aan en verlengt deze.
-#   - Voor localhost/IP: self-signed / plain HTTP (geen fouten).
+#   · STM_DOMAIN = ECHT domein + A/AAAA-record naar VPS → automatisch TLS.
+#   · STM_DOMAIN = localhost / IP → plain HTTP (geen fouten).
 # ==============================================================
 
 (common_headers) {
@@ -36,10 +39,10 @@
 }
 
 # -------------------- PROD / LOKAAL DOMEIN --------------------
-{$NEXUS_DOMAIN:localhost} {
+{$STM_DOMAIN:{$NEXUS_DOMAIN:localhost}} {
 	import common_headers
 
-	reverse_proxy {$NEXUS_APP_URL:nexus-app:3000} {
+	reverse_proxy {$STM_APP_URL:{$NEXUS_APP_URL:stm-app:3000}} {
 		# X-Forwarded-* headers — AUTH_TRUST_HOST=true in Next.js
 		header_up X-Forwarded-For    {remote_host}
 		header_up X-Forwarded-Proto  {scheme}
