@@ -75,4 +75,41 @@ test.describe("G.2.4 — Instellingen (Settings) smoke", () => {
       await expect(page.getByText(/^versie$/i).first()).toBeVisible();
     });
   });
+
+  test.describe("EMPLOYEE (readOnly modus) — FUP: employee view:setting vanaf vandaag", () => {
+    test.beforeEach(async ({ page }) => {
+      await loginAs(page, "employee");
+    });
+
+    test("EMPLOYEE → /settings: 3× readOnly-melding + 0× Opslaan + 3× Verbinding-testen", async ({
+      page,
+    }) => {
+      await page.goto("/settings", { waitUntil: "domcontentloaded" });
+
+      // Employee heeft view:setting (vanaf FUP2) maar GEEN edit:setting → readOnly mode.
+      const readOnlyMeldingen = page
+        .getByText(/alleen .*beheerders.* kunnen .* api-instellingen wijzigen/i);
+      await expect(readOnlyMeldingen).toHaveCount(3, { timeout: 12_000 });
+
+      // Geen "Opslaan" knoppen
+      const saveButtons = page.getByRole("button", { name: /^opslaan$/i });
+      await expect(saveButtons).toHaveCount(0);
+
+      // Wel "Verbinding testen" knoppen (view:setting is voldoende)
+      const testButtons = page.getByRole("button", { name: /verbinding testen/i });
+      await expect(testButtons).toHaveCount(3);
+
+      // Info-cards + API-card titels moeten ook zichtbaar zijn.
+      await expect(page.getByText(/^systeeminformatie$/i).first()).toBeVisible();
+      for (const title of [
+        "Inserve API-koppeling",
+        "Simhuis API-koppeling",
+        "Navixy API-koppeling",
+      ]) {
+        await expect(
+          page.getByText(new RegExp(`^${title}$`, "i")).first()
+        ).toBeVisible();
+      }
+    });
+  });
 });

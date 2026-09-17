@@ -48,7 +48,7 @@ describe("RBAC can() — 3-rollen matrix ADMIN / EMPLOYEE / VIEWER", () => {
   // -----------------------------------------------------------------
   // 2. EMPLOYEE: MAG create/edit, MAAR NIET delete / NIET user / NIET setting / NIET override_price
   // -----------------------------------------------------------------
-  it("2. EMPLOYEE: mag create+edit (incl activation_order), GEEN delete, GEEN users/settings/override_price", () => {
+  it("2. EMPLOYEE: mag create+edit (incl activation_order), GEEN delete/users/setting-edit/override_price, WEL view:setting (FUP §7)", () => {
     allow(E, "create", "customer");
     allow(E, "create", "tracker");
     allow(E, "create", "sim");
@@ -58,14 +58,17 @@ describe("RBAC can() — 3-rollen matrix ADMIN / EMPLOYEE / VIEWER", () => {
     allow(E, "edit", "customer");
     allow(E, "edit", "subscription");
 
+    // View: setting WEL toegestaan (FUP §7: Medewerkers mogen Instellingen bekijken readOnly)
+    allow(E, "view", "setting");
+
     // GEEN delete
     deny(E, "delete", "customer");
     deny(E, "delete", "subscription");
     deny(E, "delete", "tracker");
 
-    // GEEN user/setting resource bekijken of aanmaken
+    // GEEN user resource bekijken of aanmaken; GEEN setting EDIT (alleen ADMIN)
     deny(E, "view", "user");
-    deny(E, "view", "setting");
+    deny(E, "edit", "setting");
     deny(E, "create", "user");
 
     // GEEN override_price

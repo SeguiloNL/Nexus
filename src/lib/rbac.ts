@@ -70,6 +70,7 @@ const RBAC_MATRIX: PermissionMatrix = {
       "activation_order",
       "invoice",
       "audit_log",
+      "setting",
       "dashboard",
     ],
     create: [

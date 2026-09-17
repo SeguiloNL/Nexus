@@ -569,7 +569,65 @@ STAP-BY-STAP — GUI TOEGANG TOT POSTGRES (VANAF JE EIGEN MACHTIGE, NIET VANAF V
 EOF
 
 # ------------------------------------------------------------------------------
-# STAP 10 — Samenvatting + handige opdrachten
+# STAP 10 — Postgres Backup: script + systemd timer installeren (P2.1)
+# ------------------------------------------------------------------------------
+title "Backup: Postgres automatisch (systemd timer)"
+
+if [[ "$SKIP_BACKUP_INSTALL" -eq 1 ]]; then
+  info "--skip-backup-install: backup script/timer installatie overgeslagen."
+else
+  # Zijn de source files aanwezig?
+  BACKUP_SCRIPT_SRC="${ROOT_DIR}/scripts/backup-stm-db.sh"
+  BACKUP_SERVICE_SRC="${ROOT_DIR}/deploy/stm-db-backup.service"
+  BACKUP_TIMER_SRC="${ROOT_DIR}/deploy/stm-db-backup.timer"
+
+  BACKUP_SCRIPT_DEST="/opt/stm/scripts/backup-stm-db.sh"
+  BACKUP_SERVICE_DEST="/etc/systemd/system/stm-db-backup.service"
+  BACKUP_TIMER_DEST="/etc/systemd/system/stm-db-backup.timer"
+
+  MISSING_FILES=()
+  for f in "$BACKUP_SCRIPT_SRC" "$BACKUP_SERVICE_SRC" "$BACKUP_TIMER_SRC"; do
+    [[ -f "$f" ]] || MISSING_FILES+=("$f")
+  done
+  if (( ${#MISSING_FILES[@]} > 0 )); then
+    warn "Backup bestanden ontbreken: ${MISSING_FILES[*]}. Stap 10 wordt overgeslagen."
+  else
+    if [[ "${NON_INTERACTIVE}" -eq 0 ]] && ! confirm "Systemd backup-timer installeren en inschakelen (03:00 NL, rotatie 7d/4w/3m + rsync optie)?"; then
+      info "Backup installatie overgeslagen (J/N = n). Je kunt hem later alsnog installeren:"
+      info "  sudo cp ${BACKUP_SERVICE_SRC} ${BACKUP_SERVICE_DEST}"
+      info "  sudo cp ${BACKUP_TIMER_SRC}   ${BACKUP_TIMER_DEST}"
+      info "  sudo mkdir -p /opt/stm/scripts && sudo cp ${BACKUP_SCRIPT_SRC} ${BACKUP_SCRIPT_DEST} && sudo chmod 750 ${BACKUP_SCRIPT_DEST}"
+      info "  sudo systemctl daemon-reload && sudo systemctl enable --now stm-db-backup.timer"
+    else
+      step "Kopiëren backup-script + systemd unit/timer..."
+
+      sudo mkdir -p /opt/stm/scripts
+      sudo install -o root -g root -m 0750 "$BACKUP_SCRIPT_SRC" "$BACKUP_SCRIPT_DEST"
+      sudo install -o root -g root -m 0644 "$BACKUP_SERVICE_SRC" "$BACKUP_SERVICE_DEST"
+      sudo install -o root -g root -m 0644 "$BACKUP_TIMER_SRC" "$BACKUP_TIMER_DEST"
+
+      step "systemctl daemon-reload + enable --now timer..."
+      sudo systemctl daemon-reload
+      sudo systemctl enable --now stm-db-backup.timer
+
+      sleep 1
+      TIMER_ACTIVE="$(sudo systemctl is-active stm-db-backup.timer 2>/dev/null || echo unknown)"
+      TIMER_NEXT="$(sudo systemctl list-timers stm-db-backup.timer --no-pager 2>/dev/null | tail -1 | awk '{print $1, $2, $3}' || echo '?')"
+      if [[ "${TIMER_ACTIVE}" == "active" ]]; then
+        ok "Backup timer actief. Volgende geplande run: ${TIMER_NEXT}"
+        info "Backups worden bewaard in: ${BACKUP_DIR:-/opt/stm/backups} (zie env STM_BACKUP_DIR in script)"
+        info "Voor offsite sync: export STM_BACKUP_RSYNC_TARGET='user@backupserver:/path/to/offsite/' in /opt/stm/.env"
+      else
+        warn "Backup timer NIET actief (status=${TIMER_ACTIVE}). Check handmatig:"
+        warn "  sudo systemctl list-timers stm-db-backup.timer"
+        warn "  sudo systemctl status stm-db-backup.service"
+      fi
+    fi
+  fi
+fi
+
+# ------------------------------------------------------------------------------
+# STAP 11 — Samenvatting + handige opdrachten
 # ------------------------------------------------------------------------------
 title "Deploy afgerond — Samenvatting"
 hr
@@ -587,6 +645,12 @@ cat <<EOF | tee -a "$LOG_FILE"
   ${CYN}Opstarten           :${RST}  docker compose -f ${COMPOSE_FILE} up -d
   ${CYN}Update (git pull)   :${RST}  bash scripts/deploy-stm.sh --skip-docker
                                      (--force-rebuild indien build-cache moet leeg)
+
+  ${CYN}Backup (Postgres)   :${RST}  sudo systemctl list-timers stm-db-backup.timer
+  ${CYN}Backup nu draaien   :${RST}  sudo /opt/stm/scripts/backup-stm-db.sh
+  ${CYN}Restore backup      :${RST}  pg_restore --format=custom --clean --if-exists \
+                                       -d postgresql://stm:<pw>@localhost:5432/stm \
+                                       /opt/stm/backups/daily/stm-db-YYYYMMDD-HHMM.dump
 
   ${DIM}Defaults seed admin (indien je PRISMA SEED gedraaid hebt):
     admin@nexus.local  /  Test1234!${RST}

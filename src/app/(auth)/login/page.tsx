@@ -78,12 +78,15 @@ export default function LoginPage() {
         <div className="mb-8 flex flex-col items-center">
           <Image
             src="/nexus-logo-full.png"
-            alt="Nexus logo"
+            alt="STM logo"
             width={2172}
             height={724}
             priority
             className="h-20 w-auto object-contain"
           />
+          <h1 className="mt-4 text-2xl font-bold tracking-tight text-gray-900">
+            STM
+          </h1>
         </div>
 
         <div className="rounded-xl bg-white px-6 py-8 shadow-sm ring-1 ring-gray-200">
