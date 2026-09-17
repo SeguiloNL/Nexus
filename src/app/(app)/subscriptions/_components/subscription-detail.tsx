@@ -20,6 +20,7 @@ import {
   Clock,
   XCircle,
   Send,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -148,6 +149,7 @@ interface Props {
   replaceSimAction: (sid: string, prev: any, form: FormData) => any;
   markInvoicePaidAction: (prev: any, form: FormData) => any;
   deleteInvoiceAction: (prev: any, form: FormData) => any;
+  hardDeleteInvoiceAction: (prev: any, form: FormData) => any;
   sendInvoiceAction: (prev: any, form: FormData) => any;
   updateInvoiceStatusAction: (invoiceId: string, prev: any, form: FormData) => any;
   subscriptionId: string;
@@ -173,6 +175,7 @@ export function SubscriptionDetail({
   replaceSimAction,
   markInvoicePaidAction,
   deleteInvoiceAction,
+  hardDeleteInvoiceAction,
   sendInvoiceAction,
   updateInvoiceStatusAction,
   subscriptionId,
@@ -182,6 +185,7 @@ export function SubscriptionDetail({
   const canViewInvoices = canUserRole(role, "view", "invoice");
   const canEditInvoices = canUserRole(role, "edit", "invoice");
   const canDeleteInvoices = canUserRole(role, "delete", "invoice");
+  const isAdmin = role === "ADMIN";
 
   const [, deleteFormAction] = useFormState(
     async () => deleteAction(subscriptionId),
@@ -195,6 +199,7 @@ export function SubscriptionDetail({
   const [, paidFormAction] = useFormState(markInvoicePaidAction, undefined);
   const [, sendFormAction] = useFormState(sendInvoiceAction, undefined);
   const [, cancelInvFormAction] = useFormState(deleteInvoiceAction, undefined);
+  const [, hardDeleteInvFormAction] = useFormState(hardDeleteInvoiceAction, undefined);
 
   const activeTracker = subscription.trackerAssignments.find(
     (a) => a.endAt === null
@@ -642,6 +647,22 @@ export function SubscriptionDetail({
                                       <input type="hidden" name="id" value={inv.id} required />
                                       <Button size="sm" variant="outline" className="text-red-600" type="submit">
                                         <Ban className="h-3.5 w-3.5" /> Annuleren
+                                      </Button>
+                                    </form>
+                                  ) : null}
+                                  {canDeleteInvoices && isAdmin ? (
+                                    <form
+                                      action={hardDeleteInvFormAction}
+                                      onSubmit={(e) => {
+                                        const ok = window.confirm(
+                                          "Weet je zeker dat je deze factuur PERMANENT wilt verwijderen? Dit kan NIET ongedaan gemaakt worden!"
+                                        );
+                                        if (!ok) e.preventDefault();
+                                      }}
+                                    >
+                                      <input type="hidden" name="id" value={inv.id} required />
+                                      <Button size="sm" variant="destructive" type="submit">
+                                        <Trash2 className="h-3.5 w-3.5" /> Definitief verwijderen
                                       </Button>
                                     </form>
                                   ) : null}

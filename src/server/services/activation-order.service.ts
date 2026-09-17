@@ -6,6 +6,7 @@ import {
   assignSim,
   assignTracker,
 } from "./assignments.service";
+import { enqueueInserveSubscriptionSync } from "./subscription.service";
 import type {
   CreateActivationOrderInput,
   UpdateActivationOrderInput,
@@ -341,7 +342,7 @@ async function markFailed(
  * Isolation level Serializable om races (AC-5) af te vangen.
  */
 export async function completeActivation(id: string, ctx: Ctx) {
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const order: any = await tx.activationOrder.findUnique({
       where: { id },
       include: {
@@ -492,4 +493,8 @@ export async function completeActivation(id: string, ctx: Ctx) {
       throw err;
     }
   }, { isolationLevel: "Serializable" });
+
+  enqueueInserveSubscriptionSync(result.subscription.id, ctx);
+
+  return result;
 }

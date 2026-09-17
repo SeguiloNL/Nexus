@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import type { ColumnDef } from "@tanstack/react-table";
-import { MoreHorizontal, Plus, Trash2, Edit, Upload, Download } from "lucide-react";
+import type { ColumnDef, Row } from "@tanstack/react-table";
+import { MoreHorizontal, Plus, Trash2, Edit, Upload, Download, X } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
+import { BulkActionForm } from "@/components/data-table/bulk-action-form";
 import { Button } from "@/components/ui/button";
 import { TrackerStatusBadge } from "@/components/ui/status-badges";
 import {
@@ -16,7 +17,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { Tracker, TrackerStatus } from "@prisma/client";
 import { formatImei } from "@/lib/formatters";
-import { exportTrackersCsvAction } from "../actions";
+import {
+  exportTrackersCsvAction,
+  bulkSoftDeleteTrackersAction,
+  type BulkActionState,
+} from "../actions";
 
 type ListTracker = Tracker;
 
@@ -181,6 +186,34 @@ export function TrackerList({
         data={trackers}
         searchColumnAccessor="serialNumber"
         searchPlaceholder="Zoek tracker (serienr, IMEI, merk, model…)"
+        enableRowSelection={canDelete}
+        getRowId={(row) => (row as any).id}
+        bulkActions={
+          canDelete
+            ? ({ selectedRows, clearSelection }) => {
+                const ids = selectedRows.map((r: Row<ListTracker>) => r.original.id);
+                return (
+                  <BulkActionForm
+                    action={
+                      bulkSoftDeleteTrackersAction as (
+                        prev: BulkActionState,
+                        form: FormData
+                      ) => Promise<BulkActionState>
+                    }
+                    ids={ids}
+                    clearSelection={clearSelection}
+                    confirmTitle={`${ids.length} tracker(s) verwijderen?`}
+                    confirmDescription="Deze actie archiveert de geselecteerde trackers (soft-delete). Dit is ongedaan te maken via de database."
+                    confirmConfirmLabel="Verwijderen bevestigen"
+                  >
+                    <Button variant="destructive" size="sm" type="button">
+                      <Trash2 className="mr-2 h-4 w-4" /> Verwijderen
+                    </Button>
+                  </BulkActionForm>
+                );
+              }
+            : undefined
+        }
       />
     </div>
   );

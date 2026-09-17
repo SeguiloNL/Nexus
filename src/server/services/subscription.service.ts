@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
 import { generateSubscriptionNumber } from "@/lib/identifiers";
+import { requirePermission } from "@/lib/rbac";
 import type {
   PaginatedResult,
   CreateSubscriptionInput,
@@ -249,10 +250,14 @@ export async function terminateSubscription(id: string, ctx: Ctx, reason?: strin
   return updated;
 }
 
-function queueSync(subscriptionId: string, ctx: Ctx): void {
+export function enqueueInserveSubscriptionSync(subscriptionId: string, ctx: Ctx): void {
   Promise.resolve()
     .then(() => syncSubscriptionToInserve(subscriptionId, ctx))
     .catch((e) => console.error("[Inserve-queueSync] onverwachte fout:", e));
+}
+
+function queueSync(subscriptionId: string, ctx: Ctx): void {
+  enqueueInserveSubscriptionSync(subscriptionId, ctx);
 }
 
 export async function updateSubscriptionStatus(
@@ -316,5 +321,76 @@ export async function softDeleteSubscription(id: string, ctx: Ctx) {
       oldValues: existing as unknown as Record<string, unknown>,
     });
     return updated;
+  });
+}
+
+export async function bulkSoftDeleteSubscriptions(
+  ids: string[],
+  ctx: Ctx
+): Promise<{ count: number; ids: string[] }> {
+  requirePermission(ctx.userRole, "delete", "subscription");
+  if (!ids.length) return { count: 0, ids: [] };
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.subscription.findMany({
+      where: { id: { in: ids }, deletedAt: null },
+    });
+    if (!rows.length) return { count: 0, ids: [] };
+    const targets = rows.map((r) => r.id);
+    const deletedAt = new Date();
+    const audits = rows.map((r) =>
+      logAudit(tx, {
+        entityType: "subscription",
+        entityId: r.id,
+        action: "DELETE",
+        userId: ctx.userId,
+        oldValues: r as unknown as Record<string, unknown>,
+      })
+    );
+    await Promise.all([
+      tx.subscription.updateMany({
+        where: { id: { in: targets } },
+        data: { deletedAt },
+      }),
+      ...audits,
+    ]);
+    return { count: targets.length, ids: targets };
+  });
+}
+
+export async function bulkCancelSubscriptions(
+  ids: string[],
+  ctx: Ctx
+): Promise<{ count: number; ids: string[] }> {
+  requirePermission(ctx.userRole, "delete", "subscription");
+  if (!ids.length) return { count: 0, ids: [] };
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.subscription.findMany({
+      where: {
+        id: { in: ids },
+        deletedAt: null,
+        status: { notIn: ["CANCELLED", "TERMINATED"] as any },
+      },
+      select: { id: true, status: true },
+    });
+    if (!rows.length) return { count: 0, ids: [] };
+    const targets = rows.map((r) => r.id);
+    const updates = targets.map((id) =>
+      tx.subscription.update({
+        where: { id },
+        data: { status: "CANCELLED" as any },
+      })
+    );
+    const audits = rows.map((r) =>
+      logAudit(tx, {
+        entityType: "subscription",
+        entityId: r.id,
+        action: "CANCEL",
+        userId: ctx.userId,
+        oldValues: r as unknown as Record<string, unknown>,
+        newValues: { status: "CANCELLED" } as unknown as Record<string, unknown>,
+      })
+    );
+    await Promise.all([...updates, ...audits]);
+    return { count: targets.length, ids: targets };
   });
 }

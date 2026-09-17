@@ -18,6 +18,8 @@ import {
   resumeSubscription,
   cancelSubscription,
   terminateSubscription,
+  bulkSoftDeleteSubscriptions,
+  bulkCancelSubscriptions,
 } from "@/server/services/subscription.service";
 import {
   generateMonthly,
@@ -25,6 +27,11 @@ import {
   markInvoiceSent,
   updateInvoiceStatus,
   softDeleteInvoice,
+  hardDeleteInvoice,
+  bulkCancelInvoices,
+  bulkHardDeleteInvoices,
+  bulkMarkInvoicesSent,
+  bulkMarkInvoicesPaid,
 } from "@/server/services/invoice.service";
 import type { InvoiceStatus, SubscriptionStatus } from "@/types/enums";
 import { replaceSim, replaceTracker, unassignSim, unassignTracker } from "@/server/services/assignments.service";
@@ -258,6 +265,46 @@ export async function syncSubscriptionToInserveAction(
   };
 }
 
+export async function syncSubscriptionFromListAction(
+  _prev: InserveSyncState,
+  formData: FormData
+): Promise<InserveSyncState> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "edit", "subscription");
+  const id = String(formData.get("id") || "");
+  if (!id) return { ok: false, error: "Ontbrekend abonnement-id" };
+
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await syncSubscriptionToInserve(id, ctx);
+    revalidatePath(`/subscriptions/${id}`);
+    revalidatePath("/subscriptions");
+
+    if (result.status === "SYNCED") {
+      return {
+        ok: true,
+        status: "SYNCED",
+        message: result.details ?? "Abonnement succesvol gesynchroniseerd met Inserve.",
+      };
+    }
+    if (result.status === "SKIPPED") {
+      return {
+        ok: true,
+        status: "SKIPPED",
+        message: result.details ?? "Sync overgeslagen (geen actie nodig).",
+      };
+    }
+    return {
+      ok: false,
+      status: "FAILED",
+      error: result.error ?? "Onbekende fout bij synchronisatie met Inserve.",
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, status: "FAILED", error: msg };
+  }
+}
+
 export type GenerateInvoicesState = {
   ok?: boolean;
   message?: string | null;
@@ -414,5 +461,176 @@ export async function sendInvoiceToInserveAction(_prev: InserveSyncState, formDa
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return { ok: false, status: "FAILED", error: msg };
+  }
+}
+
+export type BulkActionState = {
+  ok: boolean;
+  message?: string | null;
+  error?: string | null;
+  count?: number;
+};
+
+function parseIdsFormData(formData: FormData): string[] {
+  const raw = formData.get("ids");
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(String(raw));
+    if (Array.isArray(parsed)) return parsed.filter((v) => typeof v === "string");
+  } catch {
+    return String(raw)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+export async function hardDeleteInvoiceAction(_prev: any, formData: FormData) {
+  const user = await getCurrentUser();
+  const id = String(formData.get("id") || "");
+  if (!id) return { error: "Ontbrekend id" };
+  const ctx = { userId: user.id, userRole: user.role };
+  const inv = await hardDeleteInvoice(id, ctx);
+  revalidatePath(`/subscriptions/${inv.subscriptionId}`);
+  revalidatePath("/subscriptions");
+  revalidatePath("/invoices");
+  return { ok: true, id: inv.id };
+}
+
+export async function bulkSoftDeleteSubscriptionsAction(
+  _prev: BulkActionState,
+  formData: FormData
+): Promise<BulkActionState> {
+  const user = await getCurrentUser();
+  const ids = parseIdsFormData(formData);
+  if (!ids.length) return { ok: false, error: "Geen abonnementen geselecteerd." };
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await bulkSoftDeleteSubscriptions(ids, ctx);
+    revalidatePath("/subscriptions");
+    return {
+      ok: true,
+      count: result.count,
+      message: `${result.count} abonnement(en) gearchiveerd.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
+}
+
+export async function bulkCancelSubscriptionsAction(
+  _prev: BulkActionState,
+  formData: FormData
+): Promise<BulkActionState> {
+  const user = await getCurrentUser();
+  const ids = parseIdsFormData(formData);
+  if (!ids.length) return { ok: false, error: "Geen abonnementen geselecteerd." };
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await bulkCancelSubscriptions(ids, ctx);
+    revalidatePath("/subscriptions");
+    result.ids.forEach((sid) => revalidatePath(`/subscriptions/${sid}`));
+    return {
+      ok: true,
+      count: result.count,
+      message: `${result.count} abonnement(en) geannuleerd.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
+}
+
+export async function bulkMarkInvoicesSentAction(
+  _prev: BulkActionState,
+  formData: FormData
+): Promise<BulkActionState> {
+  const user = await getCurrentUser();
+  const ids = parseIdsFormData(formData);
+  if (!ids.length) return { ok: false, error: "Geen facturen geselecteerd." };
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await bulkMarkInvoicesSent(ids, ctx);
+    revalidatePath("/invoices");
+    revalidatePath("/subscriptions");
+    return {
+      ok: true,
+      count: result.count,
+      message: `${result.count} concept-factuur(en) gemarkeerd als verzonden.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
+}
+
+export async function bulkMarkInvoicesPaidAction(
+  _prev: BulkActionState,
+  formData: FormData
+): Promise<BulkActionState> {
+  const user = await getCurrentUser();
+  const ids = parseIdsFormData(formData);
+  if (!ids.length) return { ok: false, error: "Geen facturen geselecteerd." };
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await bulkMarkInvoicesPaid(ids, ctx);
+    revalidatePath("/invoices");
+    revalidatePath("/subscriptions");
+    return {
+      ok: true,
+      count: result.count,
+      message: `${result.count} factuur(en) gemarkeerd als betaald.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
+}
+
+export async function bulkCancelInvoicesAction(
+  _prev: BulkActionState,
+  formData: FormData
+): Promise<BulkActionState> {
+  const user = await getCurrentUser();
+  const ids = parseIdsFormData(formData);
+  if (!ids.length) return { ok: false, error: "Geen facturen geselecteerd." };
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await bulkCancelInvoices(ids, ctx);
+    revalidatePath("/invoices");
+    revalidatePath("/subscriptions");
+    return {
+      ok: true,
+      count: result.count,
+      message: `${result.count} factuur(en) geannuleerd.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
+}
+
+export async function bulkHardDeleteInvoicesAction(
+  _prev: BulkActionState,
+  formData: FormData
+): Promise<BulkActionState> {
+  const user = await getCurrentUser();
+  const ids = parseIdsFormData(formData);
+  if (!ids.length) return { ok: false, error: "Geen facturen geselecteerd." };
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await bulkHardDeleteInvoices(ids, ctx);
+    revalidatePath("/invoices");
+    revalidatePath("/subscriptions");
+    return {
+      ok: true,
+      count: result.count,
+      message: `${result.count} factuur(en) definitief verwijderd uit het systeem.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
   }
 }

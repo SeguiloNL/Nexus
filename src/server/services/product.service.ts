@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
+import { requirePermission } from "@/lib/rbac";
 import type {
   CreateProductInput,
   PaginatedResult,
@@ -183,4 +184,36 @@ export async function listProductOptions() {
         label: `${r.name} (${r.productCode}) · € ${Number(r.monthlyPrice).toFixed(2)}/mnd`,
       }))
     );
+}
+
+export async function bulkSetActiveProducts(
+  ids: string[],
+  isActive: boolean,
+  ctx: Ctx
+): Promise<{ count: number; ids: string[] }> {
+  requirePermission(ctx.userRole, "edit", "product");
+  if (!ids.length) return { count: 0, ids: [] };
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.product.findMany({
+      where: { id: { in: ids }, isActive: { not: isActive } },
+      select: { id: true, isActive: true, name: true },
+    });
+    if (!rows.length) return { count: 0, ids: [] };
+    const targets = rows.map((r) => r.id);
+    const updates = targets.map((id) =>
+      tx.product.update({ where: { id }, data: { isActive } })
+    );
+    const audits = rows.map((r) =>
+      logAudit(tx, {
+        entityType: "product",
+        entityId: r.id,
+        action: "UPDATE",
+        userId: ctx.userId,
+        oldValues: { isActive: r.isActive } as unknown as Record<string, unknown>,
+        newValues: { isActive } as unknown as Record<string, unknown>,
+      })
+    );
+    await Promise.all([...updates, ...audits]);
+    return { count: targets.length, ids: targets };
+  });
 }

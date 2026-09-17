@@ -4,9 +4,10 @@ import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { useEffect, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { ColumnDef } from "@tanstack/react-table";
-import { FileText, MoreHorizontal, CheckCircle, Ban, Send, X, Calendar, Filter, UploadCloud, ExternalLink } from "lucide-react";
+import type { ColumnDef, Row } from "@tanstack/react-table";
+import { FileText, MoreHorizontal, CheckCircle, Ban, Send, X, Calendar, Filter, UploadCloud, ExternalLink, Trash2, Mail, Check } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
+import { BulkActionForm } from "@/components/data-table/bulk-action-form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -31,7 +32,17 @@ import { formatCurrency, formatDate } from "@/lib/formatters";
 import type { PaginatedResult } from "@/types/domain";
 import type { UserRole, InvoiceStatus as InvoiceStatusEnum } from "@/types/enums";
 import { canUserRole } from "@/lib/auth/session";
-import { markInvoicePaidAction, deleteInvoiceAction, sendInvoiceAction, sendInvoiceToInserveAction } from "../../subscriptions/actions";
+import {
+  markInvoicePaidAction,
+  deleteInvoiceAction,
+  sendInvoiceAction,
+  sendInvoiceToInserveAction,
+  bulkMarkInvoicesSentAction,
+  bulkMarkInvoicesPaidAction,
+  bulkCancelInvoicesAction,
+  bulkHardDeleteInvoicesAction,
+  type BulkActionState,
+} from "../../subscriptions/actions";
 
 type ListInvoice = any;
 
@@ -52,6 +63,7 @@ export function InvoiceList({ result }: Props) {
   const role = session?.user?.role;
   const canEdit = canUserRole(role as UserRole, "edit", "invoice");
   const canDelete = canUserRole(role as UserRole, "delete", "invoice");
+  const isAdmin = role === "ADMIN";
 
   const router = useRouter();
   const sp = useSearchParams();
@@ -472,6 +484,89 @@ export function InvoiceList({ result }: Props) {
         totalCount={result.total}
         searchColumnAccessor="invoiceNumber"
         searchPlaceholder="Zoek factuur (nr, klant, notitie…)"
+        enableRowSelection={canEdit || (canDelete && isAdmin)}
+        getRowId={(row) => (row as any).id}
+        bulkActions={
+          canEdit || (canDelete && isAdmin)
+            ? ({ selectedRows, clearSelection }) => {
+                const ids = selectedRows.map((r: Row<ListInvoice>) => (r.original as any).id);
+                return (
+                  <>
+                    {canEdit ? (
+                      <BulkActionForm
+                        action={
+                          bulkMarkInvoicesSentAction as (
+                            prev: BulkActionState,
+                            form: FormData
+                          ) => Promise<BulkActionState>
+                        }
+                        ids={ids}
+                        clearSelection={clearSelection}
+                      >
+                        <Button variant="outline" size="sm" type="button">
+                          <Send className="mr-2 h-4 w-4" /> Markeer verzonden
+                        </Button>
+                      </BulkActionForm>
+                    ) : null}
+                    {canEdit ? (
+                      <BulkActionForm
+                        action={
+                          bulkMarkInvoicesPaidAction as (
+                            prev: BulkActionState,
+                            form: FormData
+                          ) => Promise<BulkActionState>
+                        }
+                        ids={ids}
+                        clearSelection={clearSelection}
+                      >
+                        <Button variant="outline" size="sm" type="button">
+                          <Check className="mr-2 h-4 w-4" /> Markeer betaald
+                        </Button>
+                      </BulkActionForm>
+                    ) : null}
+                    {canEdit ? (
+                      <BulkActionForm
+                        action={
+                          bulkCancelInvoicesAction as (
+                            prev: BulkActionState,
+                            form: FormData
+                          ) => Promise<BulkActionState>
+                        }
+                        ids={ids}
+                        clearSelection={clearSelection}
+                        confirmTitle={`${ids.length} factuur(en) annuleren?`}
+                        confirmDescription="De geselecteerde facturen worden op status CANCELLED gezet. Dit is geen harde verwijdering."
+                        confirmConfirmLabel="Annuleren bevestigen"
+                      >
+                        <Button variant="destructive" size="sm" type="button">
+                          <Ban className="mr-2 h-4 w-4" /> Annuleren
+                        </Button>
+                      </BulkActionForm>
+                    ) : null}
+                    {canDelete && isAdmin ? (
+                      <BulkActionForm
+                        action={
+                          bulkHardDeleteInvoicesAction as (
+                            prev: BulkActionState,
+                            form: FormData
+                          ) => Promise<BulkActionState>
+                        }
+                        ids={ids}
+                        clearSelection={clearSelection}
+                        confirmTitle={`${ids.length} factuur(en) DEFINITIEF verwijderen?`}
+                        confirmDescription="Dit verwijdert de facturen permanent uit de database (hard delete). Deze actie kan NIET ongedaan gemaakt worden!"
+                        confirmConfirmLabel="Definitief verwijderen"
+                      >
+                        <Button variant="destructive" size="sm" type="button">
+                          <Trash2 className="mr-2 h-4 w-4" /> Definitief verwijderen
+                        </Button>
+                      </BulkActionForm>
+                    ) : null}
+                  </>
+                );
+              }
+            : undefined
+        }
       />
     </div>
   );

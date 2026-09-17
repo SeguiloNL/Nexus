@@ -1,9 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
 import { generateInvoiceNumber } from "@/lib/identifiers";
-import { requirePermission, PermissionError } from "@/lib/rbac";
+import { requirePermission, PermissionError, hasMinRole } from "@/lib/rbac";
 import type { PaginatedResult } from "@/types/domain";
-import type { InvoiceStatus, UserRole } from "@/types/enums";
+import type { InvoiceStatus } from "@/types/enums";
+import { UserRole } from "@/types/enums";
 import type {
   Prisma,
   Invoice as PrismaInvoice,
@@ -418,6 +419,173 @@ export async function softDeleteInvoice(id: string, ctx: Ctx): Promise<PrismaInv
       newValues: { status: updated.status } as unknown as Record<string, unknown>,
     });
     return updated as PrismaInvoice;
+  });
+}
+
+export async function hardDeleteInvoice(id: string, ctx: Ctx): Promise<PrismaInvoice> {
+  requirePermission(ctx.userRole, "delete", "invoice");
+  if (!hasMinRole(ctx.userRole, UserRole.ADMIN)) {
+    throw new PermissionError(
+      "Onvoldoende rechten: alleen ADMIN mag facturen definitief verwijderen uit het systeem."
+    );
+  }
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.invoice.findUniqueOrThrow({ where: { id } });
+    await logAudit(tx, {
+      entityType: "invoice",
+      entityId: existing.id,
+      action: "HARD_DELETE",
+      userId: ctx.userId,
+      oldValues: existing as unknown as Record<string, unknown>,
+    });
+    await tx.invoice.delete({ where: { id } });
+    return existing as PrismaInvoice;
+  });
+}
+
+export async function bulkCancelInvoices(
+  ids: string[],
+  ctx: Ctx
+): Promise<{ count: number; ids: string[] }> {
+  requirePermission(ctx.userRole, "delete", "invoice");
+  if (!ids.length) return { count: 0, ids: [] };
+  return prisma.$transaction(async (tx) => {
+    const now = new Date();
+    const rows = await tx.invoice.findMany({
+      where: { id: { in: ids }, status: { notIn: ["PAID", "CANCELLED"] as any } },
+      select: { id: true, note: true, status: true },
+    });
+    if (!rows.length) return { count: 0, ids: [] };
+    const targets = rows.map((r) => r.id);
+    const updates = rows.map((r) =>
+      tx.invoice.update({
+        where: { id: r.id },
+        data: {
+          status: "CANCELLED" as any,
+          note: r.note ? `${r.note}\n\n[BULK GEANNULEERD]` : "[BULK GEANNULEERD]",
+        },
+      })
+    );
+    const audits = rows.map((r) =>
+      logAudit(tx, {
+        entityType: "invoice",
+        entityId: r.id,
+        action: "DELETE",
+        userId: ctx.userId,
+        oldValues: r as unknown as Record<string, unknown>,
+        newValues: { status: "CANCELLED" } as unknown as Record<string, unknown>,
+      })
+    );
+    await Promise.all([...updates, ...audits]);
+    void now;
+    return { count: targets.length, ids: targets };
+  });
+}
+
+export async function bulkMarkInvoicesSent(
+  ids: string[],
+  ctx: Ctx
+): Promise<{ count: number; ids: string[] }> {
+  requirePermission(ctx.userRole, "edit", "invoice");
+  if (!ids.length) return { count: 0, ids: [] };
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.invoice.findMany({
+      where: { id: { in: ids }, status: "DRAFT" as any },
+      select: { id: true, status: true, sentAt: true },
+    });
+    if (!rows.length) return { count: 0, ids: [] };
+    const sentAt = new Date();
+    const targets = rows.map((r) => r.id);
+    const updates = targets.map((id) =>
+      tx.invoice.update({
+        where: { id },
+        data: { status: "SENT" as any, sentAt },
+      })
+    );
+    const audits = rows.map((r) =>
+      logAudit(tx, {
+        entityType: "invoice",
+        entityId: r.id,
+        action: "UPDATE",
+        userId: ctx.userId,
+        oldValues: r as unknown as Record<string, unknown>,
+        newValues: { status: "SENT", sentAt: sentAt.toISOString() } as unknown as Record<
+          string,
+          unknown
+        >,
+      })
+    );
+    await Promise.all([...updates, ...audits]);
+    return { count: targets.length, ids: targets };
+  });
+}
+
+export async function bulkMarkInvoicesPaid(
+  ids: string[],
+  ctx: Ctx
+): Promise<{ count: number; ids: string[] }> {
+  requirePermission(ctx.userRole, "edit", "invoice");
+  if (!ids.length) return { count: 0, ids: [] };
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.invoice.findMany({
+      where: { id: { in: ids }, status: { notIn: ["PAID", "CANCELLED"] as any } },
+      select: { id: true, status: true, paidAt: true },
+    });
+    if (!rows.length) return { count: 0, ids: [] };
+    const paidAt = new Date();
+    const targets = rows.map((r) => r.id);
+    const updates = targets.map((id) =>
+      tx.invoice.update({
+        where: { id },
+        data: { status: "PAID" as any, paidAt },
+      })
+    );
+    const audits = rows.map((r) =>
+      logAudit(tx, {
+        entityType: "invoice",
+        entityId: r.id,
+        action: "UPDATE",
+        userId: ctx.userId,
+        oldValues: r as unknown as Record<string, unknown>,
+        newValues: { status: "PAID", paidAt: paidAt.toISOString() } as unknown as Record<
+          string,
+          unknown
+        >,
+      })
+    );
+    await Promise.all([...updates, ...audits]);
+    return { count: targets.length, ids: targets };
+  });
+}
+
+export async function bulkHardDeleteInvoices(
+  ids: string[],
+  ctx: Ctx
+): Promise<{ count: number; ids: string[] }> {
+  requirePermission(ctx.userRole, "delete", "invoice");
+  if (!hasMinRole(ctx.userRole, UserRole.ADMIN)) {
+    throw new PermissionError(
+      "Onvoldoende rechten: alleen ADMIN mag facturen definitief verwijderen uit het systeem."
+    );
+  }
+  if (!ids.length) return { count: 0, ids: [] };
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.invoice.findMany({ where: { id: { in: ids } } });
+    if (!rows.length) return { count: 0, ids: [] };
+    const audits = rows.map((r) =>
+      logAudit(tx, {
+        entityType: "invoice",
+        entityId: r.id,
+        action: "HARD_DELETE",
+        userId: ctx.userId,
+        oldValues: r as unknown as Record<string, unknown>,
+      })
+    );
+    await Promise.all([
+      tx.invoice.deleteMany({ where: { id: { in: ids } } }),
+      ...audits,
+    ]);
+    return { count: rows.length, ids: rows.map((r) => r.id) };
   });
 }
 

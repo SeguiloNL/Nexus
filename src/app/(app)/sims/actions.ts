@@ -17,6 +17,7 @@ import {
   updateSim,
   previewSimCsvImport,
   bulkImportSims,
+  bulkSoftDeleteSims,
   type SimCsvImportRow,
 } from "@/server/services/sim.service";
 
@@ -275,4 +276,49 @@ function splitCsvLine(line: string): string[] {
   }
   out.push(cur);
   return out;
+}
+
+export type BulkActionState = {
+  ok: boolean;
+  message?: string | null;
+  error?: string | null;
+  count?: number;
+};
+
+function parseIdsFormData(formData: FormData): string[] {
+  const raw = formData.get("ids");
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(String(raw));
+    if (Array.isArray(parsed)) return parsed.filter((v) => typeof v === "string");
+  } catch {
+    return String(raw)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+export async function bulkSoftDeleteSimsAction(
+  _prev: BulkActionState,
+  formData: FormData
+): Promise<BulkActionState> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "delete", "sim");
+  const ids = parseIdsFormData(formData);
+  if (!ids.length) return { ok: false, error: "Geen SIM-kaarten geselecteerd." };
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await bulkSoftDeleteSims(ids, ctx);
+    revalidatePath("/sims");
+    return {
+      ok: true,
+      count: result.count,
+      message: `${result.count} SIM-kaart(en) gearchiveerd.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
 }

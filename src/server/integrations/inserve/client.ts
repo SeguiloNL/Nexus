@@ -22,9 +22,49 @@ export class InserveApiError extends Error {
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_RETRY_WAIT_MS = 1000;
+const CLIENT_CACHE_TTL_MS = 60_000;
+
+interface ResolvedCredentials {
+  subdomain: string;
+  apiKey: string;
+  source: "db" | "env";
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function resolveInserveCredentials(): Promise<ResolvedCredentials | null> {
+  try {
+    const { prisma } = await import("@/lib/prisma");
+    const SUBDOMAIN_KEY = "inserve.subdomain";
+    const API_KEY_KEY = "inserve.apiKey";
+
+    const [subdomainRow, apiKeyRow] = await Promise.all([
+      prisma.appSetting.findUnique({ where: { key: SUBDOMAIN_KEY } }).catch(() => null),
+      prisma.appSetting.findUnique({ where: { key: API_KEY_KEY } }).catch(() => null),
+    ]);
+
+    const dbSubdomain = subdomainRow?.value?.trim();
+    const dbApiKey = apiKeyRow?.value?.trim();
+
+    if (dbSubdomain && dbApiKey) {
+      return { subdomain: dbSubdomain, apiKey: dbApiKey, source: "db" };
+    }
+  } catch {
+    // fall through to env
+  }
+
+  const envSubdomain =
+    typeof process !== "undefined" ? process.env.INSERVE_SUBDOMAIN?.trim() : undefined;
+  const envApiKey =
+    typeof process !== "undefined" ? process.env.INSERVE_API_KEY?.trim() : undefined;
+
+  if (envSubdomain && envApiKey) {
+    return { subdomain: envSubdomain, apiKey: envApiKey, source: "env" };
+  }
+
+  return null;
 }
 
 function buildUrl(
@@ -191,45 +231,57 @@ export class InserveClient {
 
 class InserveClientSingleton {
   private instance: InserveClient | undefined;
-  private initialized = false;
+  private cacheLoadedAt: number = 0;
+  private initPromise: Promise<InserveClient | undefined> | undefined;
 
-  private init(): InserveClient | undefined {
-    if (this.initialized) {
+  private async init(): Promise<InserveClient | undefined> {
+    const now = Date.now();
+    if (this.instance && now - this.cacheLoadedAt < CLIENT_CACHE_TTL_MS) {
       return this.instance;
     }
-    this.initialized = true;
 
-    try {
-      const subdomain = typeof process !== 'undefined' ? process.env.INSERVE_SUBDOMAIN : undefined;
-      const apiKey = typeof process !== 'undefined' ? process.env.INSERVE_API_KEY : undefined;
-
-      if (subdomain && apiKey) {
-        this.instance = new InserveClient(subdomain, apiKey);
-      } else {
-        this.instance = undefined;
-      }
-    } catch {
-      this.instance = undefined;
+    if (this.initPromise) {
+      return this.initPromise;
     }
-    return this.instance;
+
+    this.initPromise = (async () => {
+      try {
+        const creds = await resolveInserveCredentials();
+        if (creds) {
+          this.instance = new InserveClient(creds.subdomain, creds.apiKey);
+        } else {
+          this.instance = undefined;
+        }
+      } catch {
+        this.instance = undefined;
+      } finally {
+        this.cacheLoadedAt = Date.now();
+        this.initPromise = undefined;
+      }
+      return this.instance;
+    })();
+
+    return this.initPromise;
   }
 
-  getClient(): InserveClient | undefined {
+  async getClient(): Promise<InserveClient | undefined> {
     return this.init();
   }
 
-  isConfigured(): boolean {
-    return this.init() !== undefined;
+  async isConfigured(): Promise<boolean> {
+    return (await this.init()) !== undefined;
   }
 
   setClient(client: InserveClient | undefined): void {
-    this.initialized = true;
     this.instance = client;
+    this.cacheLoadedAt = Date.now();
+    this.initPromise = undefined;
   }
 
   reset(): void {
-    this.initialized = false;
     this.instance = undefined;
+    this.cacheLoadedAt = 0;
+    this.initPromise = undefined;
   }
 }
 

@@ -17,6 +17,7 @@ import {
   updateTracker,
   previewTrackerCsvImport,
   bulkImportTrackers,
+  bulkSoftDeleteTrackers,
   type CsvImportRow,
 } from "@/server/services/tracker.service";
 
@@ -268,4 +269,49 @@ function splitCsvLine(line: string): string[] {
   }
   out.push(cur);
   return out;
+}
+
+export type BulkActionState = {
+  ok: boolean;
+  message?: string | null;
+  error?: string | null;
+  count?: number;
+};
+
+function parseIdsFormData(formData: FormData): string[] {
+  const raw = formData.get("ids");
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(String(raw));
+    if (Array.isArray(parsed)) return parsed.filter((v) => typeof v === "string");
+  } catch {
+    return String(raw)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+export async function bulkSoftDeleteTrackersAction(
+  _prev: BulkActionState,
+  formData: FormData
+): Promise<BulkActionState> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "delete", "tracker");
+  const ids = parseIdsFormData(formData);
+  if (!ids.length) return { ok: false, error: "Geen trackers geselecteerd." };
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await bulkSoftDeleteTrackers(ids, ctx);
+    revalidatePath("/trackers");
+    return {
+      ok: true,
+      count: result.count,
+      message: `${result.count} tracker(s) gearchiveerd.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
 }

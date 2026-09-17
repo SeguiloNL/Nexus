@@ -6,6 +6,7 @@ import {
   type ColumnFiltersState,
   type SortingState,
   type VisibilityState,
+  type Row,
   flexRender,
   getCoreRowModel,
   getFilteredRowModel,
@@ -42,6 +43,13 @@ export interface DataTableProps<TData, TValue> {
   pageSizeOptions?: number[];
   totalCount?: number;
   className?: string;
+  enableRowSelection?: boolean;
+  getRowId?: (row: TData, index: number, parent?: Row<TData>) => string;
+  bulkActions?: (params: {
+    selectedRows: Row<TData>[];
+    selectedCount: number;
+    clearSelection: () => void;
+  }) => React.ReactNode;
 }
 
 /**
@@ -57,11 +65,14 @@ export function DataTable<TData, TValue>({
   pageSizeOptions = [10, 20, 50],
   totalCount,
   className,
+  enableRowSelection = false,
+  getRowId,
+  bulkActions,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = React.useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([]);
   const [columnVisibility, setColumnVisibility] = React.useState<VisibilityState>({});
-  const [rowSelection, setRowSelection] = React.useState({});
+  const [rowSelection, setRowSelection] = React.useState<Record<string, boolean>>({});
   const [{ pageIndex, pageSize }, setPagination] = React.useState({
     pageIndex: 0,
     pageSize: pageSizeOptions[0] ?? 10,
@@ -73,13 +84,66 @@ export function DataTable<TData, TValue>({
     [pageIndex, pageSize]
   );
 
+  const selectCol: ColumnDef<TData, TValue> = React.useMemo(
+    () => ({
+      id: "__select__",
+      header: ({ table }) => {
+        if (!enableRowSelection) return null;
+        const checked = table.getIsAllPageRowsSelected();
+        const some = table.getIsSomePageRowsSelected();
+        return (
+          <div className="flex items-center justify-center">
+            <input
+              type="checkbox"
+              className="h-4 w-4 cursor-pointer rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              aria-label="Selecteer alle rijen op deze pagina"
+              checked={checked}
+              ref={(el) => {
+                if (el) el.indeterminate = !checked && some;
+              }}
+              onChange={(e) =>
+                table.toggleAllPageRowsSelected(!!e.target.checked)
+              }
+            />
+          </div>
+        );
+      },
+      cell: ({ row }) => {
+        if (!enableRowSelection) return null;
+        return (
+          <div className="flex items-center justify-center">
+            <input
+              type="checkbox"
+              className="h-4 w-4 cursor-pointer rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              aria-label="Selecteer rij"
+              checked={row.getIsSelected()}
+              disabled={!row.getCanSelect()}
+              onChange={(e) => row.toggleSelected(!!e.target.checked)}
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        );
+      },
+      enableSorting: false,
+      enableHiding: false,
+      size: 40,
+    }),
+    [enableRowSelection]
+  );
+
+  const finalColumns = React.useMemo(
+    () => (enableRowSelection ? [selectCol, ...columns] : columns),
+    [enableRowSelection, selectCol, columns]
+  );
+
   const table = useReactTable({
     data,
-    columns,
+    columns: finalColumns,
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
+    ...(enableRowSelection ? { enableRowSelection: true as const, getRowId } : {}),
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     onColumnVisibilityChange: setColumnVisibility,
@@ -106,6 +170,14 @@ export function DataTable<TData, TValue>({
 
   const pageCount = table.getPageCount();
   const displayedTotal = totalCount ?? table.getFilteredRowModel().rows.length;
+  const selectedRows = table.getSelectedRowModel().rows;
+  const selectedCount = selectedRows.length;
+
+  const clearSelection = React.useCallback(() => {
+    setRowSelection({});
+  }, []);
+
+  const showBulk = enableRowSelection && selectedCount > 0 && bulkActions;
 
   return (
     <div className={cn("space-y-4", className)}>
@@ -145,6 +217,17 @@ export function DataTable<TData, TValue>({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      {showBulk ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-blue-200 bg-blue-50/60 px-3 py-2">
+          <div className="text-sm font-medium text-blue-800">
+            {selectedCount} rij{selectedCount === 1 ? "" : "en"} geselecteerd
+          </div>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {bulkActions({ selectedRows, selectedCount, clearSelection })}
+          </div>
+        </div>
+      ) : null}
 
       <div className="rounded-md border">
         <Table>
@@ -186,7 +269,7 @@ export function DataTable<TData, TValue>({
             ) : (
               <TableRow>
                 <TableCell
-                  colSpan={columns.length}
+                  colSpan={finalColumns.length}
                   className="h-24 text-center text-slate-500"
                 >
                   Geen resultaten.

@@ -90,10 +90,10 @@ export async function syncSubscriptionToInserve(
   subscriptionId: string,
   ctx: Ctx
 ): Promise<{ status: "SYNCED" | "SKIPPED" | "FAILED"; error?: string; details?: string }> {
-  if (!inserveClient.isConfigured()) {
+  if (!(await inserveClient.isConfigured())) {
     return {
       status: "SKIPPED",
-      details: "Inserve is niet geconfigureerd (set INSERVE_SUBDOMAIN + INSERVE_API_KEY).",
+      details: "Inserve is niet geconfigureerd (stel in via Instellingen of INSERVE_SUBDOMAIN + INSERVE_API_KEY).",
     };
   }
 

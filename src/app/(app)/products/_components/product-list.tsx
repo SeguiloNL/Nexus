@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import type { ColumnDef } from "@tanstack/react-table";
-import { MoreHorizontal, Plus, Edit } from "lucide-react";
+import type { ColumnDef, Row } from "@tanstack/react-table";
+import { MoreHorizontal, Plus, Edit, Power, PowerOff } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
+import { BulkActionForm } from "@/components/data-table/bulk-action-form";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -15,6 +16,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { Product } from "@prisma/client";
 import { formatCurrency } from "@/lib/formatters";
+import {
+  bulkActivateProductsAction,
+  bulkDeactivateProductsAction,
+  type BulkActionState,
+} from "../actions";
 
 type ListProduct = Product;
 
@@ -133,6 +139,47 @@ export function ProductList({ products, canCreate, canEdit }: ProductListProps) 
         data={products}
         searchColumnAccessor="name"
         searchPlaceholder="Zoek product (naam, code, omschrijving…)"
+        enableRowSelection={canEdit}
+        getRowId={(row) => (row as any).id}
+        bulkActions={
+          canEdit
+            ? ({ selectedRows, clearSelection }) => {
+                const ids = selectedRows.map((r: Row<ListProduct>) => r.original.id);
+                return (
+                  <>
+                    <BulkActionForm
+                      action={
+                        bulkActivateProductsAction as (
+                          prev: BulkActionState,
+                          form: FormData
+                        ) => Promise<BulkActionState>
+                      }
+                      ids={ids}
+                      clearSelection={clearSelection}
+                    >
+                      <Button variant="outline" size="sm" type="button">
+                        <Power className="mr-2 h-4 w-4" /> Activeren
+                      </Button>
+                    </BulkActionForm>
+                    <BulkActionForm
+                      action={
+                        bulkDeactivateProductsAction as (
+                          prev: BulkActionState,
+                          form: FormData
+                        ) => Promise<BulkActionState>
+                      }
+                      ids={ids}
+                      clearSelection={clearSelection}
+                    >
+                      <Button variant="outline" size="sm" type="button">
+                        <PowerOff className="mr-2 h-4 w-4" /> Deactiveren
+                      </Button>
+                    </BulkActionForm>
+                  </>
+                );
+              }
+            : undefined
+        }
       />
     </div>
   );

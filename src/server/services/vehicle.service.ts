@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
+import { requirePermission } from "@/lib/rbac";
 import type {
   CreateVehicleInput,
   PaginatedResult,
@@ -187,5 +188,38 @@ export async function softDeleteVehicle(
       oldValues: existing as unknown as Record<string, unknown>,
     });
     return updated;
+  });
+}
+
+export async function bulkSoftDeleteVehicles(
+  ids: string[],
+  ctx: Ctx
+): Promise<{ count: number; ids: string[] }> {
+  requirePermission(ctx.userRole, "delete", "vehicle");
+  if (!ids.length) return { count: 0, ids: [] };
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.vehicle.findMany({
+      where: { id: { in: ids }, deletedAt: null },
+    });
+    if (!rows.length) return { count: 0, ids: [] };
+    const targets = rows.map((r) => r.id);
+    const deletedAt = new Date();
+    const audits = rows.map((r) =>
+      logAudit(tx, {
+        entityType: "vehicle",
+        entityId: r.id,
+        action: "DELETE",
+        userId: ctx.userId,
+        oldValues: r as unknown as Record<string, unknown>,
+      })
+    );
+    await Promise.all([
+      tx.vehicle.updateMany({
+        where: { id: { in: targets } },
+        data: { deletedAt },
+      }),
+      ...audits,
+    ]);
+    return { count: targets.length, ids: targets };
   });
 }

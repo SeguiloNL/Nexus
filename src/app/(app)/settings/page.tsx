@@ -5,6 +5,8 @@ import { PermissionError } from "@/lib/rbac";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Settings as SettingsIcon, Info, Database, Shield, Globe } from "lucide-react";
+import { InserveSettingsForm } from "./_components/inserve-settings-client";
+import { getInserveSettingsMasked } from "@/server/services/app-setting.service";
 
 export default async function SettingsPage() {
   const session = await auth();
@@ -16,15 +18,18 @@ export default async function SettingsPage() {
   }
 
   const canEdit = canUserRole(session.user.role, "edit", "setting");
+  const inserveSettings = await getInserveSettingsMasked();
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Instellingen</h1>
         <p className="text-sm text-slate-500">
-          Applicatie-instellingen, SSO, e-mail en database-configuratie.
+          Applicatie-instellingen, API-koppelingen, SSO, e-mail en database-configuratie.
         </p>
       </div>
+
+      <InserveSettingsForm initial={inserveSettings} readOnly={!canEdit} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card>

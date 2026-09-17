@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
+import { requirePermission } from "@/lib/rbac";
 import type {
   CreateSimInput,
   PaginatedResult,
@@ -198,6 +199,39 @@ export async function softDeleteSim(
     });
 
     return updated;
+  });
+}
+
+export async function bulkSoftDeleteSims(
+  ids: string[],
+  ctx: Ctx
+): Promise<{ count: number; ids: string[] }> {
+  requirePermission(ctx.userRole, "delete", "sim");
+  if (!ids.length) return { count: 0, ids: [] };
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.sIM.findMany({
+      where: { id: { in: ids }, deletedAt: null },
+    });
+    if (!rows.length) return { count: 0, ids: [] };
+    const targets = rows.map((r) => r.id);
+    const deletedAt = new Date();
+    const audits = rows.map((r) =>
+      logAudit(tx, {
+        entityType: "sim",
+        entityId: r.id,
+        action: "DELETE",
+        userId: ctx.userId,
+        oldValues: r as unknown as Record<string, unknown>,
+      })
+    );
+    await Promise.all([
+      tx.sIM.updateMany({
+        where: { id: { in: targets } },
+        data: { deletedAt },
+      }),
+      ...audits,
+    ]);
+    return { count: targets.length, ids: targets };
   });
 }
 

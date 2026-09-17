@@ -84,6 +84,7 @@ enum AuditAction {
   CREATE
   UPDATE
   DELETE
+  HARD_DELETE
   ACTIVATE
   SUSPEND
   RESUME
@@ -102,6 +103,7 @@ enum AuditAction {
   GENERATE_INVOICES
   MARK_INVOICE_PAID
   SEND_INVOICE
+  UPDATE_SETTINGS
 }
 
 enum InserveSyncStatus {
@@ -411,6 +413,17 @@ model ActivationOrder {
   @@index([trackerId])
   @@index([simId])
   @@map("activation_orders")
+}
+
+model AppSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String?  @db.Text
+  isSecret  Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@map("app_settings")
 }
 
 model AuditLog {

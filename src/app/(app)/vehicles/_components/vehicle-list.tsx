@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import type { ColumnDef } from "@tanstack/react-table";
+import type { ColumnDef, Row } from "@tanstack/react-table";
 import { MoreHorizontal, Plus, Edit, Trash2 } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
+import { BulkActionForm } from "@/components/data-table/bulk-action-form";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -15,6 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { Vehicle } from "@prisma/client";
 import { formatLicensePlate, formatVin } from "@/lib/formatters";
+import { bulkSoftDeleteVehiclesAction, type BulkActionState } from "../actions";
 
 type ListVehicle = Vehicle & {
   customer: { id: string; companyName: string } | null;
@@ -158,6 +160,34 @@ export function VehicleList({
         data={vehicles}
         searchColumnAccessor="licensePlate"
         searchPlaceholder="Zoek voertuig (kenteken, VIN, merk…"
+        enableRowSelection={canDelete}
+        getRowId={(row) => (row as any).id}
+        bulkActions={
+          canDelete
+            ? ({ selectedRows, clearSelection }) => {
+                const ids = selectedRows.map((r: Row<ListVehicle>) => r.original.id);
+                return (
+                  <BulkActionForm
+                    action={
+                      bulkSoftDeleteVehiclesAction as (
+                        prev: BulkActionState,
+                        form: FormData
+                      ) => Promise<BulkActionState>
+                    }
+                    ids={ids}
+                    clearSelection={clearSelection}
+                    confirmTitle={`${ids.length} voertuig(en) verwijderen?`}
+                    confirmDescription="Deze actie archiveert de geselecteerde voertuigen (soft-delete). Dit is ongedaan te maken via de database."
+                    confirmConfirmLabel="Verwijderen bevestigen"
+                  >
+                    <Button variant="destructive" size="sm" type="button">
+                      <Trash2 className="mr-2 h-4 w-4" /> Verwijderen
+                    </Button>
+                  </BulkActionForm>
+                );
+              }
+            : undefined
+        }
       />
     </div>
   );

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
+import { requirePermission } from "@/lib/rbac";
 import type {
   CreateTrackerInput,
   PaginatedResult,
@@ -215,6 +216,39 @@ export async function softDeleteTracker(
     });
 
     return updated;
+  });
+}
+
+export async function bulkSoftDeleteTrackers(
+  ids: string[],
+  ctx: Ctx
+): Promise<{ count: number; ids: string[] }> {
+  requirePermission(ctx.userRole, "delete", "tracker");
+  if (!ids.length) return { count: 0, ids: [] };
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.tracker.findMany({
+      where: { id: { in: ids }, deletedAt: null },
+    });
+    if (!rows.length) return { count: 0, ids: [] };
+    const targets = rows.map((r) => r.id);
+    const deletedAt = new Date();
+    const audits = rows.map((r) =>
+      logAudit(tx, {
+        entityType: "tracker",
+        entityId: r.id,
+        action: "DELETE",
+        userId: ctx.userId,
+        oldValues: r as unknown as Record<string, unknown>,
+      })
+    );
+    await Promise.all([
+      tx.tracker.updateMany({
+        where: { id: { in: targets } },
+        data: { deletedAt },
+      }),
+      ...audits,
+    ]);
+    return { count: targets.length, ids: targets };
   });
 }
 

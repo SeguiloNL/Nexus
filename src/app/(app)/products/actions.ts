@@ -12,6 +12,7 @@ import {
 import {
   createProduct,
   updateProduct,
+  bulkSetActiveProducts,
 } from "@/server/services/product.service";
 
 export type ProductActionState = {
@@ -98,4 +99,72 @@ export async function updateProductAction(
   revalidatePath("/products");
   revalidatePath(`/products/${productId}`);
   redirect(`/products/${productId}`);
+}
+
+export type BulkActionState = {
+  ok: boolean;
+  message?: string | null;
+  error?: string | null;
+  count?: number;
+};
+
+function parseIdsFormData(formData: FormData): string[] {
+  const raw = formData.get("ids");
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(String(raw));
+    if (Array.isArray(parsed)) return parsed.filter((v) => typeof v === "string");
+  } catch {
+    return String(raw)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+export async function bulkActivateProductsAction(
+  _prev: BulkActionState,
+  formData: FormData
+): Promise<BulkActionState> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "edit", "product");
+  const ids = parseIdsFormData(formData);
+  if (!ids.length) return { ok: false, error: "Geen producten geselecteerd." };
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await bulkSetActiveProducts(ids, true, ctx);
+    revalidatePath("/products");
+    return {
+      ok: true,
+      count: result.count,
+      message: `${result.count} product(en) geactiveerd.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
+}
+
+export async function bulkDeactivateProductsAction(
+  _prev: BulkActionState,
+  formData: FormData
+): Promise<BulkActionState> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "edit", "product");
+  const ids = parseIdsFormData(formData);
+  if (!ids.length) return { ok: false, error: "Geen producten geselecteerd." };
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await bulkSetActiveProducts(ids, false, ctx);
+    revalidatePath("/products");
+    return {
+      ok: true,
+      count: result.count,
+      message: `${result.count} product(en) gedeactiveerd.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
 }

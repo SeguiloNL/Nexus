@@ -113,10 +113,10 @@ export async function syncInvoiceToInserve(
   invoiceId: string,
   ctx: Ctx
 ): Promise<{ status: "SYNCED" | "SKIPPED" | "FAILED"; error?: string; details?: string; inserveInvoiceId?: number; invoice?: Awaited<ReturnType<typeof findFullInvoice>> }> {
-  if (!inserveClient.isConfigured()) {
+  if (!(await inserveClient.isConfigured())) {
     return {
       status: "SKIPPED",
-      details: "Inserve is niet geconfigureerd (set INSERVE_SUBDOMAIN + INSERVE_API_KEY).",
+      details: "Inserve is niet geconfigureerd (stel in via Instellingen of INSERVE_SUBDOMAIN + INSERVE_API_KEY).",
     };
   }
 

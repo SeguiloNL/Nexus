@@ -1,4 +1,4 @@
-import { inserveClient, InserveApiError } from './client';
+import { inserveClient, InserveClient, InserveApiError } from './client';
 import type {
   InserveCompany,
   InserveArticle,
@@ -54,9 +54,9 @@ export interface UpsertCompanyResult {
 }
 
 export async function upsertCompany(customer: UpsertCompanyCustomerInput): Promise<UpsertCompanyResult> {
-  const client = inserveClient.getClient();
+  const client = await inserveClient.getClient();
   if (!client) {
-    throw new Error('[Inserve] Inserve client is not configured. Set INSERVE_SUBDOMAIN and INSERVE_API_KEY.');
+    throw new Error('[Inserve] Inserve client is not configured. Set INSERVE_SUBDOMAIN and INSERVE_API_KEY or configure via Instellingen.');
   }
 
   const updatePayload: UpdateCompanyRequest = {
@@ -182,9 +182,9 @@ export interface EnsureArticleProductInput {
 }
 
 export async function ensureArticle(product: EnsureArticleProductInput): Promise<number> {
-  const client = inserveClient.getClient();
+  const client = await inserveClient.getClient();
   if (!client) {
-    throw new Error('[Inserve] Inserve client is not configured. Set INSERVE_SUBDOMAIN and INSERVE_API_KEY.');
+    throw new Error('[Inserve] Inserve client is not configured. Set INSERVE_SUBDOMAIN and INSERVE_API_KEY or configure via Instellingen.');
   }
 
   if (product.inserveArticleId) {
@@ -247,7 +247,7 @@ function toNumberPrice(price: any): number {
 }
 
 async function postContract(
-  client: ReturnType<typeof inserveClient.getClient>,
+  client: InserveClient | undefined,
   payload: CreateContractRequest,
   endpoint: 'contracts' | 'subscriptions'
 ): Promise<InserveContract> {
@@ -259,9 +259,9 @@ async function postContract(
 }
 
 export async function createSubscriptionContract(params: CreateSubscriptionContractParams): Promise<number> {
-  const client = inserveClient.getClient();
+  const client = await inserveClient.getClient();
   if (!client) {
-    throw new Error('[Inserve] Inserve client is not configured. Set INSERVE_SUBDOMAIN and INSERVE_API_KEY.');
+    throw new Error('[Inserve] Inserve client is not configured. Set INSERVE_SUBDOMAIN and INSERVE_API_KEY or configure via Instellingen.');
   }
 
   const payload: CreateContractRequest = {
@@ -294,7 +294,7 @@ export interface CancelOrTerminateContractOpts {
 }
 
 async function putContractCancel(
-  client: ReturnType<typeof inserveClient.getClient>,
+  client: InserveClient | undefined,
   contractId: number,
   payload: CancelContractRequest,
   endpoint: 'contracts' | 'subscriptions'
@@ -310,9 +310,9 @@ export async function cancelOrTerminateContract(
   contractId: number,
   opts: CancelOrTerminateContractOpts = {}
 ): Promise<void> {
-  const client = inserveClient.getClient();
+  const client = await inserveClient.getClient();
   if (!client) {
-    throw new Error('[Inserve] Inserve client is not configured. Set INSERVE_SUBDOMAIN and INSERVE_API_KEY.');
+    throw new Error('[Inserve] Inserve client is not configured. Set INSERVE_SUBDOMAIN and INSERVE_API_KEY or configure via Instellingen.');
   }
 
   const payload: CancelContractRequest = {};
@@ -361,9 +361,9 @@ export const INSERVE_INVOICE_ENDPOINT = 'invoices';
 export async function createInvoiceDraftInInserve(
   payload: CreateInvoiceRequest
 ): Promise<InserveInvoice> {
-  const client = inserveClient.getClient();
+  const client = await inserveClient.getClient();
   if (!client) {
-    throw new Error('[Inserve] Client not configured (INSERVE_SUBDOMAIN / INSERVE_API_KEY missing).');
+    throw new Error('[Inserve] Client not configured (INSERVE_SUBDOMAIN / INSERVE_API_KEY missing or configure via Instellingen).');
   }
 
   return (await client.request(INSERVE_INVOICE_ENDPOINT, {
@@ -376,9 +376,9 @@ export async function updateInvoiceInInserve(
   invoiceId: number,
   payload: Partial<CreateInvoiceRequest>
 ): Promise<InserveInvoice> {
-  const client = inserveClient.getClient();
+  const client = await inserveClient.getClient();
   if (!client) {
-    throw new Error('[Inserve] Client not configured (INSERVE_SUBDOMAIN / INSERVE_API_KEY missing).');
+    throw new Error('[Inserve] Client not configured (INSERVE_SUBDOMAIN / INSERVE_API_KEY missing or configure via Instellingen).');
   }
   return (await client.request(`${INSERVE_INVOICE_ENDPOINT}/${invoiceId}`, {
     method: 'PUT',
@@ -389,9 +389,9 @@ export async function updateInvoiceInInserve(
 export async function getInvoiceInInserve(
   invoiceId: number
 ): Promise<InserveInvoice> {
-  const client = inserveClient.getClient();
+  const client = await inserveClient.getClient();
   if (!client) {
-    throw new Error('[Inserve] Client not configured.');
+    throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
   }
   return (await client.request(`${INSERVE_INVOICE_ENDPOINT}/${invoiceId}`, {
     method: 'GET',
@@ -401,9 +401,9 @@ export async function getInvoiceInInserve(
 export async function listInvoicesInInserve(
   query?: { company_id?: number; reference?: string; status?: string; page?: number; per_page?: number }
 ): Promise<InserveListResponse<InserveInvoice>> {
-  const client = inserveClient.getClient();
+  const client = await inserveClient.getClient();
   if (!client) {
-    throw new Error('[Inserve] Client not configured.');
+    throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
   }
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(query ?? {})) {

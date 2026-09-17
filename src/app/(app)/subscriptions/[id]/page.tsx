@@ -19,6 +19,7 @@ import {
   replaceSimAction,
   markInvoicePaidAction,
   deleteInvoiceAction,
+  hardDeleteInvoiceAction,
   updateInvoiceStatusAction,
   sendInvoiceAction,
 } from "../actions";
@@ -106,6 +107,7 @@ export default async function SubscriptionDetailPage({
       replaceSimAction={replaceSimAction as any}
       markInvoicePaidAction={markInvoicePaidAction as any}
       deleteInvoiceAction={deleteInvoiceAction as any}
+      hardDeleteInvoiceAction={hardDeleteInvoiceAction as any}
       updateInvoiceStatusAction={updateInvoiceStatusAction as any}
       sendInvoiceAction={sendInvoiceAction as any}
       subscriptionId={params.id}
