@@ -348,21 +348,15 @@ export async function cancelOrTerminateContract(
 }
 
 // ============================================================================
-// INVOICES — P L A C E H O L D E R S
-// (Wachten op bevestiging EXACT endpoint path + velden vanuit Inserve API docs)
+// INVOICES
+// Endpoint bevestigd via Postman docs (Laravel Resource CRUD patroon):
+//   POST  /api/invoices       (store)   — draft factuur aanmaken
+//   GET   /api/invoices       (index)   — overzicht opvragen
+//   GET   /api/invoices/{id}  (show)    — enkele factuur
+//   PUT   /api/invoices/{id}  (update)  — bijwerken
 // ============================================================================
 
-/**
- * TODO: endpoint path + createPayload keys bevestigen!
- * Veelgebruikte opties in Inserve:
- *   - POST /api/invoices
- *   - POST /api/documents
- *   - POST /api/sales_invoices
- *   - POST /api/orders  (met order_lines / invoice_lines)
- * De onderstaande functie gooit nu expliciet een error totdat we het exacte
- * endpoint weten. Na bevestiging wordt deze aangepast.
- */
-export const INSERVE_INVOICE_ENDPOINT = '<TODO: bevestig endpoint, bijv. "invoices" | "documents" | "sales_invoices">';
+export const INSERVE_INVOICE_ENDPOINT = 'invoices';
 
 export async function createInvoiceDraftInInserve(
   payload: CreateInvoiceRequest
@@ -372,33 +366,44 @@ export async function createInvoiceDraftInInserve(
     throw new Error('[Inserve] Client not configured (INSERVE_SUBDOMAIN / INSERVE_API_KEY missing).');
   }
 
-  if (INSERVE_INVOICE_ENDPOINT.startsWith('<TODO')) {
-    throw new Error(
-      '[Inserve] Invoice endpoint is NOT YET CONFIGURED. ' +
-        'Geef het exacte API path door (bijv. "invoices", "documents", "sales_invoices") ' +
-        'plus de vereiste request/response velden. Zie INSERVE_INVOICE_ENDPOINT in service.ts.'
-    );
-  }
-
   return (await client.request(INSERVE_INVOICE_ENDPOINT, {
     method: 'POST',
     body: payload,
   })) as InserveInvoice;
 }
 
-/**
- * Lijst met facturen opvragen (handig voor debug).
- * TODO: dezelfde endpoint opmerking als hierboven.
- */
+export async function updateInvoiceInInserve(
+  invoiceId: number,
+  payload: Partial<CreateInvoiceRequest>
+): Promise<InserveInvoice> {
+  const client = inserveClient.getClient();
+  if (!client) {
+    throw new Error('[Inserve] Client not configured (INSERVE_SUBDOMAIN / INSERVE_API_KEY missing).');
+  }
+  return (await client.request(`${INSERVE_INVOICE_ENDPOINT}/${invoiceId}`, {
+    method: 'PUT',
+    body: payload,
+  })) as InserveInvoice;
+}
+
+export async function getInvoiceInInserve(
+  invoiceId: number
+): Promise<InserveInvoice> {
+  const client = inserveClient.getClient();
+  if (!client) {
+    throw new Error('[Inserve] Client not configured.');
+  }
+  return (await client.request(`${INSERVE_INVOICE_ENDPOINT}/${invoiceId}`, {
+    method: 'GET',
+  })) as InserveInvoice;
+}
+
 export async function listInvoicesInInserve(
   query?: { company_id?: number; reference?: string; status?: string; page?: number; per_page?: number }
 ): Promise<InserveListResponse<InserveInvoice>> {
   const client = inserveClient.getClient();
   if (!client) {
     throw new Error('[Inserve] Client not configured.');
-  }
-  if (INSERVE_INVOICE_ENDPOINT.startsWith('<TODO')) {
-    throw new Error('[Inserve] Invoice endpoint not configured.');
   }
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(query ?? {})) {

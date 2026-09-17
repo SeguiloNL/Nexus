@@ -46,12 +46,6 @@ export interface InserveContract {
   updated_at?: string | null;
 }
 
-// ============================================================================
-// Invoices (Plaatsaanwijzers — WACHTEN OP EXACTE API ENDPOINT + VELDEN)
-// TODO: te bevestigen vanuit Inserve API docs (varieert per versie):
-//   - POST /api/invoices? /api/documents? /api/sales_invoices?
-//   - Velden: company_id / debtor_code / date / due_date / reference / lines[]
-// ============================================================================
 export interface InserveInvoiceLine {
   id?: number;
   article_id?: number | null;

@@ -5,10 +5,11 @@ import { useSession } from "next-auth/react";
 import { useEffect, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
-import { FileText, MoreHorizontal, CheckCircle, Ban, Send, X, Calendar, Filter } from "lucide-react";
+import { FileText, MoreHorizontal, CheckCircle, Ban, Send, X, Calendar, Filter, UploadCloud, ExternalLink } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { InvoiceStatusBadge } from "@/components/ui/status-badges";
 import {
   DropdownMenu,
@@ -25,12 +26,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { Invoice, InvoiceStatus as PrismaInvoiceStatus } from "@prisma/client";
+import type { Invoice, InvoiceStatus as PrismaInvoiceStatus, InserveSyncStatus } from "@prisma/client";
 import { formatCurrency, formatDate } from "@/lib/formatters";
 import type { PaginatedResult } from "@/types/domain";
 import type { UserRole, InvoiceStatus as InvoiceStatusEnum } from "@/types/enums";
 import { canUserRole } from "@/lib/auth/session";
-import { markInvoicePaidAction, deleteInvoiceAction, sendInvoiceAction } from "../../subscriptions/actions";
+import { markInvoicePaidAction, deleteInvoiceAction, sendInvoiceAction, sendInvoiceToInserveAction } from "../../subscriptions/actions";
 
 type ListInvoice = any;
 
@@ -92,6 +93,19 @@ export function InvoiceList({ result }: Props) {
 
   const hasAnyFilter = statusFilter !== "all" || !!fromDate || !!toDate || !!searchQ;
 
+  const inSyncStatus = (st: any): InserveSyncStatus | null => {
+    return (st?.inserveSyncStatus as InserveSyncStatus) ?? null;
+  };
+
+  const canSendToInserve = (st: any): boolean => {
+    if (!canEdit) return false;
+    const paid = st.status === "PAID";
+    const cancelled = st.status === "CANCELLED";
+    if (paid || cancelled) return false;
+    const s = inSyncStatus(st);
+    return s === "PENDING" || s === "FAILED" || s === null;
+  };
+
   const actionsCol = {
     id: "actions",
     header: "Acties",
@@ -119,6 +133,19 @@ export function InvoiceList({ result }: Props) {
                     className="flex items-center w-full text-left"
                   >
                     <Send className="mr-2 h-4 w-4" /> Markeer verzonden
+                  </button>
+                </form>
+              </DropdownMenuItem>
+            ) : null}
+            {canSendToInserve(st) ? (
+              <DropdownMenuItem asChild>
+                <form action={sendInvoiceToInserveAction as any} className="w-full">
+                  <input type="hidden" name="id" value={st.id} required />
+                  <button
+                    type="submit"
+                    className="flex items-center w-full text-left"
+                  >
+                    <UploadCloud className="mr-2 h-4 w-4" /> Verstuur naar Inserve
                   </button>
                 </form>
               </DropdownMenuItem>
@@ -163,6 +190,65 @@ export function InvoiceList({ result }: Props) {
       );
     },
   } as ColumnDef<ListInvoice>;
+
+  const inServeSyncCol: ColumnDef<ListInvoice> = {
+    id: "inserveSync",
+    header: "Inserve sync",
+    cell: ({ row }: any) => {
+      const st = row.original;
+      const status = inSyncStatus(st);
+      const inserveInvoiceId = st?.inserveInvoiceId as number | null | undefined;
+      if (!status) {
+        return <span className="text-slate-400">—</span>;
+      }
+      let variant: "default" | "secondary" | "destructive" | "outline" = "outline";
+      let label: string = status ?? "";
+      switch (status) {
+        case "PENDING":
+          variant = "secondary";
+          label = "Wachten";
+          break;
+        case "IN_PROGRESS":
+          variant = "default";
+          label = "Bezig…";
+          break;
+        case "SYNCED":
+          variant = "default";
+          label = "Gesynchroniseerd";
+          break;
+        case "FAILED":
+          variant = "destructive";
+          label = "Mislukt";
+          break;
+        case "SKIPPED":
+          variant = "outline";
+          label = "Overgeslagen";
+          break;
+      }
+      return (
+        <div className="flex flex-col gap-1">
+          <Badge variant={variant} className="w-fit text-xs">
+            {label}
+          </Badge>
+          {status === "SYNCED" && inserveInvoiceId ? (
+            <a
+              href={`https://${process.env.NEXT_PUBLIC_INSERVE_SUBDOMAIN ?? ""}.inserve.nl/invoices/${inserveInvoiceId}`}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 hover:underline"
+            >
+              <ExternalLink className="h-3 w-3" /> Inserve #{inserveInvoiceId}
+            </a>
+          ) : null}
+          {status === "FAILED" && st?.inserveSyncError ? (
+            <div className="max-w-[220px] truncate text-xs text-rose-600" title={st.inserveSyncError}>
+              {st.inserveSyncError}
+            </div>
+          ) : null}
+        </div>
+      );
+    },
+  };
 
   const cols: ColumnDef<ListInvoice>[] = [
     {
@@ -273,6 +359,7 @@ export function InvoiceList({ result }: Props) {
         <InvoiceStatusBadge status={row.original.status as InvoiceStatusEnum} />
       ),
     },
+    inServeSyncCol,
   ];
 
   if (canEdit || canDelete) cols.push(actionsCol);

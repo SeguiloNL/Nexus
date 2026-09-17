@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/session";
 import { requirePermission } from "@/lib/rbac";
+import { prisma } from "@/lib/prisma";
 import {
   CreateSubscriptionSchema,
   UpdateSubscriptionStatusSchema,
@@ -28,6 +29,7 @@ import {
 import type { InvoiceStatus, SubscriptionStatus } from "@/types/enums";
 import { replaceSim, replaceTracker, unassignSim, unassignTracker } from "@/server/services/assignments.service";
 import { syncSubscriptionToInserve } from "@/server/services/inserve-sync.service";
+import { syncInvoiceToInserve } from "@/server/services/inserve-invoice-sync.service";
 import type { SimStatus, TrackerStatus } from "@prisma/client";
 
 export type InserveSyncState = {
@@ -371,4 +373,46 @@ export async function deleteInvoiceAction(_prev: any, formData: FormData) {
   revalidatePath("/subscriptions");
   revalidatePath("/invoices");
   return { ok: true, id: inv.id, status: inv.status };
+}
+
+export async function sendInvoiceToInserveAction(_prev: InserveSyncState, formData: FormData): Promise<InserveSyncState> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "edit", "invoice");
+  const id = String(formData.get("id") || "");
+  if (!id) return { ok: false, error: "Ontbrekend factuur-id" };
+  const ctx = { userId: user.id, userRole: user.role };
+
+  try {
+    const result = await syncInvoiceToInserve(id, ctx);
+    const inv = await prisma.invoice.findUnique({ where: { id }, select: { subscriptionId: true } });
+    if (inv?.subscriptionId) {
+      revalidatePath(`/subscriptions/${inv.subscriptionId}`);
+    }
+    revalidatePath("/subscriptions");
+    revalidatePath("/invoices");
+
+    if (result.status === "SYNCED") {
+      return {
+        ok: true,
+        status: result.status,
+        message: `Factuur succesvol naar Inserve verstuurd (ref #${result.inserveInvoiceId}).${result.details ? ` ${result.details}` : ""}`,
+      };
+    }
+    if (result.status === "SKIPPED") {
+      return {
+        ok: true,
+        status: result.status,
+        message: result.details ?? "Factuur overgeslagen bij Inserve sync.",
+      };
+    }
+    return {
+      ok: false,
+      status: "FAILED",
+      error: result.error ?? "Onbekende fout tijdens Inserve sync.",
+      message: result.details ?? undefined,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, status: "FAILED", error: msg };
+  }
 }
