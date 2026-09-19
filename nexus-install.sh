@@ -199,6 +199,119 @@ done
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 [[ "$SHOW_HELP" -eq 1 ]] && { usage; exit 0; }
 
+# ==============================================================================
+# STAP 0.1 — Anti-recursie dead-man switch (laatste redmiddel, voorkomt oneindige lus).
+#            Maximaal 3 her-execs (bootstrap + sudo escalatie + update). Daarna foutmelding.
+# ==============================================================================
+STM_RUN_COUNT="${STM_RUN_COUNT:-0}"
+STM_RUN_COUNT=$(( STM_RUN_COUNT + 1 ))
+export STM_RUN_COUNT
+if (( STM_RUN_COUNT > 3 )); then
+  echo "✖  FATALE FOUT: Installer heeft zichzelf ${STM_RUN_COUNT}x herstart (oneindige lus detectie)." >&2
+  echo "   Stop. Los het probleem op en start opnieuw." >&2
+  exit 10
+fi
+
+# ------------------------------------------------------------------------------
+# STAP 0.2 — /etc/hosts hostname fix (als het KAN: indien root of writable).
+#            Voorkomt "sudo: unable to resolve host cloud.example.com" warning.
+# ------------------------------------------------------------------------------
+fix_etc_hosts() {
+  local h
+  h="$(hostname 2>/dev/null || true)"
+  local fqdn
+  fqdn="$(hostname -f 2>/dev/null || true)"
+  # Als beide resolven → niets doen.
+  if [[ -n "$h" && -n "$fqdn" ]] && getent hosts "$fqdn" >/dev/null 2>&1 && getent hosts "$h" >/dev/null 2>&1; then
+    return 0
+  fi
+  # /etc/hosts niet schrijfbaar → overslaan (wordt later als root opnieuw gedaan).
+  [[ ! -w /etc/hosts ]] && return 0
+  local to_add=()
+  [[ -n "$fqdn" && "$fqdn" != *" "* ]] && to_add+=("$fqdn")
+  [[ -n "$h" && ! " ${to_add[*]} " =~ " $h " ]] && to_add+=("$h")
+  # Voeg 127.0.0.1 en 127.0.1.1 rijen toe
+  if (( ${#to_add[@]} > 0 )); then
+    local line_plain="127.0.1.1 ${to_add[*]}"
+    if ! grep -qF "$line_plain" /etc/hosts 2>/dev/null; then
+      # Zorg voor een newline op het eind
+      tail -c 1 /etc/hosts 2>/dev/null | read -r _ || echo >> /etc/hosts 2>/dev/null || true
+      echo "$line_plain" >> /etc/hosts 2>/dev/null || true
+      # 127.0.0.1 tevens
+      local line_loop="127.0.0.1 ${to_add[*]}"
+      grep -qF "$line_loop" /etc/hosts 2>/dev/null || echo "$line_loop" >> /etc/hosts 2>/dev/null || true
+    fi
+  fi
+}
+fix_etc_hosts || true
+
+# ==============================================================================
+# STAP 0.3 — EERST: Root / sudo controleren (VOOR we bootstrap of iets anders doen).
+#             We gebruiken MEERDERE checks zodat escalatie MAXIMAAL 1x gebeurt.
+# ==============================================================================
+escalated=0
+if [[ -n "${SUDO_ESCALATED:-}" && "${SUDO_ESCALATED}" == "1" ]]; then escalated=1; fi
+if [[ -n "${SUDO_USER:-}" ]]; then escalated=1; fi
+if [[ "$EUID" -eq 0 ]]; then escalated=1; fi
+
+if [[ "$escalated" -eq 0 ]]; then
+  # NIET root en NIET geëscaleerd → probeer sudo.
+  if require_cmd sudo; then
+    # Test of sudo zonder wachtwoord MAG (non-interactive).
+    if sudo -n true 2>/dev/null; then
+      export SUDO_ESCALATED=1
+      exec sudo -H -E --preserve-env=HOME,PATH,NO_COLOR,TZ,STM_RUN_COUNT,SUDO_ESCALATED,STM_BOOTSTRAPPED,DEFAULT_GIT_BRANCH \
+        bash "$0" "$@"
+    fi
+    # sudo -n (zonder wachtwoord) mag niet. Vraag gebruiker om handmatig sudo.
+    cat <<'EOT' >&2
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  💡 NIET als root gedraaid EN sudo vereist een wachtwoord.                    │
+│                                                                              │
+│  KORTE OPLOSSING (voer deze exact uit):                                      │
+│    sudo -E bash "$0" $@                                                      │
+│   OF (als $0 alleen bestandsnaam is, GEEN absoluut pad):                     │
+│    sudo -E bash ./nexus-install.sh --domain stm.jouwdomein.nl --seed         │
+│                                                                              │
+│  sudo zal nu jouw wachtwoord vragen (1x). Daarna gaat alles automatisch.     │
+└──────────────────────────────────────────────────────────────────────────────┘
+EOT
+    exit 3
+  fi
+  echo "✖  Geen sudo gevonden en niet als root gedraaid. Installeer sudo of draai als root." >&2
+  exit 3
+fi
+
+# Nu ZEKER root: init logging (schrijft naar /var/log/stm-install)
+# ------------------------------------------------------------------------------
+# Helper: init_logging: als EUID=root → /var/log/stm-install, anders /tmp fallback.
+# Zet ook exec 2>> tee redirect zodat stderr ook in logfile staat.
+init_logging() {
+  local want_dir="/var/log/stm-install"
+  if [[ "$EUID" -eq 0 ]]; then
+    if mkdir -p "$want_dir" 2>/dev/null && [[ -d "$want_dir" && -w "$want_dir" ]]; then
+      LOG_DIR="$want_dir"
+      LOG_FILE="${LOG_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
+      : > "$LOG_FILE" 2>/dev/null || true
+      chmod 0640 "$LOG_FILE" 2>/dev/null || true
+    fi
+  fi
+  # Kopieer eerdere /tmp log naar nieuw bestand (indien bestaat en verschillend)
+  local old_log=""
+  old_log="$(ls -t /tmp/stm-install/install-*-$$.log 2>/dev/null | head -1 || true)"
+  if [[ -n "${old_log:-}" && -s "$old_log" && "${old_log}" != "${LOG_FILE}" ]]; then
+    cat "$old_log" >> "$LOG_FILE" 2>/dev/null || true
+  fi
+  # stderr ook naar log (naast al bestaande stdout tee in helpers).
+  if [[ -n "${LOG_FILE:-}" && "${LOG_FILE}" != "/dev/null" ]]; then
+    exec 2> >(tee -a "$LOG_FILE" >&2) 2>/dev/null || true
+  fi
+}
+init_logging
+
+# Nu als root: /etc/hosts fix OPNIEUW (eerste poging was non-root en mislukte mogelijk door permissies)
+fix_etc_hosts || true
+
 # ------------------------------------------------------------------------------
 # BOOTSTRAP: Zorg dat de VOLLEDIGE REPO lokaal staat (ook als je alleen het script
 #            downloadde via `curl | bash`). Als benodigde bestanden ontbreken:
@@ -228,7 +341,10 @@ repo_files_present_in() {
 
 bootstrap_repo_if_needed() {
   # Sla over als we al ge-bootstrapte zijn (voorkom oneindige lus)
-  [[ "${STM_BOOTSTRAPPED:-}" == "1" ]] && return 0
+  if [[ "${STM_BOOTSTRAPPED:-}" == "1" ]]; then
+    info "Bootstrap: reeds gedaan (STM_BOOTSTRAPPED=1). Overslaan."
+    return 0
+  fi
   # Bepaal in welke map we al dan niet zoeken
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P 2>/dev/null || echo /tmp)"
@@ -264,7 +380,6 @@ bootstrap_repo_if_needed() {
     # Clone (depth 1 voor snelheid) met branch indien bekend
     local clone_branch=()
     if [[ -n "${DEFAULT_GIT_BRANCH:-}" ]]; then
-      # probeer eerst met --branch; faalt ie niet? Dan niet.
       clone_branch=(--branch "${DEFAULT_GIT_BRANCH}")
     fi
     # Run clone in tmp, dan move naar target (atomic)
@@ -296,12 +411,7 @@ bootstrap_repo_if_needed() {
   if [[ -f "$0" ]] && [[ "$(realpath "$0" 2>/dev/null || echo "$0")" != "$(realpath "${self_in_target}" 2>/dev/null || echo "${self_in_target}")" ]]; then
     cp -af "$0" "${self_in_target}" 2>/dev/null || true
   fi
-  # Fallback: als $0 geen bestand was (pipe / /dev/fd/xx) → dump stdin? Nee: BASH_SOURCE[0] is altijd scriptpad,
-  # of wij schrijven onszelf weg via cat van /proc/self/fd/0 indien nodig.
   if [[ ! -f "${self_in_target}" ]]; then
-    # Script kwam ergens vandaan zonder pad (bv. curl | bash → stdin). Dump HET VOLLEDIGE huidige script
-    # dmv een awk/sed of via heredoc? Veiliger: gebruik de script-inhoud die bash al uitvoerde d.m.v.
-    # /proc/self/fd/253 of een listing. Als het niet lukt: faal met melding.
     if [[ -f "${BASH_SOURCE[0]:-}" ]]; then
       cp -af "${BASH_SOURCE[0]}" "${self_in_target}" 2>/dev/null || true
     fi
@@ -313,12 +423,7 @@ bootstrap_repo_if_needed() {
   chmod +x "${self_in_target}" 2>/dev/null || true
 
   # --- RE-EXEC: zelfde script, nu in de target repo, met STM_BOOTSTRAPPED=1 + alle originele args ---
-  # We geven expliciet INSTALL_DIR nog een keer mee (voor het geval de target afweek van een eerdere --install-dir)
   local pass_args=()
-  # Indien --install-dir niet expliciet in originele $@ stond, voeg hem nu toe
-  # (We kunnen dat hieronder checken door $@ te scannen; eenvoudiger: --install-dir altijd na --  zetten? Nee, beter:
-  #  gewoon meegeven. We gebruiken --install-dir expliciet):
-  # Check of --install-dir al in arg-array zat
   local has_install_dir=0
   local a
   for a in "$@"; do [[ "$a" == "--install-dir" ]] && has_install_dir=1; done
@@ -327,7 +432,7 @@ bootstrap_repo_if_needed() {
     pass_args+=(--install-dir "${target}")
   fi
   export STM_BOOTSTRAPPED=1
-  echo "ℹ  Bootstrap: herstart installer vanuit ${self_in_target}..." | tee -a "$LOG_FILE" >&2
+  echo "ℹ  Bootstrap: herstart installer vanuit ${self_in_target} (STM_RUN_COUNT=${STM_RUN_COUNT})..." | tee -a "$LOG_FILE" >&2
   exec bash "${self_in_target}" "${pass_args[@]}"
   # exec komt NOOIT terug.
 }
@@ -342,58 +447,14 @@ BACKUP_TIMER_SRC="${INSTALL_DIR}/deploy/stm-db-backup.timer"
 CUSTOM_CADDYFILE_SRC="${INSTALL_DIR}/Caddyfile"
 
 # ------------------------------------------------------------------------------
-# 0b. Uitgestelde logging init + root/sudo check (ROOT eerst, daarna log dir in /var/log)
-# ------------------------------------------------------------------------------
-# Helper: init_logging: als EUID=root → /var/log/stm-install, anders /tmp fallback.
-# Zet ook exec 2>> tee redirect zodat stderr ook in logfile staat.
-init_logging() {
-  local want_dir="/var/log/stm-install"
-  if [[ "$EUID" -eq 0 ]]; then
-    if mkdir -p "$want_dir" 2>/dev/null && [[ -d "$want_dir" && -w "$want_dir" ]]; then
-      LOG_DIR="$want_dir"
-      LOG_FILE="${LOG_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
-      : > "$LOG_FILE" 2>/dev/null || true
-      chmod 0640 "$LOG_FILE" 2>/dev/null || true
-    fi
-  fi
-  # Kopieer eerdere /tmp log naar nieuw bestand (indien bestaat en verschillend)
-  local old_log=""
-  old_log="$(ls -t /tmp/stm-install/install-*-$$.log 2>/dev/null | head -1 || true)"
-  if [[ -n "${old_log:-}" && -s "$old_log" && "${old_log}" != "${LOG_FILE}" ]]; then
-    cat "$old_log" >> "$LOG_FILE" 2>/dev/null || true
-  fi
-  # stderr ook naar log (naast al bestaande stdout tee in helpers).
-  if [[ -n "${LOG_FILE:-}" && "${LOG_FILE}" != "/dev/null" ]]; then
-    exec 2> >(tee -a "$LOG_FILE" >&2) 2>/dev/null || true
-  fi
-}
-
-# ==============================================================================
-# STAP 0.9 — EERST: Root / sudo controleren (VOOR we iets anders doen).
-# ==============================================================================
-if [[ "$EUID" -ne 0 ]]; then
-  # Als user GEEN root is, maar wel sudo kan: herstart onszelf met sudo (preserve env vars).
-  if require_cmd sudo && sudo -n true 2>/dev/null; then
-    # Zet SUDO_ESCALATED=1 (zodat we niet oneindig herstarten).
-    if [[ -z "${SUDO_ESCALATED:-}" ]]; then
-      SUDO_ESCALATED=1
-      exec sudo -E --preserve-env=HOME,PATH,NO_COLOR,TZ,SUDO_ESCALATED \
-        SUDO_ESCALATED=1 bash "$0" "$@"
-    fi
-  fi
-  # Kan niet escaleren: faal vriendelijk.
-  echo "✖  Niet als root of sudo gedraaid. Gebruik: sudo bash $0 --help" >&2
-  exit 3
-fi
-# Nu zijn we root → logging init.
-init_logging
-
-# ------------------------------------------------------------------------------
 # 0c. Installer START banner
 # ------------------------------------------------------------------------------
 title "nexus-install.sh v${INSTALLER_VERSION} — STM (voorheen Nexus) complete installer"
-printf '%b  Starttijd : %s%b\n' "${DIM}" "$(date +"%Y-%m-%d %H:%M:%S %Z")" "${RST}" | tee -a "$LOG_FILE" >&2
-printf '%b  Logbestand: %s%b\n' "${DIM}" "${LOG_FILE}" "${RST}" | tee -a "$LOG_FILE" >&2
+printf '%b  Starttijd : %s%b\n'        "${DIM}" "$(date +"%Y-%m-%d %H:%M:%S %Z")" "${RST}" | tee -a "$LOG_FILE" >&2
+printf '%b  Run-count: %s (max 3 anti-lus)%b\n' "${DIM}" "${STM_RUN_COUNT}" "${RST}" | tee -a "$LOG_FILE" >&2
+printf '%b  Uitvoerder: EUID=%s  SUDO_USER=%s%b\n' "${DIM}" "${EUID}" "${SUDO_USER:-none}" "${RST}" | tee -a "$LOG_FILE" >&2
+printf '%b  Logbestand: %s%b\n'        "${DIM}" "${LOG_FILE}" "${RST}" | tee -a "$LOG_FILE" >&2
+printf '%b  Install dir: %s%b\n'        "${DIM}" "${INSTALL_DIR}" "${RST}" | tee -a "$LOG_FILE" >&2
 hr
 
 # ==============================================================================
