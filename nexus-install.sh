@@ -1,33 +1,37 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # nexus-install.sh — ONE-CLICK STM (voorheen Nexus) Installer voor Ubuntu Server
+# Repository: https://github.com/SeguiloNL/Nexus
 # Idempotent: meerdere keren draaien is VEILIG.
-# Strict:    set -Eeuo pipefail + ERR-trap (iedere fout stopt IMMEDIATE STOP, met duidelijke melding).
+# Strict:    set -Eeuo pipefail + ERR-trap (iedere fout stopt METEEN, met duidelijke melding).
 #
 # Installatie bestaat UIT:
-#   - OS hardening (update, minimale pakketten, fail2ban optioneel)
+#   - OS hardening (update, minimale pakketten, fail2ban + auto security patches)
+#   - Tijdsynchronisatie (systemd-timesyncd, NL NTP-pool) + nl_NL.UTF-8 locale
+#   - PostgreSQL 16 client, zstd/pigz compressie, acl
 #   - 1,5x RAM swapfile (overslaan met --skip-swap)
 #   - Firewall (UFW): alleen 22 (SSH), 80/443 (HTTPS). 5432 ALTIJD DICHT!
+#   - Sysctl hardening (swappiness, file descriptors, socket backlog) + limits.conf
 #   - Non-root gebruiker "stm" (sudo + docker groep, SSH keys geconserveerd)
 #   - Docker Engine (officiële apt repo, met log-rotation daemon.json)
 #   - Caddy reverse proxy (Let's Encrypt HTTPS, security headers, X-Forwarded-*)
-#   - Code (git clone van --git-url, of fallback: gebruik huidige map)
+#   - Code: AUTO download van GitHub (https://github.com/SeguiloNL/Nexus) tenzij overschreven
 #   - .env AUTO-GENERATIE: AUTH_SECRET (32 hex) + POSTGRES_PASSWORD (24 base64) + STM_DOMAIN
 #   - Docker build (stm-app + stm-db) + up -d (migrations via entrypoint.sh, Prisma migrate deploy)
 #   - (Optioneel --seed) Demo-gebruikers en demo-data via prisma/seed.mjs
 #   - Automatische backups (P2.1) systemd timer 03:00 NL, rotatie 7d/4w/3m + rsync optie
 #   - Post-install summary: URL + credentials + troubleshooting tips
 #
-# GEBRUIK (VOORKEUR, root of sudo):
-#   sudo bash nexus-install.sh --domain stm.jouwdomein.nl \
-#       --git-url https://github.com/jouworg/stm.git \
-#       --email hostmaster@jouwdomein.nl \
-#       --seed
+# ========================  STANDAARD ONE-LINER (DIRECT VANAF GITHUB)  ========================
+# Kopieer en plak in je Ubuntu VPS (als root / sudo-gebruiker):
+#   curl -sSL https://raw.githubusercontent.com/SeguiloNL/Nexus/main/nexus-install.sh \
+#     | sudo bash -s -- --domain stm.jouwdomein.nl --email hostmaster@jouwdomein.nl --seed
+# ============================================================================================
 #
 # Alle argumenten:
 #   --domain <FULL-DOMAIN>         Publiek domein (bv. stm.jouwdomein.nl). ZONDER = localhost/test zonder TLS.
-#   --git-url <URL>                Git-repo URL om code te clonen. ZONDER = gebruik map ./stm of huidige (indien --install-dir)
-#   --install-dir <PATH>           Waar de code staat. Default: /opt/stm
+#   --git-url <URL>                Git-repo URL. DEFAULT: https://github.com/SeguiloNL/Nexus.git
+#   --install-dir <PATH>           Waar de code komt te staan. Default: /opt/stm
 #   --email <E-MAIL>               (Optioneel) Let's Encrypt e-mailadres voor verlopeningsmeldingen.
 #   --ssh-key <FILE-or-STRING>     (Optioneel) Pad naar pubkey, of de letterlijke pubkey. Wordt aan ~stm/.ssh/authorized_keys toegevoegd.
 #   --seed                         (Optioneel) Draai prisma db seed (3 gebruikers + demo data).
@@ -42,10 +46,12 @@ set -Eeuo pipefail
 # 0. Globals, logging, colors, helpers
 # ------------------------------------------------------------------------------
 INSTALL_SCRIPT_NAME="nexus-install.sh"
-INSTALLER_VERSION="1.0.0"
+INSTALLER_VERSION="1.1.0"
 INSTALL_START_EPOCH="$(date +%s)"
 DEFAULT_INSTALL_DIR="/opt/stm"
 DEFAULT_SWAP_MULTIPLIER="1.5"
+DEFAULT_GIT_URL="https://github.com/SeguiloNL/Nexus.git"
+DEFAULT_GIT_BRANCH="${DEFAULT_GIT_BRANCH:-main}"
 
 # --- Logging: EERST placeholder (/tmp, altijd schrijfbaar). NA root-check zetten we hem om naar /var/log/stm-install.
 LOG_DIR_TMP="${TMPDIR:-/tmp}/stm-install"
@@ -86,6 +92,7 @@ TZ_VALUE="${TZ:-Europe/Amsterdam}"
 usage() {
   cat <<EOF
 ${BLD}nexus-install.sh v${INSTALLER_VERSION}${RST} — One-click STM installer voor Ubuntu 22.04/24.04 LTS.
+Repository: ${CYN}${DEFAULT_GIT_URL}${RST}
 
 ${BLD}Gebruik:${RST}
   sudo bash $0 [OPTIONS]
@@ -95,10 +102,11 @@ ${BLD}Vereisten:${RST}
   - Min. 1 GB RAM, 10 GB SSD, 1 vCPU. (2 GB + swap AANBEVOLEN)
   - Root of sudo (draai het met sudo; NIET als ingelogde non-root sudoer zonder sudo)
   - DNS A/AAAA record: ${CYN}--domain${RST} waarde moet al wijzen naar DEZE VPS (voor TLS)
+  - Indien Git-branch anders dan 'main': exporteer DEFAULT_GIT_BRANCH=feature/test
 
 ${BLD}Belangrijkste Opties:${RST}
   --domain <FULL-DOMAIN>        Publiek domein (bv. stm.jouwdomein.nl). Laat weg voor localhost/test zonder TLS.
-  --git-url <URL>               Git repo URL (HTTPS/SSH). Bijv. https://github.com/org/stm.git
+  --git-url <URL>               Git repo URL. DEFAULT: ${CYN}${DEFAULT_GIT_URL}${RST}
   --install-dir <PATH>          Installatiemap. Default ${DEFAULT_INSTALL_DIR}
   --email <E-MAIL>              (Optioneel) Let's Encrypt contact-e-mail (verlopeningsmeldingen).
   --ssh-key <FILE-or-STRING>    (Optioneel) Pad of letterlijke public key voor gebruiker '${STM_USER}'.
@@ -109,14 +117,27 @@ ${BLD}Belangrijkste Opties:${RST}
   -h, --help                    Deze help.
 
 ${BLD}Voorbeelden:${RST}
-  # --- Eerste install, met Git repo + echt domein + seed ---
+  # ================================================================
+  # 1) ONE-LINER — DIRECT VANAF GITHUB (AANBEVOLEN)
+  #    Download alleen dit script en alles (code + installatie) gaat automatisch.
+  # ================================================================
+  curl -sSL https://raw.githubusercontent.com/SeguiloNL/Nexus/${DEFAULT_GIT_BRANCH}/nexus-install.sh \\
+    | sudo bash -s -- \\
+        --domain stm.mijnbedrijf.nl \\
+        --email hostmaster@mijnbedrijf.nl \\
+        --seed
+
+  # ================================================================
+  # 2) Eerste install — script bestond al lokaal
+  # ================================================================
   sudo bash $0 \\
     --domain stm.mijnbedrijf.nl \\
-    --git-url https://github.com/mijnbedrijf/stm.git \\
     --email hostmaster@mijnbedrijf.nl \\
     --seed
 
-  # --- Bestaande map, lokaal testen, zonder TLS ---
+  # ================================================================
+  # 3) Lokaal testen zonder TLS (bestaande code)
+  # ================================================================
   sudo bash $0 --non-interactive --skip-swap
 EOF
 }
@@ -172,7 +193,153 @@ while [[ $# -gt 0 ]]; do
     *) err "Onbekende optie: $1"; usage; exit 2 ;;
   esac
 done
+
+# Defaults na parsing
+[[ -z "${GIT_URL:-}" ]] && GIT_URL="${DEFAULT_GIT_URL}"
+INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 [[ "$SHOW_HELP" -eq 1 ]] && { usage; exit 0; }
+
+# ------------------------------------------------------------------------------
+# BOOTSTRAP: Zorg dat de VOLLEDIGE REPO lokaal staat (ook als je alleen het script
+#            downloadde via `curl | bash`). Als benodigde bestanden ontbreken:
+#            clone de repo, copy dit script erin, en RE-EXEC jezelf.
+# ------------------------------------------------------------------------------
+# Vereiste bestanden (moeten in INSTALL_DIR staan of in de huidige script-dir)
+REQ_FILES=(
+  "docker-compose.prod.yml"
+  ".env.production.example"
+  "Caddyfile"
+  "scripts/backup-stm-db.sh"
+  "deploy/stm-db-backup.service"
+  "deploy/stm-db-backup.timer"
+)
+
+repo_files_present_in() {
+  local d="$1"
+  [[ -z "$d" || ! -d "$d" ]] && return 1
+  local f
+  for f in "${REQ_FILES[@]}"; do
+    if [[ ! -f "${d}/${f}" ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+bootstrap_repo_if_needed() {
+  # Sla over als we al ge-bootstrapte zijn (voorkom oneindige lus)
+  [[ "${STM_BOOTSTRAPPED:-}" == "1" ]] && return 0
+  # Bepaal in welke map we al dan niet zoeken
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P 2>/dev/null || echo /tmp)"
+  local search_dirs=()
+  [[ -n "${INSTALL_DIR:-}" && -d "${INSTALL_DIR:-}" ]] && search_dirs+=("$INSTALL_DIR")
+  [[ "$script_dir" != "/" ]] && search_dirs+=("$script_dir")
+  search_dirs+=("$(pwd -P 2>/dev/null || echo /tmp)")
+  local d
+  for d in "${search_dirs[@]}"; do
+    if repo_files_present_in "$d"; then
+      info "Bootstrap: repo aanwezig in ${d}."
+      # Zorg dat INSTALL_DIR ook echt naar deze map wijst
+      INSTALL_DIR="$d"
+      return 0
+    fi
+  done
+
+  # --- Benodigde bestanden ontbreken. Clone de repo, copy dit script, re-exec. ---
+  # Minimale apt: zorg dat git/curl/ca-certificates bestaan (zelfs in een kale Ubuntu)
+  export DEBIAN_FRONTEND=noninteractive
+  local bootstrap_tmpdir=""
+  if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+    echo "ℹ  Bootstrap: apt install git/curl/ca-certificates (1e setup...)" | tee -a "$LOG_FILE" >&2
+    for _ in 1 2 3; do apt-get update -y >/dev/null 2>&1 && break || sleep 3; done
+    apt-get install -y --no-install-recommends git curl ca-certificates >/dev/null 2>&1 || true
+  fi
+  # Bepaal target dir voor clone
+  local target="${INSTALL_DIR}"
+  mkdir -p "$target" 2>/dev/null || true
+  if ! repo_files_present_in "$target"; then
+    printf 'ℹ  Bootstrap: %s klonen naar %s ...\n' "$GIT_URL" "$target" | tee -a "$LOG_FILE" >&2
+    bootstrap_tmpdir="$(mktemp -d /tmp/stm-clone-XXXXXX)"
+    # Clone (depth 1 voor snelheid) met branch indien bekend
+    local clone_branch=()
+    if [[ -n "${DEFAULT_GIT_BRANCH:-}" ]]; then
+      # probeer eerst met --branch; faalt ie niet? Dan niet.
+      clone_branch=(--branch "${DEFAULT_GIT_BRANCH}")
+    fi
+    # Run clone in tmp, dan move naar target (atomic)
+    if ! git clone --depth 1 "${clone_branch[@]}" "${GIT_URL}" "${bootstrap_tmpdir}/repo" 2>&1 | tail -5 | tee -a "$LOG_FILE" >&2; then
+      # fallback: zonder branch spec (wellicht bestaat branch niet, default HEAD van remote pakken)
+      git clone --depth 1 "${GIT_URL}" "${bootstrap_tmpdir}/repo" 2>&1 | tail -5 | tee -a "$LOG_FILE" >&2
+    fi
+    # Bestanden verplaatsen naar target (atomic, ook als target al deels gevuld was)
+    if [[ -d "${bootstrap_tmpdir}/repo" ]]; then
+      shopt -s dotglob nullglob
+      local item
+      for item in "${bootstrap_tmpdir}/repo"/*; do
+        local base="${item##*/}"
+        if [[ -e "${target}/${base}" ]]; then
+          # Bestaande bestanden niet overschrijven, tenzij het het install script zelf is
+          [[ "${base}" == "nexus-install.sh" || "${base}" == "stm-install.sh" ]] && mv -f "${item}" "${target}/${base}" || true
+        else
+          mv -f "${item}" "${target}/${base}"
+        fi
+      done
+      shopt -u dotglob nullglob
+    fi
+    rm -rf "${bootstrap_tmpdir}"
+  fi
+
+  # Kopieer DIT SCRIPT (zelfs als het uit /dev/stdin pipe kwam) naar de target repo
+  local self_in_target="${target}/nexus-install.sh"
+  # Als we al op een schijfbestand zitten en gelijk zijn: skip.
+  if [[ -f "$0" ]] && [[ "$(realpath "$0" 2>/dev/null || echo "$0")" != "$(realpath "${self_in_target}" 2>/dev/null || echo "${self_in_target}")" ]]; then
+    cp -af "$0" "${self_in_target}" 2>/dev/null || true
+  fi
+  # Fallback: als $0 geen bestand was (pipe / /dev/fd/xx) → dump stdin? Nee: BASH_SOURCE[0] is altijd scriptpad,
+  # of wij schrijven onszelf weg via cat van /proc/self/fd/0 indien nodig.
+  if [[ ! -f "${self_in_target}" ]]; then
+    # Script kwam ergens vandaan zonder pad (bv. curl | bash → stdin). Dump HET VOLLEDIGE huidige script
+    # dmv een awk/sed of via heredoc? Veiliger: gebruik de script-inhoud die bash al uitvoerde d.m.v.
+    # /proc/self/fd/253 of een listing. Als het niet lukt: faal met melding.
+    if [[ -f "${BASH_SOURCE[0]:-}" ]]; then
+      cp -af "${BASH_SOURCE[0]}" "${self_in_target}" 2>/dev/null || true
+    fi
+    if [[ ! -f "${self_in_target}" ]]; then
+      err "Bootstrap: kon install-script niet kopiëren naar repo (target: ${self_in_target}). Download het handmatig via: curl -sSLo ${self_in_target} https://raw.githubusercontent.com/SeguiloNL/Nexus/${DEFAULT_GIT_BRANCH}/nexus-install.sh"
+      exit 9
+    fi
+  fi
+  chmod +x "${self_in_target}" 2>/dev/null || true
+
+  # --- RE-EXEC: zelfde script, nu in de target repo, met STM_BOOTSTRAPPED=1 + alle originele args ---
+  # We geven expliciet INSTALL_DIR nog een keer mee (voor het geval de target afweek van een eerdere --install-dir)
+  local pass_args=()
+  # Indien --install-dir niet expliciet in originele $@ stond, voeg hem nu toe
+  # (We kunnen dat hieronder checken door $@ te scannen; eenvoudiger: --install-dir altijd na --  zetten? Nee, beter:
+  #  gewoon meegeven. We gebruiken --install-dir expliciet):
+  # Check of --install-dir al in arg-array zat
+  local has_install_dir=0
+  local a
+  for a in "$@"; do [[ "$a" == "--install-dir" ]] && has_install_dir=1; done
+  pass_args=("$@")
+  if [[ "$has_install_dir" -eq 0 ]]; then
+    pass_args+=(--install-dir "${target}")
+  fi
+  export STM_BOOTSTRAPPED=1
+  echo "ℹ  Bootstrap: herstart installer vanuit ${self_in_target}..." | tee -a "$LOG_FILE" >&2
+  exec bash "${self_in_target}" "${pass_args[@]}"
+  # exec komt NOOIT terug.
+}
+bootstrap_repo_if_needed "$@"
+# Update globale paden (kloon nu in INSTALL_DIR)
+COMPOSE_FILE="${INSTALL_DIR}/docker-compose.prod.yml"
+ENV_FILE="${INSTALL_DIR}/.env"
+ENV_TEMPLATE="${INSTALL_DIR}/.env.production.example"
+BACKUP_SCRIPT_SRC="${INSTALL_DIR}/scripts/backup-stm-db.sh"
+BACKUP_SERVICE_SRC="${INSTALL_DIR}/deploy/stm-db-backup.service"
+BACKUP_TIMER_SRC="${INSTALL_DIR}/deploy/stm-db-backup.timer"
+CUSTOM_CADDYFILE_SRC="${INSTALL_DIR}/Caddyfile"
 
 # ------------------------------------------------------------------------------
 # 0b. Uitgestelde logging init + root/sudo check (ROOT eerst, daarna log dir in /var/log)
@@ -280,9 +447,9 @@ if (( FREE_DISK_MB > 0 && FREE_DISK_MB < 8000 )); then
 fi
 
 # ==============================================================================
-# STAP 2 — OS prep, pakketten, TIMEZONE, SWAP, UFW
+# STAP 2 — OS prep, pakketten, TZ, PostgreSQL client repo, locale, NTP, swap, UFW, sysctl
 # ==============================================================================
-title "STAP 2 — OS prep, pakketten, tijdzone, swapfile, firewall"
+title "STAP 2 — OS prep, pakketten, Postgres repo, locale, NTP, swap, firewall, sysctl"
 
 # 2.1 Tijdzone instellen
 if [[ -n "${TZ_VALUE:-}" ]]; then
@@ -296,19 +463,159 @@ if [[ -n "${TZ_VALUE:-}" ]]; then
   ok "Tijdzone: ${TZ_VALUE} (nu: $(date +%Z))"
 fi
 
-# 2.2 apt update + minimale pakketten
-step "apt-update + installeren basis-pakketten (ca-certificates, curl, git, openssl, rsync, ufw, fail2ban, logrotate)"
+# 2.2 apt update + basis-pakketten
+step "apt-update + basis-pakketten (curl, git, openssl, htop, jq, logrotate, ...)"
 export DEBIAN_FRONTEND=noninteractive
-# Apt update (met retry)
 for _ in 1 2 3; do apt-get update -y 2>&1 | tail -4 | tee -a "$LOG_FILE" >&2 && break || sleep 5; done
 apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg lsb-release sudo git tzdata openssl \
   rsyslog logrotate ufw fail2ban unattended-upgrades apt-transport-https software-properties-common \
-  locales htop netcat-openbsd iproute2 procps psmisc jq \
+  locales htop netcat-openbsd iproute2 procps psmisc jq pigz zstd acl bzip2 tree dnsutils \
   2>&1 | tee -a "$LOG_FILE" >&2
-ok "Systeem-pakketten geïnstalleerd."
+ok "Basis-systeem-pakketten geïnstalleerd (inclusief zstd/pigz/acl)."
 
-# 2.3 Swapfile (1,5x RAM) als --skip-swap niet gezet EN er nog géén swap actief is.
+# 2.3 PostgreSQL 16 APT repo + client (aanbevolen: client/server version match voor backup/restore)
+step "PostgreSQL 16: official apt repo toevoegen + postgresql-client-16 installeren"
+# https://wiki.postgresql.org/wiki/Apt
+PG_KEYRING="/usr/share/keyrings/postgresql-archive-keyring.gpg"
+if [[ ! -f "$PG_KEYRING" ]]; then
+  mkdir -p /usr/share/keyrings
+  for _ in 1 2 3; do
+    if curl -fsSL "https://www.postgresql.org/media/keys/ACCC4CF8.asc" 2>/dev/null \
+        | gpg --dearmor --yes -o "$PG_KEYRING" 2>/dev/null; then
+      break
+    fi
+    sleep 5
+  done
+  chmod a+r "$PG_KEYRING"
+fi
+PG_CODENAME="$(. /etc/os-release && echo "${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null || echo jammy)}")"
+PG_APT_LIST="/etc/apt/sources.list.d/pgdg.list"
+if [[ ! -f "${PG_APT_LIST}" ]] || ! grep -qF "apt.postgresql.org" "${PG_APT_LIST}" 2>/dev/null; then
+  echo "deb [signed-by=${PG_KEYRING}] http://apt.postgresql.org/pub/repos/apt ${PG_CODENAME}-pgdg main" \
+    > "${PG_APT_LIST}"
+fi
+apt-get update -y 2>&1 | tail -3 | tee -a "$LOG_FILE" >&2 || true
+apt-get install -y --no-install-recommends postgresql-client-16 2>&1 | tail -3 | tee -a "$LOG_FILE" >&2 || \
+  apt-get install -y --no-install-recommends postgresql-client 2>&1 | tail -3 | tee -a "$LOG_FILE" >&2 || true
+if command -v psql >/dev/null 2>&1; then
+  PSQL_VER="$(psql --version 2>&1 | awk '{print $3}' | cut -d. -f1)"
+  ok "PostgreSQL client: psql v${PSQL_VER}."
+else
+  warn "PostgreSQL client installatie mislukt (optioneel, kan later handmatig)."
+fi
+
+# 2.4 Locale (nl_NL.UTF-8 + en_US.UTF-8) voor facturen/data tijden/valuta
+title "STAP 2b — Locale + NTP tijdsynchronisatie (kritiek voor JWT + facturen)"
+step "Genereren: nl_NL.UTF-8 + en_US.UTF-8 locale"
+# Pas /etc/locale.gen idempotent aan
+if [[ -f /etc/locale.gen ]]; then
+  sed -i.bak \
+    -e 's/^# *nl_NL.UTF-8 UTF-8/nl_NL.UTF-8 UTF-8/' \
+    -e 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' \
+    /etc/locale.gen 2>/dev/null || true
+  rm -f /etc/locale.gen.bak
+else
+  { echo "en_US.UTF-8 UTF-8"; echo "nl_NL.UTF-8 UTF-8"; } > /etc/locale.gen
+fi
+locale-gen --purge en_US.UTF-8 nl_NL.UTF-8 2>&1 | tail -3 | tee -a "$LOG_FILE" >&2 || true
+# Default locale: OS logs in het Engels, tijds/valuta/cijfers Nederlands (voor facturen)
+cat > /etc/default/locale <<'LOCALE_EOF'
+LANG=en_US.UTF-8
+LC_CTYPE="en_US.UTF-8"
+LC_NUMERIC=nl_NL.UTF-8
+LC_TIME=nl_NL.UTF-8
+LC_COLLATE="en_US.UTF-8"
+LC_MONETARY=nl_NL.UTF-8
+LC_MESSAGES="en_US.UTF-8"
+LC_PAPER=nl_NL.UTF-8
+LC_NAME=nl_NL.UTF-8
+LC_ADDRESS=nl_NL.UTF-8
+LC_TELEPHONE=nl_NL.UTF-8
+LC_MEASUREMENT=nl_NL.UTF-8
+LC_IDENTIFICATION=nl_NL.UTF-8
+LOCALE_EOF
+chmod 0644 /etc/default/locale
+# Update huidige shell meteen
+# shellcheck disable=SC1091
+. /etc/default/locale 2>/dev/null || true
+ok "Locale: en_US.UTF-8 (logs, OS), nl_NL.UTF-8 (tijden, valuta, nummers voor facturen)."
+
+# 2.5 NTP tijdsynchronisatie (systemd-timesyncd, Nederlandse pool servers)
+step "Tijdsynchronisatie: systemd-timesyncd + NL NTP pool (noodzakelijk voor JWT + Auth + factuur datums)"
+TIMESYNCD_DROPIN="/etc/systemd/timesyncd.conf.d/10-stm-ntp.conf"
+mkdir -p "$(dirname "$TIMESYNCD_DROPIN")"
+cat > "$TIMESYNCD_DROPIN" <<'NTPEOF'
+[Time]
+NTP=ntp.ripe.net 0.nl.pool.ntp.org 1.nl.pool.ntp.org 2.nl.pool.ntp.org 3.nl.pool.ntp.org
+FallbackNTP=time.cloudflare.com time.google.com
+NTPEOF
+chmod 0644 "$TIMESYNCD_DROPIN"
+systemctl daemon-reload 2>/dev/null || true
+# Enable en start timesyncd
+systemctl enable --now systemd-timesyncd 2>/dev/null || true
+# Indien timedatectl aanwezig: set NTP = yes
+require_cmd timedatectl && (timedatectl set-ntp true 2>/dev/null || true) || true
+# Controleer (zacht falen indien VM tijd niet kan syncen in container-achtige omgevingen)
+if require_cmd timedatectl && timedatectl show -p NTP 2>/dev/null | grep -qE "=yes|=true"; then
+  ok "NTP actief (systemd-timesyncd). Synchroniseert met NL pool servers: ntp.ripe.net + 0-3.nl.pool.ntp.org"
+else
+  warn "NTP NIET actief in de kernel. Indien fysieke VPS: controleer /etc/systemd/timesyncd.conf. JWT/facturen kunnen afwijkende tijden geven."
+fi
+
+# 2.6 Sysctl hardening + bestandsdescriptors (Next.js + Prisma + Postgres hebben er veel nodig)
+title "STAP 2c — Kernel tweaks (sysctl) + bestandsdescriptors (limits.conf)"
+SYSCTL_STM="/etc/sysctl.d/99-stm-performance.conf"
+cat > "$SYSCTL_STM" <<'SYSCTLEOF'
+# STM / Nexus — performance & security hardening (nexus-install.sh)
+# ---------------------------------------------
+# Swap minder agressief (vooral voor Postgres)
+vm.swappiness = 10
+# Dentry/inode cache: niet te veel vasthouden (memory pressure)
+vm.vfs_cache_pressure = 200
+# Maximum open file descriptors (systeembreed)
+fs.file-max = 1048576
+# User max inotify watches (Next.js build, file watchers)
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 512
+# Listen queue (backlog) voor reverse proxy / Next.js
+net.core.somaxconn = 4096
+net.core.netdev_max_backlog = 4096
+# SYN flood protection
+net.ipv4.tcp_max_syn_backlog = 4096
+net.ipv4.tcp_syncookies = 1
+# Forwarding uitzetten (geen router)
+net.ipv4.ip_forward = 0
+# Kernel keyring (Auth.js/OpenSSL met grote certificaten)
+kernel.keys.maxbytes = 2000000
+kernel.keys.maxkeys = 10000
+SYSCTLEOF
+chmod 0644 "$SYSCTL_STM"
+# Toepassen (negeer fouten als container de sysctls niet kan zetten)
+sysctl --system >/dev/null 2>&1 || true
+ok "Kernel sysctl performance + security tweaks toegepast (indien ondersteund in kernel)."
+
+# 2.7 Security limits (nofile = 65536 voor users/root/STM)
+LIMITS_STM="/etc/security/limits.d/99-stm-nofile.conf"
+cat > "$LIMITS_STM" <<'LIMITSEOF'
+*       soft    nofile  65536
+*       hard    nofile  65536
+root    soft    nofile  65536
+root    hard    nofile  65536
+# STM deploy-gebruiker
+stm     soft    nofile  65536
+stm     hard    nofile  65536
+# Docker container runtime
+root    soft    nproc   65536
+root    hard    nproc   65536
+stm     soft    nproc   65536
+stm     hard    nproc   65536
+LIMITSEOF
+chmod 0644 "$LIMITS_STM"
+ok "Security/limits: 65536 open bestanden + nproc voor alle users, root & stm (vereist voor Prisma/Next.js)."
+
+# 2.8 Swapfile (1,5x RAM) als --skip-swap niet gezet EN er nog géén swap actief is.
+title "STAP 2d — Swapfile (1,5x RAM, overslaan met --skip-swap)"
 if [[ "$SKIP_SWAP" -eq 0 ]]; then
   SWAP_NOW_KB="$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
   if (( SWAP_NOW_KB < 1024 )); then
@@ -333,13 +640,15 @@ if [[ "$SKIP_SWAP" -eq 0 ]]; then
   else
     info "Swap reeds actief (${SWAP_NOW_KB} kB). Nieuwe swapfile overgeslagen."
   fi
+else
+  info "Skip-swap flag: swapfile niet aangemaakt."
 fi
 
-# 2.4 Firewall (UFW)
-title "STAP 2b — Firewall (UFW): alleen 22, 80, 443"
+# 2.9 Firewall (UFW)
+title "STAP 2e — Firewall (UFW): alleen 22 (SSH), 80 (HTTP), 443 (HTTPS)"
 if require_cmd ufw; then
   # Reset UFW niet als er al regels staan (idempotent). Voeg ALLEEN de benodigde TOE.
-  step "Toestaan: SSH (22), HTTP (80), HTTPS (443)..."
+  step "Toestaan: SSH (22), HTTP (80), HTTPS (443) | Weigeren: 5432 (Postgres, altijd!)"
   ufw allow OpenSSH >/dev/null 2>&1 || true
   ufw allow 80/tcp  >/dev/null 2>&1 || true
   ufw allow 443/tcp >/dev/null 2>&1 || true
@@ -352,7 +661,7 @@ if require_cmd ufw; then
     if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
       echo "y" | ufw enable >/dev/null 2>&1 || true
     else
-      confirm "UFW inschakelen (AANBEVOLEN: alle inkomende uit behalve SSH/HTTP/HTTPS)?" && \
+      confirm "UFW inschakelen (AANBEVOLEN: alle inkomende UIT, behalve SSH/HTTP/HTTPS)?" && \
         echo "y" | ufw enable 2>&1 | tee -a "$LOG_FILE" >&2 || true
     fi
   fi
@@ -364,13 +673,13 @@ if require_cmd ufw; then
   fi
 fi
 
-# 2.5 fail2ban + unattended (security updates)
-step "Beveiliging: fail2ban + unattended-upgrades (auto security patches)"
+# 2.10 fail2ban + unattended (security updates)
+step "Beveiliging: fail2ban (bruteforce protectie SSH) + unattended-upgrades (auto security patches)"
 systemctl enable fail2ban 2>/dev/null || true
 systemctl restart fail2ban 2>/dev/null || true
 systemctl enable unattended-upgrades 2>/dev/null || true
 dpkg-reconfigure --frontend=noninteractive unattended-upgrades 2>&1 >/dev/null || true
-ok "fail2ban + unattended-upgrades ingeschakeld."
+ok "fail2ban + automatic security updates ingeschakeld."
 
 # ==============================================================================
 # STAP 3 — Non-root gebruiker "stm" (sudo + docker groep, SSH authorized_keys)
