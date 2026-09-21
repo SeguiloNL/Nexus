@@ -994,7 +994,7 @@ cat > /etc/docker/daemon.json <<'DOCKER_DAEMON_EOF'
     "max-file": "5"
   },
   "ipv6": true,
-  "fixed-cidr-v6": "fd00:cadd1:ceb4::/64",
+  "fixed-cidr-v6": "fd00:cad1:ceb4::/64",
   "default-address-pools": [
     {"base": "172.25.0.0/16", "size": 24},
     {"base": "172.31.0.0/16", "size": 24}
