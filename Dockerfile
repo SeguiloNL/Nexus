@@ -54,10 +54,10 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 # Prisma schemabestand + client (nodig voor runtime prisma.* calls in standalone)
-# + Volledige "prisma" npm package (voor CLI — npx prisma ...)
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/prisma ./node_modules/prisma
+# + Volledige node_modules: alle dependencies zijn aanwezig (bcryptjs, sharp,
+#   auth-adapters, etc.). Ivm standalone Next.js worden er geen dev-deps mee
+#   genomen (want die zitten ook niet in deps/builder laag).
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
 
 # Runtime entrypoint: DB connectivity check + migrations + Next.js server
 COPY --chown=nextjs:nodejs entrypoint.sh ./entrypoint.sh
