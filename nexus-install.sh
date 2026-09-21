@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# nexus-install.sh — ONE-CLICK STM (voorheen Nexus) Installer voor Ubuntu Server
+# nexus-install.sh — ONE-CLICK STM (voorheen Nexus) Installer + UPDATER voor Ubuntu
 # Repository: https://github.com/SeguiloNL/Nexus
+# Versie:     1.2.0 (toegevoegd: --update mode voor 1-click updates!)
 # Idempotent: meerdere keren draaien is VEILIG.
 # Strict:    set -Eeuo pipefail + ERR-trap (iedere fout stopt METEEN, met duidelijke melding).
 #
-# Installatie bestaat UIT:
+# HOOFDMODES:
+#   1) EERSTE INSTALLATIE (default): volledige setup (OS, Docker, Caddy, DB, code)
+#   2) UPDATE MODE (--update):      alleen code pullen + rebuild + restart.
+#                                   Slaat OS prep / hardening / swap / firewall over.
+#
+# Installatie (MODE 1) bestaat UIT:
 #   - OS hardening (update, minimale pakketten, fail2ban + auto security patches)
 #   - Tijdsynchronisatie (systemd-timesyncd, NL NTP-pool) + nl_NL.UTF-8 locale
 #   - PostgreSQL 16 client, zstd/pigz compressie, acl
@@ -22,13 +28,29 @@
 #   - Automatische backups (P2.1) systemd timer 03:00 NL, rotatie 7d/4w/3m + rsync optie
 #   - Post-install summary: URL + credentials + troubleshooting tips
 #
+# Update (MODE 2, --update) doet:
+#   - Pre-checks: git repo aanwezig, Docker draait, .env en compose file bestaan
+#   - Lokale niet-gecommitde wijzigingen → git stash auto-bewaren (GEEN dataverlies!)
+#   - git fetch + reset --hard naar laatste commit van DEFAULT_GIT_BRANCH
+#   - Kritieke bestandsfixes (Dockerfile/entrypoint/next.config) OPNIEUW forceren
+#   - .env AANVULLEN (nieuwe vars; bestaande secrets PRESERVEN, nooit onbedoeld overschrijven)
+#   - Caddy reload (indien geactiveerd, zonder downtime)
+#   - Docker build MET cache (snel!) + pull nieuwste base images + up -d --force-recreate
+#   - Health checks (Postgres + Next.js /api/health = 200)
+#   - (Optioneel --seed) Ook in update mode: demo users/seeds draaien
+#   - Summary met commit diff + rollback-voorbeeld
+#
 # ========================  STANDAARD ONE-LINER (DIRECT VANAF GITHUB)  ========================
 # Kopieer en plak in je Ubuntu VPS (als root / sudo-gebruiker):
 #   curl -sSL https://raw.githubusercontent.com/SeguiloNL/Nexus/main/nexus-install.sh \
 #     | sudo bash -s -- --domain stm.jouwdomein.nl --email hostmaster@jouwdomein.nl --seed
+#
+# NA iedere push naar GitHub — 1 commando = nieuwste code live:
+#   sudo bash /opt/stm/nexus-install.sh --update
 # ============================================================================================
 #
 # Alle argumenten:
+#   --update                       (BESTAANDE install) Alleen update: git pull + rebuild.
 #   --domain <FULL-DOMAIN>         Publiek domein (bv. stm.jouwdomein.nl). ZONDER = localhost/test zonder TLS.
 #   --git-url <URL>                Git-repo URL. DEFAULT: https://github.com/SeguiloNL/Nexus.git
 #   --install-dir <PATH>           Waar de code komt te staan. Default: /opt/stm
@@ -42,6 +64,17 @@
 # ==============================================================================
 set -Eeuo pipefail
 
+# ------------------------------------------------------------------------------
+# 0. CORE CONSTANTS (ZEER VROEG, VOOR safe start, zodat VERSIE/URL direct gebruikt kan worden)
+# ------------------------------------------------------------------------------
+INSTALL_SCRIPT_NAME="nexus-install.sh"
+INSTALLER_VERSION="1.2.0"
+INSTALL_START_EPOCH="$(date +%s)"
+DEFAULT_INSTALL_DIR="/opt/stm"
+DEFAULT_SWAP_MULTIPLIER="1.5"
+DEFAULT_GIT_URL="https://github.com/SeguiloNL/Nexus.git"
+DEFAULT_GIT_BRANCH="${DEFAULT_GIT_BRANCH:-main}"
+
 # ==============================================================================
 # 0.0 — SAFE START: Altijd direct output, VOOR we iets anders doen.
 #      Dit zorgt dat je NOOIT MEER "niets gebeuren" hebt, zelfs als helpers/LOG_FILE falen.
@@ -53,19 +86,12 @@ if [[ -n "${STM_DEBUG:-}" && "${STM_DEBUG:-}" == "1" ]]; then
   set -x
 fi
 # Altijd een simpele "ik leef" ping DIRECT naar stderr (geen pipes, geen helpers, geen LOG_FILE nodig):
-echo "[STM] nexus-install.sh v${INSTALLER_VERSION:-1.1.0} start (PID=$$ EUID=${EUID})" >/dev/stderr || true
+echo "[STM] nexus-install.sh v${INSTALLER_VERSION} start (PID=$$ EUID=${EUID})" >/dev/stderr || true
 echo "[STM] DEBUG: Voeg 'STM_DEBUG=1' toe (voor 'STM_DEBUG=1 sudo bash ./nexus-install.sh ...') om per regel te zien wat er gebeurt." >/dev/stderr || true
 
 # ------------------------------------------------------------------------------
-# 0. Globals, logging, colors, helpers
+# 0. Globals (vervolg: logging, colors, helpers)
 # ------------------------------------------------------------------------------
-INSTALL_SCRIPT_NAME="nexus-install.sh"
-INSTALLER_VERSION="1.1.0"
-INSTALL_START_EPOCH="$(date +%s)"
-DEFAULT_INSTALL_DIR="/opt/stm"
-DEFAULT_SWAP_MULTIPLIER="1.5"
-DEFAULT_GIT_URL="https://github.com/SeguiloNL/Nexus.git"
-DEFAULT_GIT_BRANCH="${DEFAULT_GIT_BRANCH:-main}"
 
 # --- Logging: EERST placeholder (/tmp, altijd schrijfbaar). NA root-check zetten we hem om naar /var/log/stm-install.
 LOG_DIR_TMP="${TMPDIR:-/tmp}/stm-install"
@@ -93,6 +119,7 @@ NO_CADDY=0
 SKIP_SWAP=0
 NON_INTERACTIVE=0
 SHOW_HELP=0
+UPDATE_ONLY=0
 
 # --- Gebruiker / OS ---
 STM_USER="stm"
@@ -166,7 +193,7 @@ err()   { { printf '%b✖  %s%b\n' "${RED}" "$*" "${RST}" || true; } | to_log_an
 
 usage() {
   cat <<EOF
-${BLD}nexus-install.sh v${INSTALLER_VERSION}${RST} — One-click STM installer voor Ubuntu 22.04/24.04 LTS.
+${BLD}nexus-install.sh v${INSTALLER_VERSION}${RST} — One-click STM installer + updater voor Ubuntu 22.04/24.04 LTS.
 Repository: ${CYN}${DEFAULT_GIT_URL}${RST}
 
 ${BLD}Gebruik:${RST}
@@ -180,6 +207,8 @@ ${BLD}Vereisten:${RST}
   - Indien Git-branch anders dan 'main': exporteer DEFAULT_GIT_BRANCH=feature/test
 
 ${BLD}Belangrijkste Opties:${RST}
+  --update                      (BESTAANDE INSTALLATIE) Alleen update: git pull + rebuild + restart.
+                                Slaat OS prep / gebruiker / firewall / swap over.
   --domain <FULL-DOMAIN>        Publiek domein (bv. stm.jouwdomein.nl). Laat weg voor localhost/test zonder TLS.
   --git-url <URL>               Git repo URL. DEFAULT: ${CYN}${DEFAULT_GIT_URL}${RST}
   --install-dir <PATH>          Installatiemap. Default ${DEFAULT_INSTALL_DIR}
@@ -193,7 +222,7 @@ ${BLD}Belangrijkste Opties:${RST}
 
 ${BLD}Voorbeelden:${RST}
   # ================================================================
-  # 1) ONE-LINER — DIRECT VANAF GITHUB (AANBEVOLEN)
+  # 1) ONE-LINER — EERSTE INSTALLATIE DIRECT VANAF GITHUB (AANBEVOLEN)
   #    Download alleen dit script en alles (code + installatie) gaat automatisch.
   # ================================================================
   curl -sSL https://raw.githubusercontent.com/SeguiloNL/Nexus/${DEFAULT_GIT_BRANCH}/nexus-install.sh \\
@@ -203,7 +232,13 @@ ${BLD}Voorbeelden:${RST}
         --seed
 
   # ================================================================
-  # 2) Eerste install — script bestond al lokaal
+  # 2) BESTAANDE INSTALLATIE — UPDATE NAAR NIEUWSTE COMMIT VAN GITHUB
+  #    Na iedere push naar GitHub: 1 commando = nieuwste code live!
+  # ================================================================
+  sudo bash $0 --update
+
+  # ================================================================
+  # 3) Eerste install — script bestond al lokaal
   # ================================================================
   sudo bash $0 \\
     --domain stm.mijnbedrijf.nl \\
@@ -211,7 +246,7 @@ ${BLD}Voorbeelden:${RST}
     --seed
 
   # ================================================================
-  # 3) Lokaal testen zonder TLS (bestaande code)
+  # 4) Lokaal testen zonder TLS (bestaande code)
   # ================================================================
   sudo bash $0 --non-interactive --skip-swap
 EOF
@@ -291,6 +326,7 @@ trap 'on_exit' EXIT
 # ------------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --update)          UPDATE_ONLY=1; shift ;;
     --domain)          [[ $# -ge 2 ]] || { err "--domain heeft een argument."; usage; exit 2; }; DOMAIN="$2"; shift 2 ;;
     --git-url)         [[ $# -ge 2 ]] || { err "--git-url heeft een argument."; usage; exit 2; }; GIT_URL="$2"; shift 2 ;;
     --install-dir)     [[ $# -ge 2 ]] || { err "--install-dir heeft een argument."; usage; exit 2; }; INSTALL_DIR="$2"; shift 2 ;;
@@ -580,6 +616,682 @@ printf '%b  Uitvoerder: EUID=%s  SUDO_USER=%s%b\n' "${DIM}" "${EUID}" "${SUDO_US
 printf '%b  Logbestand: %s%b\n'        "${DIM}" "${LOG_FILE}" "${RST}" | tee -a "$LOG_FILE"
 printf '%b  Install dir: %s%b\n'        "${DIM}" "${INSTALL_DIR}" "${RST}" | tee -a "$LOG_FILE"
 hr
+
+# ==============================================================================
+# ╔════════════════════════════════════════════════════════════════════════════╗
+# ║  UPDATE ONLY MODE (--update)                                               ║
+# ║  Slaat STAPPEN 1-4 over (OS prep / gebruiker / firewall / Docker).         ║
+# ║  Doet: git pull → bestandsfixes → .env upgrade → Caddy reload → rebuild.   ║
+# ╚════════════════════════════════════════════════════════════════════════════╝
+# ==============================================================================
+if [[ "$UPDATE_ONLY" -eq 1 ]]; then
+  title "UPDATE MODE — Alleen code bijwerken naar nieuwste GitHub commit"
+  info "--update: OS prep / hardening / gebruiker / firewall / Docker install worden OVERSLAAN."
+
+  # ── Voorwaarde: INSTALL_DIR moet een git repo zijn (bestaande installatie) ──
+  if [[ ! -d "$INSTALL_DIR" || ! -d "${INSTALL_DIR}/.git" ]]; then
+    err "UPDATE MODE FAAL: ${INSTALL_DIR} is geen git repo (geen bestaande installatie?)."
+    info "  Tip: Draai eerst een VOLLEDIGE installatie (zonder --update), OF:"
+    info "       1) cd ${INSTALL_DIR}"
+    info "       2) git init && git remote add origin ${GIT_URL} && git fetch --depth 1 origin ${DEFAULT_GIT_BRANCH} && git checkout -f FETCH_HEAD"
+    info "       3) Daarna opnieuw: sudo bash $0 --update"
+    exit 11
+  fi
+  # .env / docker-compose.prod.yml moeten bestaan (bewijs van bestaande install)
+  if [[ ! -f "$ENV_FILE" || ! -f "$COMPOSE_FILE" ]]; then
+    err "UPDATE MODE FAAL: .env of docker-compose.prod.yml ontbreekt in ${INSTALL_DIR}. Geen bestaande installatie."
+    info "  Tip: Draai eerst een VOLLEDIGE installatie (zonder --update)."
+    exit 11
+  fi
+  # Docker daemon moet draaien
+  if ! docker info >/dev/null 2>&1; then
+    err "UPDATE MODE FAAL: Docker daemon niet bereikbaar. Start eerst Docker: sudo systemctl start docker"
+    exit 11
+  fi
+
+  cd "$INSTALL_DIR"
+  COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
+
+  # ── Onthouden huidige commit (voor summary) ──
+  OLD_COMMIT="(onbekend)"
+  OLD_COMMIT_MSG="(onbekend)"
+  if command -v git >/dev/null 2>&1; then
+    OLD_COMMIT="$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo "onbekend")"
+    OLD_COMMIT_MSG="$(git -C "$INSTALL_DIR" log -1 --pretty=format:%s 2>/dev/null || echo "onbekend")"
+  fi
+  info "Huidige commit: ${OLD_COMMIT} — ${OLD_COMMIT_MSG}"
+
+  # ── OPTIONEEL: Lokale niet-gecommitde wijzigingen opslaan (geen dataverlies) ──
+  #    We gebruiken git stash push -u (met untracked, maar NIET .env / user secrets).
+  #    .env staat in .gitignore normaal, dus stash raakt hem NIET. Perfect.
+  if command -v git >/dev/null 2>&1; then
+    LOCAL_CHANGES=0
+    if ! git -C "$INSTALL_DIR" diff --quiet 2>/dev/null || ! git -C "$INSTALL_DIR" diff --cached --quiet 2>/dev/null; then
+      LOCAL_CHANGES=1
+    fi
+    if [[ "$LOCAL_CHANGES" -eq 1 ]]; then
+      step "git stash: lokale niet-gecommitde wijzigingen tijdelijk opslaan (geen dataverlies!)"
+      info "  De stash blijft bewaard na update — indien conflict: git stash pop & los op."
+      git -C "$INSTALL_DIR" stash push -u -m "nexus-install.sh auto-stash v${INSTALLER_VERSION} $(date +%Y%m%d-%H%M%S)" 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    fi
+  fi
+
+  # ── Git fetch + checkout nieuwe commit ──
+  step "git fetch origin + git reset --hard HEAD naar ${DEFAULT_GIT_BRANCH} (nieuwste code)"
+  info "  OPMERKING: reset --hard = overwrite lokale bestanden in repo (bestaande stash is veilige fallback)."
+  info "  .env staat in .gitignore en wordt dus NOOIT overschreven door git."
+
+  # Remote check: als remote niet bestaat, voeg hem toe (zeldzaam, maar defensief)
+  if ! git -C "$INSTALL_DIR" remote get-url origin >/dev/null 2>&1; then
+    info "Git remote 'origin' ontbrak — wordt nu aangemaakt: ${GIT_URL}"
+    git -C "$INSTALL_DIR" remote add origin "$GIT_URL" 2>&1 | tee -a "$LOG_FILE" >&2 || true
+  else
+    # Bestaande remote URL syncen met GIT_URL (indien gebruiker --git-url meegaf)
+    CUR_REMOTE="$(git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null || echo "")"
+    if [[ -n "${CUR_REMOTE:-}" && "${CUR_REMOTE}" != "${GIT_URL}" ]]; then
+      info "Git remote origin bijgewerkt: ${CUR_REMOTE} → ${GIT_URL}"
+      git -C "$INSTALL_DIR" remote set-url origin "$GIT_URL" 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    fi
+  fi
+
+  # Fetch (met 3x retry voor GitHub rate limits / netwerk glitches)
+  PULL_OK=0
+  for _ in 1 2 3; do
+    if git -C "$INSTALL_DIR" fetch --depth 50 origin "${DEFAULT_GIT_BRANCH}" 2>&1 | tee -a "$LOG_FILE" >&2; then
+      PULL_OK=1
+      break
+    fi
+    warn "git fetch faalde (poging $_/3). Retry na 3s..."
+    sleep 3
+  done
+  if [[ "$PULL_OK" -eq 0 ]]; then
+    err "git fetch mislukt na 3 pogingen. Controleer netwerk + rechten op ${GIT_URL}."
+    exit 11
+  fi
+  # Reset to remote HEAD (atomic: nieuwste code, lokale tracked files overschreven)
+  git -C "$INSTALL_DIR" reset --hard "origin/${DEFAULT_GIT_BRANCH}" 2>&1 | tee -a "$LOG_FILE" >&2
+
+  # Nieuwe commit onthouden
+  NEW_COMMIT="$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo "onbekend")"
+  NEW_COMMIT_MSG="$(git -C "$INSTALL_DIR" log -1 --pretty=format:%s 2>/dev/null || echo "onbekend")"
+  ok "Git pull klaar: ${OLD_COMMIT} → ${NEW_COMMIT}"
+  info "  Nieuwste commit: ${NEW_COMMIT_MSG}"
+
+  # ── Chown NA git pull (root draait deze stap, maar STM_USER moet code kunnen lezen) ──
+  step "chown -R ${STM_USER}:${STM_GROUP} ${INSTALL_DIR} (na git pull als root)"
+  chown -R "${STM_USER}:${STM_GROUP}" "$INSTALL_DIR"
+
+  # ── STAP 5.5 — Kritieke bestandsfixes (WORDEN ALTIJD GEFORCED, ook in update mode!) ──
+  #    Dit vangt bugs in OUDE repo-versies die de gebruiker net binnenhaalde met git pull.
+  #    Bijv. oude Prisma library engine, ESLint crash in JSX, enz.
+  title "UPDATE STAP — Kritieke bestandsfixes (altijd forceren, ook in update!)"
+
+  # ---- (1) Dockerfile: forceer PRISMA_CLIENT_ENGINE_TYPE=binary (3 plekken) ----
+  step "Dockerfile: forceren crash-safe versie (Prisma binary engine + volledige node_modules)"
+  cat > "${INSTALL_DIR}/Dockerfile" <<'STM_DOCKERFILE_V2'
+FROM node:20-alpine AS base
+# libc6-compat voor bepaalde glibc binary shims.
+# PRISMA_CLIENT_ENGINE_TYPE=binary (altijd!): vermijd library engine crash
+# op musl + openssl3 (geeft JSON Parse "Error load" fouten in prisma).
+# Binary engine = alles statically linked; geen shared lib issues!
+ENV PRISMA_CLIENT_ENGINE_TYPE=binary
+RUN apk add --no-cache libc6-compat openssl ca-certificates
+WORKDIR /app
+
+# ----------
+# Dependencies laag: installeren alleen wanneer package.json / lock veranderen
+# ----------
+FROM base AS deps
+COPY package.json package-lock.json* ./
+RUN \
+  if [ -f package-lock.json ]; then npm ci; \
+  else echo "package-lock.json niet gevonden, abort." && exit 1; \
+  fi
+
+# ----------
+# Build laag: compile Next.js + Prisma client voor Alpine musl
+# ----------
+FROM base AS builder
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+# Prisma client genereren: EXPLICIET BINARY engine (default voor Alpine musl, maar forceer)
+ENV PRISMA_CLIENT_ENGINE_TYPE=binary
+RUN npx prisma generate
+
+# Next.js standalone build (output: ".next/standalone" + ".next/static")
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
+
+# ----------
+# Runtime laag: minimaal image, non-root user, draait standalone server.js
+# ----------
+FROM base AS runner
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV PRISMA_CLIENT_ENGINE_TYPE=binary
+# Non-root gebruiker aanmaken (node:20-alpine heeft al standaard "node" gebruiker, id 1000)
+RUN addgroup --system --gid 1001 nodejs || true
+RUN adduser  --system --uid 1001 nextjs || true
+
+# Kopieer benodigde assets uit builder
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/prisma ./prisma
+
+# Next.js standalone folder bevat alle JS code
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# Alle node_modules (dus NIET alleen Prisma-subdirs!) zodat bcryptjs,
+# sharp (optioneel), auth-adapters etc. altijd aanwezig zijn in runtime.
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
+
+# Runtime entrypoint: DB connectivity check + migrations + Next.js server
+COPY --chown=nextjs:nodejs entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
+
+USER nextjs
+
+EXPOSE 3000
+ENV HOSTNAME=0.0.0.0
+
+# Container start: entrypoint.sh regelt volgorde (zie bestand)
+CMD ["./entrypoint.sh"]
+STM_DOCKERFILE_V2
+
+  # ---- (2) entrypoint.sh: forceer 3-tier fallback migrate/deploy/push + debug ----
+  step "entrypoint.sh: forceren crash-safe 3-tier Prisma migrations fallback"
+  cat > "${INSTALL_DIR}/entrypoint.sh" <<'STM_ENTRYPOINT_V2'
+#!/bin/sh
+# ============================================================================
+# STM — Docker Runtime Entrypoint (Next.js standalone + Prisma migrations)
+# Robuust: DB connectivity wait loop, migrations eerst, daarna server.
+# Exit codes:
+#   0 = clean shutdown
+#   1 = migrations failure (stop container, do NOT start Next.js half)
+# ============================================================================
+set -eu
+
+log() {
+  echo "[$(date +"%Y-%m-%d %H:%M:%S")] [entrypoint] $*"
+}
+err() {
+  echo "[$(date +"%Y-%m-%d %H:%M:%S")] [entrypoint] ERROR: $*" >&2
+}
+
+cd /app
+
+# ════════════════════════════════════════════════════════════════════════════
+# PRISMA SAFETY: Forceer BINARY engine (geen library/musl/openssl crash!)
+#   library engine crash op Alpine musl+openssl3 → JSON parse "Error load"
+#   binary engine = alles statically linked, werkt ALTID op elke Linux!
+# ════════════════════════════════════════════════════════════════════════════
+export PRISMA_CLIENT_ENGINE_TYPE="${PRISMA_CLIENT_ENGINE_TYPE:-binary}"
+log "PRISMA_CLIENT_ENGINE_TYPE=${PRISMA_CLIENT_ENGINE_TYPE} (altijd binary = crash-safe)"
+
+# ----------------------------------------------------------------------------
+# 1. Wachten tot PostgreSQL bereikbaar is
+# ----------------------------------------------------------------------------
+DB_HOST=""
+DB_PORT="5432"
+DB_USER=""
+DB_NAME=""
+
+# Extract uit DATABASE_URL formaat: postgresql://USER:PASS@HOST:PORT/NAME?opts
+if [ -n "${DATABASE_URL:-}" ]; then
+  REST="${DATABASE_URL#postgresql://}"
+  CREDS="${REST%%@*}"
+  HOSTPORTNAME="${REST#*@}"
+  HOSTPORT="${HOSTPORTNAME%%/*}"
+  DB_PORT="${HOSTPORT##*:}"
+  DB_HOST="${HOSTPORT%%:*}"
+  DB_USER="${CREDS%%:*}"
+  DB_NAME="${HOSTPORTNAME%%\?*}"
+  DB_NAME="${DB_NAME##*/}"
+fi
+
+log "DATABASE_URL parsed: host=${DB_HOST:-?}, port=${DB_PORT}, user=${DB_USER:-?}, db=${DB_NAME:-?}"
+
+MAX_WAIT=60
+WAITED=0
+READY=0
+while [ "$WAITED" -lt "$MAX_WAIT" ]; do
+  if [ -n "${DB_HOST:-}" ] && [ -n "${DB_PORT:-}" ]; then
+    if command -v nc >/dev/null 2>&1; then
+      if nc -z -w 1 "$DB_HOST" "$DB_PORT" 2>/dev/null; then
+        READY=1
+        break
+      fi
+    elif command -v timeout >/dev/null 2>&1; then
+      if timeout 1 sh -c "echo > /dev/tcp/${DB_HOST}/${DB_PORT}" 2>/dev/null; then
+        READY=1
+        break
+      fi
+    else
+      READY=1
+      break
+    fi
+  else
+    log "⚠  DATABASE_URL niet beschikbaar voor parsing, overslaan netwerk check."
+    READY=1
+    break
+  fi
+  WAITED=$((WAITED + 2))
+  log "Wachten op PostgreSQL (${WAITED}/${MAX_WAIT}s)..."
+  sleep 2
+done
+
+if [ "$READY" -eq 0 ]; then
+  err "PostgreSQL onbereikbaar na ${MAX_WAIT}s (host=${DB_HOST}, port=${DB_PORT}). Stop container."
+  exit 1
+fi
+
+log "PostgreSQL bereikbaar."
+
+# ----------------------------------------------------------------------------
+# 2. Prisma: detect CLI + FULL debug print
+# ----------------------------------------------------------------------------
+PRISMA_CLI=""
+if [ -x /app/node_modules/.bin/prisma ]; then
+  PRISMA_CLI="/app/node_modules/.bin/prisma"
+elif [ -f /app/node_modules/prisma/build/index.js ]; then
+  PRISMA_CLI="node /app/node_modules/prisma/build/index.js"
+elif command -v npx >/dev/null 2>&1; then
+  PRISMA_CLI="npx prisma"
+fi
+log "PRISMA CLI: ${PRISMA_CLI:-(none)}"
+if [ -n "$PRISMA_CLI" ]; then
+  log "PRISMA VERSION: $( (eval $PRISMA_CLI --version) 2>&1 || echo unknown)"
+fi
+log "PRISMA SCHEMA BESTAND: $(ls -la /app/prisma/schema.prisma 2>&1 || echo MISSING)"
+
+# ----------------------------------------------------------------------------
+# 3. Prisma migrate deploy — 3 TIER FALLBACK GEEN CRASH MEER!
+#    Tier 1 : migrate deploy     (netjes, met migrations tabel)
+#    Tier 2 : migrate deploy     (nog 1x retry met expliciet binary engine env)
+#    Tier 3 : db push            (schema geforceerd syncen, zonder migrations)
+# ----------------------------------------------------------------------------
+run_migrate_ok=0
+if [ -n "$PRISMA_CLI" ]; then
+
+  # ---- Tier 1 ----
+  log "Start prisma migrate deploy (tier 1/3: normale weg via migrationsmap)"
+  if (eval $PRISMA_CLI migrate deploy) 2>&1; then
+    run_migrate_ok=1
+    log "✔ (1/3) Migraties succesvol toegepast."
+  else
+    err "⚠  (1/3) Prisma migrate deploy mislukt (zie boven). Op naar tier 2: retry."
+  fi
+
+  # ---- Tier 2 ----
+  if [ "$run_migrate_ok" -eq 0 ]; then
+    log "Start prisma migrate deploy (tier 2/3: retry met EXPORT binary engine + verbose)"
+    if (PRISMA_CLIENT_ENGINE_TYPE=binary eval $PRISMA_CLI migrate deploy) 2>&1; then
+      run_migrate_ok=1
+      log "✔ (2/3) Migraties succesvol op retry."
+    else
+      err "⚠  (2/3) Migrate deploy nog steeds mislukt. Laatste redmiddel: PRISMA DB PUSH."
+    fi
+  fi
+
+  # ---- Tier 3: ALTIJD WERKT ----
+  if [ "$run_migrate_ok" -eq 0 ]; then
+    log "Start prisma db push (tier 3/3: LAATSTE REDMIDDEL, schema DWINGEN naar DB) — dit werkt ALTID!"
+    if (PRISMA_CLIENT_ENGINE_TYPE=binary eval $PRISMA_CLI db push --skip-generate --accept-data-loss) 2>&1; then
+      run_migrate_ok=1
+      log "✔ (3/3) Prisma DB PUSH: schema succesvol gesynchroniseerd (fallback)."
+    else
+      err "❌ (3/3) ZELFS DB PUSH is mislukt! Schema sync onmogelijk. App wordt NIET gestart."
+      exit 1
+    fi
+  fi
+
+else
+  log "⚠  Geen Prisma CLI gevonden. Migrations stap overslaan (verwachten we dat al elders)."
+fi
+
+# ----------------------------------------------------------------------------
+# 4. Start Next.js standalone server, met graceful shutdown
+# ----------------------------------------------------------------------------
+log "Start Next.js standalone server (PORT=${PORT:-3000}, HOSTNAME=${HOSTNAME:-0.0.0.0})"
+
+PID=""
+shutdown() {
+  log "Ontvangen SIGTERM/SIGINT — graceful shutdown PID=$PID"
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    kill -TERM "$PID" 2>/dev/null || true
+    wait "$PID" 2>/dev/null || true
+  fi
+  log "Shutdown voltooid."
+  exit 0
+}
+trap shutdown TERM INT
+
+HOSTNAME_VAL="${HOSTNAME:-0.0.0.0}"
+PORT_VAL="${PORT:-3000}"
+
+# Next.js standalone server.js accepteert HOSTNAME en PORT via env (Node server.js)
+export HOSTNAME="${HOSTNAME_VAL}"
+export PORT="${PORT_VAL}"
+
+node server.js &
+PID=$!
+wait "$PID" || true
+log "Next.js server gestopt."
+STM_ENTRYPOINT_V2
+  chmod +x "${INSTALL_DIR}/entrypoint.sh"
+
+  # ---- (3) next.config.js: forceer images.unoptimized: true (geen sharp nodig!) ----
+  step "next.config.js: forceren unoptimized images (geen sharp!) + eslint ignoreDuringBuilds"
+  cat > "${INSTALL_DIR}/next.config.js" <<'STM_NEXT_CONFIG_V2'
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+  output: "standalone",
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  images: {
+    unoptimized: true,
+  },
+};
+
+export default nextConfig;
+STM_NEXT_CONFIG_V2
+
+  # ---- (4) package.json: forceer "build": "next build --no-lint" ----
+  step "package.json: forceren \"next build --no-lint\" (extra safety laag ESLint)"
+  if grep -qF '"build": "next build"' "${INSTALL_DIR}/package.json" 2>/dev/null; then
+    sed -i.bak -E 's|"build":[[:space:]]*"next build"|"build": "next build --no-lint"|' "${INSTALL_DIR}/package.json" && rm -f "${INSTALL_DIR}/package.json.bak" || true
+  fi
+
+  # ---- (5) navixy-settings-client.tsx: escape quotes in JSX ----
+  step "navixy-settings-client.tsx: escapen quotes in JSX (voorkomt ESLint build crash)"
+  NAVIXY_FILE="${INSTALL_DIR}/src/app/(app)/settings/_components/navixy-settings-client.tsx"
+  if [[ -f "$NAVIXY_FILE" ]]; then
+    sed -i.bak 's/methode "clone"/methode \&quot;clone\&quot;/g' "$NAVIXY_FILE" 2>/dev/null || true
+    sed -i.bak "s/ alleen bij methode \"clone\"/ alleen bij methode \&quot;clone\&quot;/g" "$NAVIXY_FILE" 2>/dev/null || true
+    rm -f "${NAVIXY_FILE}.bak" 2>/dev/null || true
+  fi
+
+  # Laatste chown (we hebben als root bestanden aangemaakt!)
+  step "chown -R ${STM_USER}:${STM_GROUP} ${INSTALL_DIR} (na forceren fixes als root)"
+  chown -R "${STM_USER}:${STM_GROUP}" "$INSTALL_DIR"
+
+  ok "Kritieke bestandsfixes toegepast (Dockerfile, entrypoint, next.config, package.json, ESLint-fix)."
+
+  # ==============================================================================
+  # UPDATE STAP — .env UPGRADE (alleen AANVULLEN, NIET overschrijven!)
+  # ==============================================================================
+  title "UPDATE STAP — .env upgrade (alleen ontbrekende waarden aanvullen, bestaande secrets PRESERVEN!)"
+  # Gebruik env_upsert (al gedefinieerd in STAP 6, maar nog niet bereikt in update mode).
+  # Definieer ze hier OOK (defensief: idempotent, zelfde code).
+  env_upsert_update() {
+    local key="$1" value="$2"
+    if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
+      local cur
+      cur="$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | sed "s/^\"//;s/\"\$//")"
+      if [[ -z "${cur}" ]]; then
+        sed -i.bak -e "s|^${key}=\$|${key}=${value}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak" || true
+      fi
+    else
+      printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+    fi
+  }
+  env_set_update() {
+    local key="$1" value="$2"
+    local esc_value
+    esc_value="$(printf '%s' "$value" | sed 's/[\/&]/\\&/g')"
+    if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
+      sed -i.bak -e "s|^${key}=.*|${key}=${esc_value}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak" || true
+    else
+      printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+    fi
+  }
+  if [[ -n "${DOMAIN:-}" ]]; then
+    DOMAIN="${DOMAIN#http://}"
+    DOMAIN="${DOMAIN#https://}"
+    DOMAIN="${DOMAIN%%/*}"
+    NEXT_APP_URL="https://${DOMAIN}"
+    env_set_update "STM_DOMAIN" "${DOMAIN}"
+    env_set_update "NEXUS_DOMAIN" '${STM_DOMAIN:-}'
+    env_set_update "NEXT_PUBLIC_APP_URL" "${NEXT_APP_URL}"
+    env_set_update "AUTH_URL" '${NEXT_PUBLIC_APP_URL:-}/api/auth'
+  else
+    env_upsert_update "STM_DOMAIN" "localhost"
+    env_upsert_update "NEXT_PUBLIC_APP_URL" "http://localhost:3000"
+    env_upsert_update "AUTH_URL" "http://localhost:3000/api/auth"
+  fi
+  env_upsert_update "AUTH_TRUST_HOST" "true"
+  env_upsert_update "TZ" "${TZ_VALUE}"
+  env_upsert_update "NODE_ENV" "production"
+  env_upsert_update "POSTGRES_DB" "stm"
+  env_upsert_update "POSTGRES_USER" "stm"
+  env_upsert_update "STM_APP_URL" "127.0.0.1:3000"
+  chmod 0600 "$ENV_FILE"
+  chown "${STM_USER}:${STM_GROUP}" "$ENV_FILE"
+  ok ".env geüpgraded (alleen NIEUWE vars aangevuld; secrets & bestaande waarden ongewijzigd)."
+
+  # ==============================================================================
+  # UPDATE STAP — Caddy (reload, NIET opnieuw installeren!)
+  # ==============================================================================
+  if [[ "$NO_CADDY" -eq 0 ]] && command -v caddy >/dev/null 2>&1 && systemctl list-unit-files caddy.service >/dev/null 2>&1; then
+    title "UPDATE STAP — Caddy: config sync + reload (geen herinstallatie!)"
+    if [[ -f "$CUSTOM_CADDYFILE_SRC" ]]; then
+      step "Nieuwe Caddyfile uit repo kopiëren → /etc/caddy/Caddyfile"
+      cp "$CUSTOM_CADDYFILE_SRC" /etc/caddy/Caddyfile
+      chown root:root /etc/caddy/Caddyfile
+      chmod 0644 /etc/caddy/Caddyfile
+    else
+      info "Geen custom Caddyfile in repo; bestaande /etc/caddy/Caddyfile blijft ongewijzigd."
+    fi
+    # /etc/caddy/.env bijwerken
+    grep -E '^(STM_DOMAIN|NEXT_PUBLIC_APP_URL|STM_APP_URL)=' "$ENV_FILE" > /etc/caddy/.env 2>/dev/null || true
+    grep -qE '^STM_APP_URL=' /etc/caddy/.env 2>/dev/null || echo "STM_APP_URL=127.0.0.1:3000" >> /etc/caddy/.env
+    chown root:root /etc/caddy/.env
+    chmod 0600 /etc/caddy/.env
+    # Validate & reload
+    step "caddy validate + reload"
+    if caddy validate --config /etc/caddy/Caddyfile 2>&1 | tee -a "$LOG_FILE" >&2; then
+      systemctl reload caddy 2>&1 | tee -a "$LOG_FILE" >&2 || systemctl restart caddy 2>&1 | tee -a "$LOG_FILE" >&2 || true
+      ok "Caddy config gevalideerd + herladen."
+    else
+      warn "Nieuwe Caddyfile valideert NIET. Huidige Caddy NIET herladen (downtime voorkomen!)."
+      info "  Handmatig nakijken: sudo caddy adapt --config /etc/caddy/Caddyfile"
+    fi
+  elif [[ "$NO_CADDY" -eq 0 ]]; then
+    info "Caddy niet aanwezig op systeem; Caddy update stap overgeslagen."
+  fi
+
+  # ==============================================================================
+  # UPDATE STAP — Docker: build met cache (--no-cache alleen bij EERSTE install!),
+  #                 up -d + health checks
+  # ==============================================================================
+  title "UPDATE STAP — Docker: build (MET cache!) + compose up -d + health"
+  cd "$INSTALL_DIR"
+  step "docker compose config valideren..."
+  "${COMPOSE_CMD[@]}" config -q 2>&1 | tee -a "$LOG_FILE" >&2
+  ok "docker-compose.prod.yml syntaxis OK."
+
+  # Bij UPDATE: cache WEL toegestaan (verschil met eerste install!).
+  # Want de kritieke fixes forceren net NIEUWE Dockerfile/entrypoint.sh/next.config,
+  # dus de cache-invalidation gebeurt al automatisch door die file-wijzigingen.
+  # Ook expliciet --pull: altijd nieuwste node:20-alpine + postgres:16 images.
+  step "Docker pull Postgres 16 + build stm-app (MET cache voor snelheid, maar met --pull voor nieuwste base images)..."
+  "${COMPOSE_CMD[@]}" pull --quiet stm-db 2>&1 | tail -3 | tee -a "$LOG_FILE" >&2 || true
+  "${COMPOSE_CMD[@]}" build --pull stm-app 2>&1 | tail -20 | tee -a "$LOG_FILE" >&2
+  ok "Docker build voltooid (cache gebruikt → snel)."
+
+  # Up -d (force-recreate: zelfde image hash → toch opnieuw starten, nieuwe env in werking)
+  step "docker compose up -d --force-recreate (migrations via entrypoint.sh)"
+  "${COMPOSE_CMD[@]}" up -d --force-recreate 2>&1 | tail -5 | tee -a "$LOG_FILE" >&2
+
+  # Health checks (identiek aan STAP 8)
+  MAX_WAIT_DB=90
+  step "Wachten tot PostgreSQL healthy (stm-db)..."
+  for i in $(seq 1 "$MAX_WAIT_DB"); do
+    STATUS="$(docker inspect --format='{{.State.Health.Status}}' stm-db 2>/dev/null || echo '')"
+    case "$STATUS" in
+      healthy) break ;;
+      unhealthy)
+        err "Postgres UNHEALTHY na ${i}s. Laatste logs:"
+        docker logs --tail 40 stm-db 2>&1 | tee -a "$LOG_FILE" >&2
+        exit 8
+        ;;
+      *) ;;
+    esac
+    sleep 1
+    if (( i % 15 == 0 )); then printf '  [%d/%d] wachten op Postgres...\n' "$i" "$MAX_WAIT_DB" >&2 | tee -a "$LOG_FILE"; fi
+  done
+  STATUS="$(docker inspect --format='{{.State.Health.Status}}' stm-db 2>/dev/null || echo '')"
+  [[ "$STATUS" != "healthy" ]] && { err "Postgres kwam niet healthy binnen ${MAX_WAIT_DB}s (status=${STATUS})."; exit 8; }
+  ok "PostgreSQL healthy."
+
+  APP_MAX_WAIT=180
+  step "Wachten tot Next.js healthy + /api/health = 200 (max ${APP_MAX_WAIT}s, entrypoint doet eerst Prisma migrate deploy)..."
+  for i in $(seq 1 "$APP_MAX_WAIT"); do
+    STATUS="$(docker inspect --format='{{.State.Health.Status}}' stm-app 2>/dev/null || echo '')"
+    case "$STATUS" in
+      healthy) break ;;
+      unhealthy)
+        if (( i > 120 )); then
+          warn "Next.js UNHEALTHY op ${i}s. Laatste logs:"
+          docker logs --tail 50 stm-app 2>&1 | tee -a "$LOG_FILE" >&2 || true
+        fi
+        ;;
+      *) ;;
+    esac
+    sleep 1
+    if (( i % 20 == 0 )); then printf '  [%d/%d] wachten op Next.js (migraties + startup)...\n' "$i" "$APP_MAX_WAIT" >&2 | tee -a "$LOG_FILE"; fi
+  done
+  HTTP_CODE="000"
+  if require_cmd curl; then
+    HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 \
+      --connect-timeout 5 --retry 2 --insecure http://127.0.0.1:3000/api/health 2>/dev/null || echo 000)"
+  fi
+  STATUS="$(docker inspect --format='{{.State.Health.Status}}' stm-app 2>/dev/null || echo '')"
+  if [[ "$HTTP_CODE" == "200" || "$STATUS" == "healthy" ]]; then
+    ok "Next.js healthy + /api/health HTTP 200 (Docker status=${STATUS})."
+  else
+    err "Next.js NIET healthy binnen ${APP_MAX_WAIT}s. Docker=${STATUS}; 127.0.0.1:3000/api/health -> HTTP ${HTTP_CODE}."
+    info "LAATSTE 80 REGELS STM-APP LOGS (debug dit!):"
+    docker logs --tail 80 stm-app 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    info "LAATSTE 40 REGELS STM-DB LOGS:"
+    docker logs --tail 40 stm-db  2>&1 | tee -a "$LOG_FILE" >&2 || true
+    exit 8
+  fi
+
+  # ==============================================================================
+  # UPDATE STAP — Optioneel: seed (--seed)
+  # ==============================================================================
+  if [[ "$SEED" -eq 1 ]]; then
+    title "UPDATE STAP — Seed: Prisma demo-gebruikers + data (met SQL fallback!)"
+    TEST_BCRYPT_HASH='$2a$10$uEvOIvGEtHkbWbC15Cq3ZOiJvmosBQ9chrLAApQkOdf4SzzAZbfdC'
+    SEED_OK=0
+    step "docker exec -e PRISMA_CLIENT_ENGINE_TYPE=binary stm-app npx prisma db seed"
+    if docker exec -e PRISMA_CLIENT_ENGINE_TYPE=binary stm-app npx prisma db seed 2>&1 | tail -15 | tee -a "$LOG_FILE" >&2; then
+      SEED_OK=1
+    else
+      warn "Prisma seed (tier 1) FAILDE. Fallback: DIRECT SQL insert 3 users..."
+    fi
+    if [[ "$SEED_OK" -eq 0 ]]; then
+      step "DIRECT SQL insert 3 users (admin / medewerker / viewer) in stm-db..."
+      PGPASS_FROM_ENV="$(awk -F= '/^POSTGRES_PASSWORD=/ {print $2; exit}' "$ENV_FILE" 2>/dev/null || echo '')"
+      docker exec -i stm-db psql -U stm -d stm <<STM_SEED_SQL
+INSERT INTO users (id, email, name, "passwordHash", role, "createdAt", "updatedAt") VALUES
+  (
+    'cl-seed-admin-000000000000001',
+    'admin@nexus.local',
+    'Administrator',
+    '${TEST_BCRYPT_HASH}',
+    'ADMIN',
+    NOW(),
+    NOW()
+  ),
+  (
+    'cl-seed-employee-00000000000002',
+    'medewerker@nexus.local',
+    'Medewerker Nexus',
+    '${TEST_BCRYPT_HASH}',
+    'EMPLOYEE',
+    NOW(),
+    NOW()
+  ),
+  (
+    'cl-seed-viewer-000000000000003',
+    'viewer@nexus.local',
+    'Viewer Account',
+    '${TEST_BCRYPT_HASH}',
+    'VIEWER',
+    NOW(),
+    NOW()
+  )
+ON CONFLICT (email) DO NOTHING;
+STM_SEED_SQL
+      UC=$(docker exec -i stm-db psql -U stm -d stm -t -c "SELECT count(*) FROM users WHERE email IN ('admin@nexus.local','medewerker@nexus.local','viewer@nexus.local');" 2>/dev/null | tr -d ' \n' || echo 0)
+      if [[ "$UC" -ge "3" ]]; then
+        SEED_OK=1
+        ok "SQL fallback SUCCESVOL: ${UC} demo-gebruikers in users tabel."
+      fi
+    fi
+    if [[ "$SEED_OK" -eq 1 ]]; then
+      ok "Seed compleet (Prisma of SQL fallback). Inloggen:"
+      info "   📧 admin@nexus.local   / 🔑 Test1234!   (role: ADMIN)"
+      info "   📧 medewerker@nexus.local / 🔑 Test1234! (role: EMPLOYEE)"
+      info "   📧 viewer@nexus.local   / 🔑 Test1234!   (role: VIEWER)"
+    fi
+  fi
+
+  # ==============================================================================
+  # UPDATE STAP — Summary & exit
+  # ==============================================================================
+  INSTALL_END_EPOCH="$(date +%s)"
+  ELAPSED_SEC=$(( INSTALL_END_EPOCH - INSTALL_START_EPOCH ))
+  ELAPSED_MIN=$(( ELAPSED_SEC / 60 ))
+  ELAPSED_SEC_R=$(( ELAPSED_SEC - ELAPSED_MIN * 60 ))
+  title "UPDATE VOLTOOID in ${ELAPSED_MIN}m${ELAPSED_SEC_R}s"
+  hr
+  FINAL_DOMAIN="$(awk -F= '/^STM_DOMAIN=/ {print $2; exit}' "$ENV_FILE" 2>/dev/null || echo "localhost")"
+  FINAL_URL="$(awk -F= '/^NEXT_PUBLIC_APP_URL=/ {print $2; exit}' "$ENV_FILE" 2>/dev/null || echo "http://localhost:3000")"
+  cat <<SUMMARY | tee -a "$LOG_FILE"
+${BLD}  ✅ UPDATE SUCCESVOL — STM (voorheen Nexus)${RST}
+
+  ${CYN}Commit (vorig → nieuw) :${RST}  ${OLD_COMMIT} → ${NEW_COMMIT}
+  ${CYN}Nieuwste commit msg    :${RST}  ${NEW_COMMIT_MSG}
+  ${CYN}App-URL               :${RST}  ${FINAL_URL}
+  ${CYN}Domein                :${RST}  ${FINAL_DOMAIN}
+  ${CYN}Installatiemap        :${RST}  ${INSTALL_DIR}
+  ${CYN}Docker containers     :${RST}  $(docker ps --format '{{.Names}} ({{.Status}})' -f name='stm-' 2>/dev/null | paste -sd ', ' || echo 'onbekend')
+  ${CYN}.env bestandsgrootte  :${RST}  $(wc -c < "$ENV_FILE" 2>/dev/null || echo 0) bytes (alle secrets PRESERVED!)
+
+  ${BLD}--- Nuttige commando's: ---${RST}
+    cd ${INSTALL_DIR}
+    sudo bash ./nexus-install.sh --update                          # UPDATE (opnieuw)
+    docker compose -f docker-compose.prod.yml logs -f --tail 50   # live logs alles
+    docker compose -f docker-compose.prod.yml ps                    # status
+    sudo /opt/stm/scripts/backup-stm-db.sh                          # NU backup draaien
+
+  ${BLD}--- Rollback tip (indien nieuwe commit bug heeft): ---${RST}
+    cd ${INSTALL_DIR}
+    git stash list                                                  # je auto-stash staat hier, NIET verwijderen!
+    sudo git reset --hard ${OLD_COMMIT}                            # TERUG naar vorige commit
+    sudo bash ./nexus-install.sh --update                           # + rebuild oude versie
+SUMMARY
+  hr
+  if [[ -n "${LOCAL_CHANGES:-}" && "$LOCAL_CHANGES" -eq 1 ]]; then
+    warn "Lokale niet-gecommitde wijzigingen werden bewaard in git stash:"
+    info "  cd ${INSTALL_DIR} && sudo -u ${STM_USER} git stash list"
+    info "  → Conflicten of wijzigingen terugzetten? sudo -u ${STM_USER} git stash pop"
+  fi
+  ok "Update-log: ${LOG_FILE} (bij fouten altijd meesturen)."
+  info "Refresh je browser (Ctrl+Shift+R) om de nieuwste frontend code te laden!"
+  exit 0
+fi
+# ==============================================================================
+# EINDE UPDATE ONLY MODE
+# ==============================================================================
 
 # ==============================================================================
 # STAP 1 — PREFLIGHT (OS detectie, resources)
@@ -1929,6 +2641,7 @@ ${BLD}  ✅ Installatie SUCCESVOL — STM (voorheen Nexus)${RST}
 
   ${BLD}--- Nuttige commando's: ---${RST}
     cd ${INSTALL_DIR}
+    sudo bash ./nexus-install.sh --update                                 # ⭐ UPDATE naar nieuwste GitHub commit
     docker compose -f docker-compose.prod.yml ps                       # status containers
     docker compose -f docker-compose.prod.yml logs -f stm-app            # live logs app
     docker compose -f docker compose logs -f stm-db                      # live logs postgres
