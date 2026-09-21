@@ -652,6 +652,19 @@ if [[ "$UPDATE_ONLY" -eq 1 ]]; then
   #    Voorkomt crash op speciale chars (!) in URL's / commit messages.
   set +H 2>/dev/null || true
 
+  # ── CRITICAL: Zorg dat GIT_URL ALTIJD een waarde heeft! ──
+  #    (kan leeg zijn als --git-url argument niet is doorgegeven + bootstrap het niet
+  #     zette → dan val ik terug naar DEFAULT_GIT_URL)
+  if [[ -z "${GIT_URL:-}" ]]; then
+    info "  GIT_URL was leeg → fallback naar DEFAULT_GIT_URL: ${DEFAULT_GIT_URL}"
+    GIT_URL="${DEFAULT_GIT_URL}"
+  fi
+  if [[ -z "${DEFAULT_GIT_BRANCH:-}" ]]; then
+    DEFAULT_GIT_BRANCH="main"
+    info "  DEFAULT_GIT_BRANCH was leeg → fallback: main"
+  fi
+  info "  Git config: repo=${GIT_URL}, branch=${DEFAULT_GIT_BRANCH}"
+
   # .env / docker-compose.prod.yml moeten bestaan (bewijs van bestaande install)
   if [[ ! -f "$ENV_FILE" || ! -f "$COMPOSE_FILE" ]]; then
     err "UPDATE MODE FAAL: .env of docker-compose.prod.yml ontbreekt in ${INSTALL_DIR}. Geen bestaande installatie."
@@ -662,6 +675,35 @@ if [[ "$UPDATE_ONLY" -eq 1 ]]; then
   if ! docker info >/dev/null 2>&1; then
     err "UPDATE MODE FAAL: Docker daemon niet bereikbaar. Start eerst Docker: sudo systemctl start docker"
     exit 11
+  fi
+
+  # ── NETWORK PRE-CHECK: Kunnen we uberhaupt GitHub bereiken? ──
+  #    Voorkomt 3x lange retry op een onbereikbare / DNS-broke VPS.
+  step "Netwerk check: bereik GitHub (poort 443)?"
+  GITHUB_HOST="$(printf '%s\n' "${GIT_URL}" | awk -F[/:] '{print $4}')"
+  [[ -z "${GITHUB_HOST}" ]] && GITHUB_HOST="github.com"
+  NET_OK=0
+  if command -v timeout >/dev/null 2>&1 && (command -v nc >/dev/null 2>&1 || command -v bash >/dev/null 2>&1); then
+    if command -v nc >/dev/null 2>&1; then
+      timeout 5 nc -z -w 3 "${GITHUB_HOST}" 443 2>/dev/null && NET_OK=1 || true
+    fi
+    if [[ "$NET_OK" -eq 0 ]] && command -v curl >/dev/null 2>&1; then
+      timeout 8 curl -sS -o /dev/null -m 5 -I "https://${GITHUB_HOST}/" 2>/dev/null && NET_OK=1 || true
+    fi
+  else
+    NET_OK=1  # geen netwerk tools aanwezig → trust, overslaan check
+  fi
+  if [[ "$NET_OK" -eq 1 ]]; then
+    ok "Netwerk OK: ${GITHUB_HOST}:443 bereikbaar."
+  else
+    err "Netwerk FAAL: ${GITHUB_HOST}:443 (GitHub) NIET bereikbaar vanaf deze VPS BINNEN 5s!"
+    info "  Oorzaken + fixes:"
+    info "   1. DNS werkt niet → test:   nslookup github.com"
+    info "   2. Outbound firewall blokkeert 443 → test:   nc -zv github.com 443"
+    info "   3. UFW blokkeert OUTPUT → sudo ufw allow out 443 comment 'git clone + updates'"
+    info "   4. Repo URL verkeerd? Check met: export DEFAULT_GIT_URL=<jouw-https-url>"
+    info "   5. GitHub status?  https://www.githubstatus.com/"
+    exit 12
   fi
 
   cd "$INSTALL_DIR"
@@ -675,41 +717,87 @@ if [[ "$UPDATE_ONLY" -eq 1 ]]; then
     GIT_VALID=1
   fi
   if [[ "$GIT_VALID" -eq 0 ]]; then
-    step "Git repo in ${INSTALL_DIR} ontbreekt of ongeldig — AUTO-REPAIR: (her)aanmaken .git + fetch origin/${DEFAULT_GIT_BRANCH}"
-    info "  Dit doet zich voor als de installer destijds de bestanden kopieerde ZONDER .git-map."
-    info "  Bestaande bestanden in ${INSTALL_DIR} blijven bestaan; .env wordt NIET aangeraakt (staat in .gitignore)."
-    # Gooi eventueel oude corrupte .git weg
+    title "AUTO-REPAIR: (her)bouw git repo in ${INSTALL_DIR}"
+    info "  Oorzaak: installer heeft destijds de bestanden ZONDER .git-map gekopieerd."
+    info "  Bestaande bestanden & .env PRESERVED; .git wordt opnieuw aangemaakt."
+    # Oude corrupte .git → backup (voor zekerheid)
     if [[ -d "${INSTALL_DIR}/.git" ]]; then
-      rm -rf "${INSTALL_DIR}/.git.old.$$" 2>/dev/null || true
-      mv -f "${INSTALL_DIR}/.git" "${INSTALL_DIR}/.git.old.$$" 2>/dev/null || rm -rf "${INSTALL_DIR}/.git" 2>/dev/null || true
+      OLDGIT_BACKUP="${INSTALL_DIR}/.git.backup-$$"
+      step "Oude corrupte .git → backup naar ${OLDGIT_BACKUP} (bewaard 5 min)"
+      mv -f "${INSTALL_DIR}/.git" "${OLDGIT_BACKUP}" 2>/dev/null || rm -rf "${INSTALL_DIR}/.git" 2>/dev/null || true
+      # Automatisch na 5 minuten oude backup opschonen (fire-and-forget subshell)
+      { sleep 300; rm -rf "${OLDGIT_BACKUP}" 2>/dev/null; } &
+      disown 2>/dev/null || true
     fi
-    # Init NIEUWE repo
-    git -C "$INSTALL_DIR" init -q 2>&1 | tee -a "$LOG_FILE" >&2 || true
-    git -C "$INSTALL_DIR" remote add origin "$GIT_URL" 2>&1 | tee -a "$LOG_FILE" >&2 || \
-      git -C "$INSTALL_DIR" remote set-url origin "$GIT_URL" 2>&1 | tee -a "$LOG_FILE" >&2
-    # Fetch nieuwste (met retry)
-    INIT_OK=0
-    for _ in 1 2 3; do
-      if git -C "$INSTALL_DIR" fetch --depth 50 origin "${DEFAULT_GIT_BRANCH}" 2>&1 | tee -a "$LOG_FILE" >&2; then
-        INIT_OK=1
-        break
-      fi
-      warn "Git fetch (auto-repair) mislukt (poging $_/3). Retry na 3s..."
-      sleep 3
-    done
-    if [[ "$INIT_OK" -eq 0 ]]; then
-      err "Git repo auto-repair FAAL: kon na 3 pogingen niet fetchen van ${GIT_URL} (branch: ${DEFAULT_GIT_BRANCH})."
-      info "  Handmatig proberen: cd ${INSTALL_DIR} && sudo git init && sudo git remote add origin ${GIT_URL} && sudo git fetch --depth 50 origin ${DEFAULT_GIT_BRANCH}"
+    # ── STAP A1: git init ──
+    step "[1/5] Nieuwe git initialiseren (git init)"
+    git_INIT_OUT="$(git -C "$INSTALL_DIR" init -q 2>&1)" ; git_INIT_RC=$?
+    if [[ $git_INIT_RC -ne 0 ]]; then
+      err "STAP 1/5 FAIL (git init, exit ${git_INIT_RC}): ${git_INIT_OUT}"
       exit 11
     fi
-    # Belangrijk: Zet HEAD naar origin/branch, maar OVERSCHRIJVEN? NEE — we willen
-    # lokale bestanden (bv. door vorige install geschreven bestanden) niet verliezen.
-    # Gebruik "git reset --soft" + "git checkout" van tracking files.
-    # Beter: we doen een "git reset --mixed origin/branch" zodat de index klopt,
-    # maar working tree NIET wordt overschreven. Daarna doen we later alsnog
-    # de expliciete reset --hard (daar komen we uiteraard nog).
-    git -C "$INSTALL_DIR" reset --mixed -q "origin/${DEFAULT_GIT_BRANCH}" 2>&1 | tee -a "$LOG_FILE" >&2 || true
-    ok "Git repo auto-repair geslaagd (init + fetch origin/${DEFAULT_GIT_BRANCH})."
+    ok "  git init OK."
+    # ── STAP A2: remote origin toevoegen ──
+    step "[2/5] Git remote origin zetten: ${GIT_URL}"
+    git_REMOTE_OUT="$(git -C "$INSTALL_DIR" remote add origin "$GIT_URL" 2>&1)" ; git_REMOTE_RC=$?
+    if [[ $git_REMOTE_RC -ne 0 ]]; then
+      info "  remote add faalde (exit ${git_REMOTE_RC}, waarschijnlijk bestond origin al). Probeer set-url: ${git_REMOTE_OUT}"
+      git_REMOTE_OUT="$(git -C "$INSTALL_DIR" remote set-url origin "$GIT_URL" 2>&1)" ; git_REMOTE_RC=$?
+      if [[ $git_REMOTE_RC -ne 0 ]]; then
+        err "STAP 2/5 FAIL (ook remote set-url, exit ${git_REMOTE_RC}): ${git_REMOTE_OUT}"
+        exit 11
+      fi
+    fi
+    # Verify remote
+    git -C "$INSTALL_DIR" remote get-url origin >/dev/null
+    ok "  git remote origin OK → $(git -C "$INSTALL_DIR" remote get-url origin)"
+    # ── STAP A3: git ls-remote (test authenticatie / repo toegang ZONDER data download) ──
+    step "[3/5] Toegang testen: git ls-remote origin (check rechten repo)"
+    LSREMOTE_OUT=""
+    LSREMOTE_RC=99
+    for _ in 1 2 3; do
+      LSREMOTE_OUT="$(timeout 20 git -C "$INSTALL_DIR" ls-remote --exit-code --heads origin "${DEFAULT_GIT_BRANCH}" 2>&1)" ; LSREMOTE_RC=$?
+      [[ $LSREMOTE_RC -eq 0 ]] && break || sleep 3
+    done
+    if [[ $LSREMOTE_RC -ne 0 ]]; then
+      err "STAP 3/5 FAIL (git ls-remote, exit ${LSREMOTE_RC}): GEEN TOEGANG TOT REPO!"
+      info "  Output: ${LSREMOTE_OUT}"
+      info "  Controleer:"
+      info "   • Is de URL correct? (${GIT_URL})"
+      info "   • Is de repo PUBLIEK? (zoniet: deploy key / HTTPS token nodig → --git-url https://<token>@github.com/..."
+      info "   • Bestaat branch '${DEFAULT_GIT_BRANCH}'?"
+      exit 11
+    fi
+    BRANCH_SHA="$(printf '%s\n' "${LSREMOTE_OUT}" | awk '{print $1; exit}')"
+    ok "  Repo toegankelijk. branch ${DEFAULT_GIT_BRANCH} sha=${BRANCH_SHA}."
+    # ── STAP A4: git fetch --depth 50 ──
+    step "[4/5] git fetch --depth 50 origin ${DEFAULT_GIT_BRANCH} (nieuwe code binnenhalen)"
+    FETCH_RC=99
+    for attempt in 1 2 3; do
+      info "  poging ${attempt}/3 …"
+      # Pipefail-safe: run command first into var, check RC, THEN append to log+stderr
+      FETCH_OUT=""
+      FETCH_OUT="$(git -C "$INSTALL_DIR" fetch --depth 50 origin "${DEFAULT_GIT_BRANCH}" 2>&1)" ; FETCH_RC=$?
+      printf '%s\n' "${FETCH_OUT}" | tee -a "$LOG_FILE" >&2 || true
+      [[ $FETCH_RC -eq 0 ]] && break
+      warn "  poging ${attempt}/3 FAALDE (exit ${FETCH_RC}). Wacht 3s…"
+      sleep 3
+    done
+    if [[ $FETCH_RC -ne 0 ]]; then
+      err "STAP 4/5 FAIL (git fetch, 3x geprobeerd, laatste exit=${FETCH_RC})."
+      info "  Handmatig debuggen: cd ${INSTALL_DIR} && sudo GIT_TRACE=1 git fetch --depth 50 origin ${DEFAULT_GIT_BRANCH}"
+      exit 11
+    fi
+    ok "  git fetch OK."
+    # ── STAP A5: reset --mixed (index naar origin/branch; working tree LATEN STAAN) ──
+    step "[5/5] git reset --mixed origin/${DEFAULT_GIT_BRANCH} (index syncen, bestaande bestanden bewaren)"
+    RESET_OUT="$(git -C "$INSTALL_DIR" reset --mixed -q "origin/${DEFAULT_GIT_BRANCH}" 2>&1)" ; RESET_RC=$?
+    if [[ $RESET_RC -ne 0 ]]; then
+      warn "  reset --mixed gaf exit ${RESET_RC} (${RESET_OUT}). Soft-fallback: git symbolic-ref HEAD"
+      git -C "$INSTALL_DIR" symbolic-ref HEAD "refs/remotes/origin/${DEFAULT_GIT_BRANCH}" 2>/dev/null || true
+    fi
+    ok "  Git repo AUTO-REPAIR 5/5 GESLAAGD."
+    hr
   fi
 
   # ── Onthouden huidige commit (voor summary) ──
@@ -729,7 +817,11 @@ if [[ "$UPDATE_ONLY" -eq 1 ]]; then
   if [[ "$LOCAL_CHANGES" -eq 1 ]]; then
     step "git stash: lokale niet-gecommitde wijzigingen tijdelijk opslaan (geen dataverlies!)"
     info "  De stash blijft bewaard na update — indien conflict: git stash pop & los op."
-    git -C "$INSTALL_DIR" stash push -u -m "nexus-install.sh auto-stash v${INSTALLER_VERSION} $(date +%Y%m%d-%H%M%S)" 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    STASH_OUT="$(git -C "$INSTALL_DIR" stash push -u -m "nexus-install.sh auto-stash v${INSTALLER_VERSION} $(date +%Y%m%d-%H%M%S)" 2>&1)" ; STASH_RC=$?
+    printf '%s\n' "${STASH_OUT}" | tee -a "$LOG_FILE" >&2 || true
+    if [[ $STASH_RC -ne 0 ]]; then
+      warn "  git stash exit ${STASH_RC} (geen kritiek; gaan verder met update)."
+    fi
   fi
 
   # ── Git fetch + checkout nieuwe commit ──
@@ -739,8 +831,8 @@ if [[ "$UPDATE_ONLY" -eq 1 ]]; then
 
   # Remote check: als remote niet bestaat, voeg hem toe (zeldzaam, maar defensief)
   if ! git -C "$INSTALL_DIR" remote get-url origin >/dev/null 2>&1; then
-    step "Git remote 'origin' ontbrak — aanmaken"
-    git -C "$INSTALL_DIR" remote add origin "$GIT_URL" 2>&1 | tee -a "$LOG_FILE" >&2
+    step "Git remote 'origin' ontbrak — aanmaken: ${GIT_URL}"
+    git -C "$INSTALL_DIR" remote add origin "$GIT_URL" 2>&1 | tee -a "$LOG_FILE" >&2 || git -C "$INSTALL_DIR" remote set-url origin "$GIT_URL" 2>&1 | tee -a "$LOG_FILE" >&2
   else
     # Bestaande remote URL syncen met GIT_URL (indien gebruiker --git-url meegaf)
     CUR_REMOTE="$(git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null || echo "")"
@@ -750,23 +842,37 @@ if [[ "$UPDATE_ONLY" -eq 1 ]]; then
     fi
   fi
 
-  # Fetch (met 3x retry voor GitHub rate limits / netwerk glitches)
+  # Fetch (PIPEFAIL-SAFE: 3x retry, check RC los van tee)
   PULL_OK=0
-  for _ in 1 2 3; do
-    if git -C "$INSTALL_DIR" fetch --depth 50 origin "${DEFAULT_GIT_BRANCH}" 2>&1 | tee -a "$LOG_FILE" >&2; then
+  PULL_ATTEMPT_RC=99
+  PULL_OUTPUT=""
+  for attempt in 1 2 3; do
+    info "  git fetch poging ${attempt}/3 …"
+    PULL_OUTPUT="$(git -C "$INSTALL_DIR" fetch --depth 50 origin "${DEFAULT_GIT_BRANCH}" 2>&1)" ; PULL_ATTEMPT_RC=$?
+    printf '%s\n' "${PULL_OUTPUT}" | tee -a "$LOG_FILE" >&2 || true
+    if [[ $PULL_ATTEMPT_RC -eq 0 ]]; then
       PULL_OK=1
       break
     fi
-    warn "git fetch faalde (poging $_/3). Retry na 3s..."
+    warn "  Fetch poging ${attempt}/3 faalde (exit ${PULL_ATTEMPT_RC}). Retry na 3s…"
     sleep 3
   done
   if [[ "$PULL_OK" -eq 0 ]]; then
-    err "git fetch mislukt na 3 pogingen. Controleer netwerk (DNS? firewall?) en publieke toegang tot: ${GIT_URL}"
-    info "  Handmatig testen: cd ${INSTALL_DIR} && sudo GIT_TRACE=1 git fetch --depth 50 origin ${DEFAULT_GIT_BRANCH}"
+    err "git fetch mislukt na 3 pogingen (laatste exit=${PULL_ATTEMPT_RC})."
+    info "  Laatste output: ${PULL_OUTPUT}"
+    info "  Netwerk was eerder OK, dus meestal:"
+    info "    • GitHub rate limit (wacht 1 minuut)"
+    info "    • Repo permissions (deploy key verlopen)"
+    info "  Handmatig debuggen: cd ${INSTALL_DIR} && sudo GIT_TRACE=1 git fetch --depth 50 origin ${DEFAULT_GIT_BRANCH}"
     exit 11
   fi
   # Reset to remote HEAD (atomic: nieuwste code, lokale tracked files overschreven)
-  git -C "$INSTALL_DIR" reset --hard "origin/${DEFAULT_GIT_BRANCH}" 2>&1 | tee -a "$LOG_FILE" >&2
+  RESET_HARD_OUT="$(git -C "$INSTALL_DIR" reset --hard "origin/${DEFAULT_GIT_BRANCH}" 2>&1)" ; RESET_HARD_RC=$?
+  printf '%s\n' "${RESET_HARD_OUT}" | tee -a "$LOG_FILE" >&2 || true
+  if [[ $RESET_HARD_RC -ne 0 ]]; then
+    err "git reset --hard FAALDE (exit ${RESET_HARD_RC}) → ${RESET_HARD_OUT}"
+    exit 11
+  fi
 
   # Nieuwe commit onthouden
   NEW_COMMIT="$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo "onbekend")"
