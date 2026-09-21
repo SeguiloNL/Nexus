@@ -1031,23 +1031,38 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
 done
 
 if [[ "$_docker_ok" -eq 0 ]]; then
-  echo "" >&2 || true
+  echo "" >/dev/stderr 2>/dev/null || true
   echo "[STM] ❌ DOCKER STARTEN MISLUKT. Details volgen (exit 6)." >/dev/stderr 2>/dev/null || true
   err "Docker daemon STARTEN mislukt na 30s (socket /var/run/docker.sock niet bereikbaar)."
-  echo "" >&2 || true
+  echo "" >/dev/stderr 2>/dev/null || true
 
+  # ── PRINT ONBREEKBAAR: eerst data opvangen, dan naar stderr, dan optioneel log.
+  #    GEEN | tee -a $LOG_FILE | pipe meer! (Zelfde patroon als to_log_and_stderr helper!)
+  _out=""
   info "=== (1/3) SYSTEMD STATUS docker, containerd, docker.socket ==="
-  (systemctl status docker containerd docker.socket --no-pager -l 2>&1 || true) | tee -a "$LOG_FILE" >&2
+  _out="$(systemctl status docker containerd docker.socket --no-pager -l 2>&1 || true)" || true
+  printf '%s\n' "$_out" 1>&2 || true
+  if [[ -n "${LOG_FILE:-}" && "${LOG_FILE}" != "/dev/null" && -d "$(dirname "$LOG_FILE" 2>/dev/null || echo "")" ]]; then
+    printf '%s\n' "$_out" >> "$LOG_FILE" 2>/dev/null || true
+  fi
 
-  echo "" >&2 || true
+  echo "" >/dev/stderr 2>/dev/null || true
   info "=== (2/3) JOURNAL LOGS docker (LAATSTE 80 REGELS) ==="
-  (journalctl -u docker --no-pager -n 80 2>&1 || true) | tee -a "$LOG_FILE" >&2
+  _out="$(journalctl -u docker --no-pager -n 80 2>&1 || true)" || true
+  printf '%s\n' "$_out" 1>&2 || true
+  if [[ -n "${LOG_FILE:-}" && "${LOG_FILE}" != "/dev/null" && -d "$(dirname "$LOG_FILE" 2>/dev/null || echo "")" ]]; then
+    printf '%s\n' "$_out" >> "$LOG_FILE" 2>/dev/null || true
+  fi
 
-  echo "" >&2 || true
+  echo "" >/dev/stderr 2>/dev/null || true
   info "=== (3/3) JOURNAL LOGS containerd (LAATSTE 40 REGELS) ==="
-  (journalctl -u containerd --no-pager -n 40 2>&1 || true) | tee -a "$LOG_FILE" >&2
+  _out="$(journalctl -u containerd --no-pager -n 40 2>&1 || true)" || true
+  printf '%s\n' "$_out" 1>&2 || true
+  if [[ -n "${LOG_FILE:-}" && "${LOG_FILE}" != "/dev/null" && -d "$(dirname "$LOG_FILE" 2>/dev/null || echo "")" ]]; then
+    printf '%s\n' "$_out" >> "$LOG_FILE" 2>/dev/null || true
+  fi
 
-  echo "" >&2 || true
+  echo "" >/dev/stderr 2>/dev/null || true
   info "Handmatig proberen opstarten + debuggen:"
   info "  sudo systemctl daemon-reload && sudo systemctl restart containerd docker && sleep 4 && sudo docker info"
   info "  sudo apt-get install --reinstall docker-ce docker-ce-cli containerd.io   # (forceer herinstall)"
