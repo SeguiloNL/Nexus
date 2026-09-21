@@ -76,6 +76,15 @@ DEFAULT_GIT_URL="https://github.com/SeguiloNL/Nexus.git"
 DEFAULT_GIT_BRANCH="${DEFAULT_GIT_BRANCH:-main}"
 
 # ==============================================================================
+# SHELL SAFETY — Bash history expansion UITSCHAKELEN (globaal, VOOR ALLES)
+#   Voorkomt crashes op "!" chars in URLs, commit messages, JSON, shell output.
+#   Geactiveerd op 2 plekken: hier (globaal) & nogmaals binnen --update mode.
+# ==============================================================================
+set +H 2>/dev/null || true
+unset HISTSIZE HISTFILE HISTFILESIZE 2>/dev/null || true
+export HISTCONTROL=ignoreboth 2>/dev/null || true
+
+# ==============================================================================
 # 0.0 — SAFE START: Altijd direct output, VOOR we iets anders doen.
 #      Dit zorgt dat je NOOIT MEER "niets gebeuren" hebt, zelfs als helpers/LOG_FILE falen.
 # ==============================================================================
@@ -552,6 +561,13 @@ bootstrap_repo_if_needed() {
       local item
       for item in "${bootstrap_tmpdir}/repo"/*; do
         local base="${item##*/}"
+        if [[ -z "${base}" ]]; then continue; fi
+        # .git map: ALTIJD verplaatsen (cruciaal voor --update later!
+        if [[ "${base}" == ".git" ]]; then
+          rm -rf "${target}/.git" 2>/dev/null || true
+          mv -f "${item}" "${target}/${base}" 2>/dev/null || cp -a "${item}" "${target}/${base}" 2>/dev/null || true
+          continue
+        fi
         if [[ -e "${target}/${base}" ]]; then
           # Bestaande bestanden niet overschrijven, tenzij het het install script zelf is
           [[ "${base}" == "nexus-install.sh" || "${base}" == "stm-install.sh" ]] && mv -f "${item}" "${target}/${base}" || true
@@ -559,6 +575,10 @@ bootstrap_repo_if_needed() {
           mv -f "${item}" "${target}/${base}"
         fi
       done
+      # Extra zekerheid: ALTIMER expliciet kopiëren indien nog aanwezig (fallback)
+      if [[ -d "${bootstrap_tmpdir}/repo/.git" && ! -d "${target}/.git" ]]; then
+        cp -a "${bootstrap_tmpdir}/repo/.git" "${target}/.git" 2>/dev/null || true
+      fi
       shopt -u dotglob nullglob
     fi
     rm -rf "${bootstrap_tmpdir}"
@@ -628,15 +648,10 @@ if [[ "$UPDATE_ONLY" -eq 1 ]]; then
   title "UPDATE MODE — Alleen code bijwerken naar nieuwste GitHub commit"
   info "--update: OS prep / hardening / gebruiker / firewall / Docker install worden OVERSLAAN."
 
-  # ── Voorwaarde: INSTALL_DIR moet een git repo zijn (bestaande installatie) ──
-  if [[ ! -d "$INSTALL_DIR" || ! -d "${INSTALL_DIR}/.git" ]]; then
-    err "UPDATE MODE FAAL: ${INSTALL_DIR} is geen git repo (geen bestaande installatie?)."
-    info "  Tip: Draai eerst een VOLLEDIGE installatie (zonder --update), OF:"
-    info "       1) cd ${INSTALL_DIR}"
-    info "       2) git init && git remote add origin ${GIT_URL} && git fetch --depth 1 origin ${DEFAULT_GIT_BRANCH} && git checkout -f FETCH_HEAD"
-    info "       3) Daarna opnieuw: sudo bash $0 --update"
-    exit 11
-  fi
+  # ── SAFETY: Bash history expansion UIT voor de HELE update sectie ──
+  #    Voorkomt crash op speciale chars (!) in URL's / commit messages.
+  set +H 2>/dev/null || true
+
   # .env / docker-compose.prod.yml moeten bestaan (bewijs van bestaande install)
   if [[ ! -f "$ENV_FILE" || ! -f "$COMPOSE_FILE" ]]; then
     err "UPDATE MODE FAAL: .env of docker-compose.prod.yml ontbreekt in ${INSTALL_DIR}. Geen bestaande installatie."
@@ -652,28 +667,69 @@ if [[ "$UPDATE_ONLY" -eq 1 ]]; then
   cd "$INSTALL_DIR"
   COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
 
+  # ── AUTO-REPAIR: indien .git ontbreekt OF ongeldige repo (geen HEAD), ──
+  #    herbouw dan de .git map AUTOMATISCH (zodat de gebruiker niet handmatig
+  #    git init + remote add + fetch hoeft te doen). Dit is de bug die je had!
+  GIT_VALID=0
+  if [[ -d "${INSTALL_DIR}/.git" ]] && git -C "$INSTALL_DIR" rev-parse --git-dir >/dev/null 2>&1 && git -C "$INSTALL_DIR" rev-parse HEAD >/dev/null 2>&1; then
+    GIT_VALID=1
+  fi
+  if [[ "$GIT_VALID" -eq 0 ]]; then
+    step "Git repo in ${INSTALL_DIR} ontbreekt of ongeldig — AUTO-REPAIR: (her)aanmaken .git + fetch origin/${DEFAULT_GIT_BRANCH}"
+    info "  Dit doet zich voor als de installer destijds de bestanden kopieerde ZONDER .git-map."
+    info "  Bestaande bestanden in ${INSTALL_DIR} blijven bestaan; .env wordt NIET aangeraakt (staat in .gitignore)."
+    # Gooi eventueel oude corrupte .git weg
+    if [[ -d "${INSTALL_DIR}/.git" ]]; then
+      rm -rf "${INSTALL_DIR}/.git.old.$$" 2>/dev/null || true
+      mv -f "${INSTALL_DIR}/.git" "${INSTALL_DIR}/.git.old.$$" 2>/dev/null || rm -rf "${INSTALL_DIR}/.git" 2>/dev/null || true
+    fi
+    # Init NIEUWE repo
+    git -C "$INSTALL_DIR" init -q 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    git -C "$INSTALL_DIR" remote add origin "$GIT_URL" 2>&1 | tee -a "$LOG_FILE" >&2 || \
+      git -C "$INSTALL_DIR" remote set-url origin "$GIT_URL" 2>&1 | tee -a "$LOG_FILE" >&2
+    # Fetch nieuwste (met retry)
+    INIT_OK=0
+    for _ in 1 2 3; do
+      if git -C "$INSTALL_DIR" fetch --depth 50 origin "${DEFAULT_GIT_BRANCH}" 2>&1 | tee -a "$LOG_FILE" >&2; then
+        INIT_OK=1
+        break
+      fi
+      warn "Git fetch (auto-repair) mislukt (poging $_/3). Retry na 3s..."
+      sleep 3
+    done
+    if [[ "$INIT_OK" -eq 0 ]]; then
+      err "Git repo auto-repair FAAL: kon na 3 pogingen niet fetchen van ${GIT_URL} (branch: ${DEFAULT_GIT_BRANCH})."
+      info "  Handmatig proberen: cd ${INSTALL_DIR} && sudo git init && sudo git remote add origin ${GIT_URL} && sudo git fetch --depth 50 origin ${DEFAULT_GIT_BRANCH}"
+      exit 11
+    fi
+    # Belangrijk: Zet HEAD naar origin/branch, maar OVERSCHRIJVEN? NEE — we willen
+    # lokale bestanden (bv. door vorige install geschreven bestanden) niet verliezen.
+    # Gebruik "git reset --soft" + "git checkout" van tracking files.
+    # Beter: we doen een "git reset --mixed origin/branch" zodat de index klopt,
+    # maar working tree NIET wordt overschreven. Daarna doen we later alsnog
+    # de expliciete reset --hard (daar komen we uiteraard nog).
+    git -C "$INSTALL_DIR" reset --mixed -q "origin/${DEFAULT_GIT_BRANCH}" 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    ok "Git repo auto-repair geslaagd (init + fetch origin/${DEFAULT_GIT_BRANCH})."
+  fi
+
   # ── Onthouden huidige commit (voor summary) ──
   OLD_COMMIT="(onbekend)"
   OLD_COMMIT_MSG="(onbekend)"
-  if command -v git >/dev/null 2>&1; then
-    OLD_COMMIT="$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo "onbekend")"
-    OLD_COMMIT_MSG="$(git -C "$INSTALL_DIR" log -1 --pretty=format:%s 2>/dev/null || echo "onbekend")"
-  fi
+  OLD_COMMIT="$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo "onbekend")"
+  OLD_COMMIT_MSG="$(git -C "$INSTALL_DIR" log -1 --pretty=format:%s 2>/dev/null || echo "onbekend")"
   info "Huidige commit: ${OLD_COMMIT} — ${OLD_COMMIT_MSG}"
 
   # ── OPTIONEEL: Lokale niet-gecommitde wijzigingen opslaan (geen dataverlies) ──
   #    We gebruiken git stash push -u (met untracked, maar NIET .env / user secrets).
   #    .env staat in .gitignore normaal, dus stash raakt hem NIET. Perfect.
-  if command -v git >/dev/null 2>&1; then
-    LOCAL_CHANGES=0
-    if ! git -C "$INSTALL_DIR" diff --quiet 2>/dev/null || ! git -C "$INSTALL_DIR" diff --cached --quiet 2>/dev/null; then
-      LOCAL_CHANGES=1
-    fi
-    if [[ "$LOCAL_CHANGES" -eq 1 ]]; then
-      step "git stash: lokale niet-gecommitde wijzigingen tijdelijk opslaan (geen dataverlies!)"
-      info "  De stash blijft bewaard na update — indien conflict: git stash pop & los op."
-      git -C "$INSTALL_DIR" stash push -u -m "nexus-install.sh auto-stash v${INSTALLER_VERSION} $(date +%Y%m%d-%H%M%S)" 2>&1 | tee -a "$LOG_FILE" >&2 || true
-    fi
+  LOCAL_CHANGES=0
+  if ! git -C "$INSTALL_DIR" diff --quiet 2>/dev/null || ! git -C "$INSTALL_DIR" diff --cached --quiet 2>/dev/null; then
+    LOCAL_CHANGES=1
+  fi
+  if [[ "$LOCAL_CHANGES" -eq 1 ]]; then
+    step "git stash: lokale niet-gecommitde wijzigingen tijdelijk opslaan (geen dataverlies!)"
+    info "  De stash blijft bewaard na update — indien conflict: git stash pop & los op."
+    git -C "$INSTALL_DIR" stash push -u -m "nexus-install.sh auto-stash v${INSTALLER_VERSION} $(date +%Y%m%d-%H%M%S)" 2>&1 | tee -a "$LOG_FILE" >&2 || true
   fi
 
   # ── Git fetch + checkout nieuwe commit ──
@@ -683,14 +739,14 @@ if [[ "$UPDATE_ONLY" -eq 1 ]]; then
 
   # Remote check: als remote niet bestaat, voeg hem toe (zeldzaam, maar defensief)
   if ! git -C "$INSTALL_DIR" remote get-url origin >/dev/null 2>&1; then
-    info "Git remote 'origin' ontbrak — wordt nu aangemaakt: ${GIT_URL}"
-    git -C "$INSTALL_DIR" remote add origin "$GIT_URL" 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    step "Git remote 'origin' ontbrak — aanmaken"
+    git -C "$INSTALL_DIR" remote add origin "$GIT_URL" 2>&1 | tee -a "$LOG_FILE" >&2
   else
     # Bestaande remote URL syncen met GIT_URL (indien gebruiker --git-url meegaf)
     CUR_REMOTE="$(git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null || echo "")"
     if [[ -n "${CUR_REMOTE:-}" && "${CUR_REMOTE}" != "${GIT_URL}" ]]; then
-      info "Git remote origin bijgewerkt: ${CUR_REMOTE} → ${GIT_URL}"
-      git -C "$INSTALL_DIR" remote set-url origin "$GIT_URL" 2>&1 | tee -a "$LOG_FILE" >&2 || true
+      step "Git remote origin bijwerken: ${CUR_REMOTE} → ${GIT_URL}"
+      git -C "$INSTALL_DIR" remote set-url origin "$GIT_URL" 2>&1 | tee -a "$LOG_FILE" >&2
     fi
   fi
 
@@ -705,7 +761,8 @@ if [[ "$UPDATE_ONLY" -eq 1 ]]; then
     sleep 3
   done
   if [[ "$PULL_OK" -eq 0 ]]; then
-    err "git fetch mislukt na 3 pogingen. Controleer netwerk + rechten op ${GIT_URL}."
+    err "git fetch mislukt na 3 pogingen. Controleer netwerk (DNS? firewall?) en publieke toegang tot: ${GIT_URL}"
+    info "  Handmatig testen: cd ${INSTALL_DIR} && sudo GIT_TRACE=1 git fetch --depth 50 origin ${DEFAULT_GIT_BRANCH}"
     exit 11
   fi
   # Reset to remote HEAD (atomic: nieuwste code, lokale tracked files overschreven)
@@ -1823,7 +1880,26 @@ elif [[ -n "${GIT_URL:-}" ]]; then
     git clone --depth 1 "$GIT_URL" "$TMP_GIT" 2>&1 | tail -5 | tee -a "$LOG_FILE" >&2
     # Verplaats alle bestanden (inclusief verborgen .env.production.example)
     shopt -s dotglob nullglob
-    mv "${TMP_GIT}/"* "${INSTALL_DIR}/" 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    for item in "${TMP_GIT}"/*; do
+      base="${item##*/}"
+      [[ -z "${base}" ]] && continue
+      # .git map: ALTIJD overschrijven / verplaatsen (cruciaal voor --update later!)
+      if [[ "${base}" == ".git" ]]; then
+        rm -rf "${INSTALL_DIR}/.git" 2>/dev/null || true
+        mv -f "${item}" "${INSTALL_DIR}/${base}" 2>/dev/null || cp -a "${item}" "${INSTALL_DIR}/${base}" 2>/dev/null || true
+        continue
+      fi
+      if [[ -e "${INSTALL_DIR}/${base}" ]]; then
+        # Al bestaande install script: overschrijven. Rest: overslaan.
+        [[ "${base}" == "nexus-install.sh" || "${base}" == "stm-install.sh" ]] && mv -f "${item}" "${INSTALL_DIR}/${base}" || true
+      else
+        mv -f "${item}" "${INSTALL_DIR}/${base}"
+      fi
+    done
+    # Fallback: expliciet .git kopiëren indien TMP_GIT hem heeft en target niet
+    if [[ -d "${TMP_GIT}/.git" && ! -d "${INSTALL_DIR}/.git" ]]; then
+      cp -a "${TMP_GIT}/.git" "${INSTALL_DIR}/.git" 2>/dev/null || true
+    fi
     shopt -u dotglob nullglob
     rm -rf "$TMP_GIT"
   else
