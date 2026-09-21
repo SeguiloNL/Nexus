@@ -984,6 +984,10 @@ else
 fi
 
 # 4.1 Daemon.json: log rotation (10m × 5), default-address-pools indien CGNAT conflict
+# ── 2x safety om bash history expansion (!) te vermijden: ──
+#    (1) Zet history expansion TIJDELIJK uit (bash '!'-karakter crash anders heredocs).
+#    (2) De heredoc heeft hieronder ALTIJD GEQUOTED delimiter <<'EOF', dus geen expansion.
+set +H 2>/dev/null || true
 step "Docker daemon.json (logrotate + IPv6 + default cidr pools)"
 mkdir -p /etc/docker
 cat > /etc/docker/daemon.json <<'DOCKER_DAEMON_EOF'
@@ -1001,6 +1005,8 @@ cat > /etc/docker/daemon.json <<'DOCKER_DAEMON_EOF'
   ]
 }
 DOCKER_DAEMON_EOF
+chmod 0644 /etc/docker/daemon.json 2>/dev/null || true
+set -H 2>/dev/null || true   # History expansion weer AAN (als het aan stond)
 # Docker groep aanmaken (indien nog niet) + user toevoegen
 getent group docker >/dev/null 2>&1 || groupadd docker
 usermod -aG docker "$STM_USER" 2>/dev/null || true
