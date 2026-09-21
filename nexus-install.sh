@@ -1012,7 +1012,13 @@ usermod -aG docker "$STM_USER" 2>/dev/null || true
 systemctl unmask docker 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable docker docker.socket containerd 2>/dev/null || true
-systemctl restart docker containerd 2>/dev/null || systemctl start docker containerd 2>/dev/null || true
+
+# Probeer eerst een 'restart' (of start indien nog niet):
+echo "[STM] Docker systemd: enable/restart containerd → docker.socket → docker..." >/dev/stderr 2>/dev/null || true
+systemctl restart containerd 2>&1 | tee -a "$LOG_FILE" >&2 || true
+sleep 1
+systemctl restart docker.socket docker 2>&1 | tee -a "$LOG_FILE" >&2 || \
+  systemctl start docker.socket docker 2>&1 | tee -a "$LOG_FILE" >&2 || true
 
 # WACHT MAXIMAAL 30s OP DOCKER SOCKET:
 _docker_ok=0
@@ -1025,11 +1031,27 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
 done
 
 if [[ "$_docker_ok" -eq 0 ]]; then
+  echo "" >&2 || true
+  echo "[STM] ❌ DOCKER STARTEN MISLUKT. Details volgen (exit 6)." >/dev/stderr 2>/dev/null || true
   err "Docker daemon STARTEN mislukt na 30s (socket /var/run/docker.sock niet bereikbaar)."
-  info "Los dit op en start opnieuw:"
-  info "  sudo journalctl -xeu docker --no-pager | tail -60   # bekijk logs"
-  info "  sudo systemctl status docker --no-pager -l"
-  info "  sudo apt-get install --reinstall docker-ce docker-ce-cli containerd.io"
+  echo "" >&2 || true
+
+  info "=== (1/3) SYSTEMD STATUS docker, containerd, docker.socket ==="
+  (systemctl status docker containerd docker.socket --no-pager -l 2>&1 || true) | tee -a "$LOG_FILE" >&2
+
+  echo "" >&2 || true
+  info "=== (2/3) JOURNAL LOGS docker (LAATSTE 80 REGELS) ==="
+  (journalctl -u docker --no-pager -n 80 2>&1 || true) | tee -a "$LOG_FILE" >&2
+
+  echo "" >&2 || true
+  info "=== (3/3) JOURNAL LOGS containerd (LAATSTE 40 REGELS) ==="
+  (journalctl -u containerd --no-pager -n 40 2>&1 || true) | tee -a "$LOG_FILE" >&2
+
+  echo "" >&2 || true
+  info "Handmatig proberen opstarten + debuggen:"
+  info "  sudo systemctl daemon-reload && sudo systemctl restart containerd docker && sleep 4 && sudo docker info"
+  info "  sudo apt-get install --reinstall docker-ce docker-ce-cli containerd.io   # (forceer herinstall)"
+  info "  sudo ss -lntp | grep -E ':(2375|2376)' | head -5                              # (socket?)"
   exit 6
 fi
 
