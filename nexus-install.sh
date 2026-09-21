@@ -256,9 +256,35 @@ on_error() {
   err "Installer FAILED op regel ${line}: ${cmd}" || true
   err "Volledig logbestand: ${LOG_FILE:-geen}" || true
   err "Los het probleem op, je kunt het script VEILIG opnieuw draaien (idempotent)." || true
+  _STM_EXIT_PRINTED=1
   exit 1
 }
 trap 'on_error "${LINENO}" "${BASH_COMMAND}"' ERR
+
+# ── EXIT TRAP (laatste-verdediging-2): ALTJD zichtbaar bij ELKE exit code != 0
+#    (OOK expliciete `exit N`, die GEEN ERR-trap afvuurt! Dus vangt exit 2/3/4/5/9/10.)
+on_exit() {
+  local ec=$?
+  [[ $ec -eq 0 ]] && return 0
+  # Indien ERR trap al heeft gefiret (_STM_EXIT_PRINTED=1): geen duplicaat, enkel nog logbestand regel.
+  if [[ "${_STM_EXIT_PRINTED:-0}" -eq 0 ]]; then
+    echo "" >/dev/stderr 2>/dev/null || true
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >/dev/stderr 2>/dev/null || true
+    echo "❌  STM INSTALLER AFGEBROKEN (exit code ${ec})" >/dev/stderr 2>/dev/null || true
+    echo "    PID=$$ EUID=${EUID}  Script: $0" >/dev/stderr 2>/dev/null || true
+    if [[ -n "${LOG_FILE:-}" && "${LOG_FILE}" != "/dev/null" ]]; then
+      echo "    Logbestand: ${LOG_FILE}" >/dev/stderr 2>/dev/null || true
+      echo "[EXIT ${ec}] Installer afgebroken" >> "$LOG_FILE" 2>/dev/null || true
+    else
+      echo "    Logbestand: (geen / niet schrijfbaar)" >/dev/stderr 2>/dev/null || true
+    fi
+    echo "    TIP: Gebruik STM_DEBUG=1 om per regel te zien wat er gebeurt." >/dev/stderr 2>/dev/null || true
+    echo "    TIP: Script is idempotent — je kunt het VEILIG opnieuw draaien." >/dev/stderr 2>/dev/null || true
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >/dev/stderr 2>/dev/null || true
+  fi
+  return 0
+}
+trap 'on_exit' EXIT
 
 # ------------------------------------------------------------------------------
 # 0b. Argument parsing
