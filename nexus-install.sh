@@ -532,6 +532,15 @@ bootstrap_repo_if_needed() {
 
   # --- Benodigde bestanden ontbreken. Clone de repo, copy dit script, re-exec. ---
   # Minimale apt: zorg dat git/curl/ca-certificates bestaan (zelfs in een kale Ubuntu)
+  # SAFETY: Schakel bash history expansion UIT + zet Git safe.directory voor target
+  set +H 2>/dev/null || true
+  if [[ -n "${target:-}" && -n "${target}" ]]; then
+    git config --global --add safe.directory "${target}" 2>/dev/null || true
+    [[ -n "${STM_USER:-}" ]] && sudo -nu "${STM_USER}" git config --global --add safe.directory "${target}" 2>/dev/null || true
+    export GIT_CONFIG_COUNT=1
+    export GIT_CONFIG_KEY_0="safe.directory"
+    export GIT_CONFIG_VALUE_0="${target}"
+  fi
   export DEBIAN_FRONTEND=noninteractive
   local bootstrap_tmpdir=""
   if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
@@ -648,9 +657,18 @@ if [[ "$UPDATE_ONLY" -eq 1 ]]; then
   title "UPDATE MODE — Alleen code bijwerken naar nieuwste GitHub commit"
   info "--update: OS prep / hardening / gebruiker / firewall / Docker install worden OVERSLAAN."
 
-  # ── SAFETY: Bash history expansion UIT voor de HELE update sectie ──
+  # ── SHELL SAFETY: Bash history expansion UITSCHAKELEN + Git safety ──
   #    Voorkomt crash op speciale chars (!) in URL's / commit messages.
+  #    Voorkomt "dubious ownership" crash in moderne Git >2.35.2: repo owner != huidige gebruiker.
   set +H 2>/dev/null || true
+  for sdir in "${INSTALL_DIR}" "${INSTALL_DIR}/.git"; do
+    git config --global --add safe.directory "${sdir}" 2>/dev/null || true
+    [[ -n "${STM_USER:-}" ]] && sudo -nu "${STM_USER}" git config --global --add safe.directory "${sdir}" 2>/dev/null || true
+  done
+  # Ter verdediging: ook via env var forceren (werkt in oudere Git versies NIET, maar geen kwaad)
+  export GIT_CONFIG_COUNT=1
+  export GIT_CONFIG_KEY_0="safe.directory"
+  export GIT_CONFIG_VALUE_0="${INSTALL_DIR}"
 
   # ── CRITICAL: Zorg dat GIT_URL ALTIJD een waarde heeft! ──
   #    (kan leeg zijn als --git-url argument niet is doorgegeven + bootstrap het niet
@@ -1959,6 +1977,17 @@ ok "Docker daemon config (log-rotation + pools) toegepast. Daemon RUNNING + bere
 # STAP 5 — Code: Git clone OF fallback. Chown naar ${STM_USER}.
 # ==============================================================================
 title "STAP 5 — Installatiemap: ${INSTALL_DIR} (git clone OF bestaande map)"
+
+# ── SHELL + GIT SAFETY (VOORAFGAAND AAN ALLE GIT OPERATIES IN STAP 5) ──
+# History expansion UIT; Git dubious ownership = zet INSTALL_DIR permanent op whitelist
+set +H 2>/dev/null || true
+for sdir in "${INSTALL_DIR}" "${INSTALL_DIR}/.git"; do
+  git config --global --add safe.directory "${sdir}" 2>/dev/null || true
+  [[ -n "${STM_USER:-}" ]] && sudo -nu "${STM_USER}" git config --global --add safe.directory "${sdir}" 2>/dev/null || true
+done
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0="safe.directory"
+export GIT_CONFIG_VALUE_0="${INSTALL_DIR}"
 
 mkdir -p "$INSTALL_DIR"
 INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
