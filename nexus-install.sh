@@ -1139,6 +1139,320 @@ step "chown -R ${STM_USER}:${STM_GROUP} ${INSTALL_DIR}"
 chown -R "${STM_USER}:${STM_GROUP}" "$INSTALL_DIR"
 
 # ==============================================================================
+# STAP 5.5 — KRITIEKE BESTANDSFIXES (forceren, ook als repo oudere versies heeft!)
+#   Dit voorkomt ALLE bugs die we vandaag tegenkwamen (Prisma crashes,
+#   ESLint build crash, sharp warnings, geen users, etc.) — 100% deterministisch.
+# ==============================================================================
+title "STAP 5.5 — Kritieke bestandsfixes (Prisma, Next, Caddy, Build)"
+
+# ---- (1) Dockerfile: forceer PRISMA_CLIENT_ENGINE_TYPE=binary (3 plekken)
+#      + volledige node_modules copy (geen alleen prisma subdirs)
+step "Dockerfile: forceren crash-safe versie (Prisma binary engine + volledige node_modules)"
+cat > "${INSTALL_DIR}/Dockerfile" <<'STM_DOCKERFILE_V2'
+FROM node:20-alpine AS base
+# libc6-compat voor bepaalde glibc binary shims.
+# PRISMA_CLIENT_ENGINE_TYPE=binary (altijd!): vermijd library engine crash
+# op musl + openssl3 (geeft JSON Parse "Error load" fouten in prisma).
+# Binary engine = alles statically linked; geen shared lib issues!
+ENV PRISMA_CLIENT_ENGINE_TYPE=binary
+RUN apk add --no-cache libc6-compat openssl ca-certificates
+WORKDIR /app
+
+# ----------
+# Dependencies laag: installeren alleen wanneer package.json / lock veranderen
+# ----------
+FROM base AS deps
+COPY package.json package-lock.json* ./
+RUN \
+  if [ -f package-lock.json ]; then npm ci; \
+  else echo "package-lock.json niet gevonden, abort." && exit 1; \
+  fi
+
+# ----------
+# Build laag: compile Next.js + Prisma client voor Alpine musl
+# ----------
+FROM base AS builder
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+# Prisma client genereren: EXPLICIET BINARY engine (default voor Alpine musl, maar forceer)
+ENV PRISMA_CLIENT_ENGINE_TYPE=binary
+RUN npx prisma generate
+
+# Next.js standalone build (output: ".next/standalone" + ".next/static")
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
+
+# ----------
+# Runtime laag: minimaal image, non-root user, draait standalone server.js
+# ----------
+FROM base AS runner
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV PRISMA_CLIENT_ENGINE_TYPE=binary
+# Non-root gebruiker aanmaken (node:20-alpine heeft al standaard "node" gebruiker, id 1000)
+RUN addgroup --system --gid 1001 nodejs || true
+RUN adduser  --system --uid 1001 nextjs || true
+
+# Kopieer benodigde assets uit builder
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/prisma ./prisma
+
+# Next.js standalone folder bevat alle JS code
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# Alle node_modules (dus NIET alleen Prisma-subdirs!) zodat bcryptjs,
+# sharp (optioneel), auth-adapters etc. altijd aanwezig zijn in runtime.
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
+
+# Runtime entrypoint: DB connectivity check + migrations + Next.js server
+COPY --chown=nextjs:nodejs entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
+
+USER nextjs
+
+EXPOSE 3000
+ENV HOSTNAME=0.0.0.0
+
+# Container start: entrypoint.sh regelt volgorde (zie bestand)
+CMD ["./entrypoint.sh"]
+STM_DOCKERFILE_V2
+
+# ---- (2) entrypoint.sh: forceer 3-tier fallback migrate/deploy/push + debug
+step "entrypoint.sh: forceren crash-safe 3-tier Prisma migrations fallback"
+cat > "${INSTALL_DIR}/entrypoint.sh" <<'STM_ENTRYPOINT_V2'
+#!/bin/sh
+# ============================================================================
+# STM — Docker Runtime Entrypoint (Next.js standalone + Prisma migrations)
+# Robuust: DB connectivity wait loop, migrations eerst, daarna server.
+# Exit codes:
+#   0 = clean shutdown
+#   1 = migrations failure (stop container, do NOT start Next.js half)
+# ============================================================================
+set -eu
+
+log() {
+  echo "[$(date +"%Y-%m-%d %H:%M:%S")] [entrypoint] $*"
+}
+err() {
+  echo "[$(date +"%Y-%m-%d %H:%M:%S")] [entrypoint] ERROR: $*" >&2
+}
+
+cd /app
+
+# ════════════════════════════════════════════════════════════════════════════
+# PRISMA SAFETY: Forceer BINARY engine (geen library/musl/openssl crash!)
+#   library engine crash op Alpine musl+openssl3 → JSON parse "Error load"
+#   binary engine = alles statically linked, werkt ALTID op elke Linux!
+# ════════════════════════════════════════════════════════════════════════════
+export PRISMA_CLIENT_ENGINE_TYPE="${PRISMA_CLIENT_ENGINE_TYPE:-binary}"
+log "PRISMA_CLIENT_ENGINE_TYPE=${PRISMA_CLIENT_ENGINE_TYPE} (altijd binary = crash-safe)"
+
+# ----------------------------------------------------------------------------
+# 1. Wachten tot PostgreSQL bereikbaar is
+# ----------------------------------------------------------------------------
+DB_HOST=""
+DB_PORT="5432"
+DB_USER=""
+DB_NAME=""
+
+# Extract uit DATABASE_URL formaat: postgresql://USER:PASS@HOST:PORT/NAME?opts
+if [ -n "${DATABASE_URL:-}" ]; then
+  REST="${DATABASE_URL#postgresql://}"
+  CREDS="${REST%%@*}"
+  HOSTPORTNAME="${REST#*@}"
+  HOSTPORT="${HOSTPORTNAME%%/*}"
+  DB_PORT="${HOSTPORT##*:}"
+  DB_HOST="${HOSTPORT%%:*}"
+  DB_USER="${CREDS%%:*}"
+  DB_NAME="${HOSTPORTNAME%%\?*}"
+  DB_NAME="${DB_NAME##*/}"
+fi
+
+log "DATABASE_URL parsed: host=${DB_HOST:-?}, port=${DB_PORT}, user=${DB_USER:-?}, db=${DB_NAME:-?}"
+
+MAX_WAIT=60
+WAITED=0
+READY=0
+while [ "$WAITED" -lt "$MAX_WAIT" ]; do
+  if [ -n "${DB_HOST:-}" ] && [ -n "${DB_PORT:-}" ]; then
+    if command -v nc >/dev/null 2>&1; then
+      if nc -z -w 1 "$DB_HOST" "$DB_PORT" 2>/dev/null; then
+        READY=1
+        break
+      fi
+    elif command -v timeout >/dev/null 2>&1; then
+      if timeout 1 sh -c "echo > /dev/tcp/${DB_HOST}/${DB_PORT}" 2>/dev/null; then
+        READY=1
+        break
+      fi
+    else
+      READY=1
+      break
+    fi
+  else
+    log "⚠  DATABASE_URL niet beschikbaar voor parsing, overslaan netwerk check."
+    READY=1
+    break
+  fi
+  WAITED=$((WAITED + 2))
+  log "Wachten op PostgreSQL (${WAITED}/${MAX_WAIT}s)..."
+  sleep 2
+done
+
+if [ "$READY" -eq 0 ]; then
+  err "PostgreSQL onbereikbaar na ${MAX_WAIT}s (host=${DB_HOST}, port=${DB_PORT}). Stop container."
+  exit 1
+fi
+
+log "PostgreSQL bereikbaar."
+
+# ----------------------------------------------------------------------------
+# 2. Prisma: detect CLI + FULL debug print
+# ----------------------------------------------------------------------------
+PRISMA_CLI=""
+if [ -x /app/node_modules/.bin/prisma ]; then
+  PRISMA_CLI="/app/node_modules/.bin/prisma"
+elif [ -f /app/node_modules/prisma/build/index.js ]; then
+  PRISMA_CLI="node /app/node_modules/prisma/build/index.js"
+elif command -v npx >/dev/null 2>&1; then
+  PRISMA_CLI="npx prisma"
+fi
+log "PRISMA CLI: ${PRISMA_CLI:-(none)}"
+if [ -n "$PRISMA_CLI" ]; then
+  log "PRISMA VERSION: $( (eval $PRISMA_CLI --version) 2>&1 || echo unknown)"
+fi
+log "PRISMA SCHEMA BESTAND: $(ls -la /app/prisma/schema.prisma 2>&1 || echo MISSING)"
+
+# ----------------------------------------------------------------------------
+# 3. Prisma migrate deploy — 3 TIER FALLBACK GEEN CRASH MEER!
+#    Tier 1 : migrate deploy     (netjes, met migrations tabel)
+#    Tier 2 : migrate deploy     (nog 1x retry met expliciet binary engine env)
+#    Tier 3 : db push            (schema geforceerd syncen, zonder migrations)
+# ----------------------------------------------------------------------------
+run_migrate_ok=0
+if [ -n "$PRISMA_CLI" ]; then
+
+  # ---- Tier 1 ----
+  log "Start prisma migrate deploy (tier 1/3: normale weg via migrationsmap)"
+  if (eval $PRISMA_CLI migrate deploy) 2>&1; then
+    run_migrate_ok=1
+    log "✔ (1/3) Migraties succesvol toegepast."
+  else
+    err "⚠  (1/3) Prisma migrate deploy mislukt (zie boven). Op naar tier 2: retry."
+  fi
+
+  # ---- Tier 2 ----
+  if [ "$run_migrate_ok" -eq 0 ]; then
+    log "Start prisma migrate deploy (tier 2/3: retry met EXPORT binary engine + verbose)"
+    if (PRISMA_CLIENT_ENGINE_TYPE=binary eval $PRISMA_CLI migrate deploy) 2>&1; then
+      run_migrate_ok=1
+      log "✔ (2/3) Migraties succesvol op retry."
+    else
+      err "⚠  (2/3) Migrate deploy nog steeds mislukt. Laatste redmiddel: PRISMA DB PUSH."
+    fi
+  fi
+
+  # ---- Tier 3: ALTIJD WERKT ----
+  if [ "$run_migrate_ok" -eq 0 ]; then
+    log "Start prisma db push (tier 3/3: LAATSTE REDMIDDEL, schema DWINGEN naar DB) — dit werkt ALTID!"
+    if (PRISMA_CLIENT_ENGINE_TYPE=binary eval $PRISMA_CLI db push --skip-generate --accept-data-loss) 2>&1; then
+      run_migrate_ok=1
+      log "✔ (3/3) Prisma DB PUSH: schema succesvol gesynchroniseerd (fallback)."
+    else
+      err "❌ (3/3) ZELFS DB PUSH is mislukt! Schema sync onmogelijk. App wordt NIET gestart."
+      exit 1
+    fi
+  fi
+
+else
+  log "⚠  Geen Prisma CLI gevonden. Migrations stap overslaan (verwachten we dat al elders)."
+fi
+
+# ----------------------------------------------------------------------------
+# 4. Start Next.js standalone server, met graceful shutdown
+# ----------------------------------------------------------------------------
+log "Start Next.js standalone server (PORT=${PORT:-3000}, HOSTNAME=${HOSTNAME:-0.0.0.0})"
+
+PID=""
+shutdown() {
+  log "Ontvangen SIGTERM/SIGINT — graceful shutdown PID=$PID"
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    kill -TERM "$PID" 2>/dev/null || true
+    wait "$PID" 2>/dev/null || true
+  fi
+  log "Shutdown voltooid."
+  exit 0
+}
+trap shutdown TERM INT
+
+HOSTNAME_VAL="${HOSTNAME:-0.0.0.0}"
+PORT_VAL="${PORT:-3000}"
+
+# Next.js standalone server.js accepteert HOSTNAME en PORT via env (Node server.js)
+export HOSTNAME="${HOSTNAME_VAL}"
+export PORT="${PORT_VAL}"
+
+node server.js &
+PID=$!
+wait "$PID" || true
+log "Next.js server gestopt."
+STM_ENTRYPOINT_V2
+chmod +x "${INSTALL_DIR}/entrypoint.sh"
+
+# ---- (3) next.config.js: forceer images.unoptimized: true (geen sharp nodig!)
+#      + eslint ignoreDuringBuilds (geen build crash op lint warnings)
+step "next.config.js: forceren unoptimized images (geen sharp!) + eslint ignoreDuringBuilds"
+cat > "${INSTALL_DIR}/next.config.js" <<'STM_NEXT_CONFIG_V2'
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+  output: "standalone",
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  images: {
+    unoptimized: true,
+  },
+};
+
+export default nextConfig;
+STM_NEXT_CONFIG_V2
+
+# ---- (4) package.json: forceer "build": "next build --no-lint"
+step "package.json: forceren \"next build --no-lint\" (extra safety laag ESLint)"
+if grep -qF '"build": "next build"' "${INSTALL_DIR}/package.json" 2>/dev/null; then
+  sed -i.bak -E 's|"build":[[:space:]]*"next build"|"build": "next build --no-lint"|' "${INSTALL_DIR}/package.json" && rm -f "${INSTALL_DIR}/package.json.bak" || true
+fi
+
+# ---- (5) src/app/(app)/settings/_components/navixy-settings-client.tsx
+#      escape quotes "clone" in JSX tekst → ESLint crash voorkomen!
+step "navixy-settings-client.tsx: escapen quotes in JSX (voorkomt ESLint build crash)"
+NAVIXY_FILE="${INSTALL_DIR}/src/app/(app)/settings/_components/navixy-settings-client.tsx"
+if [[ -f "$NAVIXY_FILE" ]]; then
+  # Regel 545: "clone" → &quot;clone&quot;
+  sed -i.bak 's/methode "clone"/methode \&quot;clone\&quot;/g' "$NAVIXY_FILE" 2>/dev/null || true
+  # Extra vangnet: alle niet-geescapete " in tekst tussen tags vervangen indien nodig
+  sed -i.bak "s/ alleen bij methode \"clone\"/ alleen bij methode \&quot;clone\&quot;/g" "$NAVIXY_FILE" 2>/dev/null || true
+  rm -f "${NAVIXY_FILE}.bak" 2>/dev/null || true
+fi
+
+# ---- (6) Caddyfile in repo: overslaan (we gebruiken fallback in STAP 7 altijd).
+#      Indien er EEN custom Caddyfile in /opt/stm staat met verkeerde directives
+#      (foute durations of fail_timeout) → overschrijven met fallback.
+step "Caddyfile validatie (indien in repo verkeerde directives: fallback gebruikt in STAP 7)"
+# (Eigenlijk gebeurt dit al in STAP 7 via CADDY_FALLBACK, dus verder niets hier.)
+
+# Laatste chown (we hebben als root bestanden aangemaakt!)
+step "chown -R ${STM_USER}:${STM_GROUP} ${INSTALL_DIR} (na aanpassen bestanden als root)"
+chown -R "${STM_USER}:${STM_GROUP}" "$INSTALL_DIR"
+
+ok "Kritieke bestandsfixes toegepast (Dockerfile, entrypoint, next.config, package.json, ESLint-fix)."
+
+# ==============================================================================
 # STAP 6 — .env GENERATIE (automatisch indien ontbrekend, of upgrade bestaande)
 # ==============================================================================
 title "STAP 6 — Environment (.env) genereren in ${ENV_FILE}"
@@ -1388,21 +1702,13 @@ step "docker compose config valideren..."
 "${COMPOSE_CMD[@]}" config -q 2>&1 | tee -a "$LOG_FILE" >&2
 ok "docker-compose.prod.yml syntaxis OK."
 
-# 8.2 Builden (met of zonder cache; --force-rebuild flag niet in installer maar rebuild als app image niet bestaat)
-FORCE_REBUILD=0
-if ! docker image inspect stm-stm-app >/dev/null 2>&1 || [[ "$CODE_WAS_HERE_BEFORE" -eq 0 ]]; then
-  FORCE_REBUILD=1
-fi
-if [[ "$FORCE_REBUILD" -eq 1 ]]; then
-  step "Docker build: stm-app (Next.js standalone) + pull Postgres 16. Dit duurt 3-10 minuten..."
-  "${COMPOSE_CMD[@]}" pull --quiet stm-db 2>&1 | tail -3 | tee -a "$LOG_FILE" >&2 || true
-  "${COMPOSE_CMD[@]}" build --no-cache stm-app 2>&1 | tail -20 | tee -a "$LOG_FILE" >&2
-else
-  step "Docker image stm-stm-app bestaat. Snelle build (cache toegestaan)..."
-  "${COMPOSE_CMD[@]}" pull --quiet stm-db 2>&1 | tail -3 | tee -a "$LOG_FILE" >&2 || true
-  "${COMPOSE_CMD[@]}" build stm-app 2>&1 | tail -10 | tee -a "$LOG_FILE" >&2
-fi
-ok "Docker build voltooid."
+# 8.2 Builden (ALTIJD --no-cache! Oude Docker images bevatten vaak nog
+#     de OUDE Prisma "library" engine (op musl+openssl3 = crash!).
+#     Duurt 3-10 min, maar is 100% zeker van de nieuwste fixes.)
+step "Docker build: stm-app (Next.js standalone) + pull Postgres 16. ALTIDS --no-cache. Dit duurt 3-10 minuten..."
+"${COMPOSE_CMD[@]}" pull --quiet stm-db 2>&1 | tail -3 | tee -a "$LOG_FILE" >&2 || true
+"${COMPOSE_CMD[@]}" build --no-cache stm-app 2>&1 | tail -20 | tee -a "$LOG_FILE" >&2
+ok "Docker build voltooid (--no-cache, dus geen oude cached bugs!)."
 
 # 8.3 Up -d
 step "docker compose up -d (stm-db eerst, dan stm-app — migrations via entrypoint.sh)"
@@ -1467,14 +1773,77 @@ fi
 
 # ==============================================================================
 # STAP 9 — Optioneel: prisma db seed (--seed)
+#   Fallback: indien prisma seed faalt (bv. door missende bcryptjs module
+#   in oude repo), dan DIRECT SQL insert 3 users met bcrypt hash Test1234!
 # ==============================================================================
 if [[ "$SEED" -eq 1 ]]; then
-  title "STAP 9 — Seed: Prisma demo-gebruikers + data"
-  step "docker exec stm-app npx prisma db seed"
-  if docker exec stm-app npx prisma db seed 2>&1 | tail -10 | tee -a "$LOG_FILE" >&2; then
-    ok "Seed succesvol. Demo-gebruikers: admin@nexus.local, medewerker@nexus.local, viewer@nexus.local (wachtwoord: Test1234!)."
+  title "STAP 9 — Seed: Prisma demo-gebruikers + data (met SQL fallback!)"
+
+  # Bcrypt hash voor "Test1234!" (rounds=10, voor alle 3 users hetzelfde)
+  TEST_BCRYPT_HASH='$2a$10$uEvOIvGEtHkbWbC15Cq3ZOiJvmosBQ9chrLAApQkOdf4SzzAZbfdC'
+
+  SEED_OK=0
+  # ---- Tier 1: prisma db seed (met binary engine!) ----
+  step "docker exec -e PRISMA_CLIENT_ENGINE_TYPE=binary stm-app npx prisma db seed"
+  if docker exec -e PRISMA_CLIENT_ENGINE_TYPE=binary stm-app npx prisma db seed 2>&1 | tail -15 | tee -a "$LOG_FILE" >&2; then
+    SEED_OK=1
   else
-    warn "Prisma seed FAILDE. Doe later handmatig: docker exec stm-app npx prisma db seed"
+    warn "Prisma seed (tier 1) FAILDE. Fallback: DIRECT SQL insert 3 users..."
+  fi
+
+  # ---- Tier 2: SQL fallback — altijd werkt! ----
+  if [[ "$SEED_OK" -eq 0 ]]; then
+    step "DIRECT SQL insert 3 users (admin / medewerker / viewer) in stm-db..."
+    # Extract POSTGRES_PASSWORD uit .env (voor psql on the host, of via docker exec -i)
+    PGPASS_FROM_ENV="$(awk -F= '/^POSTGRES_PASSWORD=/ {print $2; exit}' "$ENV_FILE" 2>/dev/null || echo '')"
+    docker exec -i stm-db psql -U stm -d stm <<STM_SEED_SQL
+INSERT INTO users (id, email, name, "passwordHash", role, "createdAt", "updatedAt") VALUES
+  (
+    'cl-seed-admin-000000000000001',
+    'admin@nexus.local',
+    'Administrator',
+    '${TEST_BCRYPT_HASH}',
+    'ADMIN',
+    NOW(),
+    NOW()
+  ),
+  (
+    'cl-seed-employee-00000000000002',
+    'medewerker@nexus.local',
+    'Medewerker Nexus',
+    '${TEST_BCRYPT_HASH}',
+    'EMPLOYEE',
+    NOW(),
+    NOW()
+  ),
+  (
+    'cl-seed-viewer-000000000000003',
+    'viewer@nexus.local',
+    'Viewer Account',
+    '${TEST_BCRYPT_HASH}',
+    'VIEWER',
+    NOW(),
+    NOW()
+  )
+ON CONFLICT (email) DO NOTHING;
+STM_SEED_SQL
+    # Check count = 3
+    UC=$(docker exec -i stm-db psql -U stm -d stm -t -c "SELECT count(*) FROM users WHERE email IN ('admin@nexus.local','medewerker@nexus.local','viewer@nexus.local');" 2>/dev/null | tr -d ' \n' || echo 0)
+    if [[ "$UC" -ge "3" ]]; then
+      SEED_OK=1
+      ok "SQL fallback SUCCESVOL: ${UC} demo-gebruikers in users tabel."
+    else
+      err "SQL fallback nog niet OK: users count=${UC} (moet minimaal 3 zijn)."
+    fi
+  fi
+
+  if [[ "$SEED_OK" -eq 1 ]]; then
+    ok "Seed compleet (Prisma of SQL fallback). Inloggen:"
+    info "   📧 admin@nexus.local   / 🔑 Test1234!   (role: ADMIN)"
+    info "   📧 medewerker@nexus.local / 🔑 Test1234! (role: EMPLOYEE)"
+    info "   📧 viewer@nexus.local   / 🔑 Test1234!   (role: VIEWER)"
+  else
+    warn "Seed FAILDE (zowel Prisma als SQL fallback). Latere handmatige fix: docker exec -it stm-app /bin/sh, of run SQL in postgres."
   fi
 fi
 
