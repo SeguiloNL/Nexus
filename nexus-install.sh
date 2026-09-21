@@ -1004,10 +1004,38 @@ DOCKER_DAEMON_EOF
 # Docker groep aanmaken (indien nog niet) + user toevoegen
 getent group docker >/dev/null 2>&1 || groupadd docker
 usermod -aG docker "$STM_USER" 2>/dev/null || true
-# Herstart Docker (indien draaiend)
-systemctl enable docker 2>/dev/null || true
-systemctl restart docker 2>/dev/null || systemctl start docker 2>/dev/null || true
-ok "Docker daemon config (log-rotation + pools) toegepast. Gebruiker ${STM_USER} in docker-groep."
+
+# ============================================================
+# 4.2 🔥 DOCKER DAEMON START + GARANDEREN DAT HIJ WERKT
+# (Dit was de FATALE bug: || true → nooit gezien dat Docker NIET startte!)
+# ============================================================
+systemctl unmask docker 2>/dev/null || true
+systemctl daemon-reload
+systemctl enable docker docker.socket containerd 2>/dev/null || true
+systemctl restart docker containerd 2>/dev/null || systemctl start docker containerd 2>/dev/null || true
+
+# WACHT MAXIMAAL 30s OP DOCKER SOCKET:
+_docker_ok=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if docker info >/dev/null 2>&1; then
+    _docker_ok=1
+    break
+  fi
+  sleep 3
+done
+
+if [[ "$_docker_ok" -eq 0 ]]; then
+  err "Docker daemon STARTEN mislukt na 30s (socket /var/run/docker.sock niet bereikbaar)."
+  info "Los dit op en start opnieuw:"
+  info "  sudo journalctl -xeu docker --no-pager | tail -60   # bekijk logs"
+  info "  sudo systemctl status docker --no-pager -l"
+  info "  sudo apt-get install --reinstall docker-ce docker-ce-cli containerd.io"
+  exit 6
+fi
+
+sudo -u "$STM_USER" docker ps >/dev/null 2>&1 2>/dev/null || info "⚠ User '${STM_USER}' in groep docker; nieuwe SSH-sessie nodig voor toegang (sudo docker werkt wel)."
+
+ok "Docker daemon config (log-rotation + pools) toegepast. Daemon RUNNING + bereikbaar. User ${STM_USER} in docker-groep."
 
 # ==============================================================================
 # STAP 5 — Code: Git clone OF fallback. Chown naar ${STM_USER}.
@@ -1268,15 +1296,40 @@ CADDY_FALLBACK
   else
     ok "Caddyfile gevalideerd."
   fi
-  # Enable/start
+
+  # ============================================================
+  # 7.2 🔥 CADDY SERVICE STARTEN + GARANDEREN DAT HIJ WERKT
+  # ============================================================
+  systemctl unmask caddy 2>/dev/null || true
+  systemctl daemon-reload
   systemctl enable caddy 2>/dev/null || true
-  systemctl restart caddy 2>/dev/null || systemctl start caddy 2>/dev/null || true
-  sleep 2
+  # Reload indien reeds running; anders restart/start:
   if systemctl is-active --quiet caddy 2>/dev/null; then
-    ok "Caddy actief (systemd). HTTPS wordt automatisch aangevraagd zodra DNS klopt."
+    systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
   else
-    warn "Caddy is NIET actief. Run: sudo systemctl status caddy — logs: journalctl -u caddy -n 80"
+    systemctl restart caddy 2>/dev/null || systemctl start caddy 2>/dev/null || true
   fi
+
+  # Wacht MAXIMAAL 20s tot Caddy RUNNING is + HTTP antwoord op :80
+  _caddy_ok=0
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if systemctl is-active --quiet caddy 2>/dev/null && curl -fsS -o /dev/null -m 3 --max-time 3 http://127.0.0.1:80/ 2>/dev/null; then
+      _caddy_ok=1
+      break
+    fi
+    sleep 2
+  done
+
+  if [[ "$_caddy_ok" -eq 0 ]]; then
+    # Indien nog niet OK: probeer nog een expliciete herstart + toon de foutmeldingen op stderr (altijd zichtbaar!)
+    systemctl restart caddy 2>/dev/null || true
+    err "Caddy service STARTEN mislukt (na 20s wachten)."
+    info "Laatste 60 regels Caddy systemd logs:"
+    journalctl -u caddy --no-pager -n 60 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    info "Tip: Controleer /etc/caddy/Caddyfile handmatig; of draai 'caddy adapt --config /etc/caddy/Caddyfile'."
+    exit 7
+  fi
+  ok "Caddy actief (systemd) + HTTP :80 bereikbaar. HTTPS wordt automatisch aangevraagd zodra DNS klopt (Let's Encrypt)."
 fi
 
 # ==============================================================================
@@ -1361,7 +1414,12 @@ STATUS="$(docker inspect --format='{{.State.Health.Status}}' stm-app 2>/dev/null
 if [[ "$HTTP_CODE" == "200" || "$STATUS" == "healthy" ]]; then
   ok "Next.js healthy + /api/health HTTP 200 (Docker status=${STATUS})."
 else
-  warn "Health status: ${STATUS}; /api/health 127.0.0.1:3000 -> HTTP ${HTTP_CODE}. Logs: docker logs --tail 80 stm-app"
+  err "Next.js NIET healthy binnen ${APP_MAX_WAIT}s. Docker=${STATUS}; 127.0.0.1:3000/api/health -> HTTP ${HTTP_CODE}."
+  info "LAATSTE 80 REGELS STM-APP LOGS (debug dit!):"
+  docker logs --tail 80 stm-app 2>&1 | tee -a "$LOG_FILE" >&2 || true
+  info "LAATSTE 40 REGELS STM-DB LOGS:"
+  docker logs --tail 40 stm-db  2>&1 | tee -a "$LOG_FILE" >&2 || true
+  exit 8
 fi
 
 # ==============================================================================
