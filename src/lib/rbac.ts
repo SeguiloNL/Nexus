@@ -33,8 +33,8 @@ const RBAC_MATRIX: PermissionMatrix = {
       "setting",
       "dashboard",
     ],
-    create: [...ALL_WRITE],
-    edit: [...ALL_WRITE, "setting"],
+    create: [...ALL_WRITE, "user"],
+    edit: [...ALL_WRITE, "setting", "user"],
     delete: [
       "customer",
       "tracker",

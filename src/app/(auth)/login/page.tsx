@@ -99,9 +99,6 @@ export default function LoginPage() {
         <p className="mt-6 text-center text-xs text-gray-500">
           Neem contact op met je beheerder voor accountgegevens.
         </p>
-        <p className="mt-2 text-center text-xs text-gray-400">
-          Seed credentials (na db seeden): admin@nexus.local / Test1234!
-        </p>
       </div>
     </div>
   );
