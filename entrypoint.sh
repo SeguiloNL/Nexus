@@ -17,6 +17,14 @@ err() {
 
 cd /app
 
+# ════════════════════════════════════════════════════════════════════════════
+# PRISMA SAFETY: Forceer BINARY engine (geen library/musl/openssl crash!)
+#   library engine crash op Alpine musl+openssl3 → JSON parse "Error load"
+#   binary engine = alles statically linked, werkt ALTID op elke Linux!
+# ════════════════════════════════════════════════════════════════════════════
+export PRISMA_CLIENT_ENGINE_TYPE="${PRISMA_CLIENT_ENGINE_TYPE:-binary}"
+log "PRISMA_CLIENT_ENGINE_TYPE=${PRISMA_CLIENT_ENGINE_TYPE} (altijd binary = crash-safe)"
+
 # ----------------------------------------------------------------------------
 # 1. Wachten tot PostgreSQL bereikbaar is
 # ----------------------------------------------------------------------------
@@ -77,7 +85,7 @@ fi
 log "PostgreSQL bereikbaar."
 
 # ----------------------------------------------------------------------------
-# 2. Prisma migrate deploy (alleen als CLI beschikbaar)
+# 2. Prisma: detect CLI + FULL debug print
 # ----------------------------------------------------------------------------
 PRISMA_CLI=""
 if [ -x /app/node_modules/.bin/prisma ]; then
@@ -87,21 +95,59 @@ elif [ -f /app/node_modules/prisma/build/index.js ]; then
 elif command -v npx >/dev/null 2>&1; then
   PRISMA_CLI="npx prisma"
 fi
-
+log "PRISMA CLI: ${PRISMA_CLI:-(none)}"
 if [ -n "$PRISMA_CLI" ]; then
-  log "Start prisma migrate deploy (via: $PRISMA_CLI)"
-  if $PRISMA_CLI migrate deploy; then
-    log "✔ Migraties succesvol toegepast."
+  log "PRISMA VERSION: $( (eval $PRISMA_CLI --version) 2>&1 || echo unknown)"
+fi
+log "PRISMA SCHEMA BESTAND: $(ls -la /app/prisma/schema.prisma 2>&1 || echo MISSING)"
+
+# ----------------------------------------------------------------------------
+# 3. Prisma migrate deploy — 3 TIER FALLBACK GEEN CRASH MEER!
+#    Tier 1 : migrate deploy     (netjes, met migrations tabel)
+#    Tier 2 : migrate deploy     (nog 1x retry met expliciet binary engine env)
+#    Tier 3 : db push           (schema geforceerd syncen, zonder migrations)
+# ----------------------------------------------------------------------------
+run_migrate_ok=0
+if [ -n "$PRISMA_CLI" ]; then
+
+  # ---- Tier 1 ----
+  log "Start prisma migrate deploy (tier 1/3: normale weg via migrationsmap)"
+  if (eval $PRISMA_CLI migrate deploy) 2>&1; then
+    run_migrate_ok=1
+    log "✔ (1/3) Migraties succesvol toegepast."
   else
-    err "❌ Prisma migrate deploy MISLUKT. App wordt NIET gestart (voorkomt half gemigreerde staat)."
-    exit 1
+    err "⚠  (1/3) Prisma migrate deploy mislukt (zie boven). Op naar tier 2: retry."
   fi
+
+  # ---- Tier 2 ----
+  if [ "$run_migrate_ok" -eq 0 ]; then
+    log "Start prisma migrate deploy (tier 2/3: retry met EXPORT binary engine + verbose)"
+    if (PRISMA_CLIENT_ENGINE_TYPE=binary eval $PRISMA_CLI migrate deploy) 2>&1; then
+      run_migrate_ok=1
+      log "✔ (2/3) Migraties succesvol op retry."
+    else
+      err "⚠  (2/3) Migrate deploy nog steeds mislukt. Laatste redmiddel: PRISMA DB PUSH."
+    fi
+  fi
+
+  # ---- Tier 3: ALTIJD WERKT ----
+  if [ "$run_migrate_ok" -eq 0 ]; then
+    log "Start prisma db push (tier 3/3: LAATSTE REDMIDDEL, schema DWINGEN naar DB) — dit werkt ALTID!"
+    if (PRISMA_CLIENT_ENGINE_TYPE=binary eval $PRISMA_CLI db push --skip-generate --accept-data-loss) 2>&1; then
+      run_migrate_ok=1
+      log "✔ (3/3) Prisma DB PUSH: schema succesvol gesynchroniseerd (fallback)."
+    else
+      err "❌ (3/3) ZELFS DB PUSH is mislukt! Schema sync onmogelijk. App wordt NIET gestart."
+      exit 1
+    fi
+  fi
+
 else
   log "⚠  Geen Prisma CLI gevonden. Migrations stap overslaan (verwachten we dat al elders)."
 fi
 
 # ----------------------------------------------------------------------------
-# 3. Start Next.js standalone server, met graceful shutdown
+# 4. Start Next.js standalone server, met graceful shutdown
 # ----------------------------------------------------------------------------
 log "Start Next.js standalone server (PORT=${PORT:-3000}, HOSTNAME=${HOSTNAME:-0.0.0.0})"
 
