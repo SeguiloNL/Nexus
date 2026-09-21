@@ -42,6 +42,20 @@
 # ==============================================================================
 set -Eeuo pipefail
 
+# ==============================================================================
+# 0.0 — SAFE START: Altijd direct output, VOOR we iets anders doen.
+#      Dit zorgt dat je NOOIT MEER "niets gebeuren" hebt, zelfs als helpers/LOG_FILE falen.
+# ==============================================================================
+# Indirect: STM_DEBUG=1 → bash -x trace per regel (naar stderr, altijd zichtbaar!)
+if [[ -n "${STM_DEBUG:-}" && "${STM_DEBUG:-}" == "1" ]]; then
+  echo "[STM-DEBUG] Script start. PID=$$ EUID=${EUID} SUDO_USER=${SUDO_USER:-none} SUDO_ESCALATED=${SUDO_ESCALATED:-none} STM_RUN_COUNT=${STM_RUN_COUNT:-0}" >/dev/stderr || true
+  echo "[STM-DEBUG] STM_DEBUG=1: bash -x trace AAN. Alle regels gaan zichtbaar voorbij op stderr." >/dev/stderr || true
+  set -x
+fi
+# Altijd een simpele "ik leef" ping DIRECT naar stderr (geen pipes, geen helpers, geen LOG_FILE nodig):
+echo "[STM] nexus-install.sh v${INSTALLER_VERSION:-1.1.0} start (PID=$$ EUID=${EUID})" >/dev/stderr || true
+echo "[STM] DEBUG: Voeg 'STM_DEBUG=1' toe (voor 'STM_DEBUG=1 sudo bash ./nexus-install.sh ...') om per regel te zien wat er gebeurt." >/dev/stderr || true
+
 # ------------------------------------------------------------------------------
 # 0. Globals, logging, colors, helpers
 # ------------------------------------------------------------------------------
@@ -89,6 +103,67 @@ TZ_VALUE="${TZ:-Europe/Amsterdam}"
 # ------------------------------------------------------------------------------
 # 0a. Helpers
 # ------------------------------------------------------------------------------
+# ── Schrijf helpers ──────────────────────────────────────────────────────────
+# INFO / OK / STEP / TITLE / HR : naar STDOUT  (gebruiker ziet dit standaard)
+# WARN / ERR                    : naar STDERR  (fouten/meldingen)
+# ALLE helpers schrijven OOK naar $LOG_FILE via tee (log duplicatie).
+#
+# ☣️  CRITICAL: Deze helpers MOETEN NOOIT falen (geen non-zero exit code)!
+#    Indien `tee` of LOG_FILE problemen geeft: schrijf alléén naar console
+#    en zorg altijd voor exit 0. Anders kettingreactie via set -e + ERR-trap
+#    → SILENT EXIT (de bug die je nu ervaart!).
+to_log_and_stdout() {
+  # 1: Naar stdout (altijd console, altijd ongeacht LOG_FILE)
+  # 2: Indien mogelijk: OOK naar $LOG_FILE appenden, MAAR OOK DAN: succes = altijd 0
+  local out=""
+  out="$(cat 2>/dev/null || true)" || true
+  # Altijd eerst stdout (zichtbaar voor gebruiker)
+  printf '%s' "$out"
+  # Optioneel: probeer ook naar $LOG_FILE. Lukt niet? Negeer het simpelweg.
+  local want_log=1
+  if [[ -z "${LOG_FILE:-}" ]]; then want_log=0; fi
+  if [[ "${LOG_FILE:-}" == "/dev/null" ]]; then want_log=0; fi
+  if [[ "$want_log" -eq 1 ]]; then
+    # Check of tee bestaat en LOG_FILE map schrijfbaar is (of /dev/null al afgehandeld)
+    if command -v tee >/dev/null 2>&1; then
+      local log_dir
+      log_dir="$(dirname "$LOG_FILE" 2>/dev/null || echo "")"
+      if [[ -n "$log_dir" && -d "$log_dir" && -w "$log_dir" ]]; then
+        printf '%s' "$out" >> "$LOG_FILE" 2>/dev/null || true
+      fi
+    fi
+  fi
+  return 0   # ☣️  ALTIJD SUCCES (ook als loggen mislukte)
+}
+to_log_and_stderr() {
+  # Zelfde als bovenstaande, maar hoofd-output gaat naar stderr
+  local out=""
+  out="$(cat 2>/dev/null || true)" || true
+  printf '%s' "$out" >&2
+  local want_log=1
+  if [[ -z "${LOG_FILE:-}" ]]; then want_log=0; fi
+  if [[ "${LOG_FILE:-}" == "/dev/null" ]]; then want_log=0; fi
+  if [[ "$want_log" -eq 1 ]]; then
+    if command -v tee >/dev/null 2>&1; then
+      local log_dir
+      log_dir="$(dirname "$LOG_FILE" 2>/dev/null || echo "")"
+      if [[ -n "$log_dir" && -d "$log_dir" && -w "$log_dir" ]]; then
+        printf '%s' "$out" >> "$LOG_FILE" 2>/dev/null || true
+      fi
+    fi
+  fi
+  return 0   # ☣️  ALTIJD SUCCES
+}
+
+# Info/Ok/Step/Title/Hr → altijd stdout + log, NOOIT falen (|| true safe guard)
+info()  { { printf '%bℹ  %s%b\n' "${CYN}" "$*" "${RST}" || true; } | to_log_and_stdout || true; }
+ok()    { { printf '%b✔  %s%b\n' "${GRN}" "$*" "${RST}" || true; } | to_log_and_stdout || true; }
+step()  { { printf '%b▸ %s%b\n'  "${BLU}" "$*" "${RST}" || true; } | to_log_and_stdout || true; }
+title() { { printf '\n%b┌─ %s%b\n'   "${BLD}" "$*" "${RST}" || true; } | to_log_and_stdout || true; }
+hr()    { { printf '%b─────────────────────────────────────────────────────────────%b\n' "${DIM}" "${RST}" || true; } | to_log_and_stdout || true; }
+warn()  { { printf '%b⚠  %s%b\n' "${YLW}" "$*" "${RST}" || true; } | to_log_and_stderr || true; }
+err()   { { printf '%b✖  %s%b\n' "${RED}" "$*" "${RST}" || true; } | to_log_and_stderr || true; }
+
 usage() {
   cat <<EOF
 ${BLD}nexus-install.sh v${INSTALLER_VERSION}${RST} — One-click STM installer voor Ubuntu 22.04/24.04 LTS.
@@ -142,14 +217,6 @@ ${BLD}Voorbeelden:${RST}
 EOF
 }
 
-info()  { printf '%bℹ  %s%b\n' "${CYN}" "$*" "${RST}" | tee -a "$LOG_FILE" >&2 ; }
-ok()    { printf '%b✔  %s%b\n' "${GRN}" "$*" "${RST}" | tee -a "$LOG_FILE" >&2 ; }
-warn()  { printf '%b⚠  %s%b\n' "${YLW}" "$*" "${RST}" | tee -a "$LOG_FILE" >&2 ; }
-err()   { printf '%b✖  %s%b\n' "${RED}" "$*" "${RST}" | tee -a "$LOG_FILE" >&2 ; }
-title() { printf '\n%b┌─ %s%b\n' "${BLD}" "$*" "${RST}" | tee -a "$LOG_FILE" >&2 ; }
-step()  { printf '%b▸ %s%b\n' "${BLU}" "$*" "${RST}" | tee -a "$LOG_FILE" >&2 ; }
-hr()    { printf '%b─────────────────────────────────────────────────────────────%b\n' "${DIM}" "${RST}" | tee -a "$LOG_FILE" >&2 ; }
-
 confirm() {
   local msg="$1" default="${2:-y}"
   [[ "$NON_INTERACTIVE" -eq 1 ]] && return 0
@@ -167,10 +234,28 @@ require_cmd() { command -v "$1" >/dev/null 2>&1 ; }
 on_error() {
   local line="$1"
   local cmd="$2"
-  hr
-  err "Installer FAILED op regel ${line}: ${cmd}"
-  err "Volledig logbestand: ${LOG_FILE}"
-  err "Los het probleem op, je kunt het script VEILIG opnieuw draaien (idempotent)."
+  # ── LAATSTE VERDEDIGING: Directe echo NAAR /dev/stderr (GEEN helpers, GEEN pipes, GEEN LOG_FILE).
+  #    Zelfs als ALLES ANDERS faalt, zie je DIT in je terminal. Dit voorkomt "niets gebeuren".
+  echo "" >/dev/stderr 2>/dev/null || true
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >/dev/stderr 2>/dev/null || true
+  echo "❌  STM INSTALLER FOUT (regel ${line}): ${cmd}" >/dev/stderr 2>/dev/null || true
+  echo "    PID=$$ EUID=${EUID}  Script: $0" >/dev/stderr 2>/dev/null || true
+  if [[ -n "${LOG_FILE:-}" && "${LOG_FILE}" != "/dev/null" ]]; then
+    echo "    Logbestand: ${LOG_FILE}" >/dev/stderr 2>/dev/null || true
+    # Probeer ook direct naar logbestand te schrijven (geen pipes/helpers)
+    echo "" >> "$LOG_FILE" 2>/dev/null || true
+    echo "[FATAL ${line}] ${cmd}" >> "$LOG_FILE" 2>/dev/null || true
+  else
+    echo "    Logbestand: (geen / niet schrijfbaar)" >/dev/stderr 2>/dev/null || true
+  fi
+  echo "    Los het probleem op en start opnieuw (script is idempotent: meerdere keren draaien is veilig)." >/dev/stderr 2>/dev/null || true
+  echo "    TIP: Gebruik STM_DEBUG=1 om per regel te zien wat er gebeurt." >/dev/stderr 2>/dev/null || true
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >/dev/stderr 2>/dev/null || true
+  # ── Nu de fancy ANSI-versie OOK proberen (geen gevolg als het faalt)
+  hr || true
+  err "Installer FAILED op regel ${line}: ${cmd}" || true
+  err "Volledig logbestand: ${LOG_FILE:-geen}" || true
+  err "Los het probleem op, je kunt het script VEILIG opnieuw draaien (idempotent)." || true
   exit 1
 }
 trap 'on_error "${LINENO}" "${BASH_COMMAND}"' ERR
@@ -260,10 +345,12 @@ if [[ "$escalated" -eq 0 ]]; then
     # Test of sudo zonder wachtwoord MAG (non-interactive).
     if sudo -n true 2>/dev/null; then
       export SUDO_ESCALATED=1
-      exec sudo -H -E --preserve-env=HOME,PATH,NO_COLOR,TZ,STM_RUN_COUNT,SUDO_ESCALATED,STM_BOOTSTRAPPED,DEFAULT_GIT_BRANCH \
+      echo "[STM] Niet als root gestart; auto-escalatie naar root via sudo (zonder wachtwoord). PID=$$ → herstart..." >/dev/stderr 2>/dev/null || true
+      exec sudo -H -E --preserve-env=HOME,PATH,NO_COLOR,TZ,STM_RUN_COUNT,SUDO_ESCALATED,STM_BOOTSTRAPPED,DEFAULT_GIT_BRANCH,STM_DEBUG \
         bash "$0" "$@"
     fi
     # sudo -n (zonder wachtwoord) mag niet. Vraag gebruiker om handmatig sudo.
+    echo "[STM] ⚠️  sudo vereist een wachtwoord (NOPASSWD staat aan). Zie handmatige instructies hieronder:" >/dev/stderr 2>/dev/null || true
     cat <<'EOT' >&2
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  💡 NIET als root gedraaid EN sudo vereist een wachtwoord.                    │
@@ -285,7 +372,10 @@ fi
 # Nu ZEKER root: init logging (schrijft naar /var/log/stm-install)
 # ------------------------------------------------------------------------------
 # Helper: init_logging: als EUID=root → /var/log/stm-install, anders /tmp fallback.
-# Zet ook exec 2>> tee redirect zodat stderr ook in logfile staat.
+#   - Kopieert eerdere /tmp log naar nieuw bestand
+#   - Redirect ZOWEL stdout ALS stderr via tee naar $LOG_FILE
+#     → stdout+stderr OOK naar console (terminal output = zichtbaar!)
+#   - Altijd fallback: LOG_FILE naar /dev/null OOK, dan nog wel console output.
 init_logging() {
   local want_dir="/var/log/stm-install"
   if [[ "$EUID" -eq 0 ]]; then
@@ -296,15 +386,22 @@ init_logging() {
       chmod 0640 "$LOG_FILE" 2>/dev/null || true
     fi
   fi
+  # Fallback: als bovenstaande mislukte, altijd een LOG_FILE dat /dev/null is (schrijven niet crasht)
+  LOG_FILE="${LOG_FILE:-/dev/null}"
   # Kopieer eerdere /tmp log naar nieuw bestand (indien bestaat en verschillend)
   local old_log=""
   old_log="$(ls -t /tmp/stm-install/install-*-$$.log 2>/dev/null | head -1 || true)"
-  if [[ -n "${old_log:-}" && -s "$old_log" && "${old_log}" != "${LOG_FILE}" ]]; then
+  if [[ -n "${old_log:-}" && -s "$old_log" && "${old_log}" != "${LOG_FILE}" && "${LOG_FILE}" != "/dev/null" ]]; then
     cat "$old_log" >> "$LOG_FILE" 2>/dev/null || true
   fi
-  # stderr ook naar log (naast al bestaande stdout tee in helpers).
-  if [[ -n "${LOG_FILE:-}" && "${LOG_FILE}" != "/dev/null" ]]; then
+  # ── BELANGRIJK: stdout EN stderr allebei via process substitution →
+  #    console + logfile krijgen ALLE output. Nooit silent.
+  #    (Doen we alleen als LOG_FILE niet /dev/null is; bij /dev/null gewoon console = default.)
+  if [[ "${LOG_FILE}" != "/dev/null" ]]; then
+    # stderr → tee naar logfile + stderr (duplicate niet op stdout!)
     exec 2> >(tee -a "$LOG_FILE" >&2) 2>/dev/null || true
+    # stdout → tee naar logfile + stdout (zichtbaar in terminal!)
+    exec >  >(tee -a "$LOG_FILE") 2>/dev/null || true
   fi
 }
 init_logging
@@ -367,7 +464,7 @@ bootstrap_repo_if_needed() {
   export DEBIAN_FRONTEND=noninteractive
   local bootstrap_tmpdir=""
   if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
-    echo "ℹ  Bootstrap: apt install git/curl/ca-certificates (1e setup...)" | tee -a "$LOG_FILE" >&2
+    info "Bootstrap: apt install git/curl/ca-certificates (1e setup...)"
     for _ in 1 2 3; do apt-get update -y >/dev/null 2>&1 && break || sleep 3; done
     apt-get install -y --no-install-recommends git curl ca-certificates >/dev/null 2>&1 || true
   fi
@@ -375,7 +472,7 @@ bootstrap_repo_if_needed() {
   local target="${INSTALL_DIR}"
   mkdir -p "$target" 2>/dev/null || true
   if ! repo_files_present_in "$target"; then
-    printf 'ℹ  Bootstrap: %s klonen naar %s ...\n' "$GIT_URL" "$target" | tee -a "$LOG_FILE" >&2
+    info "Bootstrap: ${GIT_URL} klonen naar ${target} ..."
     bootstrap_tmpdir="$(mktemp -d /tmp/stm-clone-XXXXXX)"
     # Clone (depth 1 voor snelheid) met branch indien bekend
     local clone_branch=()
@@ -432,7 +529,8 @@ bootstrap_repo_if_needed() {
     pass_args+=(--install-dir "${target}")
   fi
   export STM_BOOTSTRAPPED=1
-  echo "ℹ  Bootstrap: herstart installer vanuit ${self_in_target} (STM_RUN_COUNT=${STM_RUN_COUNT})..." | tee -a "$LOG_FILE" >&2
+  info "Bootstrap: herstart installer vanuit ${self_in_target} (STM_RUN_COUNT=${STM_RUN_COUNT})..."
+  echo "[STM] Bootstrap re-exec: herstart nu vanuit ${self_in_target} (zodat repo compleet in install dir staat)." >/dev/stderr 2>/dev/null || true
   exec bash "${self_in_target}" "${pass_args[@]}"
   # exec komt NOOIT terug.
 }
@@ -450,11 +548,11 @@ CUSTOM_CADDYFILE_SRC="${INSTALL_DIR}/Caddyfile"
 # 0c. Installer START banner
 # ------------------------------------------------------------------------------
 title "nexus-install.sh v${INSTALLER_VERSION} — STM (voorheen Nexus) complete installer"
-printf '%b  Starttijd : %s%b\n'        "${DIM}" "$(date +"%Y-%m-%d %H:%M:%S %Z")" "${RST}" | tee -a "$LOG_FILE" >&2
-printf '%b  Run-count: %s (max 3 anti-lus)%b\n' "${DIM}" "${STM_RUN_COUNT}" "${RST}" | tee -a "$LOG_FILE" >&2
-printf '%b  Uitvoerder: EUID=%s  SUDO_USER=%s%b\n' "${DIM}" "${EUID}" "${SUDO_USER:-none}" "${RST}" | tee -a "$LOG_FILE" >&2
-printf '%b  Logbestand: %s%b\n'        "${DIM}" "${LOG_FILE}" "${RST}" | tee -a "$LOG_FILE" >&2
-printf '%b  Install dir: %s%b\n'        "${DIM}" "${INSTALL_DIR}" "${RST}" | tee -a "$LOG_FILE" >&2
+printf '%b  Starttijd : %s%b\n'        "${DIM}" "$(date +"%Y-%m-%d %H:%M:%S %Z")" "${RST}" | tee -a "$LOG_FILE"
+printf '%b  Run-count: %s (max 3 anti-lus)%b\n' "${DIM}" "${STM_RUN_COUNT}" "${RST}" | tee -a "$LOG_FILE"
+printf '%b  Uitvoerder: EUID=%s  SUDO_USER=%s%b\n' "${DIM}" "${EUID}" "${SUDO_USER:-none}" "${RST}" | tee -a "$LOG_FILE"
+printf '%b  Logbestand: %s%b\n'        "${DIM}" "${LOG_FILE}" "${RST}" | tee -a "$LOG_FILE"
+printf '%b  Install dir: %s%b\n'        "${DIM}" "${INSTALL_DIR}" "${RST}" | tee -a "$LOG_FILE"
 hr
 
 # ==============================================================================
@@ -472,11 +570,25 @@ fi
 source /etc/os-release
 case "${ID:-unknown}" in
   ubuntu) ;;
-  *) warn "OS ID='${ID}'. Script is afgestemd op Ubuntu. Resultaten zijn ONGETEST." ; [[ $NON_INTERACTIVE -eq 0 ]] && confirm "Toch doorgaan?" || exit 4 ;;
+  *)
+    warn "OS ID='${ID}'. Script is afgestemd op Ubuntu. Resultaten zijn ONGETEST."
+    if [[ "$NON_INTERACTIVE" -eq 0 ]]; then
+      confirm "Toch doorgaan?" || exit 4
+    else
+      info "NON_INTERACTIVE=1: automatisch doorgaan (bestaande OS ID='${ID}'..."
+    fi
+    ;;
 esac
 case "${VERSION_ID:-0}" in
   22.04|24.04) ok "OS: Ubuntu ${VERSION_ID} (${PRETTY_NAME:-})" ;;
-  *) warn "Ubuntu versie ${VERSION_ID} wordt NIET expliciet ondersteund (alleen 22.04/24.04 getest)."; [[ $NON_INTERACTIVE -eq 0 ]] && confirm "Toch doorgaan?" || exit 4 ;;
+  *)
+    warn "Ubuntu versie ${VERSION_ID} wordt NIET expliciet ondersteund (alleen 22.04/24.04 getest)."
+    if [[ "$NON_INTERACTIVE" -eq 0 ]]; then
+      confirm "Toch doorgaan?" || exit 4
+    else
+      info "NON_INTERACTIVE=1: automatisch doorgaan (bestaande Ubuntu ${VERSION_ID})."
+    fi
+    ;;
 esac
 
 # 1.3 Architectuur
@@ -494,7 +606,11 @@ info "RAM: ~${TOTAL_RAM_MB} MB"
 if (( TOTAL_RAM_MB < 1000 )); then
   warn "Minder dan 1 GB RAM. Next.js standalone + Postgres kan problemen geven."
   [[ $SKIP_SWAP -eq 0 ]] && info "Swapfile van 1,5x RAM wordt AANGEMAAKT (kan --skip-swap)."
-  [[ $NON_INTERACTIVE -eq 0 ]] && confirm "Doorgaan?" || exit 5
+  if [[ "$NON_INTERACTIVE" -eq 0 ]]; then
+    confirm "Doorgaan?" || exit 5
+  else
+    info "NON_INTERACTIVE=1: automatisch doorgaan (onvoldoende RAM ~${TOTAL_RAM_MB} MB)."
+  fi
 fi
 
 # 1.5 Schijfruimte: Min. 10 GB
@@ -504,7 +620,11 @@ require_cmd df && FREE_DISK_MB="$(df -Pk "$INSTALL_DIR" 2>/dev/null | awk 'NR==2
 info "Schijfruimte: ~${FREE_DISK_MB} MB (vrij in ${INSTALL_DIR:-/})"
 if (( FREE_DISK_MB > 0 && FREE_DISK_MB < 8000 )); then
   warn "Minder dan ~8 GB vrij. Docker build zal mogelijk falen."
-  [[ $NON_INTERACTIVE -eq 0 ]] && confirm "Toch doorgaan?" || exit 5
+  if [[ "$NON_INTERACTIVE" -eq 0 ]]; then
+    confirm "Toch doorgaan?" || exit 5
+  else
+    info "NON_INTERACTIVE=1: automatisch doorgaan (weinig schijfruimte ~${FREE_DISK_MB} MB)."
+  fi
 fi
 
 # ==============================================================================
@@ -945,6 +1065,7 @@ else
 fi
 
 # Helper: voeg een KEY=VALUE toe, of vervang alleen als LEEG / NIET BESTAAT.
+# Gebruik dit voor wachtwoorden, secrets en optionele defaults (veilig, nooit onbedoeld overschrijven).
 env_upsert() {
   local key="$1" value="$2"
   # Bestaat de key al?
@@ -962,6 +1083,20 @@ env_upsert() {
   fi
 }
 
+# Helper: VOEG TOE of VERVANG ALTIJD KEY=VALUE (overschrijf ook bestaande NIET-lege waarden).
+# Gebruik dit ALLEEN voor variabelen die de gebruiker EXPLICIET als CLI-argument opgaf
+# (bv. --domain → STM_DOMAIN/NEXT_PUBLIC_APP_URL/AUTH_URL = expliciete user intent).
+env_set() {
+  local key="$1" value="$2"
+  local esc_value
+  esc_value="$(printf '%s' "$value" | sed 's/[\/&]/\\&/g')"
+  if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
+    sed -i.bak -e "s|^${key}=.*|${key}=${esc_value}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  fi
+}
+
 # Genereer secrets
 GEN_AUTH_SECRET=""
 GEN_PG_PASS=""
@@ -971,17 +1106,19 @@ if [[ "$ENV_EXISTED_BEFORE" -eq 0 ]]; then
 fi
 
 # --domain param → NEXT_PUBLIC_APP_URL + STM_DOMAIN
+# Indien --domain expliciet opgegeven: FORCEER de waarden (expliciete user intent = altijd doorvoeren,
+# ook al stonden er al waarden in de .env van een eerdere verkeerde run).
 if [[ -n "${DOMAIN:-}" ]]; then
   DOMAIN="${DOMAIN#http://}"
   DOMAIN="${DOMAIN#https://}"
   DOMAIN="${DOMAIN%%/*}"
   NEXT_APP_URL="https://${DOMAIN}"
-  env_upsert "STM_DOMAIN" "${DOMAIN}"
-  env_upsert "NEXUS_DOMAIN" '${STM_DOMAIN:-}'
-  env_upsert "NEXT_PUBLIC_APP_URL" "${NEXT_APP_URL}"
-  env_upsert "AUTH_URL" '${NEXT_PUBLIC_APP_URL:-}/api/auth'
+  env_set "STM_DOMAIN" "${DOMAIN}"
+  env_set "NEXUS_DOMAIN" '${STM_DOMAIN:-}'
+  env_set "NEXT_PUBLIC_APP_URL" "${NEXT_APP_URL}"
+  env_set "AUTH_URL" '${NEXT_PUBLIC_APP_URL:-}/api/auth'
 else
-  # Geen domein: localhost (geen TLS).
+  # Geen domein opgegeven: LAAT bestaande waarden met rust (alleen invullen als LEEG / ontbreekt).
   env_upsert "STM_DOMAIN" "localhost"
   env_upsert "NEXT_PUBLIC_APP_URL" "http://localhost:3000"
   env_upsert "AUTH_URL" "http://localhost:3000/api/auth"
@@ -1271,7 +1408,7 @@ SUMMARY_PG_PASS="*(automatisch gegenereerd — te vinden in ${ENV_FILE})"
 # Lees pg password alleen om length te tonen (maskered)
 PG_PASS_LEN="$(awk -F= '/^POSTGRES_PASSWORD=/ {print length($2)}' "$ENV_FILE" 2>/dev/null || echo 0)"
 
-cat <<SUMMARY | tee -a "$LOG_FILE" >&2
+cat <<SUMMARY | tee -a "$LOG_FILE"
 ${BLD}  ✅ Installatie SUCCESVOL — STM (voorheen Nexus)${RST}
 
   ${CYN}App-URL           :${RST}  ${FINAL_URL}
