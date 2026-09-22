@@ -621,6 +621,36 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
                       )}
                     </ul>
                   )}
+                  {syncResult.debugContext?.wafBlocked && (
+                    <div className="mt-3 rounded-md border border-red-300 bg-white p-2.5 text-[11px] text-red-900 shadow-sm">
+                      <p className="font-semibold text-red-700">
+                        ⚠️ Simhuis WAF blokkeert jouw Nexus-server (IP-whitelist probleem!)
+                      </p>
+                      <ol className="mt-2 list-decimal space-y-1.5 pl-5">
+                        {syncResult.debugContext.wafSteps.map((s, i) => (
+                          <li key={i}>{s}</li>
+                        ))}
+                      </ol>
+                      {syncResult.debugContext.wafCurlOnNexusServer && (
+                        <div className="mt-3">
+                          <p className="mb-1 font-medium text-red-800">Draai deze curl-commando&apos;s:</p>
+                          <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border border-red-200 bg-red-900/5 p-2 font-mono text-[10.5px] leading-relaxed text-red-950">
+{syncResult.debugContext.wafCurlOnNexusServer}
+                          </pre>
+                        </div>
+                      )}
+                      {syncResult.debugContext.wafEmailTemplate && (
+                        <details className="mt-3">
+                          <summary className="cursor-pointer rounded-md bg-red-100/70 px-2 py-1 font-semibold text-red-900 hover:bg-red-100">
+                            📨 Klik hier voor de kant-en-klare e-mail naar Simhuis Support
+                          </summary>
+                          <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md border border-amber-200 bg-amber-50 p-2 font-mono text-[10.5px] leading-relaxed text-amber-950">
+{syncResult.debugContext.wafEmailTemplate}
+                          </pre>
+                        </details>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
