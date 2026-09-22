@@ -220,12 +220,26 @@ function extractTotal(raw: unknown, fallback: number): number | undefined {
 type ListAttempt = {
   method: 'GET' | 'POST';
   path: string;
-  kind: 'query' | 'body';
+  kind: 'query' | 'json-body' | 'form-body';
   payload?: Record<string, any>;
   statusCode?: number;
   error?: string;
   errorClass?: string;
 };
+
+function objToFormEncoded(obj: Record<string, any>): URLSearchParams {
+  const params = new URLSearchParams();
+  const append = (key: string, v: any) => {
+    if (v === null || v === undefined || v === '') return;
+    if (typeof v === 'object') {
+      params.append(key, JSON.stringify(v));
+    } else {
+      params.append(key, String(v));
+    }
+  };
+  for (const k of Object.keys(obj)) append(k, obj[k]);
+  return params;
+}
 
 export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsResult> {
   const client = (await simhuisClient.getClient())!;
@@ -233,46 +247,60 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   const limit = options.limit ?? 100;
   const resellerId = options.resellerId ?? client.resellerId;
 
-  const baseQuery: Record<string, any> = { page: page, limit: limit };
-  if (resellerId) baseQuery.reseller_id = resellerId;
-  if (options.status) baseQuery.status = options.status;
+  const basePayload: Record<string, any> = { page: page, limit: limit };
+  if (resellerId) basePayload.reseller_id = resellerId;
+  if (options.status) basePayload.status = options.status;
 
-  const queryVariants = [
-    { ...baseQuery },
-    { ...baseQuery, per_page: limit, page_number: page },
-    { ...baseQuery, page: page, size: limit },
+  const payloadVariantsRaw: Array<Record<string, any> | null | undefined> = [
+    {},
+    { ...basePayload },
+    { ...basePayload, per_page: limit, page_number: page },
+    { ...basePayload, page: page, size: limit },
     { limit: limit },
     { page: page },
+    { pagination: { page: page, limit: limit } },
+    {
+      filter: options.status ? { status: options.status } : undefined,
+      resellerId: resellerId,
+      page: page,
+      limit: limit,
+    },
+    { action: 'list_sims', page: page, limit: limit },
   ];
+  const payloadVariants = payloadVariantsRaw.filter((b): b is Record<string, any> => b !== null && b !== undefined);
+
+  const queryVariants = payloadVariants;
 
   const pathVariants = [
     client.endpoints.sims,
     client.endpoints.sims + '/list',
+    client.endpoints.sims + '/search',
+    client.endpoints.sims + '/query',
+    '/sims',
+    '/sims/list',
     '/sims/search',
     '/sims/query',
     '/sim/list',
+    '/sims.json',
   ];
-
-  const bodyVariantsRaw: Array<Record<string, any> | null | undefined> = [
-    { ...baseQuery },
-    { ...baseQuery, per_page: limit, page_number: page },
-    { ...baseQuery, page: page, size: limit },
-    { pagination: { page: page, limit: limit } },
-    { filter: options.status ? { status: options.status } : undefined, resellerId: resellerId },
-  ];
-  const bodyVariants = bodyVariantsRaw.filter((b): b is Record<string, any> => b !== null && b !== undefined);
 
   const attempts: ListAttempt[] = [];
 
   const tryOne = async (a: ListAttempt): Promise<ListSimsResult | null> => {
     const trace: ListAttempt = { ...a };
     try {
-      const resp = await doRequest<unknown>(
-        a.path,
-        a.method === 'GET'
-          ? { method: 'GET', query: a.payload }
-          : { method: 'POST', body: a.payload }
-      );
+      let opts: SimhuisRequestOptions;
+      if (a.method === 'GET') {
+        opts = { method: 'GET', query: a.payload };
+      } else if (a.kind === 'form-body') {
+        opts = {
+          method: 'POST',
+          body: (a.payload ? objToFormEncoded(a.payload) : new URLSearchParams()) as any,
+        };
+      } else {
+        opts = { method: 'POST', body: a.payload && Object.keys(a.payload).length > 0 ? a.payload : undefined };
+      }
+      const resp = await doRequest<unknown>(a.path, opts);
       const rawArray = extractSimList(resp);
       const items = rawArray.map((item) => {
         const iccid = String(item.iccid ?? item.sim_iccid ?? item.simIccid ?? (item as any)?.sim?.iccid ?? '').trim();
@@ -296,6 +324,26 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     }
   };
 
+  const postPaths = [
+    client.endpoints.sims,
+    client.endpoints.sims + '/search',
+    client.endpoints.sims + '/query',
+    client.endpoints.sims + '/list',
+    '/sims',
+    '/sims/search',
+    '/sims/query',
+    '/sims/list',
+    '/sim/list',
+  ];
+  for (const path of postPaths) {
+    for (const b of payloadVariants) {
+      const r1 = await tryOne({ method: 'POST', path: path, kind: 'json-body', payload: b });
+      if (r1) return r1;
+      const r2 = await tryOne({ method: 'POST', path: path, kind: 'form-body', payload: b });
+      if (r2) return r2;
+    }
+  }
+
   for (const path of pathVariants) {
     for (const q of queryVariants) {
       const result = await tryOne({ method: 'GET', path: path, kind: 'query', payload: q });
@@ -303,28 +351,12 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     }
   }
 
-  const postPaths = [
-    client.endpoints.sims + '/search',
-    client.endpoints.sims + '/query',
-    client.endpoints.sims,
-    '/sims/search',
-    '/sim/list',
-    '/sims',
-  ];
-  for (const path of postPaths) {
-    for (const b of bodyVariants) {
-      const result = await tryOne({ method: 'POST', path: path, kind: 'body', payload: b });
-      if (result) return result;
-    }
-  }
-
   let summary = attempts
     .map((a) => `${a.method} ${a.path} [${a.statusCode ?? 'err'}] (${a.kind}) ${a.errorClass ?? ''}: ${a.error ?? ''}`)
-    .join(' ; ');
-  summary = summary.slice(0, 800);
-
+    .join('\n');
+  summary = summary.slice(0, 4000);
   const last = attempts[attempts.length - 1];
-  const errMsg = `[Simhuis] listSims failed: geen enkel endpoint reageerde. Pogingen: ${summary}`;
+  const errMsg = `[Simhuis] listSims failed: geen enkel endpoint reageerde. Pogingen (${attempts.length}x, POST eerst):\n${summary}`;
   if (last?.errorClass === 'SimhuisApiError') {
     const e = new SimhuisApiError(last.statusCode ?? 500, {}, last?.path ?? '', errMsg);
     (e as any).attempts = attempts;
