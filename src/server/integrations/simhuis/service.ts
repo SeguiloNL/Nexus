@@ -234,7 +234,7 @@ function parseFetchResponse(respText: string, ct: string): unknown {
 }
 
 type ListAttempt = {
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH';
   path: string;
   kind: 'query' | 'json-body' | 'form-body';
   signature?: string;
@@ -272,9 +272,10 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   if (options.status) basePayload.status = options.status;
 
   const attempts: ListAttempt[] = [];
-  const MAX_ATTEMPTS = 300;
+  const MAX_ATTEMPTS = 180;
   let pogingen = 0;
-  const overallDeadline = AbortSignal.timeout(45000);
+  const overallDeadline = AbortSignal.timeout(40000);
+  const allowHeadersByPath = new Map<string, string>();
 
   const authBasic = basicAuthHeader(creds.username, creds.password);
   const authStyles: AuthStyle[] = [
@@ -282,15 +283,15 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     {
       tag: 'custom-headers',
       headers: {
-        Authorization: authBasic,
+        'X-API-Username': creds.username,
+        'X-API-Password': creds.password,
         ...(resellerId ? { 'X-Reseller-ID': String(resellerId) } : {}),
       },
     },
     {
       tag: 'custom-headers',
       headers: {
-        'X-API-Username': creds.username,
-        'X-API-Password': creds.password,
+        Authorization: authBasic,
         ...(resellerId ? { 'X-Reseller-ID': String(resellerId) } : {}),
       },
     },
@@ -305,19 +306,10 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     '/sims/list',
     '/sims/search',
     '/sims/inventory',
-    '/sims/all',
-    '/sims.json',
   ];
   if (resellerFragment) {
-    focusPaths.push(`/resellers/${resellerFragment}/sims`);
+    focusPaths.unshift(`/resellers/${resellerFragment}/sims`);
   }
-
-  const compactPayloads: Record<string, any>[] = [
-    {},
-    { ...basePayload },
-    { ...basePayload, per_page: limit, page_number: page },
-    { ...basePayload, page: page, size: limit },
-  ];
 
   const processResponse = (respBodyRaw: unknown): ListSimsResult | null => {
     const rawArray = extractSimList(respBodyRaw);
@@ -355,8 +347,8 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     return url;
   };
 
-  const augmentBody = (b: Record<string, any> | null, inject: 'none' | 'creds'): Record<string, any> => {
-    const base = b && Object.keys(b).length > 0 ? { ...b } : {};
+  const augmentBody = (inject: 'none' | 'creds', extra: Record<string, any> = {}): Record<string, any> => {
+    const base: Record<string, any> = { ...basePayload, ...extra };
     if (inject === 'creds') {
       base.username = creds.username;
       base.password = creds.password;
@@ -365,8 +357,8 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     return base;
   };
 
-  const augmentQuery = (q: Record<string, any> | null, inject: 'none' | 'creds'): Record<string, any> => {
-    const base = q && Object.keys(q).length > 0 ? { ...q } : {};
+  const augmentQuery = (inject: 'none' | 'creds', extra: Record<string, any> = {}): Record<string, any> => {
+    const base: Record<string, any> = { ...basePayload, ...extra };
     if (inject === 'creds') {
       base.username = creds.username;
       base.password = creds.password;
@@ -377,11 +369,12 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
 
   const doDirectFetch = async (args: {
     fullUrl: string;
-    method: 'GET' | 'POST';
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH';
     contentType: 'json' | 'form' | 'none';
     body: Record<string, any> | null;
     auth: AuthStyle;
     meta: Omit<ListAttempt, 'statusCode' | 'error' | 'errorClass'>;
+    pathForAllowHeader: string;
   }): Promise<ListSimsResult | null> => {
     pogingen++;
     const trace: ListAttempt = { ...args.meta };
@@ -401,7 +394,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         Object.assign(headers, args.auth.headers);
       }
       let body: BodyInit | undefined;
-      if (args.method === 'POST' && args.body) {
+      if ((args.method === 'POST' || args.method === 'PUT' || args.method === 'PATCH') && args.body) {
         if (args.contentType === 'json') {
           headers['Content-Type'] = 'application/json';
           body = JSON.stringify(args.body);
@@ -418,6 +411,12 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       }
       const resp = await fetch(args.fullUrl, { method: args.method, headers, body, signal: overallDeadline });
       const ct = resp.headers.get('content-type') ?? '';
+      if (resp.status === 405) {
+        const allow = resp.headers.get('allow') ?? resp.headers.get('Allow') ?? '';
+        if (allow) {
+          allowHeadersByPath.set(args.pathForAllowHeader, allow);
+        }
+      }
       const text = await resp.text();
       const parsed = parseFetchResponse(text, ct);
       if (resp.ok) {
@@ -429,7 +428,10 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       } else {
         trace.statusCode = resp.status;
         const snippet = (typeof parsed === 'string' ? parsed : JSON.stringify(parsed)).slice(0, 150);
-        trace.error = `HTTP ${resp.status}${snippet ? `: ${snippet}` : ''}`;
+        const allowExtra = (resp.status === 405 && allowHeadersByPath.has(args.pathForAllowHeader))
+          ? ` [Allow: ${allowHeadersByPath.get(args.pathForAllowHeader)}]`
+          : '';
+        trace.error = `HTTP ${resp.status}${allowExtra}${snippet ? `: ${snippet}` : ''}`;
         trace.errorClass = 'HTTPError';
         attempts.push(trace);
         if (resp.status === 403) throw new SimhuisApiError(403, parsed ?? {}, args.fullUrl, trace.error);
@@ -452,44 +454,54 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     return null;
   };
 
-  const injectStyles: Array<'none' | 'creds'> = ['creds', 'none'];
+  const httpMethodsFast: Array<'GET' | 'POST' | 'PUT' | 'PATCH'> = ['POST', 'GET', 'PUT', 'PATCH'];
+  const injectStylesFast: Array<'none' | 'creds'> = ['creds', 'none'];
 
-  // Priority: auth style met credentials geinjecteerd IN DE BODY (meest kansrijk ivm InvalidCredentials)
+  // FOCUS ROUND: per path × per auth × per inject × per method — 1 payload variant (full basePayload)
+  // 4 paths × 6 auths × 2 injects × 4 methods × 2 kinds (query excluded for non-GET) = ~336 worst case, maar we stoppen bij 180 en snel succes
   for (const path of focusPaths) {
     for (const auth of authStyles) {
-      for (const inject of injectStyles) {
-        for (const b of compactPayloads) {
-          const body = augmentBody(b, inject);
-          const r1 = await doDirectFetch({
-            fullUrl: makeFullUrl(path, null),
-            method: 'POST',
-            contentType: 'json',
-            body,
-            auth,
-            meta: { method: 'POST', path, kind: 'json-body', signature: `auth=${auth.tag};inject=${inject};p=${Object.keys(b).length}` },
-          });
-          if (r1) return r1;
-          const r2 = await doDirectFetch({
-            fullUrl: makeFullUrl(path, null),
-            method: 'POST',
-            contentType: 'form',
-            body,
-            auth,
-            meta: { method: 'POST', path, kind: 'form-body', signature: `auth=${auth.tag};inject=${inject};p=${Object.keys(b).length}` },
-          });
-          if (r2) return r2;
-        }
-        for (const q of compactPayloads) {
-          const query = augmentQuery(q, inject);
-          const r = await doDirectFetch({
-            fullUrl: makeFullUrl(path, query),
-            method: 'GET',
-            contentType: 'none',
-            body: null,
-            auth,
-            meta: { method: 'GET', path, kind: 'query', signature: `auth=${auth.tag};inject=${inject};p=${Object.keys(q).length}` },
-          });
-          if (r) return r;
+      for (const inject of injectStylesFast) {
+        for (const method of httpMethodsFast) {
+          if (method === 'GET') {
+            const query = augmentQuery(inject);
+            const r = await doDirectFetch({
+              fullUrl: makeFullUrl(path, query),
+              method: 'GET',
+              contentType: 'none',
+              body: null,
+              auth,
+              meta: { method: 'GET', path, kind: 'query', signature: `auth=${auth.tag};inject=${inject}` },
+              pathForAllowHeader: path,
+            });
+            if (r) return r;
+          } else {
+            const body = augmentBody(inject);
+            // JSON body first
+            const r1 = await doDirectFetch({
+              fullUrl: makeFullUrl(path, null),
+              method,
+              contentType: 'json',
+              body,
+              auth,
+              meta: { method, path, kind: 'json-body', signature: `auth=${auth.tag};inject=${inject}` },
+              pathForAllowHeader: path,
+            });
+            if (r1) return r1;
+            // form body only for POST / PUT (many APIs don't parse form for PATCH)
+            if (method !== 'PATCH') {
+              const r2 = await doDirectFetch({
+                fullUrl: makeFullUrl(path, null),
+                method,
+                contentType: 'form',
+                body,
+                auth,
+                meta: { method, path, kind: 'form-body', signature: `auth=${auth.tag};inject=${inject}` },
+                pathForAllowHeader: path,
+              });
+              if (r2) return r2;
+            }
+          }
         }
       }
     }
@@ -505,8 +517,15 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   let summary = Array.from(seen.values())
     .map(({ attempt: a, count, sample }) => `${a.method} ${a.path} [${a.statusCode ?? 'err'}] (${a.kind}) ×${count} sig=${sample} → ${a.errorClass ?? ''}: ${a.error ?? ''}`)
     .join('\n');
-  summary = summary.slice(0, 6000);
-  const msg = `[Simhuis] listSims mislukt na ${attempts.length}/${MAX_ATTEMPTS} pogingen. Samenvatting:\n${summary}`;
+  summary = summary.slice(0, 5500);
+  let allowHints = '';
+  if (allowHeadersByPath.size > 0) {
+    allowHints = '\n\n[Allow-headers hint (405 responses toonden WELKE methodes toegestaan zijn)]:\n';
+    for (const [p, allow] of allowHeadersByPath.entries()) {
+      allowHints += `  ${p}: Allow=${allow}\n`;
+    }
+  }
+  const msg = `[Simhuis] listSims mislukt na ${attempts.length}/${MAX_ATTEMPTS} pogingen.${allowHints}\nSamenvatting:\n${summary}`;
   throw new Error(msg);
 }
 
