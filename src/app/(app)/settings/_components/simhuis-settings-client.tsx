@@ -52,6 +52,9 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [resellerId, setResellerId] = useState(initial.resellerId ?? "");
+  const [defaultOfferId, setDefaultOfferId] = useState(initial.defaultOfferId ?? "");
+  const [defaultPlanId, setDefaultPlanId] = useState(initial.defaultPlanId ?? "");
+  const [defaultProductName, setDefaultProductName] = useState(initial.defaultProductName ?? "");
   const [endpointLogin, setEndpointLogin] = useState(initial.endpoints?.login ?? "/auth/login");
   const [endpointSims, setEndpointSims] = useState(initial.endpoints?.sims ?? "/sims");
   const [endpointSimActivate, setEndpointSimActivate] = useState(
@@ -280,6 +283,89 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
                 {state.errors.resellerId.join(" ")}
               </p>
             )}
+          </div>
+
+          <div className="rounded-md border border-amber-200 bg-amber-50/60 p-4 space-y-3">
+            <div className="flex items-start gap-2">
+              <div className="rounded-md bg-amber-200/60 px-2 py-1 text-[11px] font-semibold tracking-wide text-amber-900 uppercase">
+                SIM Product
+              </div>
+              <div>
+                <p className="text-sm font-medium text-amber-900">
+                  Standaard Simhuis-product voor nieuwe SIM-activaties
+                </p>
+                <p className="text-xs text-amber-800/80 mt-0.5">
+                  Bij elke SIM-activering voor een tracker wordt automatisch dit product
+                  (offer/plan) doorgestuurd naar Simhuis. Productnaam is alleen voor
+                  eigen referentie.
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <div className="space-y-2">
+                <Label htmlFor="simhuis-default-offer-id">
+                  Default Offer ID <span className="text-[10px] text-slate-500 font-normal">(offer_id)</span>
+                </Label>
+                <Input
+                  id="simhuis-default-offer-id"
+                  name="defaultOfferId"
+                  type="text"
+                  placeholder="Bijv. SEG-OFFER-123 of 1001"
+                  value={defaultOfferId ?? ""}
+                  onChange={(e) => setDefaultOfferId(e.target.value)}
+                  readOnly={readOnly}
+                  className={cn(readOnly && "bg-slate-50 text-slate-500")}
+                  autoComplete="off"
+                />
+                {state?.errors?.defaultOfferId && (
+                  <p className="text-xs font-medium text-red-600">
+                    {state.errors.defaultOfferId.join(" ")}
+                  </p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="simhuis-default-plan-id">
+                  Default Plan ID <span className="text-[10px] text-slate-500 font-normal">(plan_id)</span>
+                </Label>
+                <Input
+                  id="simhuis-default-plan-id"
+                  name="defaultPlanId"
+                  type="text"
+                  placeholder="Bijv. SEG-PLAN-456 of 2002"
+                  value={defaultPlanId ?? ""}
+                  onChange={(e) => setDefaultPlanId(e.target.value)}
+                  readOnly={readOnly}
+                  className={cn(readOnly && "bg-slate-50 text-slate-500")}
+                  autoComplete="off"
+                />
+                {state?.errors?.defaultPlanId && (
+                  <p className="text-xs font-medium text-red-600">
+                    {state.errors.defaultPlanId.join(" ")}
+                  </p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="simhuis-default-product-name">
+                  Productnaam <span className="text-[10px] text-slate-500 font-normal">(referentie)</span>
+                </Label>
+                <Input
+                  id="simhuis-default-product-name"
+                  name="defaultProductName"
+                  type="text"
+                  placeholder="Bijv. Seguilo B.V. ROPD LR 0.40 OU per MB 0.0029 EUR SMS"
+                  value={defaultProductName ?? ""}
+                  onChange={(e) => setDefaultProductName(e.target.value)}
+                  readOnly={readOnly}
+                  className={cn(readOnly && "bg-slate-50 text-slate-500")}
+                  autoComplete="off"
+                />
+                {state?.errors?.defaultProductName && (
+                  <p className="text-xs font-medium text-red-600">
+                    {state.errors.defaultProductName.join(" ")}
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
 
           <details className="rounded-md border border-slate-200 bg-slate-50/50">

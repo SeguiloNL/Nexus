@@ -15,6 +15,10 @@ import { inserveClient } from "@/server/integrations/inserve/client";
 import { simhuisClient } from "@/server/integrations/simhuis/client";
 import { navixyClient } from "@/server/integrations/navixy/client";
 import {
+  syncAvailableSimsFromSimhuis,
+  type SimhuisSyncResult,
+} from "@/server/services/simhuis-sim-sync.service";
+import {
   InserveSettingsSchema,
   type InserveSettingsInput,
   SimhuisSettingsSchema,
@@ -124,6 +128,9 @@ export async function saveSimhuisSettingsAction(
     username: formStr(formData.get("username")),
     password: formStr(formData.get("password")),
     resellerId: formStr(formData.get("resellerId")),
+    defaultOfferId: formStr(formData.get("defaultOfferId")),
+    defaultPlanId: formStr(formData.get("defaultPlanId")),
+    defaultProductName: formStr(formData.get("defaultProductName")),
     endpointLogin: formStr(formData.get("endpointLogin")) || "/auth/login",
     endpointSims: formStr(formData.get("endpointSims")) || "/sims",
     endpointSimActivate: formStr(formData.get("endpointSimActivate")) || "/activate",
@@ -279,4 +286,47 @@ export async function testNavixyConnectionAction(): Promise<ConnectionTestResult
       ? `Verbinding Navixy succesvol (${res.latencyMs}ms)`
       : res.error ?? "Verbinding Navixy mislukt.",
   };
+}
+
+/* ========================= Simhuis SIM-voorraad sync ========================= */
+
+export interface SimSyncActionResult {
+  ok: boolean;
+  message: string;
+  totalInSimhuis?: number;
+  eligibleInSimhuis?: number;
+  created?: number;
+  updated?: number;
+  skipped?: number;
+  errors?: number;
+  errorMessages?: string[];
+  durationMs?: number;
+}
+
+export async function syncSimhuisSimsAction(): Promise<SimSyncActionResult> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "edit", "sim");
+  try {
+    const r = await syncAvailableSimsFromSimhuis({ userId: user.id, userRole: user.role });
+    const summary =
+      `SIM-voorraad bijgewerkt. Aangemaakt: ${r.created}, bijgewerkt: ${r.updated}, overgeslagen: ${r.skipped}. ` +
+      `Totaal in Simhuis: ${r.totalInSimhuis}, in aanmerking genomen: ${r.eligibleInSimhuis}. ` +
+      `Fouten: ${r.errors}. Duur: ${r.durationMs}ms.`;
+    revalidatePath("/sims");
+    revalidatePath("/settings");
+    return {
+      ok: r.errors < r.eligibleInSimhuis || r.created > 0 || r.updated > 0,
+      message: summary,
+      ...r,
+    };
+  } catch (err) {
+    console.error("[settings] Failed to sync Simhuis SIMs:", err);
+    return {
+      ok: false,
+      message:
+        err instanceof Error
+          ? err.message
+          : "Er is een fout opgetreden tijdens het synchroniseren van de Simhuis SIM-voorraad.",
+    };
+  }
 }

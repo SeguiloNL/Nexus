@@ -69,6 +69,24 @@ export const SimhuisSettingsSchema = z.object({
     .optional()
     .nullable()
     .transform((val) => (val === null || val === "" ? undefined : val)),
+  defaultOfferId: z
+    .string()
+    .trim()
+    .optional()
+    .nullable()
+    .transform((val) => (val === null || val === "" ? undefined : val)),
+  defaultPlanId: z
+    .string()
+    .trim()
+    .optional()
+    .nullable()
+    .transform((val) => (val === null || val === "" ? undefined : val)),
+  defaultProductName: z
+    .string()
+    .trim()
+    .optional()
+    .nullable()
+    .transform((val) => (val === null || val === "" ? undefined : val)),
   endpointLogin: z
     .string()
     .trim()
@@ -99,6 +117,9 @@ export interface SimhuisSettings {
   username: string;
   password: string;
   resellerId?: string | null;
+  defaultOfferId?: string | null;
+  defaultPlanId?: string | null;
+  defaultProductName?: string | null;
   endpoints: {
     login: string;
     sims: string;
@@ -114,6 +135,9 @@ export interface SimhuisSettingsMasked {
   passwordMasked: string;
   hasPassword: boolean;
   resellerId?: string | null;
+  defaultOfferId?: string | null;
+  defaultPlanId?: string | null;
+  defaultProductName?: string | null;
   endpoints: {
     login: string;
     sims: string;

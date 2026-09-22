@@ -166,5 +166,124 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
   throw lastErr ?? new Error(`[Simhuis] deactivateSim failed for ICCID ${iccid}`);
 }
 
+export interface ListSimsOptions {
+  page?: number;
+  limit?: number;
+  status?: string;
+  resellerId?: string | null;
+}
+
+export interface ListSimsResult {
+  items: SimhuisSimStatus[];
+  total?: number;
+  page: number;
+  limit: number;
+  hasMore: boolean;
+  raw?: unknown;
+}
+
+function extractSimList(raw: unknown): Array<Record<string, any>> {
+  if (Array.isArray(raw)) return raw as Array<Record<string, any>>;
+  if (!raw || typeof raw !== 'object') return [];
+  const r = raw as Record<string, any>;
+  const candidates = [
+    r.data,
+    r.sims,
+    r.items,
+    r.results,
+    r.rows,
+    r.list,
+    r?.data?.sims,
+    r?.data?.items,
+    r?.data?.results,
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c as Array<Record<string, any>>;
+  }
+  return [];
+}
+
+function extractTotal(raw: unknown, fallback: number): number | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, any>;
+  const candidates = [r.total, r.total_count, r.totalCount, r.count, r?.meta?.total, r?.pagination?.total, r?.data?.total];
+  for (const c of candidates) {
+    if (typeof c === 'number' && isFinite(c)) return c;
+    if (typeof c === 'string') {
+      const n = Number(c);
+      if (isFinite(n)) return n;
+    }
+  }
+  return fallback;
+}
+
+export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsResult> {
+  const client = (await simhuisClient.getClient())!;
+  const page = options.page ?? 1;
+  const limit = options.limit ?? 100;
+  const resellerId = options.resellerId ?? client.resellerId;
+
+  const baseQuery: Record<string, any> = { page, limit };
+  if (resellerId) baseQuery.reseller_id = resellerId;
+  if (options.status) baseQuery.status = options.status;
+
+  const queries = [
+    { ...baseQuery },
+    { ...baseQuery, per_page: limit, page_number: page },
+    { ...baseQuery, page: page, size: limit },
+  ];
+
+  const paths = [
+    client.endpoints.sims,
+    client.endpoints.sims + '/list',
+    '/sim/list',
+  ];
+
+  let lastErr: unknown = null;
+  for (const path of paths) {
+    for (const q of queries) {
+      try {
+        const resp = await doRequest<unknown>(path, { method: 'GET', query: q as any });
+        const rawArray = extractSimList(resp);
+        const items = rawArray.map((item) => {
+          const iccid = String(item.iccid ?? item.sim_iccid ?? item.simIccid ?? '').trim();
+          return toSimStatus(item, iccid);
+        });
+        const total = extractTotal(resp, items.length);
+        const hasMore = typeof total === 'number' ? (page * limit) < total : items.length === limit;
+        return { items, total, page, limit, hasMore, raw: resp };
+      } catch (err) {
+        lastErr = err;
+        if (err instanceof SimhuisApiError) {
+          if (err.statusCode === 404 || err.statusCode === 405 || err.statusCode === 400) continue;
+        }
+        throw err;
+      }
+    }
+  }
+  throw lastErr ?? new Error(`[Simhuis] listSims failed: geen enkel endpoint reageerde`);
+}
+
+export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit'> = {}): Promise<SimhuisSimStatus[]> {
+  const all: SimhuisSimStatus[] = [];
+  let page = 1;
+  const pageSize = 200;
+  const seen = new Set<string>();
+  let safety = 0;
+  while (safety < 50) {
+    safety++;
+    const batch = await listSims({ ...options, page, limit: pageSize });
+    for (const s of batch.items) {
+      if (s.iccid && !seen.has(s.iccid)) {
+        seen.add(s.iccid);
+        all.push(s);
+      }
+    }
+    if (!batch.hasMore || batch.items.length === 0) break;
+    page++;
+  }
+  return all;
+}
+
 export { simhuisClient, SimhuisApiError };
 export type { SimhuisRequestOptions };

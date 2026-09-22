@@ -20,6 +20,7 @@ import {
   simhuisClient,
 } from "../integrations/simhuis/service";
 import type { SimhuisSimStatus } from "../integrations/simhuis/types";
+import { getSimhuisSettings } from "./app-setting.service";
 
 import {
   registerTracker as navixyRegisterTracker,
@@ -435,6 +436,17 @@ export async function completeActivation(id: string, ctx: Ctx) {
     const simhuisConfigured = await simhuisClient.isConfigured();
     if (simhuisConfigured) {
       try {
+        const simhuisSettings = await getSimhuisSettings();
+        const defaultOfferId = simhuisSettings?.defaultOfferId ?? null;
+        const defaultPlanId = simhuisSettings?.defaultPlanId ?? null;
+        const resellerId = simhuisSettings?.resellerId ?? null;
+
+        if (defaultOfferId || defaultPlanId) {
+          console.info(
+            `[Activation] Standaard Simhuis-product: offer_id=${defaultOfferId ?? "-"}, plan_id=${defaultPlanId ?? "-"} (reseller_id=${resellerId ?? "-"})`
+          );
+        }
+
         const preStatus = await simhuisGetSimStatus(initial.sim.iccid);
         if (preStatus.status === "active") {
           console.info(`[Activation] SIM ${initial.sim.iccid} reeds actief in Simhuis — overslaan`);
@@ -443,6 +455,9 @@ export async function completeActivation(id: string, ctx: Ctx) {
           const activated = await simhuisActivateSim({
             iccid: initial.sim.iccid,
             customerRef: initial.customer.customerNumber ?? `${initial.customer.id}`,
+            offerId: defaultOfferId,
+            planId: defaultPlanId,
+            resellerId: resellerId,
           });
           rollbackCtx.simActivated = activated;
         }

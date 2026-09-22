@@ -29,6 +29,9 @@ const SIMHUIS_KEYS = {
   username: "simhuis.username",
   password: "simhuis.password",
   resellerId: "simhuis.resellerId",
+  defaultOfferId: "simhuis.defaultOfferId",
+  defaultPlanId: "simhuis.defaultPlanId",
+  defaultProductName: "simhuis.defaultProductName",
   endpointLogin: "simhuis.endpoint.login",
   endpointSims: "simhuis.endpoint.sims",
   endpointSimActivate: "simhuis.endpoint.simActivate",
@@ -217,12 +220,18 @@ function getEnvSimhuisSettings(): SimhuisSettings | null {
   const password = envStr("SIMHUIS_PASSWORD");
   if (!username || !password) return null;
   const resellerId = envStr("SIMHUIS_RESELLER_ID") || null;
+  const defaultOfferId = envStr("SIMHUIS_DEFAULT_OFFER_ID") || null;
+  const defaultPlanId = envStr("SIMHUIS_DEFAULT_PLAN_ID") || null;
+  const defaultProductName = envStr("SIMHUIS_DEFAULT_PRODUCT_NAME") || null;
   return {
     baseUrl,
     authMode,
     username,
     password,
     resellerId: resellerId || undefined,
+    defaultOfferId: defaultOfferId || undefined,
+    defaultPlanId: defaultPlanId || undefined,
+    defaultProductName: defaultProductName || undefined,
     endpoints: {
       login: envStr("SIMHUIS_ENDPOINT_LOGIN") || "/auth/login",
       sims: envStr("SIMHUIS_ENDPOINT_SIMS") || "/sims",
@@ -254,6 +263,9 @@ export async function getSimhuisSettings(): Promise<SimhuisSettings | null> {
       username,
       password,
       resellerId: map[SIMHUIS_KEYS.resellerId] || undefined,
+      defaultOfferId: map[SIMHUIS_KEYS.defaultOfferId] || undefined,
+      defaultPlanId: map[SIMHUIS_KEYS.defaultPlanId] || undefined,
+      defaultProductName: map[SIMHUIS_KEYS.defaultProductName] || undefined,
       endpoints: {
         login: map[SIMHUIS_KEYS.endpointLogin] || "/auth/login",
         sims: map[SIMHUIS_KEYS.endpointSims] || "/sims",
@@ -290,6 +302,9 @@ export async function getSimhuisSettingsMasked(): Promise<SimhuisSettingsMasked>
       passwordMasked: maskApiKey(dbPassword!),
       hasPassword: true,
       resellerId: map[SIMHUIS_KEYS.resellerId] || undefined,
+      defaultOfferId: map[SIMHUIS_KEYS.defaultOfferId] || undefined,
+      defaultPlanId: map[SIMHUIS_KEYS.defaultPlanId] || undefined,
+      defaultProductName: map[SIMHUIS_KEYS.defaultProductName] || undefined,
       endpoints: {
         login: map[SIMHUIS_KEYS.endpointLogin] || "/auth/login",
         sims: map[SIMHUIS_KEYS.endpointSims] || "/sims",
@@ -309,6 +324,9 @@ export async function getSimhuisSettingsMasked(): Promise<SimhuisSettingsMasked>
       passwordMasked: maskApiKey(env.password),
       hasPassword: true,
       resellerId: env.resellerId,
+      defaultOfferId: env.defaultOfferId,
+      defaultPlanId: env.defaultPlanId,
+      defaultProductName: env.defaultProductName,
       endpoints: env.endpoints,
       source: "env",
     };
@@ -323,6 +341,9 @@ export async function getSimhuisSettingsMasked(): Promise<SimhuisSettingsMasked>
     passwordMasked: "",
     hasPassword: false,
     resellerId: map[SIMHUIS_KEYS.resellerId] ?? undefined,
+    defaultOfferId: map[SIMHUIS_KEYS.defaultOfferId] ?? undefined,
+    defaultPlanId: map[SIMHUIS_KEYS.defaultPlanId] ?? undefined,
+    defaultProductName: map[SIMHUIS_KEYS.defaultProductName] ?? undefined,
     endpoints: {
       login: map[SIMHUIS_KEYS.endpointLogin] || "/auth/login",
       sims: map[SIMHUIS_KEYS.endpointSims] || "/sims",
@@ -362,6 +383,9 @@ export async function saveSimhuisSettings(
           username: uname,
           password: pw,
           resellerId: prev[SIMHUIS_KEYS.resellerId] || undefined,
+          defaultOfferId: prev[SIMHUIS_KEYS.defaultOfferId] || undefined,
+          defaultPlanId: prev[SIMHUIS_KEYS.defaultPlanId] || undefined,
+          defaultProductName: prev[SIMHUIS_KEYS.defaultProductName] || undefined,
           endpoints: {
             login: prev[SIMHUIS_KEYS.endpointLogin] || "/auth/login",
             sims: prev[SIMHUIS_KEYS.endpointSims] || "/sims",
@@ -388,6 +412,9 @@ export async function saveSimhuisSettings(
       username: validated.username,
       password: finalPassword,
       resellerId: validated.resellerId,
+      defaultOfferId: validated.defaultOfferId,
+      defaultPlanId: validated.defaultPlanId,
+      defaultProductName: validated.defaultProductName,
       endpoints: {
         login: validated.endpointLogin,
         sims: validated.endpointSims,
@@ -403,6 +430,9 @@ export async function saveSimhuisSettings(
     oldValues.authMode = prev[SIMHUIS_KEYS.authMode] ?? null;
     oldValues.username = prev[SIMHUIS_KEYS.username] ?? null;
     oldValues.hasPassword = !!prev[SIMHUIS_KEYS.password];
+    oldValues.defaultOfferId = prev[SIMHUIS_KEYS.defaultOfferId] ?? null;
+    oldValues.defaultPlanId = prev[SIMHUIS_KEYS.defaultPlanId] ?? null;
+    oldValues.defaultProductName = prev[SIMHUIS_KEYS.defaultProductName] ?? null;
 
     newValues.source = "db";
     newValues.baseUrl = finalSettings.baseUrl;
@@ -410,73 +440,36 @@ export async function saveSimhuisSettings(
     newValues.username = finalSettings.username;
     newValues.hasPassword = true;
     newValues.passwordChanged = !!validated.password || !prev[SIMHUIS_KEYS.password];
+    newValues.defaultOfferId = finalSettings.defaultOfferId ?? null;
+    newValues.defaultPlanId = finalSettings.defaultPlanId ?? null;
+    newValues.defaultProductName = finalSettings.defaultProductName ?? null;
+
+    const upsertPair = (
+      key: string,
+      value: string | null | undefined,
+      isSecret: boolean
+    ) => {
+      const v = value === null || value === undefined ? "" : value;
+      return tx.appSetting.upsert({
+        where: { key },
+        create: { key, value: v, isSecret },
+        update: { value: v },
+      });
+    };
 
     const upserts: Promise<unknown>[] = [
-      tx.appSetting.upsert({
-        where: { key: SIMHUIS_KEYS.baseUrl },
-        create: { key: SIMHUIS_KEYS.baseUrl, value: finalSettings.baseUrl, isSecret: false },
-        update: { value: finalSettings.baseUrl },
-      }),
-      tx.appSetting.upsert({
-        where: { key: SIMHUIS_KEYS.authMode },
-        create: { key: SIMHUIS_KEYS.authMode, value: finalSettings.authMode, isSecret: false },
-        update: { value: finalSettings.authMode },
-      }),
-      tx.appSetting.upsert({
-        where: { key: SIMHUIS_KEYS.username },
-        create: { key: SIMHUIS_KEYS.username, value: finalSettings.username, isSecret: false },
-        update: { value: finalSettings.username },
-      }),
-      tx.appSetting.upsert({
-        where: { key: SIMHUIS_KEYS.password },
-        create: { key: SIMHUIS_KEYS.password, value: finalSettings.password, isSecret: true },
-        update: { value: finalSettings.password },
-      }),
-      tx.appSetting.upsert({
-        where: { key: SIMHUIS_KEYS.resellerId },
-        create: {
-          key: SIMHUIS_KEYS.resellerId,
-          value: finalSettings.resellerId ?? "",
-          isSecret: false,
-        },
-        update: { value: finalSettings.resellerId ?? "" },
-      }),
-      tx.appSetting.upsert({
-        where: { key: SIMHUIS_KEYS.endpointLogin },
-        create: {
-          key: SIMHUIS_KEYS.endpointLogin,
-          value: finalSettings.endpoints.login,
-          isSecret: false,
-        },
-        update: { value: finalSettings.endpoints.login },
-      }),
-      tx.appSetting.upsert({
-        where: { key: SIMHUIS_KEYS.endpointSims },
-        create: {
-          key: SIMHUIS_KEYS.endpointSims,
-          value: finalSettings.endpoints.sims,
-          isSecret: false,
-        },
-        update: { value: finalSettings.endpoints.sims },
-      }),
-      tx.appSetting.upsert({
-        where: { key: SIMHUIS_KEYS.endpointSimActivate },
-        create: {
-          key: SIMHUIS_KEYS.endpointSimActivate,
-          value: finalSettings.endpoints.simActivate,
-          isSecret: false,
-        },
-        update: { value: finalSettings.endpoints.simActivate },
-      }),
-      tx.appSetting.upsert({
-        where: { key: SIMHUIS_KEYS.endpointSimDeactivate },
-        create: {
-          key: SIMHUIS_KEYS.endpointSimDeactivate,
-          value: finalSettings.endpoints.simDeactivate,
-          isSecret: false,
-        },
-        update: { value: finalSettings.endpoints.simDeactivate },
-      }),
+      upsertPair(SIMHUIS_KEYS.baseUrl, finalSettings.baseUrl, false),
+      upsertPair(SIMHUIS_KEYS.authMode, finalSettings.authMode, false),
+      upsertPair(SIMHUIS_KEYS.username, finalSettings.username, false),
+      upsertPair(SIMHUIS_KEYS.password, finalSettings.password, true),
+      upsertPair(SIMHUIS_KEYS.resellerId, finalSettings.resellerId, false),
+      upsertPair(SIMHUIS_KEYS.defaultOfferId, finalSettings.defaultOfferId, false),
+      upsertPair(SIMHUIS_KEYS.defaultPlanId, finalSettings.defaultPlanId, false),
+      upsertPair(SIMHUIS_KEYS.defaultProductName, finalSettings.defaultProductName, false),
+      upsertPair(SIMHUIS_KEYS.endpointLogin, finalSettings.endpoints.login, false),
+      upsertPair(SIMHUIS_KEYS.endpointSims, finalSettings.endpoints.sims, false),
+      upsertPair(SIMHUIS_KEYS.endpointSimActivate, finalSettings.endpoints.simActivate, false),
+      upsertPair(SIMHUIS_KEYS.endpointSimDeactivate, finalSettings.endpoints.simDeactivate, false),
     ];
 
     await Promise.all(upserts);
