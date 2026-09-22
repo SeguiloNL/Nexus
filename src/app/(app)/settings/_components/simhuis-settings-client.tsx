@@ -7,6 +7,8 @@ import {
   type SimhuisSettingsActionState,
   testSimhuisConnectionAction,
   type ConnectionTestResult,
+  syncSimhuisSimsAction,
+  type SimSyncActionResult,
 } from "../actions";
 import type { SimhuisSettingsMasked } from "@/server/validators/setting";
 import { Button } from "@/components/ui/button";
@@ -28,7 +30,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Globe, Eye, EyeOff, CheckCircle2, AlertCircle, Info, Loader2 } from "lucide-react";
+import {
+  Globe,
+  Eye,
+  EyeOff,
+  CheckCircle2,
+  AlertCircle,
+  Info,
+  Loader2,
+  RefreshCcw,
+  Database,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface SimhuisSettingsFormProps {
@@ -45,6 +57,8 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
   );
   const [isTestPending, startTestTransition] = useTransition();
   const [connectionResult, setConnectionResult] = useState<ConnectionTestResult | null>(null);
+  const [isSyncPending, startSyncTransition] = useTransition();
+  const [syncResult, setSyncResult] = useState<SimSyncActionResult | null>(null);
 
   const [baseUrl, setBaseUrl] = useState(initial.baseUrl ?? "");
   const [authMode, setAuthMode] = useState<"basic" | "bearer">(initial.authMode ?? "basic");
@@ -75,6 +89,14 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
     startTestTransition(async () => {
       const result = await testSimhuisConnectionAction();
       setConnectionResult(result);
+    });
+  };
+
+  const handleSyncSims = () => {
+    setSyncResult(null);
+    startSyncTransition(async () => {
+      const result = await syncSimhuisSimsAction();
+      setSyncResult(result);
     });
   };
 
@@ -448,23 +470,45 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
         <CardFooter className="border-t bg-slate-50/50 px-6 py-3">
           <div className="flex w-full flex-col gap-3">
             <div className="flex w-full flex-wrap items-center justify-end gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={handleTestConnection}
-                disabled={isTestPending}
-                className="mr-auto"
-              >
-                {isTestPending ? (
-                  <>
-                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    Testen…
-                  </>
-                ) : (
-                  <>🔌 Verbinding testen</>
-                )}
-              </Button>
+              <div className="mr-auto flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleTestConnection}
+                  disabled={isTestPending}
+                >
+                  {isTestPending ? (
+                    <>
+                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      Testen…
+                    </>
+                  ) : (
+                    <>🔌 Verbinding testen</>
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="default"
+                  size="sm"
+                  onClick={handleSyncSims}
+                  disabled={isSyncPending}
+                  className="bg-indigo-600 text-white hover:bg-indigo-700"
+                >
+                  {isSyncPending ? (
+                    <>
+                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      Syncen…
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCcw className="mr-2 h-3.5 w-3.5" />
+                      <Database className="mr-1.5 h-3.5 w-3.5" />
+                      SIM-voorraad synchroniseren
+                    </>
+                  )}
+                </Button>
+              </div>
               {!readOnly ? (
                 <>
                   <p className="text-xs text-slate-500">
@@ -518,6 +562,48 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
                     <p className="mt-0.5 text-[11px] opacity-90">
                       Fout: {connectionResult.error}
                     </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {syncResult && (
+              <div
+                className={cn(
+                  "flex items-start gap-2 rounded-md border p-2.5 text-xs",
+                  syncResult.ok
+                    ? "border-indigo-200 bg-indigo-50 text-indigo-900"
+                    : "border-red-200 bg-red-50 text-red-800"
+                )}
+                role="status"
+              >
+                {syncResult.ok ? (
+                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                ) : (
+                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                )}
+                <div className="flex-1">
+                  <p className="font-medium">{syncResult.message}</p>
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] opacity-80">
+                    <span>Totaal Simhuis: {syncResult.totalInSimhuis ?? "-"}</span>
+                    <span>Gekwalificeerd: {syncResult.eligibleInSimhuis ?? "-"}</span>
+                    <span>🆕 Aangemaakt: {syncResult.created ?? 0}</span>
+                    <span>♻️ Bijgewerkt: {syncResult.updated ?? 0}</span>
+                    <span>⏭️ Overgeslagen: {syncResult.skipped ?? 0}</span>
+                    <span>❌ Fouten: {syncResult.errors ?? 0}</span>
+                    {typeof syncResult.durationMs === "number" && (
+                      <span>⏱️ {syncResult.durationMs}ms</span>
+                    )}
+                  </div>
+                  {syncResult.errorMessages && syncResult.errorMessages.length > 0 && (
+                    <ul className="mt-1.5 list-disc pl-5 text-[11px] opacity-95">
+                      {syncResult.errorMessages.slice(0, 5).map((e, i) => (
+                        <li key={i}>{e}</li>
+                      ))}
+                      {syncResult.errorMessages.length > 5 && (
+                        <li>…en nog {syncResult.errorMessages.length - 5} fouten.</li>
+                      )}
+                    </ul>
                   )}
                 </div>
               </div>
