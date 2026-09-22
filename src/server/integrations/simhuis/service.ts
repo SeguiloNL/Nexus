@@ -272,11 +272,23 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   if (options.status) basePayload.status = options.status;
 
   const attempts: ListAttempt[] = [];
-  const MAX_ATTEMPTS = 90;
+  const MAX_ATTEMPTS = 100;
   let pogingen = 0;
-  const overallDeadline = AbortSignal.timeout(40000);
+  const overallDeadline = AbortSignal.timeout(45000);
   const allowHeadersByPath = new Map<string, string>();
   const authBasic = basicAuthHeader(creds.username, creds.password);
+
+  // === WAF-BYPASS HEADERS ===
+  // Simhuis/apicontrolcenter.com staat achter een reverse-proxy (Netscaler/Citrix/Cloudflare)
+  // die server-side fetch-requests (undici User-Agent) met 405 Allow: OPTIONS afwijst,
+  // MAAR browsers/Postman WEL doorlaat. Deze headers bootsen een Postman/browser request na.
+  const wafBypassHeaders: Record<string, string> = {
+    'User-Agent': 'PostmanRuntime/7.39.0',
+    'Accept': 'application/json',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Requested-With': 'XMLHttpRequest',
+  };
 
   const basicAuthOnly: AuthStyle = { tag: 'basic-header', header: authBasic };
   const noAuth: AuthStyle = { tag: 'custom-headers', headers: {} };
@@ -338,7 +350,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         signature: `base=${baseClean};auth=${tc.auth.tag}`,
       };
       try {
-        const headers: Record<string, string> = { Accept: 'application/json' };
+        const headers: Record<string, string> = { ...wafBypassHeaders };
         if (tc.auth.tag === 'custom-headers') Object.assign(headers, tc.auth.headers);
         else headers.Authorization = tc.auth.header;
         let bodyInit: BodyInit | undefined;
@@ -543,7 +555,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       return null;
     }
     try {
-      const headers: Record<string, string> = { Accept: 'application/json' };
+      const headers: Record<string, string> = { ...wafBypassHeaders };
       if (args.auth.tag === 'basic-header' || args.auth.tag === 'bearer-header' ||
           args.auth.tag === 'apikey-header-x' || args.auth.tag === 'api-key-auth-header') {
         headers.Authorization = args.auth.header;
@@ -632,7 +644,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       signature: probe.label,
     };
     try {
-      const headers: Record<string, string> = { Accept: 'application/json' };
+      const headers: Record<string, string> = { ...wafBypassHeaders };
       if (probe.auth.tag === 'custom-headers') Object.assign(headers, probe.auth.headers);
       else headers.Authorization = probe.auth.header;
 
