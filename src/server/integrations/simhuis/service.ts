@@ -272,13 +272,13 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   if (options.status) basePayload.status = options.status;
 
   const attempts: ListAttempt[] = [];
-  const MAX_ATTEMPTS = 180;
+  const MAX_ATTEMPTS = 120;
   let pogingen = 0;
-  const overallDeadline = AbortSignal.timeout(40000);
+  const overallDeadline = AbortSignal.timeout(30000);
   const allowHeadersByPath = new Map<string, string>();
 
   const authBasic = basicAuthHeader(creds.username, creds.password);
-  const authStyles: AuthStyle[] = [
+  const authStylesFast: AuthStyle[] = [
     { tag: 'basic-header', header: authBasic },
     {
       tag: 'custom-headers',
@@ -288,27 +288,56 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         ...(resellerId ? { 'X-Reseller-ID': String(resellerId) } : {}),
       },
     },
-    {
-      tag: 'custom-headers',
-      headers: {
-        Authorization: authBasic,
-        ...(resellerId ? { 'X-Reseller-ID': String(resellerId) } : {}),
-      },
-    },
-    { tag: 'bearer-header', header: `Bearer ${creds.password}` },
-    { tag: 'apikey-header-x', header: `x-api-key ${creds.password}` },
-    { tag: 'api-key-auth-header', header: `ApiKey ${creds.username}:${creds.password}` },
   ];
 
   const resellerFragment = resellerId ? encodeURIComponent(String(resellerId)) : null;
-  const focusPaths: string[] = [
-    '/sims',
-    '/sims/list',
-    '/sims/search',
-    '/sims/inventory',
+
+  const listStylePaths: string[] = [
+    '/inventory',
+    '/inventory/sims',
+    '/inventory/list',
+    '/inventory/search',
+    '/subscriptions',
+    '/subscriptions/list',
+    '/subscriptions/search',
+    '/simcards',
+    '/sim-cards',
+    '/simcards/list',
+    '/pool/sims',
+    '/stock/sims',
+    '/available/sims',
+    '/available-sims',
+    '/inactive/sims',
+    '/iccids',
+    '/iccids/list',
+    '/devices',
+    '/devices/sims',
+    '/account/sims',
+    '/account/inventory',
+    '/customer/sims',
+    '/customer/inventory',
+    '/users/sims',
+    '/packages',
+    '/packages/sims',
+    '/offers',
+    '/offers/sims',
+    '/plans',
+    '/plans/sims',
+    '/tariffs/sims',
+    '/resellers/sims',
+    '/reseller/sims',
+    '/all/sims',
+    '/sims.json',
+    '/inventory.json',
+    '/subscriptions.json',
   ];
   if (resellerFragment) {
-    focusPaths.unshift(`/resellers/${resellerFragment}/sims`);
+    listStylePaths.unshift(
+      `/resellers/${resellerFragment}/sims`,
+      `/resellers/${resellerFragment}/inventory`,
+      `/resellers/${resellerFragment}/subscriptions`,
+      `/resellers/${resellerFragment}/simcards`,
+    );
   }
 
   const processResponse = (respBodyRaw: unknown): ListSimsResult | null => {
@@ -454,13 +483,13 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     return null;
   };
 
-  const httpMethodsFast: Array<'GET' | 'POST' | 'PUT' | 'PATCH'> = ['POST', 'GET', 'PUT', 'PATCH'];
+  const httpMethodsFast: Array<'POST' | 'GET'> = ['POST', 'GET'];
   const injectStylesFast: Array<'none' | 'creds'> = ['creds', 'none'];
 
-  // FOCUS ROUND: per path × per auth × per inject × per method — 1 payload variant (full basePayload)
-  // 4 paths × 6 auths × 2 injects × 4 methods × 2 kinds (query excluded for non-GET) = ~336 worst case, maar we stoppen bij 180 en snel succes
-  for (const path of focusPaths) {
-    for (const auth of authStyles) {
+  // Fase 1 (snelle dekking): 38 paden × 2 auths × 2 injects × 2 methods × 2 kinds ≈ 240 worst-case → stoppen bij 120
+  // Vindt hopelijk snel een 200, 201 of 204 response met een array of data-lijst.
+  for (const path of listStylePaths) {
+    for (const auth of authStylesFast) {
       for (const inject of injectStylesFast) {
         for (const method of httpMethodsFast) {
           if (method === 'GET') {
@@ -477,7 +506,6 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
             if (r) return r;
           } else {
             const body = augmentBody(inject);
-            // JSON body first
             const r1 = await doDirectFetch({
               fullUrl: makeFullUrl(path, null),
               method,
@@ -488,21 +516,61 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
               pathForAllowHeader: path,
             });
             if (r1) return r1;
-            // form body only for POST / PUT (many APIs don't parse form for PATCH)
-            if (method !== 'PATCH') {
-              const r2 = await doDirectFetch({
-                fullUrl: makeFullUrl(path, null),
-                method,
-                contentType: 'form',
-                body,
-                auth,
-                meta: { method, path, kind: 'form-body', signature: `auth=${auth.tag};inject=${inject}` },
-                pathForAllowHeader: path,
-              });
-              if (r2) return r2;
-            }
+            const r2 = await doDirectFetch({
+              fullUrl: makeFullUrl(path, null),
+              method,
+              contentType: 'form',
+              body,
+              auth,
+              meta: { method, path, kind: 'form-body', signature: `auth=${auth.tag};inject=${inject}` },
+              pathForAllowHeader: path,
+            });
+            if (r2) return r2;
           }
         }
+      }
+    }
+  }
+
+  // Fase 2 (laatste redmiddel): Bearer en ApiKey varianten op de 6 meest kansrijke paden
+  const fallbackAuths: AuthStyle[] = [
+    { tag: 'bearer-header', header: `Bearer ${creds.password}` },
+    { tag: 'api-key-auth-header', header: `ApiKey ${creds.username}:${creds.password}` },
+    { tag: 'apikey-header-x', header: `x-api-key ${creds.password}` },
+    {
+      tag: 'custom-headers',
+      headers: {
+        Authorization: authBasic,
+        ...(resellerId ? { 'X-Reseller-ID': String(resellerId) } : {}),
+      },
+    },
+  ];
+  const backupPaths = listStylePaths.slice(0, 6);
+  for (const path of backupPaths) {
+    for (const auth of fallbackAuths) {
+      for (const inject of injectStylesFast) {
+        const body = augmentBody(inject);
+        const r = await doDirectFetch({
+          fullUrl: makeFullUrl(path, null),
+          method: 'POST',
+          contentType: 'json',
+          body,
+          auth,
+          meta: { method: 'POST', path, kind: 'json-body', signature: `auth=${auth.tag};inject=${inject};fase=2` },
+          pathForAllowHeader: path,
+        });
+        if (r) return r;
+        const query = augmentQuery(inject);
+        const r2 = await doDirectFetch({
+          fullUrl: makeFullUrl(path, query),
+          method: 'GET',
+          contentType: 'none',
+          body: null,
+          auth,
+          meta: { method: 'GET', path, kind: 'query', signature: `auth=${auth.tag};inject=${inject};fase=2` },
+          pathForAllowHeader: path,
+        });
+        if (r2) return r2;
       }
     }
   }
