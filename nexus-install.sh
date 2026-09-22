@@ -2,7 +2,7 @@
 # ==============================================================================
 # nexus-install.sh — ONE-CLICK STM (voorheen Nexus) Installer + UPDATER voor Ubuntu
 # Repository: https://github.com/SeguiloNL/Nexus
-# Versie:     1.2.0 (toegevoegd: --update mode voor 1-click updates!)
+# Versie:     1.2.1 (HOTFIX: root-escalatie SUDO_USER-bug + defensieve Caddyfile-copy)
 # Idempotent: meerdere keren draaien is VEILIG.
 # Strict:    set -Eeuo pipefail + ERR-trap (iedere fout stopt METEEN, met duidelijke melding).
 #
@@ -68,7 +68,7 @@ set -Eeuo pipefail
 # 0. CORE CONSTANTS (ZEER VROEG, VOOR safe start, zodat VERSIE/URL direct gebruikt kan worden)
 # ------------------------------------------------------------------------------
 INSTALL_SCRIPT_NAME="nexus-install.sh"
-INSTALLER_VERSION="1.2.0"
+INSTALLER_VERSION="1.2.1"
 INSTALL_START_EPOCH="$(date +%s)"
 DEFAULT_INSTALL_DIR="/opt/stm"
 DEFAULT_SWAP_MULTIPLIER="1.5"
@@ -403,40 +403,89 @@ fix_etc_hosts || true
 
 # ==============================================================================
 # STAP 0.3 — EERST: Root / sudo controleren (VOOR we bootstrap of iets anders doen).
-#             We gebruiken MEERDERE checks zodat escalatie MAXIMAAL 1x gebeurt.
+#             STRICT: Script MOET echt als root draaien (EUID == 0).
+#
+#   ⚠️  HISTORISCHE BUG (vastgesteld 2026-09-22):
+#       Oud checkte `SUDO_USER!=empty` ⇒ "al geëscaleerd". Maar als je als root
+#       eerst `sudo -u stm -i` doet en VERVOLGENS ./nexus-install.sh draait,
+#       blijft SUDO_USER GEZET (uit de eerste sudo-sessie), terwijl EUID=999 = stm.
+#       Het script dacht toen "ik ben al root" en skipte de escalatie, waarna
+#       het op alle /etc/caddy, systemctl en chown operaties crashte.
+#
+#   NIEUW: ECHTE root zijn (EUID == 0) is het ENIGE betrouwbare bewijs.
+#         Onze eigen marker SUDO_ESCALATED=1 is ook betrouwbaar (want wij zetten
+#         die alleen bij een succesvolle `exec sudo ... bash "$0" ...` herstart).
 # ==============================================================================
-escalated=0
-if [[ -n "${SUDO_ESCALATED:-}" && "${SUDO_ESCALATED}" == "1" ]]; then escalated=1; fi
-if [[ -n "${SUDO_USER:-}" ]]; then escalated=1; fi
-if [[ "$EUID" -eq 0 ]]; then escalated=1; fi
+#
+# Helper: als_root <command...>
+#   - DRAAIT command gegarandeerd als root.
+#   - Als wij al root zijn (EUID=0):                direct exec, geen overhead.
+#   - Als wij NIET root zijn maar sudo -n werkt:   via sudo -n -E -H
+#   - Als geen van beide:                           exit 3 met duidelijke melding.
+#     (in practice zouden wij nooit hier komen door de eerdere root-check!)
+as_root() {
+  if [[ "$EUID" -eq 0 ]]; then
+    "$@"
+  else
+    if sudo -n true 2>/dev/null; then
+      sudo -n -E -H "$@"
+    else
+      echo "" >/dev/stderr 2>/dev/null || true
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >/dev/stderr 2>/dev/null || true
+      echo "❌  ROOT RECHTEN VEREIST (regel ${BASH_LINENO[0]:-?}): as_root $*" >/dev/stderr 2>/dev/null || true
+      echo "    Je bent nu gebruiker $(id -un 2>/dev/null || echo "onbekend") met EUID=${EUID}." >/dev/stderr 2>/dev/null || true
+      echo "" >/dev/stderr 2>/dev/null || true
+      echo "    ✅  FIX: Log eerst UIT deze non-root sessie en start het script als ROOT:" >/dev/stderr 2>/dev/null || true
+      echo "        exit" >/dev/stderr 2>/dev/null || true
+      echo "        sudo -E bash $0 $*" >/dev/stderr 2>/dev/null || true
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >/dev/stderr 2>/dev/null || true
+      exit 3
+    fi
+  fi
+}
 
-if [[ "$escalated" -eq 0 ]]; then
-  # NIET root en NIET geëscaleerd → probeer sudo.
+iam_root=0
+if [[ "$EUID" -eq 0 ]]; then iam_root=1; fi
+# Onze eigen marker (betrouwbaar: wij zetten hem alleen bij `exec sudo ...` herstart)
+if [[ -n "${SUDO_ESCALATED:-}" && "${SUDO_ESCALATED}" == "1" ]]; then
+  # Als we SUDO_ESCALATED hebben gezegd MOET EUID 0 zijn; is dat niet zo, dan
+  # is er iets raar met de sudo-configuratie en forceren we een escalatie.
+  if [[ "$EUID" -eq 0 ]]; then iam_root=1; fi
+fi
+
+if [[ "$iam_root" -eq 0 ]]; then
+  # WIJ ZIJN NIET ROOT. Probeer escaleren via sudo.
+  echo "[STM] Draaiend als gebruiker $(id -un 2>/dev/null || echo onbekend) (EUID=${EUID}). Auto-escalatie naar root proberen..." >/dev/stderr 2>/dev/null || true
   if require_cmd sudo; then
-    # Test of sudo zonder wachtwoord MAG (non-interactive).
+    # (1) Eerste keus: sudo zonder wachtwoord. Beste UX, 0 interactive prompts.
     if sudo -n true 2>/dev/null; then
       export SUDO_ESCALATED=1
-      echo "[STM] Niet als root gestart; auto-escalatie naar root via sudo (zonder wachtwoord). PID=$$ → herstart..." >/dev/stderr 2>/dev/null || true
+      echo "[STM] sudo NOPASSWD toegestaan. PID=$$ → herstart als root via sudo -E bash $0 ..." >/dev/stderr 2>/dev/null || true
       exec sudo -H -E --preserve-env=HOME,PATH,NO_COLOR,TZ,STM_RUN_COUNT,SUDO_ESCALATED,STM_BOOTSTRAPPED,DEFAULT_GIT_BRANCH,STM_DEBUG \
         bash "$0" "$@"
+      # exec komt nooit terug.
     fi
-    # sudo -n (zonder wachtwoord) mag niet. Vraag gebruiker om handmatig sudo.
-    echo "[STM] ⚠️  sudo vereist een wachtwoord (NOPASSWD staat aan). Zie handmatige instructies hieronder:" >/dev/stderr 2>/dev/null || true
-    cat <<'EOT' >&2
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  💡 NIET als root gedraaid EN sudo vereist een wachtwoord.                    │
-│                                                                              │
-│  KORTE OPLOSSING (voer deze exact uit):                                      │
-│    sudo -E bash "$0" $@                                                      │
-│   OF (als $0 alleen bestandsnaam is, GEEN absoluut pad):                     │
-│    sudo -E bash ./nexus-install.sh --domain stm.jouwdomein.nl --seed         │
-│                                                                              │
-│  sudo zal nu jouw wachtwoord vragen (1x). Daarna gaat alles automatisch.     │
-└──────────────────────────────────────────────────────────────────────────────┘
-EOT
+    # (2) Tweede keus: sudo MET wachtwoord. Laat de EXACTE copy-paste regel zien.
+    #     Belangrijk: vermeld OOK de "stm"-sessie valkuil!
+    echo "" >/dev/stderr 2>/dev/null || true
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >/dev/stderr 2>/dev/null || true
+    echo "💡  Script draait NU NIET als root (huidige EUID=${EUID}, user=$(id -un 2>/dev/null || echo ?))." >/dev/stderr 2>/dev/null || true
+    echo "    sudo vereist een wachtwoord (NOPASSWD) of je zat in een non-root sessie" >/dev/stderr 2>/dev/null || true
+    echo "    (bijv. via \`sudo -u stm -i\` — dan blijft SUDO_USER staan en heb je nog steeds GEEN root!)" >/dev/stderr 2>/dev/null || true
+    echo "" >/dev/stderr 2>/dev/null || true
+    echo "    ✅  FIX — voer DEZE exacte regel UIT (in dezelfde terminal, of log eerst uit):" >/dev/stderr 2>/dev/null || true
+    printf '        cd "%s" && sudo -E bash %s' "$(pwd -P 2>/dev/null || pwd)" "$0" >/dev/stderr 2>/dev/null || true
+    # toon ook de originele args (zonder dat bash ze expansion verkeerd doet):
+    _esc_arg=""
+    for _esc_arg in "$@"; do
+      printf ' %q' "$_esc_arg" >/dev/stderr 2>/dev/null || true
+    done
+    unset _esc_arg
+    echo "" >/dev/stderr 2>/dev/null || true
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >/dev/stderr 2>/dev/null || true
     exit 3
   fi
-  echo "✖  Geen sudo gevonden en niet als root gedraaid. Installeer sudo of draai als root." >&2
+  echo "✖  Geen sudo gevonden en niet als root gedraaid. Installeer sudo of draai als root (EUID=0)." >&2
   exit 3
 fi
 
@@ -1260,23 +1309,33 @@ STM_NEXT_CONFIG_V2
   # ==============================================================================
   if [[ "$NO_CADDY" -eq 0 ]] && command -v caddy >/dev/null 2>&1 && systemctl list-unit-files caddy.service >/dev/null 2>&1; then
     title "UPDATE STAP — Caddy: config sync + reload (geen herinstallatie!)"
-    if [[ -f "$CUSTOM_CADDYFILE_SRC" ]]; then
+    # ---- Defensive copy Caddyfile uit repo ----
+    if [[ -n "${CUSTOM_CADDYFILE_SRC:-}" && -f "$CUSTOM_CADDYFILE_SRC" ]]; then
       step "Nieuwe Caddyfile uit repo kopiëren → /etc/caddy/Caddyfile"
-      cp "$CUSTOM_CADDYFILE_SRC" /etc/caddy/Caddyfile
-      chown root:root /etc/caddy/Caddyfile
-      chmod 0644 /etc/caddy/Caddyfile
+      as_root mkdir -p /etc/caddy
+      as_root cp -f "$CUSTOM_CADDYFILE_SRC" /etc/caddy/Caddyfile
+      as_root chown root:root /etc/caddy/Caddyfile
+      as_root chmod 0644 /etc/caddy/Caddyfile
     else
-      info "Geen custom Caddyfile in repo; bestaande /etc/caddy/Caddyfile blijft ongewijzigd."
+      if [[ -z "${CUSTOM_CADDYFILE_SRC:-}" ]]; then
+        warn "CUSTOM_CADDYFILE_SRC variabele was leeg; /etc/caddy/Caddyfile NIET overschreven (verwachte file: ${INSTALL_DIR}/Caddyfile)."
+      else
+        info "Geen custom Caddyfile in repo (${CUSTOM_CADDYFILE_SRC}); bestaande /etc/caddy/Caddyfile blijft ongewijzigd."
+      fi
     fi
-    # /etc/caddy/.env bijwerken
-    grep -E '^(STM_DOMAIN|NEXT_PUBLIC_APP_URL|STM_APP_URL)=' "$ENV_FILE" > /etc/caddy/.env 2>/dev/null || true
-    grep -qE '^STM_APP_URL=' /etc/caddy/.env 2>/dev/null || echo "STM_APP_URL=127.0.0.1:3000" >> /etc/caddy/.env
-    chown root:root /etc/caddy/.env
-    chmod 0600 /etc/caddy/.env
-    # Validate & reload
+    # ---- /etc/caddy/.env bijwerken ----
+    as_root mkdir -p /etc/caddy
+    grep -E '^(STM_DOMAIN|NEXT_PUBLIC_APP_URL|STM_APP_URL)=' "$ENV_FILE" 2>/dev/null | as_root tee /etc/caddy/.env >/dev/null || true
+    if ! as_root grep -qE '^STM_APP_URL=' /etc/caddy/.env 2>/dev/null; then
+      printf 'STM_APP_URL=127.0.0.1:3000\n' | as_root tee -a /etc/caddy/.env >/dev/null || true
+    fi
+    as_root chown root:root /etc/caddy/.env || true
+    as_root chmod 0600 /etc/caddy/.env || true
+    # ---- Validate & reload ----
     step "caddy validate + reload"
     if caddy validate --config /etc/caddy/Caddyfile 2>&1 | tee -a "$LOG_FILE" >&2; then
-      systemctl reload caddy 2>&1 | tee -a "$LOG_FILE" >&2 || systemctl restart caddy 2>&1 | tee -a "$LOG_FILE" >&2 || true
+      as_root systemctl reload caddy 2>&1 | tee -a "$LOG_FILE" >&2 || \
+        as_root systemctl restart caddy 2>&1 | tee -a "$LOG_FILE" >&2 || true
       ok "Caddy config gevalideerd + herladen."
     else
       warn "Nieuwe Caddyfile valideert NIET. Huidige Caddy NIET herladen (downtime voorkomen!)."
@@ -2520,13 +2579,21 @@ if [[ "$NO_CADDY" -eq 0 ]]; then
 
   # Caddyfile kopiëren naar /etc/caddy + env file
   step "Caddy configureren: /etc/caddy/Caddyfile + /etc/caddy/.env"
-  if [[ -f "$CUSTOM_CADDYFILE_SRC" ]]; then
-    cp "$CUSTOM_CADDYFILE_SRC" /etc/caddy/Caddyfile
-    chown root:root /etc/caddy/Caddyfile
-    chmod 0644 /etc/caddy/Caddyfile
+  as_root mkdir -p /etc/caddy
+  _TMP_CADDYFILE=""
+  _TMP_CADDYFILE="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/stm-caddy-$$.conf")"
+  trap 'rm -f "$_TMP_CADDYFILE"' RETURN
+  if [[ -n "${CUSTOM_CADDYFILE_SRC:-}" && -f "$CUSTOM_CADDYFILE_SRC" ]]; then
+    as_root cp -f "$CUSTOM_CADDYFILE_SRC" /etc/caddy/Caddyfile
+    as_root chown root:root /etc/caddy/Caddyfile
+    as_root chmod 0644 /etc/caddy/Caddyfile
   else
-    warn "Geen Caddyfile in project (${CUSTOM_CADDYFILE_SRC}). Fallback: minimal reverse proxy."
-    cat > /etc/caddy/Caddyfile <<'CADDY_FALLBACK'
+    if [[ -z "${CUSTOM_CADDYFILE_SRC:-}" ]]; then
+      warn "CUSTOM_CADDYFILE_SRC variabele was leeg; fallback minimal reverse proxy."
+    else
+      warn "Geen Caddyfile in project (${CUSTOM_CADDYFILE_SRC}). Fallback: minimal reverse proxy."
+    fi
+    cat > "$_TMP_CADDYFILE" <<'CADDY_FALLBACK'
 {$STM_DOMAIN:localhost} {
   header Strict-Transport-Security "max-age=31536000; includeSubDomains"
   header X-Content-Type-Options    "nosniff"
@@ -2543,32 +2610,38 @@ if [[ "$NO_CADDY" -eq 0 ]]; then
   }
 }
 CADDY_FALLBACK
-    chmod 0644 /etc/caddy/Caddyfile
+    as_root cp -f "$_TMP_CADDYFILE" /etc/caddy/Caddyfile
+    as_root chown root:root /etc/caddy/Caddyfile
+    as_root chmod 0644 /etc/caddy/Caddyfile
   fi
   # Caddy env: alleen STM_DOMAIN + STM_APP_URL (volgt direct uit .env)
   # shellcheck disable=SC2063
-  grep -E '^(STM_DOMAIN|NEXT_PUBLIC_APP_URL|STM_APP_URL)=' "$ENV_FILE" > /etc/caddy/.env || true
+  grep -E '^(STM_DOMAIN|NEXT_PUBLIC_APP_URL|STM_APP_URL)=' "$ENV_FILE" 2>/dev/null | as_root tee /etc/caddy/.env >/dev/null || true
   # Als STM_APP_URL nog niet in ENV stond: vul hier met localhost:3000
-  grep -qE '^STM_APP_URL=' /etc/caddy/.env || echo "STM_APP_URL=127.0.0.1:3000" >> /etc/caddy/.env
-  chown root:root /etc/caddy/.env
-  chmod 0600 /etc/caddy/.env
+  if ! as_root grep -qE '^STM_APP_URL=' /etc/caddy/.env 2>/dev/null; then
+    printf 'STM_APP_URL=127.0.0.1:3000\n' | as_root tee -a /etc/caddy/.env >/dev/null || true
+  fi
+  as_root chown root:root /etc/caddy/.env || true
+  as_root chmod 0600 /etc/caddy/.env || true
   # E-mailadres (Let's Encrypt)
   if [[ -n "${EMAIL:-}" ]]; then
     step "Caddy global e-mail (Let's Encrypt): ${EMAIL} → /etc/caddy/Caddyfile"
     # Zet aan het begin, voor de site-block
-    if ! grep -qF "{\"$EMAIL\"}" /etc/caddy/Caddyfile 2>/dev/null; then
-      TMP_CADDY="$(mktemp)"
+    if ! as_root grep -qF "{\"${EMAIL}\"}" /etc/caddy/Caddyfile 2>/dev/null; then
+      : > "$_TMP_CADDYFILE"
       printf '{
   email %s
   acme_ca https://acme-v02.api.letsencrypt.org/directory
 }
 
-' "${EMAIL}" > "$TMP_CADDY"
-      cat /etc/caddy/Caddyfile >> "$TMP_CADDY"
-      mv "$TMP_CADDY" /etc/caddy/Caddyfile
-      chmod 0644 /etc/caddy/Caddyfile
+' "${EMAIL}" > "$_TMP_CADDYFILE"
+      as_root cat /etc/caddy/Caddyfile >> "$_TMP_CADDYFILE" || true
+      as_root cp -f "$_TMP_CADDYFILE" /etc/caddy/Caddyfile
+      as_root chmod 0644 /etc/caddy/Caddyfile
     fi
   fi
+  rm -f "$_TMP_CADDYFILE"
+  trap - RETURN
   # Caddyfile droog testen
   step "caddy validate /etc/caddy/Caddyfile"
   if ! caddy validate --config /etc/caddy/Caddyfile 2>&1 | tee -a "$LOG_FILE" >&2; then
@@ -2580,20 +2653,20 @@ CADDY_FALLBACK
   # ============================================================
   # 7.2 🔥 CADDY SERVICE STARTEN + GARANDEREN DAT HIJ WERKT
   # ============================================================
-  systemctl unmask caddy 2>/dev/null || true
-  systemctl daemon-reload
-  systemctl enable caddy 2>/dev/null || true
+  as_root systemctl unmask caddy 2>/dev/null || true
+  as_root systemctl daemon-reload
+  as_root systemctl enable caddy 2>/dev/null || true
   # Reload indien reeds running; anders restart/start:
-  if systemctl is-active --quiet caddy 2>/dev/null; then
-    systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
+  if as_root systemctl is-active --quiet caddy 2>/dev/null; then
+    as_root systemctl reload caddy 2>/dev/null || as_root systemctl restart caddy 2>/dev/null || true
   else
-    systemctl restart caddy 2>/dev/null || systemctl start caddy 2>/dev/null || true
+    as_root systemctl restart caddy 2>/dev/null || as_root systemctl start caddy 2>/dev/null || true
   fi
 
   # Wacht MAXIMAAL 20s tot Caddy RUNNING is + HTTP antwoord op :80
   _caddy_ok=0
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if systemctl is-active --quiet caddy 2>/dev/null && curl -fsS -o /dev/null -m 3 --max-time 3 http://127.0.0.1:80/ 2>/dev/null; then
+    if as_root systemctl is-active --quiet caddy 2>/dev/null && curl -fsS -o /dev/null -m 3 --max-time 3 http://127.0.0.1:80/ 2>/dev/null; then
       _caddy_ok=1
       break
     fi
@@ -2602,10 +2675,10 @@ CADDY_FALLBACK
 
   if [[ "$_caddy_ok" -eq 0 ]]; then
     # Indien nog niet OK: probeer nog een expliciete herstart + toon de foutmeldingen op stderr (altijd zichtbaar!)
-    systemctl restart caddy 2>/dev/null || true
+    as_root systemctl restart caddy 2>/dev/null || true
     err "Caddy service STARTEN mislukt (na 20s wachten)."
     info "Laatste 60 regels Caddy systemd logs:"
-    journalctl -u caddy --no-pager -n 60 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    as_root journalctl -u caddy --no-pager -n 60 2>&1 | tee -a "$LOG_FILE" >&2 || true
     info "Tip: Controleer /etc/caddy/Caddyfile handmatig; of draai 'caddy adapt --config /etc/caddy/Caddyfile'."
     exit 7
   fi
@@ -2783,21 +2856,21 @@ if [[ ! -f "$BACKUP_SCRIPT_SRC" || ! -f "$BACKUP_SERVICE_SRC" || ! -f "$BACKUP_T
   warn "Backup-bestanden ontbreken (${BACKUP_SCRIPT_SRC}, deploy/*). Overgeslaan."
 else
   step "Installeren backups (idempotent)..."
-  mkdir -p /opt/stm/scripts
-  install -o root -g root -m 0750 "$BACKUP_SCRIPT_SRC"   "$BACKUP_DEST_SCRIPT"
-  install -o root -g root -m 0644 "$BACKUP_SERVICE_SRC"  "$BACKUP_DEST_SERVICE"
-  install -o root -g root -m 0644 "$BACKUP_TIMER_SRC"    "$BACKUP_DEST_TIMER"
+  as_root mkdir -p /opt/stm/scripts
+  as_root install -o root -g root -m 0750 "$BACKUP_SCRIPT_SRC"   "$BACKUP_DEST_SCRIPT"
+  as_root install -o root -g root -m 0644 "$BACKUP_SERVICE_SRC"  "$BACKUP_DEST_SERVICE"
+  as_root install -o root -g root -m 0644 "$BACKUP_TIMER_SRC"    "$BACKUP_DEST_TIMER"
 
   # Zorg dat /opt/stm ook naar STM_USER wijst (voor ./backups/)
-  mkdir -p /opt/stm
-  chown -R "${STM_USER}:${STM_GROUP}" /opt/stm || true
+  as_root mkdir -p /opt/stm
+  as_root chown -R "${STM_USER}:${STM_GROUP}" /opt/stm || true
 
   step "systemctl daemon-reload + enable --now stm-db-backup.timer"
-  systemctl daemon-reload
-  systemctl enable --now stm-db-backup.timer 2>&1 | tee -a "$LOG_FILE" >&2 || true
+  as_root systemctl daemon-reload
+  as_root systemctl enable --now stm-db-backup.timer 2>&1 | tee -a "$LOG_FILE" >&2 || true
   sleep 1
-  TIMER_ACTIVE="$(systemctl is-active stm-db-backup.timer 2>/dev/null || echo "unknown")"
-  TIMER_NEXT="$(systemctl list-timers stm-db-backup.timer --no-pager 2>/dev/null | tail -1 | awk '{print $1, $2, $3}' || echo '?')"
+  TIMER_ACTIVE="$(as_root systemctl is-active stm-db-backup.timer 2>/dev/null || echo "unknown")"
+  TIMER_NEXT="$(as_root systemctl list-timers stm-db-backup.timer --no-pager 2>/dev/null | tail -1 | awk '{print $1, $2, $3}' || echo '?')"
   if [[ "$TIMER_ACTIVE" == "active" ]]; then
     ok "Backup timer ACTIEF (${TIMER_ACTIVE}). Volgende geplande run: ${TIMER_NEXT}"
     info "  Handmatig NU backup draaien: sudo ${BACKUP_DEST_SCRIPT}"
