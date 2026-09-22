@@ -272,9 +272,9 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   if (options.status) basePayload.status = options.status;
 
   const attempts: ListAttempt[] = [];
-  const MAX_ATTEMPTS = 60;
+  const MAX_ATTEMPTS = 90;
   let pogingen = 0;
-  const overallDeadline = AbortSignal.timeout(30000);
+  const overallDeadline = AbortSignal.timeout(40000);
   const allowHeadersByPath = new Map<string, string>();
   const authBasic = basicAuthHeader(creds.username, creds.password);
 
@@ -290,6 +290,142 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   };
 
   const resellerFragment = resellerId ? encodeURIComponent(String(resellerId)) : null;
+
+  // ===== FASE -1: MULTI-BASE PROBE — probeer eerst 6 waarschijnlijke base URLs met 3 tests per base =====
+  // Want: historische sessie gaf WEL app-level response op POST /v3/sims, NU alles 405 Allow: OPTIONS.
+  // Dus base URL is waarschijnlijk verkeerd ingesteld in GUI.
+  const origBase = creds.baseUrl.replace(/\/+$/, '');
+  const baseCandidates = Array.from(new Set<string>([
+    origBase,
+    origBase.replace(/\/v\d+$/, ''),
+    origBase.replace(/https?:\/\/(?!api\.)/, (m) => m.replace('://', '://api.')),
+    origBase.replace(/\/v\d+$/, '').replace(/https?:\/\/(?!api\.)/, (m) => m.replace('://', '://api.')),
+  ])).slice(0, 5);
+
+  type BaseHit = { base: string; method: 'GET' | 'POST'; path: string; auth: AuthStyle; statusCode: number; body: unknown };
+  const baseHits: BaseHit[] = [];
+
+  for (const base of baseCandidates) {
+    if (pogingen > MAX_ATTEMPTS || overallDeadline.aborted) break;
+    const baseClean = base.endsWith('/') ? base.slice(0, -1) : base;
+    const makeUrlForBase = (path: string, query: Record<string, any> | null): string => {
+      const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+      let u = `${baseClean}/${cleanPath}`;
+      if (query && Object.keys(query).length > 0) {
+        const sp = new URLSearchParams();
+        for (const [k, v] of Object.entries(query)) {
+          if (v === null || v === undefined || v === '') continue;
+          sp.append(k, String(v));
+        }
+        const qs = sp.toString();
+        if (qs) u += `?${qs}`;
+      }
+      return u;
+    };
+    // 3 tests per base: POST /sims basic met {page:1,limit:100}, POST /auth/login noauth, GET / basic
+    const testCases: Array<{ method: 'GET' | 'POST'; path: string; auth: AuthStyle; kind: 'json-body' | 'query' | 'form-body'; body?: Record<string, any>; query?: Record<string, any> }> = [
+      { method: 'POST', path: '/sims', auth: basicAuthOnly, kind: 'json-body', body: { page: 1, limit: 100 } },
+      { method: 'POST', path: '/auth/login', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password } },
+      { method: 'GET', path: '/auth/me', auth: basicAuthOnly, kind: 'query' },
+    ];
+    for (const tc of testCases) {
+      if (pogingen > MAX_ATTEMPTS || overallDeadline.aborted) break;
+      pogingen++;
+      const trace: ListAttempt = {
+        method: tc.method,
+        path: tc.path,
+        kind: tc.kind,
+        signature: `base=${baseClean};auth=${tc.auth.tag}`,
+      };
+      try {
+        const headers: Record<string, string> = { Accept: 'application/json' };
+        if (tc.auth.tag === 'custom-headers') Object.assign(headers, tc.auth.headers);
+        else headers.Authorization = tc.auth.header;
+        let bodyInit: BodyInit | undefined;
+        const fullUrl = tc.method === 'GET'
+          ? makeUrlForBase(tc.path, (tc.query ?? {}) as Record<string, any>)
+          : makeUrlForBase(tc.path, null);
+        if (tc.method === 'POST' && tc.body) {
+          if (tc.kind === 'json-body') {
+            headers['Content-Type'] = 'application/json';
+            bodyInit = JSON.stringify(tc.body);
+          } else if (tc.kind === 'form-body') {
+            const sp = new URLSearchParams();
+            for (const [k, v] of Object.entries(tc.body)) {
+              if (v === null || v === undefined || v === '') continue;
+              sp.append(k, String(v));
+            }
+            headers['Content-Type'] = 'application/x-www-form-urlencoded;charset=UTF-8';
+            bodyInit = sp.toString();
+          }
+        }
+        const resp = await fetch(fullUrl, { method: tc.method, headers, body: bodyInit, signal: overallDeadline });
+        const ct = resp.headers.get('content-type') ?? '';
+        if (resp.status === 405) {
+          const allow = resp.headers.get('allow') ?? '';
+          if (allow) allowHeadersByPath.set(`[${baseClean}]${tc.path}`, allow);
+        }
+        const text = await resp.text();
+        const parsed = parseFetchResponse(text, ct);
+        if (resp.ok) {
+          trace.statusCode = resp.status;
+          trace.errorClass = 'OK-200';
+          const snippet = (typeof parsed === 'string' ? parsed : JSON.stringify(parsed)).slice(0, 140);
+          trace.error = `Body: ${snippet || '(leeg)'}`;
+          attempts.push(trace);
+          baseHits.push({ base: baseClean, method: tc.method, path: tc.path, auth: tc.auth, statusCode: resp.status, body: parsed });
+          // App-level response! Stop multi-base probe en gebruik deze base.
+          break;
+        } else {
+          trace.statusCode = resp.status;
+          const snippet = (typeof parsed === 'string' ? parsed : JSON.stringify(parsed)).slice(0, 150);
+          const allowExtra = (resp.status === 405 && allowHeadersByPath.has(`[${baseClean}]${tc.path}`))
+            ? ` [Allow: ${allowHeadersByPath.get(`[${baseClean}]${tc.path}`)}]`
+            : '';
+          trace.error = `HTTP ${resp.status}${allowExtra}: ${snippet}`;
+          trace.errorClass = 'HTTPError';
+          attempts.push(trace);
+          if (resp.status !== 404 && resp.status !== 405 && resp.status < 500) {
+            // App-level response! (401 InvalidCredentials, 400, etc)
+            baseHits.push({ base: baseClean, method: tc.method, path: tc.path, auth: tc.auth, statusCode: resp.status, body: parsed });
+            break;
+          }
+          if (resp.status === 403) throw new SimhuisApiError(403, parsed ?? {}, fullUrl, trace.error);
+        }
+      } catch (err: any) {
+        trace.statusCode = err instanceof SimhuisApiError ? err.statusCode : (err?.name === 'TimeoutError' ? 0 : undefined);
+        trace.error = String(err?.message ?? err ?? 'Onbekende fout').slice(0, 200);
+        trace.errorClass = err instanceof SimhuisApiError ? 'SimhuisApiError' : (err?.name === 'TimeoutError' ? 'Timeout' : err?.constructor?.name ?? 'Error');
+        attempts.push(trace);
+        if (err instanceof SimhuisApiError) throw err;
+      }
+    }
+    if (baseHits.length > 0) break;
+  }
+
+  // Kies de beste base (eerste hit)
+  let effectiveBase = creds.baseUrl.replace(/\/+$/, '');
+  if (baseHits.length > 0) {
+    effectiveBase = baseHits[0].base;
+  }
+
+  // Overschrijf makeFullUrl / augmentBody etc. om effectieve base te gebruiken (als die afwijkt)
+  const useCustomBase = baseHits.length > 0;
+  const buildFinalUrl = (path: string, query: Record<string, any> | null): string => {
+    if (!useCustomBase) return makeFullUrl(path, query);
+    const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+    let url = `${effectiveBase}/${cleanPath}`;
+    if (query && Object.keys(query).length > 0) {
+      const sp = new URLSearchParams();
+      for (const [k, v] of Object.entries(query)) {
+        if (v === undefined || v === null || v === '') continue;
+        sp.append(k, String(v));
+      }
+      const qs = sp.toString();
+      if (qs) url += `?${qs}`;
+    }
+    return url;
+  };
 
   type Phase0Probe = {
     label: string;
@@ -435,7 +571,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       if (resp.status === 405) {
         const allow = resp.headers.get('allow') ?? resp.headers.get('Allow') ?? '';
         if (allow) {
-          allowHeadersByPath.set(args.pathForAllowHeader, allow);
+          allowHeadersByPath.set(`[${effectiveBase}]${args.pathForAllowHeader}`, allow);
         }
       }
       const text = await resp.text();
@@ -449,8 +585,8 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       } else {
         trace.statusCode = resp.status;
         const snippet = (typeof parsed === 'string' ? parsed : JSON.stringify(parsed)).slice(0, 150);
-        const allowExtra = (resp.status === 405 && allowHeadersByPath.has(args.pathForAllowHeader))
-          ? ` [Allow: ${allowHeadersByPath.get(args.pathForAllowHeader)}]`
+        const allowExtra = (resp.status === 405 && allowHeadersByPath.has(`[${effectiveBase}]${args.pathForAllowHeader}`))
+          ? ` [Allow: ${allowHeadersByPath.get(`[${effectiveBase}]${args.pathForAllowHeader}`)}]`
           : '';
         trace.error = `HTTP ${resp.status}${allowExtra}${snippet ? `: ${snippet}` : ''}`;
         trace.errorClass = 'HTTPError';
@@ -502,8 +638,8 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
 
       let bodyInit: BodyInit | undefined;
       const fullUrl = probe.method === 'GET'
-        ? makeFullUrl(probe.path, (probe.query ?? {}) as Record<string, any>)
-        : makeFullUrl(probe.path, null);
+        ? buildFinalUrl(probe.path, (probe.query ?? {}) as Record<string, any>)
+        : buildFinalUrl(probe.path, null);
 
       if (probe.method === 'POST' && probe.body) {
         if (probe.kind === 'json-body') {
@@ -591,8 +727,8 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         for (const auth of authVariants) {
           const result = await doDirectFetch({
             fullUrl: method === 'GET'
-              ? makeFullUrl(path, (payload.query ?? {}) as Record<string, any>)
-              : makeFullUrl(path, null),
+              ? buildFinalUrl(path, (payload.query ?? {}) as Record<string, any>)
+              : buildFinalUrl(path, null),
             method,
             contentType: method === 'POST' ? 'json' : 'none',
             body: method === 'POST' ? (payload.body ?? {}) : null,
@@ -627,7 +763,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
           if (method === 'GET') {
             const query = augmentQuery(inject);
             const r = await doDirectFetch({
-              fullUrl: makeFullUrl(path, query),
+              fullUrl: buildFinalUrl(path, query),
               method: 'GET',
               contentType: 'none',
               body: null,
@@ -639,7 +775,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
           } else {
             const body = augmentBody(inject);
             const r1 = await doDirectFetch({
-              fullUrl: makeFullUrl(path, null),
+              fullUrl: buildFinalUrl(path, null),
               method,
               contentType: 'json',
               body,
@@ -673,15 +809,29 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       allowHints += `  ${p}: Allow=${allow}\n`;
     }
   }
+  let baseHitsHints = '';
+  if (baseHits.length > 0) {
+    baseHitsHints = `\n\n[🌐 FASE -1: BASE URL GERADEN! App-level responses op ${baseHits.length} base(s) — SIMs endpoint zitten op deze base]\n`;
+    for (const bh of baseHits.slice(0, 6)) {
+      const bodySnippet = (typeof bh.body === 'string' ? bh.body : JSON.stringify(bh.body)).slice(0, 220);
+      baseHitsHints += `  base="${bh.base}" [status=${bh.statusCode}] ${bh.method} ${bh.path} auth=${bh.auth.tag}\n    body: ${bodySnippet}\n`;
+    }
+    baseHitsHints += `  ℹ️ Gebruikte effectieve base URL voor de rest van de pogingen: "${effectiveBase}"\n`;
+  } else {
+    baseHitsHints = `\n\n[🌐 FASE -1: GEEN ENKELE base URL gaf app-level response (alles 404/405/5xx). Dit is 99% kans dat baseURL (incl. /v3 prefix) of credentials VERKEERD zijn.\n  Geteste base URLs:\n`;
+    for (const b of baseCandidates) baseHitsHints += `    - ${b}\n`;
+    baseHitsHints += `  Oorspronkelijke base URL: "${origBase}"\n`;
+    baseHitsHints += `  💡 Advies: Controleer of jouw Simhuis / Control Center base URL klopt (geen /v3 prefix? api. subdomein?); en of username/password (GUI settings > Simhuis) correct zijn.\n`;
+  }
   let interestingHints = '';
   if (interesting.length > 0) {
-    interestingHints = `\n\n[🔥 FASE 0: ${interesting.length} APP-LEVEL RESPONSES GEVONDEN (geen 405! Daar zit de oplossing)]:\n`;
+    interestingHints = `\n\n[🔥 FASE 0: ${interesting.length} APP-LEVEL RESPONSES GEVONDEN (op effectieve base="${effectiveBase}")]\n`;
     for (const hit of interesting.slice(0, 12)) {
       const bodySnippet = (typeof hit.respBody === 'string' ? hit.respBody : JSON.stringify(hit.respBody)).slice(0, 200);
       interestingHints += `  [status=${hit.statusCode}] ${hit.probe.label} → ${hit.probe.method} ${hit.probe.path} [${hit.probe.kind}] auth=${hit.probe.auth.tag}\n    body: ${bodySnippet}\n`;
     }
   }
-  const msg = `[Simhuis] listSims mislukt na ${attempts.length}/${MAX_ATTEMPTS} pogingen.${allowHints}${interestingHints}\nSamenvatting alle pogingen:\n${summary}`;
+  const msg = `[Simhuis] listSims mislukt na ${attempts.length}/${MAX_ATTEMPTS} pogingen.${baseHitsHints}${allowHints}${interestingHints}\nSamenvatting alle pogingen:\n${summary}`;
   throw new Error(msg);
 }
 
