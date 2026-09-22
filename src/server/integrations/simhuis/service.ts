@@ -219,9 +219,10 @@ function extractTotal(raw: unknown, fallback: number): number | undefined {
 
 type ListAttempt = {
   method: 'GET' | 'POST';
+  baseTag: string;
   path: string;
   kind: 'query' | 'json-body' | 'form-body';
-  payload?: Record<string, any>;
+  signature?: string;
   statusCode?: number;
   error?: string;
   errorClass?: string;
@@ -241,11 +242,35 @@ function objToFormEncoded(obj: Record<string, any>): URLSearchParams {
   return params;
 }
 
+function basicAuthHeader(username: string, password: string): string {
+  const combo = `${username}:${password}`;
+  const encoded = typeof Buffer !== 'undefined'
+    ? Buffer.from(combo).toString('base64')
+    : btoa(combo);
+  return `Basic ${encoded}`;
+}
+
+function parseFetchResponse(respText: string, ct: string): unknown {
+  if (ct && ct.includes('application/json')) {
+    try { return JSON.parse(respText); } catch { /* fallthrough */ }
+  }
+  try { return JSON.parse(respText); } catch { /* ignore */ }
+  return respText;
+}
+
 export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsResult> {
-  const client = (await simhuisClient.getClient())!;
   const page = options.page ?? 1;
   const limit = options.limit ?? 100;
-  const resellerId = options.resellerId ?? client.resellerId;
+
+  const credsClient = await simhuisClient.getClient();
+  if (!credsClient) {
+    throw new Error('[Simhuis] Niet geconfigureerd.');
+  }
+  const creds = (credsClient as any).creds as {
+    baseUrl: string; authMode: 'basic' | 'bearer';
+    username: string; password: string; resellerId?: string | null;
+  };
+  const resellerId = options.resellerId ?? creds.resellerId;
 
   const basePayload: Record<string, any> = { page: page, limit: limit };
   if (resellerId) basePayload.reseller_id = resellerId;
@@ -269,102 +294,244 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   ];
   const payloadVariants = payloadVariantsRaw.filter((b): b is Record<string, any> => b !== null && b !== undefined);
 
-  const queryVariants = payloadVariants;
+  const baseSims = credsClient.endpoints.sims;
+  const resellerFragment = resellerId ? encodeURIComponent(String(resellerId)) : null;
 
-  const pathVariants = [
-    client.endpoints.sims,
-    client.endpoints.sims + '/list',
-    client.endpoints.sims + '/search',
-    client.endpoints.sims + '/query',
+  const pathVariants: string[] = [
+    baseSims,
+    `${baseSims}/list`,
+    `${baseSims}/search`,
+    `${baseSims}/query`,
+    `${baseSims}/all`,
+    `${baseSims}/inventory`,
+    `${baseSims}.json`,
     '/sims',
     '/sims/list',
     '/sims/search',
     '/sims/query',
-    '/sim/list',
+    '/sims/all',
     '/sims.json',
+    '/sim/list',
+    '/inventory/sims',
+    '/stock/sims',
+    '/sims/inventory',
+    '/available-sims',
+    '/account/sims',
+    '/accounts/sims',
+    '/sims/available',
+    '/sims/stock',
   ];
+  if (resellerFragment) {
+    pathVariants.push(
+      `/resellers/${resellerFragment}/sims`,
+      `/reseller/${resellerFragment}/sims`,
+      `/resellers/${resellerFragment}/sims/list`,
+      `/resellers/${resellerFragment}/inventory/sims`,
+      `/partners/${resellerFragment}/sims`,
+    );
+  }
+
+  const baseUrlVariants: Array<{ tag: string; base: string }> = [
+    { tag: 'cfg', base: creds.baseUrl },
+  ];
+  try {
+    const u = new URL(creds.baseUrl);
+    const origin = u.origin;
+    const stripped = origin;
+    baseUrlVariants.push({ tag: 'no-v3', base: stripped });
+    baseUrlVariants.push({ tag: 'api-v3', base: `${origin}/api/v3` });
+    baseUrlVariants.push({ tag: 'api-v1', base: `${origin}/api/v1` });
+    baseUrlVariants.push({ tag: 'api', base: `${origin}/api` });
+    baseUrlVariants.push({ tag: 'rest-v3', base: `${origin}/rest/v3` });
+    baseUrlVariants.push({ tag: 'sim-api', base: `${origin}/sim-api/v3` });
+  } catch { /* ignore */ }
 
   const attempts: ListAttempt[] = [];
 
-  const tryOne = async (a: ListAttempt): Promise<ListSimsResult | null> => {
-    const trace: ListAttempt = { ...a };
-    try {
-      let opts: SimhuisRequestOptions;
-      if (a.method === 'GET') {
-        opts = { method: 'GET', query: a.payload };
-      } else if (a.kind === 'form-body') {
-        opts = {
-          method: 'POST',
-          body: (a.payload ? objToFormEncoded(a.payload) : new URLSearchParams()) as any,
-        };
-      } else {
-        opts = { method: 'POST', body: a.payload && Object.keys(a.payload).length > 0 ? a.payload : undefined };
+  const processResponse = (
+    respBodyRaw: unknown,
+  ): ListSimsResult | null => {
+    const rawArray = extractSimList(respBodyRaw);
+    if (!rawArray || rawArray.length === 0) {
+      const bodyAsObj = respBodyRaw as Record<string, any> | null;
+      if (
+        bodyAsObj && typeof bodyAsObj === 'object' &&
+        ('iccid' in bodyAsObj || 'sim_iccid' in bodyAsObj)
+      ) {
+        const iccid = String(bodyAsObj.iccid ?? bodyAsObj.sim_iccid ?? '').trim();
+        if (iccid) {
+          const items = [toSimStatus(bodyAsObj, iccid)];
+          return { items, total: 1, page: page, limit: limit, hasMore: false, raw: respBodyRaw };
+        }
       }
-      const resp = await doRequest<unknown>(a.path, opts);
-      const rawArray = extractSimList(resp);
-      const items = rawArray.map((item) => {
-        const iccid = String(item.iccid ?? item.sim_iccid ?? item.simIccid ?? (item as any)?.sim?.iccid ?? '').trim();
-        return toSimStatus(item, iccid);
+      return null;
+    }
+    const items = rawArray.map((item) => {
+      const iccid = String(item.iccid ?? item.sim_iccid ?? item.simIccid ?? (item as any)?.sim?.iccid ?? '').trim();
+      return toSimStatus(item, iccid);
+    });
+    const total = extractTotal(respBodyRaw, items.length);
+    const hasMore = typeof total === 'number' ? (page * limit) < total : items.length === limit;
+    return { items, total, page: page, limit: limit, hasMore, raw: respBodyRaw };
+  };
+
+  const doDirectFetch = async (args: {
+    fullUrl: string;
+    method: 'GET' | 'POST';
+    contentType: 'json' | 'form' | 'none';
+    body: Record<string, any> | null;
+    authBasic?: string;
+    meta: Omit<ListAttempt, 'statusCode' | 'error' | 'errorClass'>;
+  }): Promise<ListSimsResult | null> => {
+    const trace: ListAttempt = { ...args.meta };
+    try {
+      const headers: Record<string, string> = { 'Accept': 'application/json' };
+      if (args.authBasic) headers['Authorization'] = args.authBasic;
+      let body: BodyInit | undefined;
+      if (args.method === 'POST' && args.body) {
+        if (args.contentType === 'json') {
+          headers['Content-Type'] = 'application/json';
+          body = JSON.stringify(args.body);
+        } else if (args.contentType === 'form') {
+          const sp = new URLSearchParams();
+          for (const [k, v] of Object.entries(args.body)) {
+            if (v === null || v === undefined || v === '') continue;
+            if (typeof v === 'object') sp.append(k, JSON.stringify(v));
+            else sp.append(k, String(v));
+          }
+          headers['Content-Type'] = 'application/x-www-form-urlencoded;charset=UTF-8';
+          body = sp.toString();
+        }
+      }
+      const resp = await fetch(args.fullUrl, {
+        method: args.method,
+        headers,
+        body,
+        signal: AbortSignal.timeout(15000),
       });
-      const total = extractTotal(resp, items.length);
-      const hasMore = typeof total === 'number' ? (page * limit) < total : items.length === limit;
-      return { items, total, page: page, limit: limit, hasMore, raw: resp };
+      const ct = resp.headers.get('content-type') ?? '';
+      const text = await resp.text();
+      const parsed = parseFetchResponse(text, ct);
+      if (resp.ok) {
+        const result = processResponse(parsed);
+        if (result) return result;
+        if (resp.status === 200 || resp.status === 201 || resp.status === 204) {
+          return { items: [], total: 0, page: page, limit: limit, hasMore: false, raw: parsed };
+        }
+      } else {
+        trace.statusCode = resp.status;
+        const snippet = (typeof parsed === 'string' ? parsed : JSON.stringify(parsed)).slice(0, 120);
+        trace.error = `HTTP ${resp.status} ${snippet ? `: ${snippet}` : ''}`;
+        trace.errorClass = 'HTTPError';
+        attempts.push(trace);
+        if (resp.status === 401 || resp.status === 403) {
+          throw new SimhuisApiError(resp.status, parsed ?? {}, args.fullUrl, trace.error);
+        }
+        return null;
+      }
     } catch (err: any) {
       trace.statusCode = err instanceof SimhuisApiError ? err.statusCode : undefined;
       trace.error = String(err?.message ?? err ?? 'Onbekende fout').slice(0, 200);
       trace.errorClass = err instanceof SimhuisApiError ? 'SimhuisApiError' : err?.constructor?.name ?? 'Error';
       attempts.push(trace);
-      if (err instanceof SimhuisApiError) {
-        if (err.statusCode === 401 || err.statusCode === 403) {
-          throw err;
-        }
-        return null;
+      if (err instanceof SimhuisApiError && (err.statusCode === 401 || err.statusCode === 403)) {
+        throw err;
       }
       return null;
     }
+    return null;
   };
 
-  const postPaths = [
-    client.endpoints.sims,
-    client.endpoints.sims + '/search',
-    client.endpoints.sims + '/query',
-    client.endpoints.sims + '/list',
-    '/sims',
-    '/sims/search',
-    '/sims/query',
-    '/sims/list',
-    '/sim/list',
-  ];
-  for (const path of postPaths) {
-    for (const b of payloadVariants) {
-      const r1 = await tryOne({ method: 'POST', path: path, kind: 'json-body', payload: b });
+  const makeFullUrl = (base: string, path: string, query: Record<string, any> | null): string => {
+    const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+    let url = base.endsWith('/') ? `${base}${cleanPath}` : `${base}/${cleanPath}`;
+    if (query && Object.keys(query).length > 0) {
+      const params = new URLSearchParams();
+      for (const [k, v] of Object.entries(query)) {
+        if (v === undefined || v === null || v === '') continue;
+        params.append(k, String(v));
+      }
+      const qs = params.toString();
+      if (qs) url += `?${qs}`;
+    }
+    return url;
+  };
+
+  const authBasicHeader = basicAuthHeader(creds.username, creds.password);
+
+  for (const baseInfo of baseUrlVariants) {
+    for (const path of pathVariants) {
+      for (const b of payloadVariants) {
+        const bodyHasKeys = Object.keys(b).length > 0;
+        const r1 = await doDirectFetch({
+          fullUrl: makeFullUrl(baseInfo.base, path, null),
+          method: 'POST',
+          contentType: 'json',
+          body: bodyHasKeys ? b : {},
+          authBasic: authBasicHeader,
+          meta: { method: 'POST', baseTag: baseInfo.tag, path, kind: 'json-body', signature: bodyHasKeys ? Object.keys(b).sort().join(',') : 'empty' },
+        });
+        if (r1) return r1;
+        const r2 = await doDirectFetch({
+          fullUrl: makeFullUrl(baseInfo.base, path, null),
+          method: 'POST',
+          contentType: 'form',
+          body: bodyHasKeys ? b : {},
+          authBasic: authBasicHeader,
+          meta: { method: 'POST', baseTag: baseInfo.tag, path, kind: 'form-body', signature: bodyHasKeys ? Object.keys(b).sort().join(',') : 'empty' },
+        });
+        if (r2) return r2;
+      }
+      for (const q of payloadVariants) {
+        const r = await doDirectFetch({
+          fullUrl: makeFullUrl(baseInfo.base, path, q),
+          method: 'GET',
+          contentType: 'none',
+          body: null,
+          authBasic: authBasicHeader,
+          meta: { method: 'GET', baseTag: baseInfo.tag, path, kind: 'query', signature: Object.keys(q).sort().join(',') },
+        });
+        if (r) return r;
+      }
+    }
+    // JSON-RPC endpoint + root endpoint with action body
+    const rpcPaths = ['/jsonrpc', '/rpc', '/api', '/'];
+    for (const rpcPath of rpcPaths) {
+      const r1 = await doDirectFetch({
+        fullUrl: makeFullUrl(baseInfo.base, rpcPath, null),
+        method: 'POST',
+        contentType: 'json',
+        body: { jsonrpc: '2.0', method: 'sims.list', params: { ...basePayload }, id: 1 },
+        authBasic: authBasicHeader,
+        meta: { method: 'POST', baseTag: baseInfo.tag, path: rpcPath, kind: 'json-body', signature: 'jsonrpc:sims.list' },
+      });
       if (r1) return r1;
-      const r2 = await tryOne({ method: 'POST', path: path, kind: 'form-body', payload: b });
+      const r2 = await doDirectFetch({
+        fullUrl: makeFullUrl(baseInfo.base, rpcPath, { action: 'list_sims', ...basePayload }),
+        method: 'GET',
+        contentType: 'none',
+        body: null,
+        authBasic: authBasicHeader,
+        meta: { method: 'GET', baseTag: baseInfo.tag, path: rpcPath, kind: 'query', signature: 'action:list_sims' },
+      });
       if (r2) return r2;
     }
   }
 
-  for (const path of pathVariants) {
-    for (const q of queryVariants) {
-      const result = await tryOne({ method: 'GET', path: path, kind: 'query', payload: q });
-      if (result) return result;
-    }
+  // Dedup for error summary
+  const seen = new Map<string, { attempt: ListAttempt; count: number }>();
+  for (const a of attempts) {
+    const key = `${a.method} ${a.baseTag}${a.path} [${a.statusCode ?? 'err'}] (${a.kind})`;
+    const cur = seen.get(key);
+    if (cur) cur.count++;
+    else seen.set(key, { attempt: a, count: 1 });
   }
-
-  let summary = attempts
-    .map((a) => `${a.method} ${a.path} [${a.statusCode ?? 'err'}] (${a.kind}) ${a.errorClass ?? ''}: ${a.error ?? ''}`)
+  let summary = Array.from(seen.values())
+    .map(({ attempt: a, count }) => `${a.method} ${a.path} (base=${a.baseTag}) [${a.statusCode ?? 'err'}] (${a.kind}) ×${count} ${a.errorClass ?? ''}: ${a.error ?? ''}`)
     .join('\n');
-  summary = summary.slice(0, 4000);
-  const last = attempts[attempts.length - 1];
-  const errMsg = `[Simhuis] listSims failed: geen enkel endpoint reageerde. Pogingen (${attempts.length}x, POST eerst):\n${summary}`;
-  if (last?.errorClass === 'SimhuisApiError') {
-    const e = new SimhuisApiError(last.statusCode ?? 500, {}, last?.path ?? '', errMsg);
-    (e as any).attempts = attempts;
-    throw e;
-  }
-  const genErr = new Error(errMsg);
-  (genErr as any).attempts = attempts;
-  throw genErr;
+  summary = summary.slice(0, 8000);
+  const msg = `[Simhuis] listSims failed: ${attempts.length} pogingen, geen succes. Samenvatting:\n${summary}`;
+  throw new Error(msg);
 }
 
 export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit'> = {}): Promise<SimhuisSimStatus[]> {
