@@ -217,51 +217,122 @@ function extractTotal(raw: unknown, fallback: number): number | undefined {
   return fallback;
 }
 
+type ListAttempt = {
+  method: 'GET' | 'POST';
+  path: string;
+  kind: 'query' | 'body';
+  payload?: Record<string, any>;
+  statusCode?: number;
+  error?: string;
+  errorClass?: string;
+};
+
 export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsResult> {
   const client = (await simhuisClient.getClient())!;
   const page = options.page ?? 1;
   const limit = options.limit ?? 100;
   const resellerId = options.resellerId ?? client.resellerId;
 
-  const baseQuery: Record<string, any> = { page, limit };
+  const baseQuery: Record<string, any> = { page: page, limit: limit };
   if (resellerId) baseQuery.reseller_id = resellerId;
   if (options.status) baseQuery.status = options.status;
 
-  const queries = [
+  const queryVariants = [
     { ...baseQuery },
     { ...baseQuery, per_page: limit, page_number: page },
     { ...baseQuery, page: page, size: limit },
+    { limit: limit },
+    { page: page },
   ];
 
-  const paths = [
+  const pathVariants = [
     client.endpoints.sims,
     client.endpoints.sims + '/list',
+    '/sims/search',
+    '/sims/query',
     '/sim/list',
   ];
 
-  let lastErr: unknown = null;
-  for (const path of paths) {
-    for (const q of queries) {
-      try {
-        const resp = await doRequest<unknown>(path, { method: 'GET', query: q as any });
-        const rawArray = extractSimList(resp);
-        const items = rawArray.map((item) => {
-          const iccid = String(item.iccid ?? item.sim_iccid ?? item.simIccid ?? '').trim();
-          return toSimStatus(item, iccid);
-        });
-        const total = extractTotal(resp, items.length);
-        const hasMore = typeof total === 'number' ? (page * limit) < total : items.length === limit;
-        return { items, total, page, limit, hasMore, raw: resp };
-      } catch (err) {
-        lastErr = err;
-        if (err instanceof SimhuisApiError) {
-          if (err.statusCode === 404 || err.statusCode === 405 || err.statusCode === 400) continue;
+  const bodyVariantsRaw: Array<Record<string, any> | null | undefined> = [
+    { ...baseQuery },
+    { ...baseQuery, per_page: limit, page_number: page },
+    { ...baseQuery, page: page, size: limit },
+    { pagination: { page: page, limit: limit } },
+    { filter: options.status ? { status: options.status } : undefined, resellerId: resellerId },
+  ];
+  const bodyVariants = bodyVariantsRaw.filter((b): b is Record<string, any> => b !== null && b !== undefined);
+
+  const attempts: ListAttempt[] = [];
+
+  const tryOne = async (a: ListAttempt): Promise<ListSimsResult | null> => {
+    const trace: ListAttempt = { ...a };
+    try {
+      const resp = await doRequest<unknown>(
+        a.path,
+        a.method === 'GET'
+          ? { method: 'GET', query: a.payload }
+          : { method: 'POST', body: a.payload }
+      );
+      const rawArray = extractSimList(resp);
+      const items = rawArray.map((item) => {
+        const iccid = String(item.iccid ?? item.sim_iccid ?? item.simIccid ?? (item as any)?.sim?.iccid ?? '').trim();
+        return toSimStatus(item, iccid);
+      });
+      const total = extractTotal(resp, items.length);
+      const hasMore = typeof total === 'number' ? (page * limit) < total : items.length === limit;
+      return { items, total, page: page, limit: limit, hasMore, raw: resp };
+    } catch (err: any) {
+      trace.statusCode = err instanceof SimhuisApiError ? err.statusCode : undefined;
+      trace.error = String(err?.message ?? err ?? 'Onbekende fout').slice(0, 200);
+      trace.errorClass = err instanceof SimhuisApiError ? 'SimhuisApiError' : err?.constructor?.name ?? 'Error';
+      attempts.push(trace);
+      if (err instanceof SimhuisApiError) {
+        if (err.statusCode === 401 || err.statusCode === 403) {
+          throw err;
         }
-        throw err;
+        return null;
       }
+      return null;
+    }
+  };
+
+  for (const path of pathVariants) {
+    for (const q of queryVariants) {
+      const result = await tryOne({ method: 'GET', path: path, kind: 'query', payload: q });
+      if (result) return result;
     }
   }
-  throw lastErr ?? new Error(`[Simhuis] listSims failed: geen enkel endpoint reageerde`);
+
+  const postPaths = [
+    client.endpoints.sims + '/search',
+    client.endpoints.sims + '/query',
+    client.endpoints.sims,
+    '/sims/search',
+    '/sim/list',
+    '/sims',
+  ];
+  for (const path of postPaths) {
+    for (const b of bodyVariants) {
+      const result = await tryOne({ method: 'POST', path: path, kind: 'body', payload: b });
+      if (result) return result;
+    }
+  }
+
+  let summary = attempts
+    .map((a) => `${a.method} ${a.path} [${a.statusCode ?? 'err'}] (${a.kind}) ${a.errorClass ?? ''}: ${a.error ?? ''}`)
+    .join(' ; ');
+  summary = summary.slice(0, 800);
+
+  const last = attempts[attempts.length - 1];
+  const errMsg = `[Simhuis] listSims failed: geen enkel endpoint reageerde. Pogingen: ${summary}`;
+  if (last?.errorClass === 'SimhuisApiError') {
+    const e = new SimhuisApiError(last.statusCode ?? 500, {}, last?.path ?? '', errMsg);
+    (e as any).attempts = attempts;
+    throw e;
+  }
+  const genErr = new Error(errMsg);
+  (genErr as any).attempts = attempts;
+  throw genErr;
 }
 
 export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit'> = {}): Promise<SimhuisSimStatus[]> {
@@ -272,7 +343,7 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
   let safety = 0;
   while (safety < 50) {
     safety++;
-    const batch = await listSims({ ...options, page, limit: pageSize });
+    const batch = await listSims({ ...options, page: page, limit: pageSize });
     for (const s of batch.items) {
       if (s.iccid && !seen.has(s.iccid)) {
         seen.add(s.iccid);
