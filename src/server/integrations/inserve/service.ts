@@ -399,7 +399,7 @@ export async function getInvoiceInInserve(
 }
 
 export async function listInvoicesInInserve(
-  query?: { company_id?: number; reference?: string; status?: string; page?: number; per_page?: number }
+  query?: { company_id?: number; reference?: string; status?: string; page?: number; limit?: number; per_page?: number }
 ): Promise<InserveListResponse<InserveInvoice>> {
   const client = await inserveClient.getClient();
   if (!client) {

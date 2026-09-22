@@ -300,12 +300,12 @@ class InserveClientSingleton {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(new Error("timeout")), 8000);
       try {
-        const response = await client.request(
-          "companies",
-          { method: "GET", query: { per_page: 1 }, signal: controller.signal }
+        await client.request(
+          "auth/me",
+          { method: "GET", signal: controller.signal }
         );
         const elapsed = Date.now() - started;
-        return { ok: true, status: 200, latencyMs: elapsed, endpoint: "GET /companies?per_page=1" };
+        return { ok: true, status: 200, latencyMs: elapsed, endpoint: "GET /auth/me" };
       } finally {
         clearTimeout(timeout);
       }
