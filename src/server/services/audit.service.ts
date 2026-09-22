@@ -41,7 +41,7 @@ export async function findManyAuditLogs(
   params: AuditLogFilterParams & { viewerUserId?: string; viewerRole?: UserRole }
 ): Promise<
   PaginatedResult<
-    PrismaAuditLog & { user?: { name: string | null; email: string } }
+    PrismaAuditLog & { user: { name: string | null; email: string } | null }
   >
 > {
   const {

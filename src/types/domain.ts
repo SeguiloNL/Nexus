@@ -357,8 +357,8 @@ export interface AuditLogFilterParams extends ListQueryParams {
 
 export interface AuditLogEntry {
   id: string;
-  userId: string;
-  userName?: string;
+  userId: string | null;
+  userName?: string | null;
   timestamp: Date;
   entityType: string;
   entityId: string;

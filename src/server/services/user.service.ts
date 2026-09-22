@@ -168,7 +168,7 @@ export async function deleteUser(id: string, ctx: Ctx): Promise<User> {
       throw new Error("Je kunt je eigen account niet verwijderen.");
     }
     const existing = await tx.user.findUniqueOrThrow({ where: { id } });
-    const deleted = await tx.user.delete({ where: { id } });
+
     await logAudit(tx, {
       entityType: "user",
       entityId: id,
@@ -181,6 +181,22 @@ export async function deleteUser(id: string, ctx: Ctx): Promise<User> {
         role: existing.role,
       } as any,
     });
+
+    await tx.auditLog.deleteMany({ where: { userId: id } });
+    await tx.trackerAssignment.updateMany({
+      where: { createdById: id },
+      data: { createdById: null as any },
+    });
+    await tx.simAssignment.updateMany({
+      where: { createdById: id },
+      data: { createdById: null as any },
+    });
+    await tx.activationOrder.updateMany({
+      where: { createdById: id },
+      data: { createdById: null as any },
+    });
+
+    const deleted = await tx.user.delete({ where: { id } });
     return deleted;
   });
 }

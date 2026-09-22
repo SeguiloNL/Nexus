@@ -345,8 +345,8 @@ model TrackerAssignment {
   startAt        DateTime          @db.Timestamptz
   endAt          DateTime?         @db.Timestamptz
   reason         AssignmentReason?
-  createdById    String
-  createdBy      User              @relation("CreatedTrackers", fields: [createdById], references: [id])
+  createdById    String?
+  createdBy      User?             @relation("CreatedTrackers", fields: [createdById], references: [id], onDelete: SetNull)
 
   // Opmerking: Een tracker kan maximaal 1 ACTIVE assignment hebben (endAt IS NULL)
   // Deze partial unique unique index wordt aangemaakt via raw SQL in de init migration
@@ -365,8 +365,8 @@ model SimAssignment {
   startAt        DateTime          @db.Timestamptz
   endAt          DateTime?         @db.Timestamptz
   reason         AssignmentReason?
-  createdById    String
-  createdBy      User              @relation("CreatedSims", fields: [createdById], references: [id])
+  createdById    String?
+  createdBy      User?             @relation("CreatedSims", fields: [createdById], references: [id], onDelete: SetNull)
 
   // Opmerking: Een SIM kan maximaal 1 ACTIVE assignment hebben (endAt IS NULL)
   // Deze partial unique unique index wordt aangemaakt via raw SQL in de init migration
@@ -400,8 +400,8 @@ model ActivationOrder {
   failureReason      String?                @db.Text
   failedAt           DateTime?              @db.Timestamptz
   completedAt        DateTime?              @db.Timestamptz
-  createdById        String
-  createdBy          User                   @relation("CreatedOrders", fields: [createdById], references: [id])
+  createdById        String?
+  createdBy          User?                  @relation("CreatedOrders", fields: [createdById], references: [id], onDelete: SetNull)
   createdAt          DateTime               @default(now())
   updatedAt          DateTime               @updatedAt
 
@@ -428,8 +428,8 @@ model AppSetting {
 
 model AuditLog {
   id         String      @id @default(cuid())
-  userId     String
-  user       User        @relation(fields: [userId], references: [id])
+  userId     String?
+  user       User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
   timestamp  DateTime    @default(now()) @db.Timestamptz
   entityType String
   entityId   String
