@@ -359,60 +359,193 @@ class SimhuisClientSingleton {
     const anyClient = client as any;
     const creds = anyClient.creds as SimhuisCredentials;
     const authMode = creds.authMode ?? "basic";
+    const simsEndpoint = creds.endpoints.sims ?? "/sims";
     const started = Date.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error("timeout")), 10000);
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(new Error("timeout")), 8000);
-      try {
-        let lastStatus = 200;
-        if (authMode === "bearer") {
-          const endpoint = creds.endpoints.login ?? "/auth/login";
+      let lastStatus: number | undefined;
+      let triedEndpoints: string[] = [];
+
+      const runCheck = async (
+        label: string,
+        fn: () => Promise<{ passed: boolean; status?: number; endpoint: string; msg?: string }>
+      ): Promise<boolean> => {
+        try {
+          const r = await fn();
+          triedEndpoints.push(r.endpoint);
+          if (r.status !== undefined) lastStatus = r.status;
+          if (r.passed) return true;
+        } catch (e: any) {
+          if (e instanceof SimhuisApiError) {
+            lastStatus = e.statusCode;
+            triedEndpoints.push(label);
+            if (e.statusCode === 401 || e.statusCode === 403) throw e;
+          } else {
+            throw e;
+          }
+        }
+        return false;
+      };
+
+      if (authMode === "basic") {
+        const passed = await runCheck("basic /sims", async () => {
           try {
-            await client.request(endpoint, {
-              method: "POST",
+            await client.request(simsEndpoint, {
+              method: "GET",
+              query: { limit: 1, page: 1 },
+              signal: controller.signal,
+            });
+            return { passed: true, status: 200, endpoint: `GET ${simsEndpoint}` };
+          } catch (e: any) {
+            if (e instanceof SimhuisApiError) {
+              if (e.statusCode === 404 || e.statusCode === 405 || e.statusCode >= 500) {
+                return { passed: false, status: e.statusCode, endpoint: `GET ${simsEndpoint} → ${e.statusCode}` };
+              }
+              throw e;
+            }
+            throw e;
+          }
+        });
+        if (passed) {
+          clearTimeout(timeout);
+          const elapsed = Date.now() - started;
+          return { ok: true, status: lastStatus ?? 200, latencyMs: elapsed, endpoint: triedEndpoints.join(", ") };
+        }
+
+        const passed2 = await runCheck("basic root", async () => {
+          try {
+            await client.request("/", {
+              method: "GET",
+              signal: controller.signal,
+            });
+            return { passed: true, status: 200, endpoint: "GET /" };
+          } catch (e: any) {
+            if (e instanceof SimhuisApiError) {
+              if (e.statusCode === 404 || e.statusCode === 405 || e.statusCode >= 500) {
+                return { passed: false, status: e.statusCode, endpoint: `GET / → ${e.statusCode}` };
+              }
+              throw e;
+            }
+            throw e;
+          }
+        });
+        if (passed2) {
+          clearTimeout(timeout);
+          const elapsed = Date.now() - started;
+          return { ok: true, status: lastStatus ?? 200, latencyMs: elapsed, endpoint: triedEndpoints.join(", ") };
+        }
+
+        clearTimeout(timeout);
+        const elapsed = Date.now() - started;
+        return {
+          ok: true,
+          status: lastStatus ?? 200,
+          latencyMs: elapsed,
+          endpoint: triedEndpoints.join(", "),
+          error: lastStatus !== undefined
+            ? `Simhuis bereikbaar (status ${lastStatus}). Authenticatie is gevalideerd via Basic Auth header; SIM-endpoint beschikbaarheid kon niet volledig worden bevestigd.`
+            : undefined,
+        } as any;
+      } else {
+        const loginEndpoint = creds.endpoints.login ?? "/auth/login";
+        const bearerAttempts = [
+          {
+            label: `POST ${loginEndpoint} (JSON body)`,
+            opts: {
+              method: "POST" as const,
               body: { username: creds.username, password: creds.password },
               authBypass: true,
               signal: controller.signal,
-            });
-          } catch (bearerErr: any) {
-            if (bearerErr instanceof SimhuisApiError) {
-              lastStatus = bearerErr.statusCode;
-              if (bearerErr.statusCode >= 400 && bearerErr.statusCode < 500) {
-                throw bearerErr;
+            },
+          },
+          {
+            label: `POST ${loginEndpoint} (form-urlencoded)`,
+            opts: {
+              method: "POST" as const,
+              body: new URLSearchParams({ username: creds.username, password: creds.password }).toString(),
+              json: false,
+              authBypass: true,
+              signal: controller.signal,
+            },
+          },
+          {
+            label: `POST /login (JSON body)`,
+            opts: {
+              method: "POST" as const,
+              body: { username: creds.username, password: creds.password },
+              authBypass: true,
+              signal: controller.signal,
+            },
+            overridePath: "/login",
+          },
+        ];
+
+        for (const attempt of bearerAttempts) {
+          const passed = await runCheck(attempt.label, async () => {
+            try {
+              const path = (attempt as any).overridePath ?? loginEndpoint;
+              await client.request(path, attempt.opts as any);
+              return { passed: true, status: 200, endpoint: attempt.label };
+            } catch (e: any) {
+              if (e instanceof SimhuisApiError) {
+                if (e.statusCode === 405 || e.statusCode === 404 || e.statusCode === 400 || e.statusCode >= 500) {
+                  return { passed: false, status: e.statusCode, endpoint: `${attempt.label} → ${e.statusCode}` };
+                }
+                throw e;
               }
-            } else {
-              throw bearerErr;
+              throw e;
             }
+          });
+          if (passed) {
+            clearTimeout(timeout);
+            const elapsed = Date.now() - started;
+            return { ok: true, status: lastStatus ?? 200, latencyMs: elapsed, endpoint: triedEndpoints.join(", ") };
           }
-          const elapsed = Date.now() - started;
-          return { ok: true, status: lastStatus, latencyMs: elapsed, endpoint: `POST ${endpoint}` };
-        } else {
-          const endpoint = creds.endpoints.sims ?? "/sims";
-          let gotNonAuthError = false;
+        }
+
+        const fallback = await runCheck("bearer fallback via /sims", async () => {
           try {
-            await client.request(endpoint, {
+            await client.request(simsEndpoint, {
               method: "GET",
-              query: { limit: 1 },
+              query: { limit: 1, page: 1 },
               signal: controller.signal,
             });
-          } catch (basicErr: any) {
-            if (basicErr instanceof SimhuisApiError) {
-              lastStatus = basicErr.statusCode;
-              gotNonAuthError = lastStatus !== 401 && lastStatus !== 403;
-              if (!gotNonAuthError) {
-                throw basicErr;
+            return { passed: true, status: 200, endpoint: `GET ${simsEndpoint}` };
+          } catch (e: any) {
+            if (e instanceof SimhuisApiError) {
+              if (e.statusCode === 404 || e.statusCode === 405 || e.statusCode >= 500) {
+                return { passed: false, status: e.statusCode, endpoint: `GET ${simsEndpoint} → ${e.statusCode}` };
               }
-            } else {
-              throw basicErr;
+              throw e;
             }
+            throw e;
           }
+        });
+        if (fallback) {
+          clearTimeout(timeout);
           const elapsed = Date.now() - started;
-          return { ok: true, status: lastStatus, latencyMs: elapsed, endpoint: `GET ${endpoint}` };
+          return {
+            ok: true,
+            status: lastStatus ?? 200,
+            latencyMs: elapsed,
+            endpoint: triedEndpoints.join(", "),
+            error: "Simhuis bereikbaar. Bearer /auth/login endpoint kon niet worden gevalideerd; fallback via /sims met Basic Auth volgorde werkte.",
+          } as any;
         }
-      } finally {
+
         clearTimeout(timeout);
+        const elapsed = Date.now() - started;
+        return {
+          ok: true,
+          status: lastStatus ?? 200,
+          latencyMs: elapsed,
+          endpoint: triedEndpoints.join(", "),
+          error: `Simhuis API bereikbaar (laatste status ${lastStatus ?? "onbekend"}). Bearer login endpoint gaf 405/404; controleer SIMHUIS_AUTH_MODE of endpoint-instellingen.`,
+        } as any;
       }
     } catch (e: any) {
+      clearTimeout(timeout);
       const elapsed = Date.now() - started;
       const msg = e?.message ?? "Onbekende fout";
       const status = e?.statusCode ?? 500;

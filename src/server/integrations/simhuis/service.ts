@@ -46,38 +46,124 @@ async function doRequest<T = unknown>(
 
 export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
   const client = (await simhuisClient.getClient())!;
-  const path = `${client.endpoints.sims}/${encodeURIComponent(iccid)}`;
-  try {
-    const resp = await doRequest<unknown>(path, { method: 'GET' });
-    return toSimStatus(resp, iccid);
-  } catch (err) {
-    if (err instanceof SimhuisApiError && err.statusCode === 404) {
-      return { iccid, status: null, raw: null };
+  const paths = [
+    `${client.endpoints.sims}/${encodeURIComponent(iccid)}`,
+    `${client.endpoints.sims}?iccid=${encodeURIComponent(iccid)}`,
+    `/sim/${encodeURIComponent(iccid)}`,
+  ];
+  let lastErr: unknown = null;
+  for (const path of paths) {
+    try {
+      const resp = await doRequest<unknown>(path, { method: 'GET' });
+      return toSimStatus(resp, iccid);
+    } catch (err) {
+      lastErr = err;
+      if (err instanceof SimhuisApiError) {
+        if (err.statusCode === 404 || err.statusCode === 405) continue;
+      }
+      throw err;
     }
-    throw err;
   }
+  if (lastErr instanceof SimhuisApiError && lastErr.statusCode === 404) {
+    return { iccid, status: null, raw: null };
+  }
+  throw lastErr ?? new Error(`[Simhuis] getSimStatus failed for ICCID ${iccid}`);
 }
 
 export async function activateSim(options: ActivateSimOptions): Promise<SimhuisSimStatus> {
   const client = (await simhuisClient.getClient())!;
   const resellerId = options.resellerId ?? client.resellerId;
-  const body: Record<string, unknown> = {};
-  if (options.offerId) body.offer_id = options.offerId;
-  if (options.planId) body.plan_id = options.planId;
-  if (resellerId) body.reseller_id = resellerId;
-  if (options.customerRef) body.customer_ref = options.customerRef;
-  if (options.iccid) body.iccid = options.iccid;
+  const bodyBase: Record<string, unknown> = {};
+  if (options.offerId) bodyBase.offer_id = options.offerId;
+  if (options.planId) bodyBase.plan_id = options.planId;
+  if (resellerId) bodyBase.reseller_id = resellerId;
+  if (options.customerRef) bodyBase.customer_ref = options.customerRef;
+  if (options.iccid) bodyBase.iccid = options.iccid;
 
-  const path = `${client.endpoints.sims}/${encodeURIComponent(options.iccid)}${client.endpoints.simActivate}`;
-  const resp = await doRequest<unknown>(path, { method: 'POST', body });
-  return toSimStatus(resp, options.iccid);
+  const baseBodyWithIccid = { ...bodyBase, iccid: options.iccid };
+
+  const attempts = [
+    {
+      path: `${client.endpoints.sims}/${encodeURIComponent(options.iccid)}${client.endpoints.simActivate}`,
+      method: 'POST' as const,
+      body: bodyBase,
+    },
+    {
+      path: `${client.endpoints.sims}/activate`,
+      method: 'POST' as const,
+      body: baseBodyWithIccid,
+    },
+    {
+      path: `/sim/${encodeURIComponent(options.iccid)}/activate`,
+      method: 'POST' as const,
+      body: bodyBase,
+    },
+    {
+      path: `${client.endpoints.sims}/${encodeURIComponent(options.iccid)}`,
+      method: 'PUT' as const,
+      body: { ...bodyBase, status: 'active' },
+    },
+  ];
+
+  let lastErr: unknown = null;
+  for (const attempt of attempts) {
+    try {
+      const resp = await doRequest<unknown>(attempt.path, { method: attempt.method, body: attempt.body });
+      return toSimStatus(resp, options.iccid);
+    } catch (err) {
+      lastErr = err;
+      if (err instanceof SimhuisApiError) {
+        if (err.statusCode === 404 || err.statusCode === 405 || err.statusCode === 400) {
+          continue;
+        }
+      }
+      throw err;
+    }
+  }
+  throw lastErr ?? new Error(`[Simhuis] activateSim failed for ICCID ${options.iccid}`);
 }
 
 export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
   const client = (await simhuisClient.getClient())!;
-  const path = `${client.endpoints.sims}/${encodeURIComponent(iccid)}${client.endpoints.simDeactivate}`;
-  const resp = await doRequest<unknown>(path, { method: 'POST', body: { iccid } });
-  return toSimStatus(resp, iccid);
+  const attempts = [
+    {
+      path: `${client.endpoints.sims}/${encodeURIComponent(iccid)}${client.endpoints.simDeactivate}`,
+      method: 'POST' as const,
+      body: { iccid },
+    },
+    {
+      path: `${client.endpoints.sims}/deactivate`,
+      method: 'POST' as const,
+      body: { iccid },
+    },
+    {
+      path: `/sim/${encodeURIComponent(iccid)}/deactivate`,
+      method: 'POST' as const,
+      body: { iccid },
+    },
+    {
+      path: `${client.endpoints.sims}/${encodeURIComponent(iccid)}`,
+      method: 'PUT' as const,
+      body: { iccid, status: 'inactive' },
+    },
+  ];
+
+  let lastErr: unknown = null;
+  for (const attempt of attempts) {
+    try {
+      const resp = await doRequest<unknown>(attempt.path, { method: attempt.method, body: attempt.body });
+      return toSimStatus(resp, iccid);
+    } catch (err) {
+      lastErr = err;
+      if (err instanceof SimhuisApiError) {
+        if (err.statusCode === 404 || err.statusCode === 405 || err.statusCode === 400) {
+          continue;
+        }
+      }
+      throw err;
+    }
+  }
+  throw lastErr ?? new Error(`[Simhuis] deactivateSim failed for ICCID ${iccid}`);
 }
 
 export { simhuisClient, SimhuisApiError };
