@@ -375,18 +375,90 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     return { items, total, page: page, limit: limit, hasMore, raw: respBodyRaw };
   };
 
+  type AuthStyle =
+    | { tag: 'basic-header'; header: string }
+    | { tag: 'bearer-header'; header: string }
+    | { tag: 'apikey-header-x'; header: string }
+    | { tag: 'custom-headers'; headers: Record<string, string> }
+    | { tag: 'none' }
+    | { tag: 'api-key-auth-header'; header: string };
+
+  const authBasicHeader = basicAuthHeader(creds.username, creds.password);
+
+  const authStyles: AuthStyle[] = [
+    { tag: 'basic-header', header: authBasicHeader },
+    { tag: 'apikey-header-x', header: `x-api-key ${creds.password}` },
+    { tag: 'api-key-auth-header', header: `ApiKey ${creds.username}:${creds.password}` },
+    { tag: 'bearer-header', header: `Bearer ${creds.password}` },
+    {
+      tag: 'custom-headers',
+      headers: {
+        'X-API-Username': creds.username,
+        'X-API-Password': creds.password,
+      },
+    },
+  ];
+  if (resellerId) {
+    authStyles.push({
+      tag: 'custom-headers',
+      headers: {
+        Authorization: authBasicHeader,
+        'X-Reseller-ID': String(resellerId),
+      },
+    });
+  }
+
+  const augmentBody = (
+    b: Record<string, any> | null,
+    authInject: 'none' | 'creds' | 'reseller_creds',
+  ): Record<string, any> => {
+    const base = b && Object.keys(b).length > 0 ? { ...b } : {};
+    if (authInject === 'creds') {
+      base.username = creds.username;
+      base.password = creds.password;
+    } else if (authInject === 'reseller_creds') {
+      base.username = creds.username;
+      base.password = creds.password;
+      if (resellerId) base.reseller_id = resellerId;
+    }
+    return base;
+  };
+
+  const augmentQuery = (
+    q: Record<string, any> | null,
+    authInject: 'none' | 'creds' | 'reseller_creds',
+  ): Record<string, any> => {
+    const base = q && Object.keys(q).length > 0 ? { ...q } : {};
+    if (authInject === 'creds') {
+      base.username = creds.username;
+      base.password = creds.password;
+    } else if (authInject === 'reseller_creds') {
+      base.username = creds.username;
+      base.password = creds.password;
+      if (resellerId) base.reseller_id = resellerId;
+    }
+    return base;
+  };
+
+  const authInjectStyles: Array<'none' | 'creds' | 'reseller_creds'> = ['none', 'creds', 'reseller_creds'];
+
   const doDirectFetch = async (args: {
     fullUrl: string;
     method: 'GET' | 'POST';
     contentType: 'json' | 'form' | 'none';
     body: Record<string, any> | null;
-    authBasic?: string;
+    auth: AuthStyle;
     meta: Omit<ListAttempt, 'statusCode' | 'error' | 'errorClass'>;
   }): Promise<ListSimsResult | null> => {
     const trace: ListAttempt = { ...args.meta };
     try {
       const headers: Record<string, string> = { 'Accept': 'application/json' };
-      if (args.authBasic) headers['Authorization'] = args.authBasic;
+      if (args.auth.tag === 'basic-header' || args.auth.tag === 'bearer-header' ||
+          args.auth.tag === 'apikey-header-x' || args.auth.tag === 'api-key-auth-header') {
+        headers['Authorization'] = args.auth.header;
+      } else if (args.auth.tag === 'custom-headers') {
+        Object.assign(headers, args.auth.headers);
+      }
       let body: BodyInit | undefined;
       if (args.method === 'POST' && args.body) {
         if (args.contentType === 'json') {
@@ -424,7 +496,13 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         trace.error = `HTTP ${resp.status} ${snippet ? `: ${snippet}` : ''}`;
         trace.errorClass = 'HTTPError';
         attempts.push(trace);
-        if (resp.status === 401 || resp.status === 403) {
+        if (resp.status === 401) {
+          const parsedObj = parsed as Record<string, any> | null;
+          const code = parsedObj && typeof parsedObj === 'object' ? String(parsedObj.code ?? parsedObj.error_code ?? '') : '';
+          if (code === 'InvalidToken' || code === 'InvalidAuth' || code === 'Unauthorized') {
+            throw new SimhuisApiError(resp.status, parsed ?? {}, args.fullUrl, trace.error);
+          }
+        } else if (resp.status === 403) {
           throw new SimhuisApiError(resp.status, parsed ?? {}, args.fullUrl, trace.error);
         }
         return null;
@@ -434,8 +512,13 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       trace.error = String(err?.message ?? err ?? 'Onbekende fout').slice(0, 200);
       trace.errorClass = err instanceof SimhuisApiError ? 'SimhuisApiError' : err?.constructor?.name ?? 'Error';
       attempts.push(trace);
-      if (err instanceof SimhuisApiError && (err.statusCode === 401 || err.statusCode === 403)) {
-        throw err;
+      if (err instanceof SimhuisApiError) {
+        if (err.statusCode === 403) throw err;
+        if (err.statusCode === 401) {
+          const rb = err.responseBody as any;
+          const code = rb && typeof rb === 'object' ? String(rb.code ?? rb.error_code ?? '') : '';
+          if (code !== 'InvalidCredentials') throw err;
+        }
       }
       return null;
     }
@@ -457,79 +540,87 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     return url;
   };
 
-  const authBasicHeader = basicAuthHeader(creds.username, creds.password);
-
   for (const baseInfo of baseUrlVariants) {
     for (const path of pathVariants) {
-      for (const b of payloadVariants) {
-        const bodyHasKeys = Object.keys(b).length > 0;
+      for (const auth of authStyles) {
+        for (const inject of authInjectStyles) {
+          for (const b of payloadVariants) {
+            const bodyHasKeys = Object.keys(b).length > 0 || inject !== 'none';
+            const body = augmentBody(bodyHasKeys ? b : null, inject);
+            const r1 = await doDirectFetch({
+              fullUrl: makeFullUrl(baseInfo.base, path, null),
+              method: 'POST',
+              contentType: 'json',
+              body,
+              auth,
+              meta: { method: 'POST', baseTag: baseInfo.tag, path, kind: 'json-body', signature: `auth=${auth.tag};inject=${inject};payload=${Object.keys(b).sort().join(',') || 'empty'}` },
+            });
+            if (r1) return r1;
+            const r2 = await doDirectFetch({
+              fullUrl: makeFullUrl(baseInfo.base, path, null),
+              method: 'POST',
+              contentType: 'form',
+              body,
+              auth,
+              meta: { method: 'POST', baseTag: baseInfo.tag, path, kind: 'form-body', signature: `auth=${auth.tag};inject=${inject};payload=${Object.keys(b).sort().join(',') || 'empty'}` },
+            });
+            if (r2) return r2;
+          }
+          for (const q of payloadVariants) {
+            const query = augmentQuery(q, inject);
+            const r = await doDirectFetch({
+              fullUrl: makeFullUrl(baseInfo.base, path, query),
+              method: 'GET',
+              contentType: 'none',
+              body: null,
+              auth,
+              meta: { method: 'GET', baseTag: baseInfo.tag, path, kind: 'query', signature: `auth=${auth.tag};inject=${inject};payload=${Object.keys(q).sort().join(',') || 'empty'}` },
+            });
+            if (r) return r;
+          }
+        }
+      }
+    }
+    const rpcPaths = ['/jsonrpc', '/rpc', '/api', '/'];
+    for (const auth of authStyles.slice(0, 2)) {
+      for (const rpcPath of rpcPaths) {
+        const rpcBody = { jsonrpc: '2.0', method: 'sims.list', params: augmentBody(basePayload, 'creds'), id: 1 };
         const r1 = await doDirectFetch({
-          fullUrl: makeFullUrl(baseInfo.base, path, null),
+          fullUrl: makeFullUrl(baseInfo.base, rpcPath, null),
           method: 'POST',
           contentType: 'json',
-          body: bodyHasKeys ? b : {},
-          authBasic: authBasicHeader,
-          meta: { method: 'POST', baseTag: baseInfo.tag, path, kind: 'json-body', signature: bodyHasKeys ? Object.keys(b).sort().join(',') : 'empty' },
+          body: rpcBody,
+          auth,
+          meta: { method: 'POST', baseTag: baseInfo.tag, path: rpcPath, kind: 'json-body', signature: `auth=${auth.tag};jsonrpc:sims.list` },
         });
         if (r1) return r1;
         const r2 = await doDirectFetch({
-          fullUrl: makeFullUrl(baseInfo.base, path, null),
-          method: 'POST',
-          contentType: 'form',
-          body: bodyHasKeys ? b : {},
-          authBasic: authBasicHeader,
-          meta: { method: 'POST', baseTag: baseInfo.tag, path, kind: 'form-body', signature: bodyHasKeys ? Object.keys(b).sort().join(',') : 'empty' },
-        });
-        if (r2) return r2;
-      }
-      for (const q of payloadVariants) {
-        const r = await doDirectFetch({
-          fullUrl: makeFullUrl(baseInfo.base, path, q),
+          fullUrl: makeFullUrl(baseInfo.base, rpcPath, augmentQuery({ action: 'list_sims' }, 'creds')),
           method: 'GET',
           contentType: 'none',
           body: null,
-          authBasic: authBasicHeader,
-          meta: { method: 'GET', baseTag: baseInfo.tag, path, kind: 'query', signature: Object.keys(q).sort().join(',') },
+          auth,
+          meta: { method: 'GET', baseTag: baseInfo.tag, path: rpcPath, kind: 'query', signature: `auth=${auth.tag};action:list_sims` },
         });
-        if (r) return r;
+        if (r2) return r2;
       }
-    }
-    // JSON-RPC endpoint + root endpoint with action body
-    const rpcPaths = ['/jsonrpc', '/rpc', '/api', '/'];
-    for (const rpcPath of rpcPaths) {
-      const r1 = await doDirectFetch({
-        fullUrl: makeFullUrl(baseInfo.base, rpcPath, null),
-        method: 'POST',
-        contentType: 'json',
-        body: { jsonrpc: '2.0', method: 'sims.list', params: { ...basePayload }, id: 1 },
-        authBasic: authBasicHeader,
-        meta: { method: 'POST', baseTag: baseInfo.tag, path: rpcPath, kind: 'json-body', signature: 'jsonrpc:sims.list' },
-      });
-      if (r1) return r1;
-      const r2 = await doDirectFetch({
-        fullUrl: makeFullUrl(baseInfo.base, rpcPath, { action: 'list_sims', ...basePayload }),
-        method: 'GET',
-        contentType: 'none',
-        body: null,
-        authBasic: authBasicHeader,
-        meta: { method: 'GET', baseTag: baseInfo.tag, path: rpcPath, kind: 'query', signature: 'action:list_sims' },
-      });
-      if (r2) return r2;
     }
   }
 
-  // Dedup for error summary
-  const seen = new Map<string, { attempt: ListAttempt; count: number }>();
+  const seen = new Map<string, { attempt: ListAttempt; count: number; sample: string }>();
   for (const a of attempts) {
-    const key = `${a.method} ${a.baseTag}${a.path} [${a.statusCode ?? 'err'}] (${a.kind})`;
+    const key = `${a.method} ${a.baseTag}::${a.path} [${a.statusCode ?? 'err'}] (${a.kind})`;
     const cur = seen.get(key);
-    if (cur) cur.count++;
-    else seen.set(key, { attempt: a, count: 1 });
+    if (cur) {
+      cur.count++;
+    } else {
+      seen.set(key, { attempt: a, count: 1, sample: a.signature ?? '' });
+    }
   }
   let summary = Array.from(seen.values())
-    .map(({ attempt: a, count }) => `${a.method} ${a.path} (base=${a.baseTag}) [${a.statusCode ?? 'err'}] (${a.kind}) ×${count} ${a.errorClass ?? ''}: ${a.error ?? ''}`)
+    .map(({ attempt: a, count, sample }) => `${a.method} ${a.path} (base=${a.baseTag}) [${a.statusCode ?? 'err'}] (${a.kind}) ×${count} sig=${sample} → ${a.errorClass ?? ''}: ${a.error ?? ''}`)
     .join('\n');
-  summary = summary.slice(0, 8000);
+  summary = summary.slice(0, 9000);
   const msg = `[Simhuis] listSims failed: ${attempts.length} pogingen, geen succes. Samenvatting:\n${summary}`;
   throw new Error(msg);
 }
