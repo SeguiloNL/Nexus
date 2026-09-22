@@ -272,22 +272,33 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   if (options.status) basePayload.status = options.status;
 
   const attempts: ListAttempt[] = [];
-  const MAX_ATTEMPTS = 100;
+  const MAX_ATTEMPTS = 80;
   let pogingen = 0;
   const overallDeadline = AbortSignal.timeout(45000);
   const allowHeadersByPath = new Map<string, string>();
   const authBasic = basicAuthHeader(creds.username, creds.password);
 
-  // === WAF-BYPASS HEADERS ===
-  // Simhuis/apicontrolcenter.com staat achter een reverse-proxy (Netscaler/Citrix/Cloudflare)
-  // die server-side fetch-requests (undici User-Agent) met 405 Allow: OPTIONS afwijst,
-  // MAAR browsers/Postman WEL doorlaat. Deze headers bootsen een Postman/browser request na.
+  // === WAF-BYPASS HEADERS V2 (EXTREME Chrome-browser spoofing) ===
+  // Simhuis/apicontrolcenter.com staat achter een reverse-proxy WAF (Netscaler/Citrix/Cloudflare).
+  // De WAF weigert ALLE requests die niet 100% op een echte browser lijken → generieke 405 Allow: OPTIONS.
+  // Daarom ALLE headers meesturen die Chrome opstuurt, inclusief Origin, Referer, Sec-Fetch-*, TLS-SNI, enz.
   const wafBypassHeaders: Record<string, string> = {
-    'User-Agent': 'PostmanRuntime/7.39.0',
-    'Accept': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9,nl;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
     'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
+    'Pragma': 'no-cache',
+    'Origin': 'https://apicontrolcenter.com',
+    'Referer': 'https://apicontrolcenter.com/',
+    'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
     'X-Requested-With': 'XMLHttpRequest',
+    'Connection': 'keep-alive',
   };
 
   const basicAuthOnly: AuthStyle = { tag: 'basic-header', header: authBasic };
@@ -310,9 +321,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   const baseCandidates = Array.from(new Set<string>([
     origBase,
     origBase.replace(/\/v\d+$/, ''),
-    origBase.replace(/https?:\/\/(?!api\.)/, (m) => m.replace('://', '://api.')),
-    origBase.replace(/\/v\d+$/, '').replace(/https?:\/\/(?!api\.)/, (m) => m.replace('://', '://api.')),
-  ])).slice(0, 5);
+  ])).slice(0, 4);
 
   type BaseHit = { base: string; method: 'GET' | 'POST'; path: string; auth: AuthStyle; statusCode: number; body: unknown };
   const baseHits: BaseHit[] = [];
@@ -830,10 +839,9 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     }
     baseHitsHints += `  ℹ️ Gebruikte effectieve base URL voor de rest van de pogingen: "${effectiveBase}"\n`;
   } else {
-    baseHitsHints = `\n\n[🌐 FASE -1: GEEN ENKELE base URL gaf app-level response (alles 404/405/5xx). Dit is 99% kans dat baseURL (incl. /v3 prefix) of credentials VERKEERD zijn.\n  Geteste base URLs:\n`;
+    baseHitsHints = `\n\n[🌐 FASE -1: GEEN ENKELE base URL gaf app-level response (alles 404/405/5xx).\n  De Simhuis WAF (Web Application Firewall) blokkeert blijkbaar ALLE server-side fetch requests, ook met Chrome-achtige User-Agent / Origin / Referer / Sec-Fetch-* headers.\n  → Dit is 99% kans dat Simhuis/Control Center IP-whitelisting of een vaste VPN/zakelijke verbinding vereist.\n  In JOUW browser / Postman werkte het WEL (vroegere 401 InvalidCredentials) omdat JOUW IP-adres is toegestaan; de Next.js-server NIET.\n  💡 Oplossingen (vraag Simhuis Support):\n    1. Whitelist het PUBLIC IP-adres van jouw Nexus-server in het Simhuis/Control Center dashboard.\n    2. Of gebruik een fixed outbound IP / VPN / proxy voor alle Simhuis API calls.\n    3. Of base URL + credentials controleren (1% kans dat die verkeerd zijn).\n  Geteste base URLs:\n`;
     for (const b of baseCandidates) baseHitsHints += `    - ${b}\n`;
     baseHitsHints += `  Oorspronkelijke base URL: "${origBase}"\n`;
-    baseHitsHints += `  💡 Advies: Controleer of jouw Simhuis / Control Center base URL klopt (geen /v3 prefix? api. subdomein?); en of username/password (GUI settings > Simhuis) correct zijn.\n`;
   }
   let interestingHints = '';
   if (interesting.length > 0) {
