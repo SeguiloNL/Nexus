@@ -272,71 +272,63 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   if (options.status) basePayload.status = options.status;
 
   const attempts: ListAttempt[] = [];
-  const MAX_ATTEMPTS = 120;
+  const MAX_ATTEMPTS = 60;
   let pogingen = 0;
   const overallDeadline = AbortSignal.timeout(30000);
   const allowHeadersByPath = new Map<string, string>();
-
   const authBasic = basicAuthHeader(creds.username, creds.password);
-  const authStylesFast: AuthStyle[] = [
-    { tag: 'basic-header', header: authBasic },
-    {
-      tag: 'custom-headers',
-      headers: {
-        'X-API-Username': creds.username,
-        'X-API-Password': creds.password,
-        ...(resellerId ? { 'X-Reseller-ID': String(resellerId) } : {}),
-      },
+
+  const basicAuthOnly: AuthStyle = { tag: 'basic-header', header: authBasic };
+  const noAuth: AuthStyle = { tag: 'custom-headers', headers: {} };
+  const xUserPassHeaders: AuthStyle = {
+    tag: 'custom-headers',
+    headers: {
+      'X-API-Username': creds.username,
+      'X-API-Password': creds.password,
+      ...(resellerId ? { 'X-Reseller-ID': String(resellerId) } : {}),
     },
-  ];
+  };
 
   const resellerFragment = resellerId ? encodeURIComponent(String(resellerId)) : null;
 
-  const listStylePaths: string[] = [
-    '/inventory',
-    '/inventory/sims',
-    '/inventory/list',
-    '/inventory/search',
-    '/subscriptions',
-    '/subscriptions/list',
-    '/subscriptions/search',
-    '/simcards',
-    '/sim-cards',
-    '/simcards/list',
-    '/pool/sims',
-    '/stock/sims',
-    '/available/sims',
-    '/available-sims',
-    '/inactive/sims',
-    '/iccids',
-    '/iccids/list',
-    '/devices',
-    '/devices/sims',
-    '/account/sims',
-    '/account/inventory',
-    '/customer/sims',
-    '/customer/inventory',
-    '/users/sims',
-    '/packages',
-    '/packages/sims',
-    '/offers',
-    '/offers/sims',
-    '/plans',
-    '/plans/sims',
-    '/tariffs/sims',
-    '/resellers/sims',
-    '/reseller/sims',
-    '/all/sims',
-    '/sims.json',
-    '/inventory.json',
-    '/subscriptions.json',
+  type Phase0Probe = {
+    label: string;
+    method: 'GET' | 'POST';
+    path: string;
+    auth: AuthStyle;
+    kind: 'query' | 'json-body' | 'form-body';
+    body?: Record<string, any>;
+    query?: Record<string, any>;
+  };
+
+  // FASE 0: 20 SNELLE probes (max 5 seconden) — alleen de KENNIS opdoen welke (path,method,auth) combinaties uberhaupt de app bereiken (geen Allow:OPTIONS 405).
+  // Dit is informatiever dan 100+ wilde pogingen.
+  const probes: Phase0Probe[] = [
+    { label: 'POST-login-json-noauth', method: 'POST', path: '/auth/login', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password } },
+    { label: 'POST-login-form-noauth', method: 'POST', path: '/auth/login', auth: noAuth, kind: 'form-body', body: { username: creds.username, password: creds.password } },
+    { label: 'POST-login-json-noauth', method: 'POST', path: '/login', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password } },
+    { label: 'POST-login-form-noauth', method: 'POST', path: '/login', auth: noAuth, kind: 'form-body', body: { username: creds.username, password: creds.password } },
+    { label: 'POST-token-json-noauth', method: 'POST', path: '/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
+    { label: 'GET-auth-me-basic', method: 'GET', path: '/auth/me', auth: basicAuthOnly, kind: 'query' },
+    { label: 'GET-me-basic', method: 'GET', path: '/me', auth: basicAuthOnly, kind: 'query' },
+    { label: 'POST-sims-empty-body-basic', method: 'POST', path: '/sims', auth: basicAuthOnly, kind: 'json-body', body: {} },
+    { label: 'POST-sims-page-limit-basic', method: 'POST', path: '/sims', auth: basicAuthOnly, kind: 'json-body', body: { page: 1, limit: 100 } },
+    { label: 'GET-sims-page-limit-basic', method: 'GET', path: '/sims', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 100 } },
+    { label: 'POST-sims-creds-body-noauth', method: 'POST', path: '/sims', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, page: 1, limit: 100 } },
+    { label: 'POST-sims-creds-body-xheaders', method: 'POST', path: '/sims', auth: xUserPassHeaders, kind: 'json-body', body: { page: 1, limit: 100 } },
+    { label: 'POST-sims-reseller-creds-body-basic', method: 'POST', path: '/sims', auth: basicAuthOnly, kind: 'json-body', body: { username: creds.username, password: creds.password, page: 1, limit: 100 } },
   ];
   if (resellerFragment) {
-    listStylePaths.unshift(
-      `/resellers/${resellerFragment}/sims`,
-      `/resellers/${resellerFragment}/inventory`,
-      `/resellers/${resellerFragment}/subscriptions`,
-      `/resellers/${resellerFragment}/simcards`,
+    probes.push(
+      { label: 'GET-reseller-sims-basic', method: 'GET', path: `/resellers/${resellerFragment}/sims`, auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 100 } },
+      { label: 'POST-reseller-sims-basic', method: 'POST', path: `/resellers/${resellerFragment}/sims`, auth: basicAuthOnly, kind: 'json-body', body: { page: 1, limit: 100 } },
+      { label: 'GET-reseller-sims-noauth-credsquery', method: 'GET', path: `/resellers/${resellerFragment}/sims`, auth: noAuth, kind: 'query', query: { username: creds.username, password: creds.password, page: 1, limit: 100 } },
+    );
+  } else {
+    probes.push(
+      { label: 'GET-root-basic', method: 'GET', path: '/', auth: basicAuthOnly, kind: 'query' },
+      { label: 'POST-root-basic-empty', method: 'POST', path: '/', auth: basicAuthOnly, kind: 'json-body', body: {} },
+      { label: 'POST-v3-basic-empty', method: 'POST', path: '/', auth: basicAuthOnly, kind: 'json-body', body: {} },
     );
   }
 
@@ -486,10 +478,150 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   const httpMethodsFast: Array<'POST' | 'GET'> = ['POST', 'GET'];
   const injectStylesFast: Array<'none' | 'creds'> = ['creds', 'none'];
 
-  // Fase 1 (snelle dekking): 38 paden × 2 auths × 2 injects × 2 methods × 2 kinds ≈ 240 worst-case → stoppen bij 120
-  // Vindt hopelijk snel een 200, 201 of 204 response met een array of data-lijst.
-  for (const path of listStylePaths) {
-    for (const auth of authStylesFast) {
+  type InterestingProbe = {
+    probe: Phase0Probe;
+    statusCode: number;
+    respBody: unknown;
+  };
+  const interesting: InterestingProbe[] = [];
+
+  // ===== FASE 0: Probes uitvoeren — snel (elk pad 1 keer met 1 specifieke payload/auth-combinatie) =====
+  for (const probe of probes) {
+    if (pogingen > MAX_ATTEMPTS || overallDeadline.aborted) break;
+    pogingen++;
+    const trace: ListAttempt = {
+      method: probe.method,
+      path: probe.path,
+      kind: probe.kind,
+      signature: probe.label,
+    };
+    try {
+      const headers: Record<string, string> = { Accept: 'application/json' };
+      if (probe.auth.tag === 'custom-headers') Object.assign(headers, probe.auth.headers);
+      else headers.Authorization = probe.auth.header;
+
+      let bodyInit: BodyInit | undefined;
+      const fullUrl = probe.method === 'GET'
+        ? makeFullUrl(probe.path, (probe.query ?? {}) as Record<string, any>)
+        : makeFullUrl(probe.path, null);
+
+      if (probe.method === 'POST' && probe.body) {
+        if (probe.kind === 'json-body') {
+          headers['Content-Type'] = 'application/json';
+          bodyInit = JSON.stringify(probe.body);
+        } else if (probe.kind === 'form-body') {
+          const sp = new URLSearchParams();
+          for (const [k, v] of Object.entries(probe.body)) {
+            if (v === null || v === undefined || v === '') continue;
+            sp.append(k, String(v));
+          }
+          headers['Content-Type'] = 'application/x-www-form-urlencoded;charset=UTF-8';
+          bodyInit = sp.toString();
+        }
+      }
+      const resp = await fetch(fullUrl, { method: probe.method, headers, body: bodyInit, signal: overallDeadline });
+      const ct = resp.headers.get('content-type') ?? '';
+      if (resp.status === 405) {
+        const allow = resp.headers.get('allow') ?? '';
+        if (allow) allowHeadersByPath.set(probe.path, allow);
+      }
+      const text = await resp.text();
+      const parsed = parseFetchResponse(text, ct);
+      if (resp.ok) {
+        const result = processResponse(parsed);
+        if (result) return result;
+        if (resp.status === 200 || resp.status === 204) {
+          interesting.push({ probe, statusCode: resp.status, respBody: parsed });
+          trace.statusCode = resp.status;
+          trace.errorClass = 'OK-200';
+          const snippet = typeof parsed === 'string' ? parsed.slice(0, 120) : JSON.stringify(parsed).slice(0, 120);
+          trace.error = `Body: ${snippet || '(leeg)'}`;
+          attempts.push(trace);
+          continue;
+        }
+      } else {
+        trace.statusCode = resp.status;
+        const snippet = (typeof parsed === 'string' ? parsed : JSON.stringify(parsed)).slice(0, 150);
+        const allowExtra = (resp.status === 405 && allowHeadersByPath.has(probe.path))
+          ? ` [Allow: ${allowHeadersByPath.get(probe.path)}]`
+          : '';
+        trace.error = `HTTP ${resp.status}${allowExtra}: ${snippet}`;
+        trace.errorClass = 'HTTPError';
+        attempts.push(trace);
+        if (resp.status !== 405 && resp.status !== 404 && resp.status < 500) {
+          // App-level response — houd deze bij als "interessant"
+          interesting.push({ probe, statusCode: resp.status, respBody: parsed });
+        }
+        if (resp.status === 403) throw new SimhuisApiError(403, parsed ?? {}, fullUrl, trace.error);
+        if (resp.status === 401) {
+          const parsedObj = parsed as Record<string, any> | null;
+          const code = parsedObj && typeof parsedObj === 'object' ? String(parsedObj.code ?? '') : '';
+          if (code === 'InvalidToken' || code === 'InvalidAuth') {
+            throw new SimhuisApiError(401, parsed ?? {}, fullUrl, trace.error);
+          }
+        }
+      }
+    } catch (err: any) {
+      trace.statusCode = err instanceof SimhuisApiError ? err.statusCode : (err?.name === 'TimeoutError' ? 0 : undefined);
+      trace.error = String(err?.message ?? err ?? 'Onbekende fout').slice(0, 200);
+      trace.errorClass = err instanceof SimhuisApiError ? 'SimhuisApiError' : (err?.name === 'TimeoutError' ? 'Timeout' : err?.constructor?.name ?? 'Error');
+      attempts.push(trace);
+      if (err instanceof SimhuisApiError) throw err;
+    }
+  }
+
+  // ===== FASE 1: Als we een INTERESSANTE (app-level) response vonden in fase 0 → verfijn die (pad,method,auth)-combo met payload varianten =====
+  if (interesting.length > 0) {
+    const byPath = new Map<string, InterestingProbe>();
+    for (const p of interesting) byPath.set(`${p.probe.path}::${p.probe.method}`, p);
+
+    for (const hit of byPath.values()) {
+      const path = hit.probe.path;
+      const method = hit.probe.method;
+      const probeAuth = hit.probe.auth;
+      const payloadVariants: Array<{ label: string; body?: Record<string, any>; query?: Record<string, any> }> = [
+        { label: 'p=1,l=200', body: method === 'POST' ? { ...basePayload, limit: 200 } : undefined, query: method === 'GET' ? { ...basePayload, limit: 200 } : undefined },
+        { label: 'p=1,l=200,creds', body: method === 'POST' ? { ...basePayload, limit: 200, username: creds.username, password: creds.password, ...(resellerId ? { reseller_id: resellerId } : {}) } : undefined, query: method === 'GET' ? { ...basePayload, limit: 200, username: creds.username, password: creds.password, ...(resellerId ? { reseller_id: resellerId } : {}) } : undefined },
+        { label: 'status=inactive', body: method === 'POST' ? { ...basePayload, limit: 200, status: 'inactive' } : undefined, query: method === 'GET' ? { ...basePayload, limit: 200, status: 'inactive' } : undefined },
+        { label: 'status=available', body: method === 'POST' ? { ...basePayload, limit: 200, status: 'available' } : undefined, query: method === 'GET' ? { ...basePayload, limit: 200, status: 'available' } : undefined },
+        { label: 'empty', body: method === 'POST' ? {} : undefined, query: method === 'GET' ? {} : undefined },
+      ];
+      const authVariants: AuthStyle[] = [probeAuth, basicAuthOnly, noAuth, xUserPassHeaders];
+      for (const payload of payloadVariants) {
+        for (const auth of authVariants) {
+          const result = await doDirectFetch({
+            fullUrl: method === 'GET'
+              ? makeFullUrl(path, (payload.query ?? {}) as Record<string, any>)
+              : makeFullUrl(path, null),
+            method,
+            contentType: method === 'POST' ? 'json' : 'none',
+            body: method === 'POST' ? (payload.body ?? {}) : null,
+            auth,
+            meta: { method, path, kind: method === 'GET' ? 'query' : 'json-body', signature: `fase=1;hit=${hit.probe.label};payload=${payload.label};auth=${auth.tag}` },
+            pathForAllowHeader: path,
+          });
+          if (result) return result;
+          if (pogingen > MAX_ATTEMPTS || overallDeadline.aborted) break;
+        }
+      }
+    }
+  } else {
+    // ===== FASE 1 B: Geen interessante response gevonden → classic fallback naar 22 kansrijke (reseller+inventory+subscription) paden met basic auth =====
+    const backupPaths: string[] = [
+      '/inventory', '/inventory/sims', '/inventory/list', '/inventory/search',
+      '/subscriptions', '/subscriptions/list', '/simcards', '/sim-cards',
+      '/pool/sims', '/stock/sims', '/available/sims', '/inactive/sims',
+      '/iccids', '/devices', '/account/sims', '/account/inventory',
+      '/customer/sims', '/packages', '/offers', '/plans', '/all/sims', '/sims.json',
+    ];
+    if (resellerFragment) {
+      backupPaths.unshift(
+        `/resellers/${resellerFragment}/sims`,
+        `/resellers/${resellerFragment}/inventory`,
+        `/resellers/${resellerFragment}/subscriptions`,
+      );
+    }
+    for (const path of backupPaths) {
       for (const inject of injectStylesFast) {
         for (const method of httpMethodsFast) {
           if (method === 'GET') {
@@ -499,8 +631,8 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
               method: 'GET',
               contentType: 'none',
               body: null,
-              auth,
-              meta: { method: 'GET', path, kind: 'query', signature: `auth=${auth.tag};inject=${inject}` },
+              auth: basicAuthOnly,
+              meta: { method: 'GET', path, kind: 'query', signature: `fase=1b;auth=basic;inject=${inject}` },
               pathForAllowHeader: path,
             });
             if (r) return r;
@@ -511,66 +643,14 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
               method,
               contentType: 'json',
               body,
-              auth,
-              meta: { method, path, kind: 'json-body', signature: `auth=${auth.tag};inject=${inject}` },
+              auth: basicAuthOnly,
+              meta: { method, path, kind: 'json-body', signature: `fase=1b;auth=basic;inject=${inject}` },
               pathForAllowHeader: path,
             });
             if (r1) return r1;
-            const r2 = await doDirectFetch({
-              fullUrl: makeFullUrl(path, null),
-              method,
-              contentType: 'form',
-              body,
-              auth,
-              meta: { method, path, kind: 'form-body', signature: `auth=${auth.tag};inject=${inject}` },
-              pathForAllowHeader: path,
-            });
-            if (r2) return r2;
           }
+          if (pogingen > MAX_ATTEMPTS || overallDeadline.aborted) break;
         }
-      }
-    }
-  }
-
-  // Fase 2 (laatste redmiddel): Bearer en ApiKey varianten op de 6 meest kansrijke paden
-  const fallbackAuths: AuthStyle[] = [
-    { tag: 'bearer-header', header: `Bearer ${creds.password}` },
-    { tag: 'api-key-auth-header', header: `ApiKey ${creds.username}:${creds.password}` },
-    { tag: 'apikey-header-x', header: `x-api-key ${creds.password}` },
-    {
-      tag: 'custom-headers',
-      headers: {
-        Authorization: authBasic,
-        ...(resellerId ? { 'X-Reseller-ID': String(resellerId) } : {}),
-      },
-    },
-  ];
-  const backupPaths = listStylePaths.slice(0, 6);
-  for (const path of backupPaths) {
-    for (const auth of fallbackAuths) {
-      for (const inject of injectStylesFast) {
-        const body = augmentBody(inject);
-        const r = await doDirectFetch({
-          fullUrl: makeFullUrl(path, null),
-          method: 'POST',
-          contentType: 'json',
-          body,
-          auth,
-          meta: { method: 'POST', path, kind: 'json-body', signature: `auth=${auth.tag};inject=${inject};fase=2` },
-          pathForAllowHeader: path,
-        });
-        if (r) return r;
-        const query = augmentQuery(inject);
-        const r2 = await doDirectFetch({
-          fullUrl: makeFullUrl(path, query),
-          method: 'GET',
-          contentType: 'none',
-          body: null,
-          auth,
-          meta: { method: 'GET', path, kind: 'query', signature: `auth=${auth.tag};inject=${inject};fase=2` },
-          pathForAllowHeader: path,
-        });
-        if (r2) return r2;
       }
     }
   }
@@ -585,15 +665,23 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   let summary = Array.from(seen.values())
     .map(({ attempt: a, count, sample }) => `${a.method} ${a.path} [${a.statusCode ?? 'err'}] (${a.kind}) ×${count} sig=${sample} → ${a.errorClass ?? ''}: ${a.error ?? ''}`)
     .join('\n');
-  summary = summary.slice(0, 5500);
+  summary = summary.slice(0, 7000);
   let allowHints = '';
   if (allowHeadersByPath.size > 0) {
-    allowHints = '\n\n[Allow-headers hint (405 responses toonden WELKE methodes toegestaan zijn)]:\n';
+    allowHints = '\n\n[Allow-headers hint (405 responses)]:\n';
     for (const [p, allow] of allowHeadersByPath.entries()) {
       allowHints += `  ${p}: Allow=${allow}\n`;
     }
   }
-  const msg = `[Simhuis] listSims mislukt na ${attempts.length}/${MAX_ATTEMPTS} pogingen.${allowHints}\nSamenvatting:\n${summary}`;
+  let interestingHints = '';
+  if (interesting.length > 0) {
+    interestingHints = `\n\n[🔥 FASE 0: ${interesting.length} APP-LEVEL RESPONSES GEVONDEN (geen 405! Daar zit de oplossing)]:\n`;
+    for (const hit of interesting.slice(0, 12)) {
+      const bodySnippet = (typeof hit.respBody === 'string' ? hit.respBody : JSON.stringify(hit.respBody)).slice(0, 200);
+      interestingHints += `  [status=${hit.statusCode}] ${hit.probe.label} → ${hit.probe.method} ${hit.probe.path} [${hit.probe.kind}] auth=${hit.probe.auth.tag}\n    body: ${bodySnippet}\n`;
+    }
+  }
+  const msg = `[Simhuis] listSims mislukt na ${attempts.length}/${MAX_ATTEMPTS} pogingen.${allowHints}${interestingHints}\nSamenvatting alle pogingen:\n${summary}`;
   throw new Error(msg);
 }
 
