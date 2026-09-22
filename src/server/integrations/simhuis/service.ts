@@ -5,11 +5,11 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   const r = (raw ?? {}) as Record<string, any>;
   const statusRaw = String(r.status ?? r.state ?? r.sim_status ?? r.simState ?? '').toLowerCase();
   let status: SimhuisSimStatus['status'] = statusRaw as any;
-  if (['active','enabled','online'].includes(statusRaw)) status = 'active';
-  else if (['inactive','disabled','offline'].includes(statusRaw)) status = 'inactive';
-  else if (['suspended','paused','barred'].includes(statusRaw)) status = 'suspended';
-  else if (['terminated','deleted','cancelled'].includes(statusRaw)) status = 'terminated';
-  else if (['provisioning','activating','pending'].includes(statusRaw)) status = 'provisioning';
+  if (['active', 'enabled', 'online'].includes(statusRaw)) status = 'active';
+  else if (['inactive', 'disabled', 'offline'].includes(statusRaw)) status = 'inactive';
+  else if (['suspended', 'paused', 'barred'].includes(statusRaw)) status = 'suspended';
+  else if (['terminated', 'deleted', 'cancelled'].includes(statusRaw)) status = 'terminated';
+  else if (['provisioning', 'activating', 'pending'].includes(statusRaw)) status = 'provisioning';
   return {
     iccid: String(r.iccid ?? r.sim_iccid ?? iccid),
     imsi: typeof r.imsi === 'string' ? r.imsi : null,
@@ -217,31 +217,6 @@ function extractTotal(raw: unknown, fallback: number): number | undefined {
   return fallback;
 }
 
-type ListAttempt = {
-  method: 'GET' | 'POST';
-  baseTag: string;
-  path: string;
-  kind: 'query' | 'json-body' | 'form-body';
-  signature?: string;
-  statusCode?: number;
-  error?: string;
-  errorClass?: string;
-};
-
-function objToFormEncoded(obj: Record<string, any>): URLSearchParams {
-  const params = new URLSearchParams();
-  const append = (key: string, v: any) => {
-    if (v === null || v === undefined || v === '') return;
-    if (typeof v === 'object') {
-      params.append(key, JSON.stringify(v));
-    } else {
-      params.append(key, String(v));
-    }
-  };
-  for (const k of Object.keys(obj)) append(k, obj[k]);
-  return params;
-}
-
 function basicAuthHeader(username: string, password: string): string {
   const combo = `${username}:${password}`;
   const encoded = typeof Buffer !== 'undefined'
@@ -258,6 +233,23 @@ function parseFetchResponse(respText: string, ct: string): unknown {
   return respText;
 }
 
+type ListAttempt = {
+  method: 'GET' | 'POST';
+  path: string;
+  kind: 'query' | 'json-body' | 'form-body';
+  signature?: string;
+  statusCode?: number;
+  error?: string;
+  errorClass?: string;
+};
+
+type AuthStyle =
+  | { tag: 'basic-header'; header: string }
+  | { tag: 'bearer-header'; header: string }
+  | { tag: 'apikey-header-x'; header: string }
+  | { tag: 'api-key-auth-header'; header: string }
+  | { tag: 'custom-headers'; headers: Record<string, string> };
+
 export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsResult> {
   const page = options.page ?? 1;
   const limit = options.limit ?? 100;
@@ -267,8 +259,11 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     throw new Error('[Simhuis] Niet geconfigureerd.');
   }
   const creds = (credsClient as any).creds as {
-    baseUrl: string; authMode: 'basic' | 'bearer';
-    username: string; password: string; resellerId?: string | null;
+    baseUrl: string;
+    authMode: 'basic' | 'bearer';
+    username: string;
+    password: string;
+    resellerId?: string | null;
   };
   const resellerId = options.resellerId ?? creds.resellerId;
 
@@ -276,92 +271,62 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   if (resellerId) basePayload.reseller_id = resellerId;
   if (options.status) basePayload.status = options.status;
 
-  const payloadVariantsRaw: Array<Record<string, any> | null | undefined> = [
+  const attempts: ListAttempt[] = [];
+  const MAX_ATTEMPTS = 300;
+  let pogingen = 0;
+  const overallDeadline = AbortSignal.timeout(45000);
+
+  const authBasic = basicAuthHeader(creds.username, creds.password);
+  const authStyles: AuthStyle[] = [
+    { tag: 'basic-header', header: authBasic },
+    {
+      tag: 'custom-headers',
+      headers: {
+        Authorization: authBasic,
+        ...(resellerId ? { 'X-Reseller-ID': String(resellerId) } : {}),
+      },
+    },
+    {
+      tag: 'custom-headers',
+      headers: {
+        'X-API-Username': creds.username,
+        'X-API-Password': creds.password,
+        ...(resellerId ? { 'X-Reseller-ID': String(resellerId) } : {}),
+      },
+    },
+    { tag: 'bearer-header', header: `Bearer ${creds.password}` },
+    { tag: 'apikey-header-x', header: `x-api-key ${creds.password}` },
+    { tag: 'api-key-auth-header', header: `ApiKey ${creds.username}:${creds.password}` },
+  ];
+
+  const resellerFragment = resellerId ? encodeURIComponent(String(resellerId)) : null;
+  const focusPaths: string[] = [
+    '/sims',
+    '/sims/list',
+    '/sims/search',
+    '/sims/inventory',
+    '/sims/all',
+    '/sims.json',
+  ];
+  if (resellerFragment) {
+    focusPaths.push(`/resellers/${resellerFragment}/sims`);
+  }
+
+  const compactPayloads: Record<string, any>[] = [
     {},
     { ...basePayload },
     { ...basePayload, per_page: limit, page_number: page },
     { ...basePayload, page: page, size: limit },
-    { limit: limit },
-    { page: page },
-    { pagination: { page: page, limit: limit } },
-    {
-      filter: options.status ? { status: options.status } : undefined,
-      resellerId: resellerId,
-      page: page,
-      limit: limit,
-    },
-    { action: 'list_sims', page: page, limit: limit },
   ];
-  const payloadVariants = payloadVariantsRaw.filter((b): b is Record<string, any> => b !== null && b !== undefined);
 
-  const baseSims = credsClient.endpoints.sims;
-  const resellerFragment = resellerId ? encodeURIComponent(String(resellerId)) : null;
-
-  const pathVariants: string[] = [
-    baseSims,
-    `${baseSims}/list`,
-    `${baseSims}/search`,
-    `${baseSims}/query`,
-    `${baseSims}/all`,
-    `${baseSims}/inventory`,
-    `${baseSims}.json`,
-    '/sims',
-    '/sims/list',
-    '/sims/search',
-    '/sims/query',
-    '/sims/all',
-    '/sims.json',
-    '/sim/list',
-    '/inventory/sims',
-    '/stock/sims',
-    '/sims/inventory',
-    '/available-sims',
-    '/account/sims',
-    '/accounts/sims',
-    '/sims/available',
-    '/sims/stock',
-  ];
-  if (resellerFragment) {
-    pathVariants.push(
-      `/resellers/${resellerFragment}/sims`,
-      `/reseller/${resellerFragment}/sims`,
-      `/resellers/${resellerFragment}/sims/list`,
-      `/resellers/${resellerFragment}/inventory/sims`,
-      `/partners/${resellerFragment}/sims`,
-    );
-  }
-
-  const baseUrlVariants: Array<{ tag: string; base: string }> = [
-    { tag: 'cfg', base: creds.baseUrl },
-  ];
-  try {
-    const u = new URL(creds.baseUrl);
-    const origin = u.origin;
-    const stripped = origin;
-    baseUrlVariants.push({ tag: 'no-v3', base: stripped });
-    baseUrlVariants.push({ tag: 'api-v3', base: `${origin}/api/v3` });
-    baseUrlVariants.push({ tag: 'api-v1', base: `${origin}/api/v1` });
-    baseUrlVariants.push({ tag: 'api', base: `${origin}/api` });
-    baseUrlVariants.push({ tag: 'rest-v3', base: `${origin}/rest/v3` });
-    baseUrlVariants.push({ tag: 'sim-api', base: `${origin}/sim-api/v3` });
-  } catch { /* ignore */ }
-
-  const attempts: ListAttempt[] = [];
-
-  const processResponse = (
-    respBodyRaw: unknown,
-  ): ListSimsResult | null => {
+  const processResponse = (respBodyRaw: unknown): ListSimsResult | null => {
     const rawArray = extractSimList(respBodyRaw);
     if (!rawArray || rawArray.length === 0) {
       const bodyAsObj = respBodyRaw as Record<string, any> | null;
-      if (
-        bodyAsObj && typeof bodyAsObj === 'object' &&
-        ('iccid' in bodyAsObj || 'sim_iccid' in bodyAsObj)
-      ) {
+      if (bodyAsObj && typeof bodyAsObj === 'object' && ('iccid' in bodyAsObj || 'sim_iccid' in bodyAsObj)) {
         const iccid = String(bodyAsObj.iccid ?? bodyAsObj.sim_iccid ?? '').trim();
         if (iccid) {
-          const items = [toSimStatus(bodyAsObj, iccid)];
-          return { items, total: 1, page: page, limit: limit, hasMore: false, raw: respBodyRaw };
+          return { items: [toSimStatus(bodyAsObj, iccid)], total: 1, page: page, limit: limit, hasMore: false, raw: respBodyRaw };
         }
       }
       return null;
@@ -375,48 +340,24 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     return { items, total, page: page, limit: limit, hasMore, raw: respBodyRaw };
   };
 
-  type AuthStyle =
-    | { tag: 'basic-header'; header: string }
-    | { tag: 'bearer-header'; header: string }
-    | { tag: 'apikey-header-x'; header: string }
-    | { tag: 'custom-headers'; headers: Record<string, string> }
-    | { tag: 'none' }
-    | { tag: 'api-key-auth-header'; header: string };
+  const makeFullUrl = (path: string, query: Record<string, any> | null): string => {
+    const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+    let url = creds.baseUrl.endsWith('/') ? `${creds.baseUrl}${cleanPath}` : `${creds.baseUrl}/${cleanPath}`;
+    if (query && Object.keys(query).length > 0) {
+      const params = new URLSearchParams();
+      for (const [k, v] of Object.entries(query)) {
+        if (v === undefined || v === null || v === '') continue;
+        params.append(k, String(v));
+      }
+      const qs = params.toString();
+      if (qs) url += `?${qs}`;
+    }
+    return url;
+  };
 
-  const authBasicHeader = basicAuthHeader(creds.username, creds.password);
-
-  const authStyles: AuthStyle[] = [
-    { tag: 'basic-header', header: authBasicHeader },
-    { tag: 'apikey-header-x', header: `x-api-key ${creds.password}` },
-    { tag: 'api-key-auth-header', header: `ApiKey ${creds.username}:${creds.password}` },
-    { tag: 'bearer-header', header: `Bearer ${creds.password}` },
-    {
-      tag: 'custom-headers',
-      headers: {
-        'X-API-Username': creds.username,
-        'X-API-Password': creds.password,
-      },
-    },
-  ];
-  if (resellerId) {
-    authStyles.push({
-      tag: 'custom-headers',
-      headers: {
-        Authorization: authBasicHeader,
-        'X-Reseller-ID': String(resellerId),
-      },
-    });
-  }
-
-  const augmentBody = (
-    b: Record<string, any> | null,
-    authInject: 'none' | 'creds' | 'reseller_creds',
-  ): Record<string, any> => {
+  const augmentBody = (b: Record<string, any> | null, inject: 'none' | 'creds'): Record<string, any> => {
     const base = b && Object.keys(b).length > 0 ? { ...b } : {};
-    if (authInject === 'creds') {
-      base.username = creds.username;
-      base.password = creds.password;
-    } else if (authInject === 'reseller_creds') {
+    if (inject === 'creds') {
       base.username = creds.username;
       base.password = creds.password;
       if (resellerId) base.reseller_id = resellerId;
@@ -424,23 +365,15 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     return base;
   };
 
-  const augmentQuery = (
-    q: Record<string, any> | null,
-    authInject: 'none' | 'creds' | 'reseller_creds',
-  ): Record<string, any> => {
+  const augmentQuery = (q: Record<string, any> | null, inject: 'none' | 'creds'): Record<string, any> => {
     const base = q && Object.keys(q).length > 0 ? { ...q } : {};
-    if (authInject === 'creds') {
-      base.username = creds.username;
-      base.password = creds.password;
-    } else if (authInject === 'reseller_creds') {
+    if (inject === 'creds') {
       base.username = creds.username;
       base.password = creds.password;
       if (resellerId) base.reseller_id = resellerId;
     }
     return base;
   };
-
-  const authInjectStyles: Array<'none' | 'creds' | 'reseller_creds'> = ['none', 'creds', 'reseller_creds'];
 
   const doDirectFetch = async (args: {
     fullUrl: string;
@@ -450,12 +383,20 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     auth: AuthStyle;
     meta: Omit<ListAttempt, 'statusCode' | 'error' | 'errorClass'>;
   }): Promise<ListSimsResult | null> => {
+    pogingen++;
     const trace: ListAttempt = { ...args.meta };
+    if (pogingen > MAX_ATTEMPTS || overallDeadline.aborted) {
+      trace.statusCode = -1;
+      trace.error = `Stop: ${pogingen}/${MAX_ATTEMPTS} pogingen of timeout`;
+      trace.errorClass = 'Aborted';
+      attempts.push(trace);
+      return null;
+    }
     try {
-      const headers: Record<string, string> = { 'Accept': 'application/json' };
+      const headers: Record<string, string> = { Accept: 'application/json' };
       if (args.auth.tag === 'basic-header' || args.auth.tag === 'bearer-header' ||
           args.auth.tag === 'apikey-header-x' || args.auth.tag === 'api-key-auth-header') {
-        headers['Authorization'] = args.auth.header;
+        headers.Authorization = args.auth.header;
       } else if (args.auth.tag === 'custom-headers') {
         Object.assign(headers, args.auth.headers);
       }
@@ -475,12 +416,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
           body = sp.toString();
         }
       }
-      const resp = await fetch(args.fullUrl, {
-        method: args.method,
-        headers,
-        body,
-        signal: AbortSignal.timeout(15000),
-      });
+      const resp = await fetch(args.fullUrl, { method: args.method, headers, body, signal: overallDeadline });
       const ct = resp.headers.get('content-type') ?? '';
       const text = await resp.text();
       const parsed = parseFetchResponse(text, ct);
@@ -492,136 +428,85 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         }
       } else {
         trace.statusCode = resp.status;
-        const snippet = (typeof parsed === 'string' ? parsed : JSON.stringify(parsed)).slice(0, 120);
-        trace.error = `HTTP ${resp.status} ${snippet ? `: ${snippet}` : ''}`;
+        const snippet = (typeof parsed === 'string' ? parsed : JSON.stringify(parsed)).slice(0, 150);
+        trace.error = `HTTP ${resp.status}${snippet ? `: ${snippet}` : ''}`;
         trace.errorClass = 'HTTPError';
         attempts.push(trace);
-        if (resp.status === 401) {
-          const parsedObj = parsed as Record<string, any> | null;
-          const code = parsedObj && typeof parsedObj === 'object' ? String(parsedObj.code ?? parsedObj.error_code ?? '') : '';
-          if (code === 'InvalidToken' || code === 'InvalidAuth' || code === 'Unauthorized') {
-            throw new SimhuisApiError(resp.status, parsed ?? {}, args.fullUrl, trace.error);
-          }
-        } else if (resp.status === 403) {
-          throw new SimhuisApiError(resp.status, parsed ?? {}, args.fullUrl, trace.error);
+        if (resp.status === 403) throw new SimhuisApiError(403, parsed ?? {}, args.fullUrl, trace.error);
+        const parsedObj = parsed as Record<string, any> | null;
+        const code = parsedObj && typeof parsedObj === 'object' ? String(parsedObj.code ?? parsedObj.error_code ?? '') : '';
+        if (resp.status === 401 && (code === 'InvalidToken' || code === 'InvalidAuth' || code === 'Unauthorized')) {
+          throw new SimhuisApiError(401, parsed ?? {}, args.fullUrl, trace.error);
         }
         return null;
       }
     } catch (err: any) {
-      trace.statusCode = err instanceof SimhuisApiError ? err.statusCode : undefined;
+      trace.statusCode = err instanceof SimhuisApiError ? err.statusCode : (err?.name === 'TimeoutError' ? 0 : undefined);
       trace.error = String(err?.message ?? err ?? 'Onbekende fout').slice(0, 200);
-      trace.errorClass = err instanceof SimhuisApiError ? 'SimhuisApiError' : err?.constructor?.name ?? 'Error';
+      trace.errorClass = err instanceof SimhuisApiError ? 'SimhuisApiError' : (err?.name === 'TimeoutError' ? 'Timeout' : err?.constructor?.name ?? 'Error');
       attempts.push(trace);
-      if (err instanceof SimhuisApiError) {
-        if (err.statusCode === 403) throw err;
-        if (err.statusCode === 401) {
-          const rb = err.responseBody as any;
-          const code = rb && typeof rb === 'object' ? String(rb.code ?? rb.error_code ?? '') : '';
-          if (code !== 'InvalidCredentials') throw err;
-        }
-      }
+      if (err instanceof SimhuisApiError) throw err;
+      if (err?.name === 'TimeoutError') return null;
       return null;
     }
     return null;
   };
 
-  const makeFullUrl = (base: string, path: string, query: Record<string, any> | null): string => {
-    const cleanPath = path.startsWith('/') ? path.slice(1) : path;
-    let url = base.endsWith('/') ? `${base}${cleanPath}` : `${base}/${cleanPath}`;
-    if (query && Object.keys(query).length > 0) {
-      const params = new URLSearchParams();
-      for (const [k, v] of Object.entries(query)) {
-        if (v === undefined || v === null || v === '') continue;
-        params.append(k, String(v));
-      }
-      const qs = params.toString();
-      if (qs) url += `?${qs}`;
-    }
-    return url;
-  };
+  const injectStyles: Array<'none' | 'creds'> = ['creds', 'none'];
 
-  for (const baseInfo of baseUrlVariants) {
-    for (const path of pathVariants) {
-      for (const auth of authStyles) {
-        for (const inject of authInjectStyles) {
-          for (const b of payloadVariants) {
-            const bodyHasKeys = Object.keys(b).length > 0 || inject !== 'none';
-            const body = augmentBody(bodyHasKeys ? b : null, inject);
-            const r1 = await doDirectFetch({
-              fullUrl: makeFullUrl(baseInfo.base, path, null),
-              method: 'POST',
-              contentType: 'json',
-              body,
-              auth,
-              meta: { method: 'POST', baseTag: baseInfo.tag, path, kind: 'json-body', signature: `auth=${auth.tag};inject=${inject};payload=${Object.keys(b).sort().join(',') || 'empty'}` },
-            });
-            if (r1) return r1;
-            const r2 = await doDirectFetch({
-              fullUrl: makeFullUrl(baseInfo.base, path, null),
-              method: 'POST',
-              contentType: 'form',
-              body,
-              auth,
-              meta: { method: 'POST', baseTag: baseInfo.tag, path, kind: 'form-body', signature: `auth=${auth.tag};inject=${inject};payload=${Object.keys(b).sort().join(',') || 'empty'}` },
-            });
-            if (r2) return r2;
-          }
-          for (const q of payloadVariants) {
-            const query = augmentQuery(q, inject);
-            const r = await doDirectFetch({
-              fullUrl: makeFullUrl(baseInfo.base, path, query),
-              method: 'GET',
-              contentType: 'none',
-              body: null,
-              auth,
-              meta: { method: 'GET', baseTag: baseInfo.tag, path, kind: 'query', signature: `auth=${auth.tag};inject=${inject};payload=${Object.keys(q).sort().join(',') || 'empty'}` },
-            });
-            if (r) return r;
-          }
+  // Priority: auth style met credentials geinjecteerd IN DE BODY (meest kansrijk ivm InvalidCredentials)
+  for (const path of focusPaths) {
+    for (const auth of authStyles) {
+      for (const inject of injectStyles) {
+        for (const b of compactPayloads) {
+          const body = augmentBody(b, inject);
+          const r1 = await doDirectFetch({
+            fullUrl: makeFullUrl(path, null),
+            method: 'POST',
+            contentType: 'json',
+            body,
+            auth,
+            meta: { method: 'POST', path, kind: 'json-body', signature: `auth=${auth.tag};inject=${inject};p=${Object.keys(b).length}` },
+          });
+          if (r1) return r1;
+          const r2 = await doDirectFetch({
+            fullUrl: makeFullUrl(path, null),
+            method: 'POST',
+            contentType: 'form',
+            body,
+            auth,
+            meta: { method: 'POST', path, kind: 'form-body', signature: `auth=${auth.tag};inject=${inject};p=${Object.keys(b).length}` },
+          });
+          if (r2) return r2;
         }
-      }
-    }
-    const rpcPaths = ['/jsonrpc', '/rpc', '/api', '/'];
-    for (const auth of authStyles.slice(0, 2)) {
-      for (const rpcPath of rpcPaths) {
-        const rpcBody = { jsonrpc: '2.0', method: 'sims.list', params: augmentBody(basePayload, 'creds'), id: 1 };
-        const r1 = await doDirectFetch({
-          fullUrl: makeFullUrl(baseInfo.base, rpcPath, null),
-          method: 'POST',
-          contentType: 'json',
-          body: rpcBody,
-          auth,
-          meta: { method: 'POST', baseTag: baseInfo.tag, path: rpcPath, kind: 'json-body', signature: `auth=${auth.tag};jsonrpc:sims.list` },
-        });
-        if (r1) return r1;
-        const r2 = await doDirectFetch({
-          fullUrl: makeFullUrl(baseInfo.base, rpcPath, augmentQuery({ action: 'list_sims' }, 'creds')),
-          method: 'GET',
-          contentType: 'none',
-          body: null,
-          auth,
-          meta: { method: 'GET', baseTag: baseInfo.tag, path: rpcPath, kind: 'query', signature: `auth=${auth.tag};action:list_sims` },
-        });
-        if (r2) return r2;
+        for (const q of compactPayloads) {
+          const query = augmentQuery(q, inject);
+          const r = await doDirectFetch({
+            fullUrl: makeFullUrl(path, query),
+            method: 'GET',
+            contentType: 'none',
+            body: null,
+            auth,
+            meta: { method: 'GET', path, kind: 'query', signature: `auth=${auth.tag};inject=${inject};p=${Object.keys(q).length}` },
+          });
+          if (r) return r;
+        }
       }
     }
   }
 
   const seen = new Map<string, { attempt: ListAttempt; count: number; sample: string }>();
   for (const a of attempts) {
-    const key = `${a.method} ${a.baseTag}::${a.path} [${a.statusCode ?? 'err'}] (${a.kind})`;
+    const key = `${a.method}::${a.path} [${a.statusCode ?? 'err'}] (${a.kind})`;
     const cur = seen.get(key);
-    if (cur) {
-      cur.count++;
-    } else {
-      seen.set(key, { attempt: a, count: 1, sample: a.signature ?? '' });
-    }
+    if (cur) cur.count++;
+    else seen.set(key, { attempt: a, count: 1, sample: a.signature ?? '' });
   }
   let summary = Array.from(seen.values())
-    .map(({ attempt: a, count, sample }) => `${a.method} ${a.path} (base=${a.baseTag}) [${a.statusCode ?? 'err'}] (${a.kind}) ×${count} sig=${sample} → ${a.errorClass ?? ''}: ${a.error ?? ''}`)
+    .map(({ attempt: a, count, sample }) => `${a.method} ${a.path} [${a.statusCode ?? 'err'}] (${a.kind}) ×${count} sig=${sample} → ${a.errorClass ?? ''}: ${a.error ?? ''}`)
     .join('\n');
-  summary = summary.slice(0, 9000);
-  const msg = `[Simhuis] listSims failed: ${attempts.length} pogingen, geen succes. Samenvatting:\n${summary}`;
+  summary = summary.slice(0, 6000);
+  const msg = `[Simhuis] listSims mislukt na ${attempts.length}/${MAX_ATTEMPTS} pogingen. Samenvatting:\n${summary}`;
   throw new Error(msg);
 }
 

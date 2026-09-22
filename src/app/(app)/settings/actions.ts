@@ -304,18 +304,23 @@ export interface SimSyncActionResult {
 }
 
 export async function syncSimhuisSimsAction(): Promise<SimSyncActionResult> {
-  const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "sim");
   try {
+    const user = await getCurrentUser();
+    requirePermission(user.role, "edit", "sim");
     const r = await syncAvailableSimsFromSimhuis({ userId: user.id, userRole: user.role });
+    const ok = r.totalInSimhuis === 0
+      ? false
+      : (r.errors < r.eligibleInSimhuis || r.created > 0 || r.updated > 0);
     const summary =
-      `SIM-voorraad bijgewerkt. Aangemaakt: ${r.created}, bijgewerkt: ${r.updated}, overgeslagen: ${r.skipped}. ` +
-      `Totaal in Simhuis: ${r.totalInSimhuis}, in aanmerking genomen: ${r.eligibleInSimhuis}. ` +
-      `Fouten: ${r.errors}. Duur: ${r.durationMs}ms.`;
+      r.totalInSimhuis === 0
+        ? `Geen SIMs gevonden in Simhuis (list endpoint vond geen records). Controleer of jouw account SIM-inventaris heeft, of lees de foutmelding in de server logs. Totaal: ${r.totalInSimhuis}, Gekwalificeerd: ${r.eligibleInSimhuis}. Duur: ${r.durationMs}ms.`
+        : `SIM-voorraad bijgewerkt. Aangemaakt: ${r.created}, bijgewerkt: ${r.updated}, overgeslagen: ${r.skipped}. ` +
+          `Totaal in Simhuis: ${r.totalInSimhuis}, in aanmerking genomen: ${r.eligibleInSimhuis}. ` +
+          `Fouten: ${r.errors}. Duur: ${r.durationMs}ms.`;
     revalidatePath("/sims");
     revalidatePath("/settings");
     return {
-      ok: r.errors < r.eligibleInSimhuis || r.created > 0 || r.updated > 0,
+      ok,
       message: summary,
       ...r,
     };

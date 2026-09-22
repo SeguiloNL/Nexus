@@ -93,10 +93,26 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
   };
 
   const handleSyncSims = () => {
-    setSyncResult(null);
+    setSyncResult({
+      ok: true,
+      message: "Sync wordt gestart… Simhuis SIM-voorraad wordt opgehaald en verwerkt.",
+    });
     startSyncTransition(async () => {
-      const result = await syncSimhuisSimsAction();
-      setSyncResult(result);
+      try {
+        const result = await syncSimhuisSimsAction();
+        setSyncResult(result);
+      } catch (err: any) {
+        setSyncResult({
+          ok: false,
+          message:
+            err instanceof Error
+              ? `Sync-fout: ${err.message}`
+              : "Sync Simhuis SIM-voorraad is onverwachts gestopt. Probeer het opnieuw of controleer de server-logboeken.",
+          errorMessages: [
+            err instanceof Error ? String(err.message) : String(err ?? "Onbekende fout"),
+          ].filter(Boolean) as string[],
+        });
+      }
     });
   };
 
