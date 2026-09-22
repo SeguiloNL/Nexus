@@ -356,19 +356,59 @@ class SimhuisClientSingleton {
     if (!client) {
       return { ok: false, error: "Simhuis niet geconfigureerd (geen credentials in DB of env)" };
     }
+    const anyClient = client as any;
+    const creds = anyClient.creds as SimhuisCredentials;
+    const authMode = creds.authMode ?? "basic";
     const started = Date.now();
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(new Error("timeout")), 8000);
       try {
-        const anyClient = client as any;
-        const endpoint = (client as any).creds?.endpoints?.login ?? "/auth/login";
-        const response = await anyClient.request(
-          endpoint,
-          { method: "GET", signal: controller.signal, authBypass: true }
-        );
-        const elapsed = Date.now() - started;
-        return { ok: true, status: 200, latencyMs: elapsed, endpoint: `GET ${endpoint}` };
+        let lastStatus = 200;
+        if (authMode === "bearer") {
+          const endpoint = creds.endpoints.login ?? "/auth/login";
+          try {
+            await client.request(endpoint, {
+              method: "POST",
+              body: { username: creds.username, password: creds.password },
+              authBypass: true,
+              signal: controller.signal,
+            });
+          } catch (bearerErr: any) {
+            if (bearerErr instanceof SimhuisApiError) {
+              lastStatus = bearerErr.statusCode;
+              if (bearerErr.statusCode >= 400 && bearerErr.statusCode < 500) {
+                throw bearerErr;
+              }
+            } else {
+              throw bearerErr;
+            }
+          }
+          const elapsed = Date.now() - started;
+          return { ok: true, status: lastStatus, latencyMs: elapsed, endpoint: `POST ${endpoint}` };
+        } else {
+          const endpoint = creds.endpoints.sims ?? "/sims";
+          let gotNonAuthError = false;
+          try {
+            await client.request(endpoint, {
+              method: "GET",
+              query: { limit: 1 },
+              signal: controller.signal,
+            });
+          } catch (basicErr: any) {
+            if (basicErr instanceof SimhuisApiError) {
+              lastStatus = basicErr.statusCode;
+              gotNonAuthError = lastStatus !== 401 && lastStatus !== 403;
+              if (!gotNonAuthError) {
+                throw basicErr;
+              }
+            } else {
+              throw basicErr;
+            }
+          }
+          const elapsed = Date.now() - started;
+          return { ok: true, status: lastStatus, latencyMs: elapsed, endpoint: `GET ${endpoint}` };
+        }
       } finally {
         clearTimeout(timeout);
       }
