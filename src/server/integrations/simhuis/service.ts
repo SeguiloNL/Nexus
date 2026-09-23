@@ -44,126 +44,446 @@ async function doRequest<T = unknown>(
   return unwrap<T>(await client.request<T>(path, options));
 }
 
-export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
-  const client = (await simhuisClient.getClient())!;
-  const paths = [
-    `${client.endpoints.sims}/${encodeURIComponent(iccid)}`,
-    `${client.endpoints.sims}?iccid=${encodeURIComponent(iccid)}`,
-    `/sim/${encodeURIComponent(iccid)}`,
-  ];
-  let lastErr: unknown = null;
-  for (const path of paths) {
-    try {
-      const resp = await doRequest<unknown>(path, { method: 'GET' });
-      return toSimStatus(resp, iccid);
-    } catch (err) {
-      lastErr = err;
-      if (err instanceof SimhuisApiError) {
-        if (err.statusCode === 404 || err.statusCode === 405) continue;
+// === Gedeelde WAF-bypass & auth utilities (gebruikt door getSimStatus/activateSim/deactivateSim) ===
+const PER_SIM_WAF_HEADERS: Record<string, string> = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'en-US,en;q=0.9,nl;q=0.8',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Cache-Control': 'no-cache',
+  'Pragma': 'no-cache',
+  'Origin': 'https://apicontrolcenter.com',
+  'Referer': 'https://apicontrolcenter.com/',
+  'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+  'Sec-Ch-Ua-Mobile': '?0',
+  'Sec-Ch-Ua-Platform': '"Windows"',
+  'Sec-Fetch-Dest': 'empty',
+  'Sec-Fetch-Mode': 'cors',
+  'Sec-Fetch-Site': 'same-origin',
+  'X-Requested-With': 'XMLHttpRequest',
+  'Connection': 'keep-alive',
+};
+
+type PerSimAuth =
+  | { tag: 'basic-header'; header: string }
+  | { tag: 'creds-body'; username: string; password: string; resellerId?: string | null }
+  | { tag: 'creds-query'; username: string; password: string; resellerId?: string | null }
+  | { tag: 'x-custom-headers'; username: string; password: string; resellerId?: string | null };
+
+type PerSimAttemptResult =
+  | { tag: 'ok'; body: unknown; statusCode: number }
+  | { tag: 'skip'; statusCode: number; error?: string }
+  | { tag: 'error'; statusCode: number; error: string; raw?: unknown };
+
+async function getSimhuisCreds(): Promise<{
+  baseUrl: string;
+  username: string;
+  password: string;
+  resellerId?: string | null;
+  endpoints: { sims: string; simActivate: string; simDeactivate: string };
+}> {
+  const anyClient = await simhuisClient.getClient();
+  if (!anyClient) {
+    throw new Error('[Simhuis] Niet geconfigureerd (username/password ontbreken).');
+  }
+  const creds = (anyClient as unknown as {
+    creds: {
+      baseUrl: string;
+      username: string;
+      password: string;
+      resellerId?: string | null;
+      endpoints: { sims: string; simActivate: string; simDeactivate: string };
+    };
+  }).creds;
+  return creds;
+}
+
+function makePerSimFullUrl(baseUrl: string, path: string, query: Record<string, any> | null): string {
+  const cleanBase = baseUrl.replace(/\/+$/, '');
+  const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+  let u = `${cleanBase}/${cleanPath}`;
+  if (query && Object.keys(query).length > 0) {
+    const sp = new URLSearchParams();
+    for (const [k, v] of Object.entries(query)) {
+      if (v === null || v === undefined || v === '') continue;
+      sp.append(k, String(v));
+    }
+    const qs = sp.toString();
+    if (qs) u += `?${qs}`;
+  }
+  return u;
+}
+
+async function doPerSimFetch(args: {
+  fullUrl: string;
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH';
+  contentType: 'json' | 'form' | 'none';
+  body: Record<string, any> | null;
+  auth: PerSimAuth;
+  timeoutMs?: number;
+}): Promise<PerSimAttemptResult> {
+  const effectiveTimeoutMs = args.timeoutMs ?? 20_000;
+  const signal = (AbortSignal as any).timeout ? (AbortSignal as any).timeout(effectiveTimeoutMs) : undefined;
+  const headers: Record<string, string> = { ...PER_SIM_WAF_HEADERS };
+  if (args.auth.tag === 'basic-header') {
+    headers.Authorization = args.auth.header;
+  } else if (args.auth.tag === 'x-custom-headers') {
+    headers['X-API-Username'] = args.auth.username;
+    headers['X-API-Password'] = args.auth.password;
+    if (args.auth.resellerId) headers['X-Reseller-ID'] = String(args.auth.resellerId);
+  }
+
+  let bodyInit: BodyInit | undefined;
+  const mergedBody: Record<string, any> | null = args.body ? { ...args.body } : null;
+  if (args.auth.tag === 'creds-body' && mergedBody) {
+    mergedBody.username = args.auth.username;
+    mergedBody.password = args.auth.password;
+    if (args.auth.resellerId) mergedBody.reseller_id = args.auth.resellerId;
+  }
+  if ((args.method === 'POST' || args.method === 'PUT' || args.method === 'PATCH') && mergedBody) {
+    if (args.contentType === 'json') {
+      headers['Content-Type'] = 'application/json';
+      bodyInit = JSON.stringify(mergedBody);
+    } else if (args.contentType === 'form') {
+      const sp = new URLSearchParams();
+      for (const [k, v] of Object.entries(mergedBody)) {
+        if (v === null || v === undefined || v === '') continue;
+        if (typeof v === 'object') sp.append(k, JSON.stringify(v));
+        else sp.append(k, String(v));
       }
-      throw err;
+      headers['Content-Type'] = 'application/x-www-form-urlencoded;charset=UTF-8';
+      bodyInit = sp.toString();
     }
   }
-  if (lastErr instanceof SimhuisApiError && lastErr.statusCode === 404) {
-    return { iccid, status: null, raw: null };
+
+  let finalUrl = args.fullUrl;
+  if (args.auth.tag === 'creds-query') {
+    const sep = finalUrl.includes('?') ? '&' : '?';
+    const sp = new URLSearchParams();
+    sp.append('username', args.auth.username);
+    sp.append('password', args.auth.password);
+    if (args.auth.resellerId) sp.append('reseller_id', String(args.auth.resellerId));
+    finalUrl = `${finalUrl}${sep}${sp.toString()}`;
   }
-  throw lastErr ?? new Error(`[Simhuis] getSimStatus failed for ICCID ${iccid}`);
+
+  try {
+    const resp = await fetch(finalUrl, { method: args.method, headers, body: bodyInit, signal });
+    const ct = resp.headers.get('content-type') ?? '';
+    const text = await resp.text();
+    const parsed = parseFetchResponse(text, ct);
+    if (resp.ok) {
+      return { tag: 'ok', body: parsed, statusCode: resp.status };
+    }
+    const snippet = (typeof parsed === 'string' ? parsed : JSON.stringify(parsed)).slice(0, 300);
+    // Skip: 404/405/400 zijn endpoints/auth-stijlen die niet bestaan → proberen we een andere
+    if (resp.status === 404 || resp.status === 405 || resp.status === 400) {
+      return { tag: 'skip', statusCode: resp.status, error: `HTTP ${resp.status}: ${snippet}` };
+    }
+    return { tag: 'error', statusCode: resp.status, error: `HTTP ${resp.status}: ${snippet}`, raw: parsed };
+  } catch (err: any) {
+    const msg = String(err?.message ?? err ?? 'Onbekende fout');
+    if (err?.name === 'TimeoutError' || /timeout/i.test(msg)) {
+      return { tag: 'skip', statusCode: 0, error: `Timeout na ${effectiveTimeoutMs}ms` };
+    }
+    return { tag: 'error', statusCode: 0, error: msg };
+  }
+}
+
+export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
+  const creds = await getSimhuisCreds();
+  const authBasic = basicAuthHeader(creds.username, creds.password);
+
+  const endpointVariants: Array<{ method: 'GET' | 'POST'; path: string; kind: 'query' | 'json-body'; body?: Record<string, any>; query?: Record<string, any> }> = [
+    { method: 'GET', path: `${creds.endpoints.sims}/${encodeURIComponent(iccid)}`, kind: 'query' },
+    { method: 'GET', path: creds.endpoints.sims, kind: 'query', query: { iccid } },
+    { method: 'POST', path: creds.endpoints.sims, kind: 'json-body', body: { iccid } },
+    { method: 'POST', path: `${creds.endpoints.sims}/search`, kind: 'json-body', body: { iccid } },
+    { method: 'GET', path: `/sim/${encodeURIComponent(iccid)}`, kind: 'query' },
+    { method: 'POST', path: `/sim/status`, kind: 'json-body', body: { iccid } },
+  ];
+
+  const authVariants: PerSimAuth[] = [
+    { tag: 'basic-header', header: authBasic },
+    { tag: 'creds-body', username: creds.username, password: creds.password, resellerId: creds.resellerId },
+    { tag: 'creds-query', username: creds.username, password: creds.password, resellerId: creds.resellerId },
+    { tag: 'x-custom-headers', username: creds.username, password: creds.password, resellerId: creds.resellerId },
+  ];
+
+  const contentTypeVariants: Array<'json' | 'form'> = ['json', 'form'];
+
+  let lastErrorResult: PerSimAttemptResult | null = null;
+  let lastSkipError: string | null = null;
+
+  for (const endpoint of endpointVariants) {
+    for (const auth of authVariants) {
+      for (const contentType of contentTypeVariants) {
+        if (endpoint.method === 'GET' && contentType === 'form') continue;
+        const fullUrl = makePerSimFullUrl(
+          creds.baseUrl,
+          endpoint.path,
+          endpoint.method === 'GET' ? (endpoint.query ?? {}) : null,
+        );
+        const body = endpoint.method === 'POST' ? (endpoint.body ?? {}) : null;
+        // Bij GET + creds-body slaan we over, GET heeft geen body
+        if (endpoint.method === 'GET' && auth.tag === 'creds-body') continue;
+        // Bij form body moet methode POST zijn
+        if (contentType === 'form' && endpoint.method === 'GET') continue;
+        const result = await doPerSimFetch({
+          fullUrl,
+          method: endpoint.method,
+          contentType: endpoint.method === 'POST' ? contentType : 'none',
+          body,
+          auth,
+        });
+        if (result.tag === 'ok') {
+          const status = toSimStatus(result.body, iccid);
+          if (status.status || status.imsi || status.msisdn || status.ip) {
+            return status;
+          }
+          return status;
+        } else if (result.tag === 'error') {
+          lastErrorResult = result;
+        } else if (result.tag === 'skip') {
+          lastSkipError = result.error ?? null;
+        }
+      }
+    }
+  }
+
+  if (lastErrorResult) {
+    const code = lastErrorResult.raw && typeof lastErrorResult.raw === 'object'
+      ? String((lastErrorResult.raw as Record<string, any>).code ?? '')
+      : '';
+    if (lastErrorResult.statusCode === 404 || code === 'NotFound') {
+      return { iccid, status: null, raw: null };
+    }
+    throw new SimhuisApiError(
+      lastErrorResult.statusCode || 500,
+      lastErrorResult.raw ?? null,
+      creds.baseUrl,
+      `[Simhuis] getSimStatus mislukt voor ICCID ${iccid}: ${lastErrorResult.error}`,
+    );
+  }
+  throw new Error(
+    `[Simhuis] getSimStatus mislukt voor ICCID ${iccid}. Alle endpoints gaven 404/405/400. Laatste skip: ${lastSkipError ?? '(onbekend)'}`,
+  );
 }
 
 export async function activateSim(options: ActivateSimOptions): Promise<SimhuisSimStatus> {
-  const client = (await simhuisClient.getClient())!;
-  const resellerId = options.resellerId ?? client.resellerId;
+  const creds = await getSimhuisCreds();
+  const authBasic = basicAuthHeader(creds.username, creds.password);
+  const resellerId = options.resellerId ?? creds.resellerId;
+
   const bodyBase: Record<string, unknown> = {};
   if (options.offerId) bodyBase.offer_id = options.offerId;
   if (options.planId) bodyBase.plan_id = options.planId;
   if (resellerId) bodyBase.reseller_id = resellerId;
   if (options.customerRef) bodyBase.customer_ref = options.customerRef;
-  if (options.iccid) bodyBase.iccid = options.iccid;
+  bodyBase.iccid = options.iccid;
 
-  const baseBodyWithIccid = { ...bodyBase, iccid: options.iccid };
-
-  const attempts = [
+  const endpointVariants: Array<{ method: 'POST' | 'PUT'; path: string; body: Record<string, unknown> }> = [
     {
-      path: `${client.endpoints.sims}/${encodeURIComponent(options.iccid)}${client.endpoints.simActivate}`,
-      method: 'POST' as const,
-      body: bodyBase,
+      method: 'POST',
+      path: `${creds.endpoints.sims}/${encodeURIComponent(options.iccid)}${creds.endpoints.simActivate}`,
+      body: { ...bodyBase, iccid: undefined },
     },
     {
-      path: `${client.endpoints.sims}/activate`,
-      method: 'POST' as const,
-      body: baseBodyWithIccid,
+      method: 'POST',
+      path: `${creds.endpoints.sims}${creds.endpoints.simActivate}`,
+      body: { ...bodyBase },
     },
     {
+      method: 'POST',
       path: `/sim/${encodeURIComponent(options.iccid)}/activate`,
-      method: 'POST' as const,
-      body: bodyBase,
+      body: { ...bodyBase, iccid: undefined },
     },
     {
-      path: `${client.endpoints.sims}/${encodeURIComponent(options.iccid)}`,
-      method: 'PUT' as const,
+      method: 'POST',
+      path: `/sim/activate`,
+      body: { ...bodyBase },
+    },
+    {
+      method: 'POST',
+      path: `/subscription/activate`,
+      body: { ...bodyBase },
+    },
+    {
+      method: 'PUT',
+      path: `${creds.endpoints.sims}/${encodeURIComponent(options.iccid)}`,
       body: { ...bodyBase, status: 'active' },
+    },
+    {
+      method: 'PUT',
+      path: `/sim/${encodeURIComponent(options.iccid)}`,
+      body: { ...bodyBase, iccid: undefined, status: 'active' },
     },
   ];
 
-  let lastErr: unknown = null;
-  for (const attempt of attempts) {
-    try {
-      const resp = await doRequest<unknown>(attempt.path, { method: attempt.method, body: attempt.body });
-      return toSimStatus(resp, options.iccid);
-    } catch (err) {
-      lastErr = err;
-      if (err instanceof SimhuisApiError) {
-        if (err.statusCode === 404 || err.statusCode === 405 || err.statusCode === 400) {
-          continue;
+  const authVariants: PerSimAuth[] = [
+    { tag: 'basic-header', header: authBasic },
+    { tag: 'creds-body', username: creds.username, password: creds.password, resellerId: creds.resellerId },
+    { tag: 'creds-query', username: creds.username, password: creds.password, resellerId: creds.resellerId },
+    { tag: 'x-custom-headers', username: creds.username, password: creds.password, resellerId: creds.resellerId },
+  ];
+
+  const contentTypeVariants: Array<'json' | 'form'> = ['json', 'form'];
+
+  let lastErrorResult: PerSimAttemptResult | null = null;
+  let lastSkipError: string | null = null;
+  let successRaw: unknown = null;
+  let successFound = false;
+
+  for (const endpoint of endpointVariants) {
+    for (const auth of authVariants) {
+      for (const contentType of contentTypeVariants) {
+        const fullUrl = makePerSimFullUrl(creds.baseUrl, endpoint.path, null);
+        const result = await doPerSimFetch({
+          fullUrl,
+          method: endpoint.method,
+          contentType,
+          body: endpoint.body,
+          auth,
+          timeoutMs: 30_000,
+        });
+        if (result.tag === 'ok') {
+          successFound = true;
+          successRaw = result.body;
+          const status = toSimStatus(result.body, options.iccid);
+          if (status.status || status.imsi || status.msisdn || status.activatedAt) {
+            return status;
+          }
+        } else if (result.tag === 'error') {
+          lastErrorResult = result;
+        } else if (result.tag === 'skip') {
+          lastSkipError = result.error ?? null;
         }
       }
-      throw err;
     }
   }
-  throw lastErr ?? new Error(`[Simhuis] activateSim failed for ICCID ${options.iccid}`);
+
+  if (successFound && successRaw !== null) {
+    const status = toSimStatus(successRaw, options.iccid);
+    if (!status.status) status.status = 'active';
+    return status;
+  }
+
+  if (lastErrorResult) {
+    throw new SimhuisApiError(
+      lastErrorResult.statusCode || 500,
+      lastErrorResult.raw ?? null,
+      creds.baseUrl,
+      `[Simhuis] activateSim mislukt voor ICCID ${options.iccid}: ${lastErrorResult.error}`,
+    );
+  }
+  throw new Error(
+    `[Simhuis] activateSim mislukt voor ICCID ${options.iccid}. Alle endpoints gaven 404/405/400. Laatste skip: ${lastSkipError ?? '(onbekend)'}`,
+  );
 }
 
 export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
-  const client = (await simhuisClient.getClient())!;
-  const attempts = [
+  const creds = await getSimhuisCreds();
+  const authBasic = basicAuthHeader(creds.username, creds.password);
+  const resellerId = creds.resellerId;
+  const bodyBase = { iccid };
+  if (resellerId) (bodyBase as any).reseller_id = resellerId;
+
+  const endpointVariants: Array<{ method: 'POST' | 'PUT'; path: string; body: Record<string, unknown> }> = [
     {
-      path: `${client.endpoints.sims}/${encodeURIComponent(iccid)}${client.endpoints.simDeactivate}`,
-      method: 'POST' as const,
-      body: { iccid },
+      method: 'POST',
+      path: `${creds.endpoints.sims}/${encodeURIComponent(iccid)}${creds.endpoints.simDeactivate}`,
+      body: { ...bodyBase, iccid: undefined },
     },
     {
-      path: `${client.endpoints.sims}/deactivate`,
-      method: 'POST' as const,
-      body: { iccid },
+      method: 'POST',
+      path: `${creds.endpoints.sims}${creds.endpoints.simDeactivate}`,
+      body: { ...bodyBase },
     },
     {
+      method: 'POST',
       path: `/sim/${encodeURIComponent(iccid)}/deactivate`,
-      method: 'POST' as const,
-      body: { iccid },
+      body: { ...bodyBase, iccid: undefined },
     },
     {
-      path: `${client.endpoints.sims}/${encodeURIComponent(iccid)}`,
-      method: 'PUT' as const,
-      body: { iccid, status: 'inactive' },
+      method: 'POST',
+      path: `/sim/deactivate`,
+      body: { ...bodyBase },
+    },
+    {
+      method: 'POST',
+      path: `/subscription/suspend`,
+      body: { ...bodyBase },
+    },
+    {
+      method: 'PUT',
+      path: `${creds.endpoints.sims}/${encodeURIComponent(iccid)}`,
+      body: { ...bodyBase, status: 'inactive' },
+    },
+    {
+      method: 'PUT',
+      path: `/sim/${encodeURIComponent(iccid)}`,
+      body: { ...bodyBase, iccid: undefined, status: 'inactive' },
     },
   ];
 
-  let lastErr: unknown = null;
-  for (const attempt of attempts) {
-    try {
-      const resp = await doRequest<unknown>(attempt.path, { method: attempt.method, body: attempt.body });
-      return toSimStatus(resp, iccid);
-    } catch (err) {
-      lastErr = err;
-      if (err instanceof SimhuisApiError) {
-        if (err.statusCode === 404 || err.statusCode === 405 || err.statusCode === 400) {
-          continue;
+  const authVariants: PerSimAuth[] = [
+    { tag: 'basic-header', header: authBasic },
+    { tag: 'creds-body', username: creds.username, password: creds.password, resellerId: creds.resellerId },
+    { tag: 'creds-query', username: creds.username, password: creds.password, resellerId: creds.resellerId },
+    { tag: 'x-custom-headers', username: creds.username, password: creds.password, resellerId: creds.resellerId },
+  ];
+
+  const contentTypeVariants: Array<'json' | 'form'> = ['json', 'form'];
+
+  let lastErrorResult: PerSimAttemptResult | null = null;
+  let lastSkipError: string | null = null;
+  let successRaw: unknown = null;
+  let successFound = false;
+
+  for (const endpoint of endpointVariants) {
+    for (const auth of authVariants) {
+      for (const contentType of contentTypeVariants) {
+        const fullUrl = makePerSimFullUrl(creds.baseUrl, endpoint.path, null);
+        const result = await doPerSimFetch({
+          fullUrl,
+          method: endpoint.method,
+          contentType,
+          body: endpoint.body,
+          auth,
+          timeoutMs: 30_000,
+        });
+        if (result.tag === 'ok') {
+          successFound = true;
+          successRaw = result.body;
+          const status = toSimStatus(result.body, iccid);
+          if (status.status || status.imsi || status.msisdn || status.ip !== undefined) {
+            return status;
+          }
+        } else if (result.tag === 'error') {
+          lastErrorResult = result;
+        } else if (result.tag === 'skip') {
+          lastSkipError = result.error ?? null;
         }
       }
-      throw err;
     }
   }
-  throw lastErr ?? new Error(`[Simhuis] deactivateSim failed for ICCID ${iccid}`);
+
+  if (successFound && successRaw !== null) {
+    const status = toSimStatus(successRaw, iccid);
+    if (!status.status) status.status = 'inactive';
+    return status;
+  }
+
+  if (lastErrorResult) {
+    throw new SimhuisApiError(
+      lastErrorResult.statusCode || 500,
+      lastErrorResult.raw ?? null,
+      creds.baseUrl,
+      `[Simhuis] deactivateSim mislukt voor ICCID ${iccid}: ${lastErrorResult.error}`,
+    );
+  }
+  throw new Error(
+    `[Simhuis] deactivateSim mislukt voor ICCID ${iccid}. Alle endpoints gaven 404/405/400. Laatste skip: ${lastSkipError ?? '(onbekend)'}`,
+  );
 }
 
 export interface ListSimsOptions {
