@@ -262,22 +262,30 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
 
   const prefixes = getSimhuisPathPrefixes(creds.endpoints.sims).slice(0, 4);
 
-  // BELANGRIJK: volgorde is gebaseerd op echte 405-hints uit de praktijk:
-  // GET /sims/{iccid} gaf 405 MethodNotAllowed ("GET is not allowed") → dus eerst POST op dezelfde URL proberen!
   type Template = { method: 'GET' | 'POST'; pathTpl: string; query?: Record<string, any>; body?: Record<string, any> };
   const templates: Template[] = [
-    // Hoogste prioriteit: /sims/{iccid} als POST (GET gaf 405)
+    // Hoogste prioriteit: details/status/info sub-endpoints (deze zijn meestal expliciet GET/POST bedoeld)
+    { method: 'POST', pathTpl: '/sims/{iccid}/details', body: { iccid } },
+    { method: 'POST', pathTpl: '/sims/{iccid}/info', body: { iccid } },
+    { method: 'POST', pathTpl: '/sims/{iccid}/status', body: { iccid } },
+    { method: 'POST', pathTpl: '/sim/{iccid}/details', body: { iccid } },
+    { method: 'POST', pathTpl: '/sim/{iccid}/status', body: { iccid } },
+    { method: 'GET', pathTpl: '/sims/{iccid}/details' },
+    { method: 'GET', pathTpl: '/sims/{iccid}/info' },
+    { method: 'GET', pathTpl: '/sims/{iccid}/status' },
+    // Daarna de "search" endpoints (altijd POST)
+    { method: 'POST', pathTpl: '/sims/search', body: { iccid } },
+    { method: 'POST', pathTpl: '/sims/filter', body: { iccid } },
+    { method: 'POST', pathTpl: '/sims/list', body: { iccid } },
+    { method: 'POST', pathTpl: '/sim/status', body: { iccid } },
+    { method: 'POST', pathTpl: '/sims/find', body: { iccid } },
+    { method: 'POST', pathTpl: '/sims/query', body: { iccid } },
+    { method: 'POST', pathTpl: '/sims', body: { iccid } },
+    { method: 'POST', pathTpl: '/subscriptions/{iccid}', body: { iccid } },
+    { method: 'POST', pathTpl: '/simcards/{iccid}', body: { iccid } },
+    // Als laatste: de simpele /sims/{iccid} (GET/POST/PUT/PATCH door 405 fallback)
     { method: 'POST', pathTpl: '/sims/{iccid}', body: { iccid } },
     { method: 'POST', pathTpl: '/sim/{iccid}', body: { iccid } },
-    { method: 'POST', pathTpl: '/sims', body: { iccid } },
-    { method: 'POST', pathTpl: '/simcards/{iccid}', body: { iccid } },
-    { method: 'POST', pathTpl: '/iccids/{iccid}', body: { iccid } },
-    // Daarna de search/status endpoints
-    { method: 'POST', pathTpl: '/sims/search', body: { iccid } },
-    { method: 'POST', pathTpl: '/sim/status', body: { iccid } },
-    { method: 'POST', pathTpl: '/subscriptions/{iccid}', body: { iccid } },
-    { method: 'POST', pathTpl: '/inventory/sims/{iccid}', body: { iccid } },
-    // Als laatste fallback: GET varianten (die gaven 405, maar wie weet voor andere prefixes)
     { method: 'GET', pathTpl: '/sims/{iccid}' },
     { method: 'GET', pathTpl: '/sim/{iccid}' },
     { method: 'GET', pathTpl: '/sims', query: { iccid } },
@@ -289,9 +297,16 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
 
   function alternativeMethodFor405(method: 'GET' | 'POST' | 'PUT' | 'PATCH'): 'GET' | 'POST' | 'PUT' | 'PATCH' {
     if (method === 'GET') return 'POST';
-    if (method === 'POST') return 'GET';
-    if (method === 'PUT') return 'POST';
-    return 'POST';
+    if (method === 'POST') return 'PUT';
+    if (method === 'PUT') return 'PATCH';
+    return 'GET';
+  }
+  const METHOD_CYCLE: Array<'GET' | 'POST' | 'PUT' | 'PATCH'> = ['GET', 'POST', 'PUT', 'PATCH'];
+  function allMethodsAfter(start: 'GET' | 'POST' | 'PUT' | 'PATCH'): Array<'GET' | 'POST' | 'PUT' | 'PATCH'> {
+    const idx = METHOD_CYCLE.indexOf(start);
+    const rest = METHOD_CYCLE.slice();
+    rest.splice(idx, 1);
+    return rest;
   }
 
   function pushRanked(meta: PerSimAttemptMeta, result: PerSimAttemptResult) {
@@ -359,13 +374,14 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
           pushRanked(meta, result);
           if (result.tag === 'error') lastErrorResult = result;
 
-          // === MAGIE: 405 MethodNotAllowed → direct de andere methode proberen op dezelfde URL! ===
+          // === MAGIE: 405 MethodNotAllowed → probeer ALLE andere HTTP-methodes op dezelfde URL! ===
           if (result.statusCode === 405) {
-            const altMethod = alternativeMethodFor405(tpl.method) as 'GET' | 'POST';
-            if (altMethod !== tpl.method && !(altMethod === 'GET' && auth.tag === 'creds-body')) {
+            const remaining = allMethodsAfter(tpl.method);
+            for (const altMethod of remaining) {
+              if (altMethod === 'GET' && auth.tag === 'creds-body') continue;
               const altContentType: 'json' | 'form' | 'none' = altMethod === 'GET' ? 'none' : 'json';
               const altQuery = altMethod === 'GET' ? { iccid, ...(tpl.query ?? {}) } : null;
-              const altBody = altMethod === 'POST' ? { iccid, ...(tpl.body ?? {}) } : null;
+              const altBody = altMethod === 'GET' ? null : { iccid, ...(tpl.body ?? {}) };
               const altFullUrl = makePerSimFullUrl(creds.baseUrl, endpointPath, altQuery);
               const altMeta: PerSimAttemptMeta = {
                 endpointPath,
@@ -392,6 +408,29 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
         }
       }
     }
+  }
+
+  // === Laatste redmiddel: probeer listSims met een ICCID-filter! ===
+  // We weten dat listSims Discovery een werkend POST endpoint heeft (listSims heeft al gebruikt), dus dat werkt)
+  try {
+    const listResult = await listSims({ status: undefined, page: 1, limit: 5 });
+    if (listResult && Array.isArray(listResult.items)) {
+      const match = listResult.items.find((s: SimhuisSimStatus) => s.iccid === iccid);
+      if (match) return match;
+    }
+  } catch {
+    // negeer; we geven de echte pogingen
+  }
+
+  // Probeer ten slotte nog een POST /sims (als list endpoint met filter in eenmalig 100 items om de sim te vinden
+  try {
+    const bigList = await listSims({ status: undefined, page: 1, limit: 100 });
+    if (bigList && Array.isArray(bigList.items)) {
+      const match = bigList.items.find((s: SimhuisSimStatus) => s.iccid === iccid);
+      if (match) return match;
+    }
+  } catch {
+    // negeer
   }
 
   const top = topRanked(3);
@@ -469,7 +508,15 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
   }
   function altMethodFor405(method: 'POST' | 'PUT' | 'PATCH'): 'POST' | 'PUT' | 'PATCH' {
     if (method === 'POST') return 'PUT';
+    if (method === 'PUT') return 'PATCH';
     return 'POST';
+  }
+  const ACTIVATE_METHODS: Array<'POST' | 'PUT' | 'PATCH'> = ['POST', 'PUT', 'PATCH'];
+  function allActivateMethodsAfter(start: 'POST' | 'PUT' | 'PATCH'): Array<'POST' | 'PUT' | 'PATCH'> {
+    const idx = ACTIVATE_METHODS.indexOf(start);
+    const rest = ACTIVATE_METHODS.slice();
+    rest.splice(idx, 1);
+    return rest;
   }
 
   // Eerst LEEGE prefix (geen /api/v1), omdat /sims/{iccid} zonder prefix al 405 gaf = endpoint bestaat!
@@ -505,10 +552,10 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
             if (result.tag === 'error') lastErrorResult = result;
           }
 
-          // 405 → direct andere methode proberen op dezelfde URL
+          // 405 → probeer ALLE resterende methodes (POST/PUT/PATCH) op dezelfde URL!
           if (result.statusCode === 405) {
-            const altMethod = altMethodFor405(tpl.method);
-            if (altMethod !== tpl.method) {
+            const remaining = allActivateMethodsAfter(tpl.method);
+            for (const altMethod of remaining) {
               const altMeta: PerSimAttemptMeta = { endpointPath, method: altMethod, authTag: toAuthTag(auth), contentType };
               const altResult = await doPerSimFetch({
                 fullUrl,
@@ -607,7 +654,15 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
   }
   function altMethodFor405(method: 'POST' | 'PUT' | 'PATCH'): 'POST' | 'PUT' | 'PATCH' {
     if (method === 'POST') return 'PUT';
+    if (method === 'PUT') return 'PATCH';
     return 'POST';
+  }
+  const ACTIVATE_METHODS: Array<'POST' | 'PUT' | 'PATCH'> = ['POST', 'PUT', 'PATCH'];
+  function allActivateMethodsAfter(start: 'POST' | 'PUT' | 'PATCH'): Array<'POST' | 'PUT' | 'PATCH'> {
+    const idx = ACTIVATE_METHODS.indexOf(start);
+    const rest = ACTIVATE_METHODS.slice();
+    rest.splice(idx, 1);
+    return rest;
   }
 
   // Eerst LEEGE prefix (geen /api/v1), omdat /sims/{iccid} zonder prefix al 405 gaf = endpoint bestaat!
