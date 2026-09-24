@@ -138,12 +138,16 @@ function toAuthTag(auth: PerSimAuth): string {
 
 function attemptRankScore(statusCode: number, error: string | null): number {
   if (statusCode === 401 || statusCode === 403) return 1000;
+  // 405 MethodNotAllowed = endpoint BESTAAT, alleen verkeerde HTTP-methode → zeer sterke hint!
+  if (statusCode === 405) return 950;
   if (statusCode === 422) return 900;
+  // 409 Conflict = endpoint bestaat en request werd verwerkt, maar business rule faalde → zeer sterk
+  if (statusCode === 409) return 850;
   if (statusCode === 400) return 800;
-  if (statusCode === 409) return 700;
-  if (statusCode === 404) return 300;
-  if (statusCode === 405) return 200;
-  if (statusCode >= 500) return 100;
+  // 5xx = endpoint en auth lijken OK, server fout → ook redelijk sterk
+  if (statusCode >= 500) return 600;
+  // 404 = endpoint bestaat NIET → zwakke hint
+  if (statusCode === 404) return 200;
   if (statusCode === 0) return 10;
   return 500;
 }
@@ -258,21 +262,37 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
 
   const prefixes = getSimhuisPathPrefixes(creds.endpoints.sims).slice(0, 4);
 
-  // Templates (zonder prefix): {method, pathTpl}
-  // pathTpl kan {iccid} placeholder bevatten
+  // BELANGRIJK: volgorde is gebaseerd op echte 405-hints uit de praktijk:
+  // GET /sims/{iccid} gaf 405 MethodNotAllowed ("GET is not allowed") → dus eerst POST op dezelfde URL proberen!
   type Template = { method: 'GET' | 'POST'; pathTpl: string; query?: Record<string, any>; body?: Record<string, any> };
   const templates: Template[] = [
+    // Hoogste prioriteit: /sims/{iccid} als POST (GET gaf 405)
+    { method: 'POST', pathTpl: '/sims/{iccid}', body: { iccid } },
+    { method: 'POST', pathTpl: '/sim/{iccid}', body: { iccid } },
+    { method: 'POST', pathTpl: '/sims', body: { iccid } },
+    { method: 'POST', pathTpl: '/simcards/{iccid}', body: { iccid } },
+    { method: 'POST', pathTpl: '/iccids/{iccid}', body: { iccid } },
+    // Daarna de search/status endpoints
+    { method: 'POST', pathTpl: '/sims/search', body: { iccid } },
+    { method: 'POST', pathTpl: '/sim/status', body: { iccid } },
+    { method: 'POST', pathTpl: '/subscriptions/{iccid}', body: { iccid } },
+    { method: 'POST', pathTpl: '/inventory/sims/{iccid}', body: { iccid } },
+    // Als laatste fallback: GET varianten (die gaven 405, maar wie weet voor andere prefixes)
     { method: 'GET', pathTpl: '/sims/{iccid}' },
     { method: 'GET', pathTpl: '/sim/{iccid}' },
     { method: 'GET', pathTpl: '/sims', query: { iccid } },
-    { method: 'POST', pathTpl: '/sims/search', body: { iccid } },
-    { method: 'POST', pathTpl: '/sim/status', body: { iccid } },
     { method: 'GET', pathTpl: '/simcards/{iccid}' },
     { method: 'GET', pathTpl: '/iccids/{iccid}' },
     { method: 'GET', pathTpl: '/inventory/sims/{iccid}' },
     { method: 'GET', pathTpl: '/subscriptions/{iccid}' },
-    { method: 'POST', pathTpl: '/sims', body: { iccid } },
   ];
+
+  function alternativeMethodFor405(method: 'GET' | 'POST' | 'PUT' | 'PATCH'): 'GET' | 'POST' | 'PUT' | 'PATCH' {
+    if (method === 'GET') return 'POST';
+    if (method === 'POST') return 'GET';
+    if (method === 'PUT') return 'POST';
+    return 'POST';
+  }
 
   function pushRanked(meta: PerSimAttemptMeta, result: PerSimAttemptResult) {
     if (result.tag === 'ok') return;
@@ -291,10 +311,16 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
 
   const allAuthVariants = [...authVariantsFirst, ...authVariantsThen];
 
-  for (const prefix of prefixes) {
+  // Eerst LEEGE prefix (geen /api/v1), omdat /sims/{iccid} zonder prefix al 405 gaf = endpoint bestaat!
+  const orderedPrefixes = [...prefixes].sort((a, b) => {
+    const aEmpty = a === '' ? 0 : 1;
+    const bEmpty = b === '' ? 0 : 1;
+    return aEmpty - bEmpty;
+  });
+
+  for (const prefix of orderedPrefixes) {
     for (const tpl of templates) {
       for (const auth of allAuthVariants) {
-        // Content type loops: GET → alleen 'none'; POST → eerst 'json', dan 'form' alleen als we nog geen hoge score hebben
         const contentTypes = tpl.method === 'GET'
           ? (['none'] as const)
           : (['json', 'form'] as const);
@@ -333,10 +359,35 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
           pushRanked(meta, result);
           if (result.tag === 'error') lastErrorResult = result;
 
-          // Als we een 401/403 of 400 krijgen: deze prefix/template is veelbelovend.
-          // Blijf op dezelfde prefix/template/method de resterende auth-stijlen en ctypes proberen.
-          if (result.statusCode === 401 || result.statusCode === 403) {
-            // Blijf loopen (automatisch).
+          // === MAGIE: 405 MethodNotAllowed → direct de andere methode proberen op dezelfde URL! ===
+          if (result.statusCode === 405) {
+            const altMethod = alternativeMethodFor405(tpl.method) as 'GET' | 'POST';
+            if (altMethod !== tpl.method && !(altMethod === 'GET' && auth.tag === 'creds-body')) {
+              const altContentType: 'json' | 'form' | 'none' = altMethod === 'GET' ? 'none' : 'json';
+              const altQuery = altMethod === 'GET' ? { iccid, ...(tpl.query ?? {}) } : null;
+              const altBody = altMethod === 'POST' ? { iccid, ...(tpl.body ?? {}) } : null;
+              const altFullUrl = makePerSimFullUrl(creds.baseUrl, endpointPath, altQuery);
+              const altMeta: PerSimAttemptMeta = {
+                endpointPath,
+                method: altMethod,
+                authTag: toAuthTag(auth),
+                contentType: altContentType,
+              };
+              const altResult = await doPerSimFetch({
+                fullUrl: altFullUrl,
+                method: altMethod,
+                contentType: altContentType,
+                body: altBody,
+                auth,
+                timeoutMs: 15_000,
+              });
+              if (altResult.tag === 'ok') {
+                const status = toSimStatus(altResult.body, iccid);
+                return status;
+              }
+              pushRanked(altMeta, altResult);
+              if (altResult.tag === 'error') lastErrorResult = altResult;
+            }
           }
         }
       }
@@ -416,8 +467,19 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
   function topRanked(n: number): RankedAttempt[] {
     return [...rankedAttempts].sort((a, b) => b.score - a.score).slice(0, n);
   }
+  function altMethodFor405(method: 'POST' | 'PUT' | 'PATCH'): 'POST' | 'PUT' | 'PATCH' {
+    if (method === 'POST') return 'PUT';
+    return 'POST';
+  }
 
-  for (const prefix of prefixes) {
+  // Eerst LEEGE prefix (geen /api/v1), omdat /sims/{iccid} zonder prefix al 405 gaf = endpoint bestaat!
+  const orderedPrefixes = [...prefixes].sort((a, b) => {
+    const aEmpty = a === '' ? 0 : 1;
+    const bEmpty = b === '' ? 0 : 1;
+    return aEmpty - bEmpty;
+  });
+
+  for (const prefix of orderedPrefixes) {
     for (const tpl of templates) {
       for (const auth of allAuthVariants) {
         const contentTypes: Array<'json' | 'form'> = ['json', 'form'];
@@ -441,6 +503,31 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
           } else {
             pushRanked(meta, result);
             if (result.tag === 'error') lastErrorResult = result;
+          }
+
+          // 405 → direct andere methode proberen op dezelfde URL
+          if (result.statusCode === 405) {
+            const altMethod = altMethodFor405(tpl.method);
+            if (altMethod !== tpl.method) {
+              const altMeta: PerSimAttemptMeta = { endpointPath, method: altMethod, authTag: toAuthTag(auth), contentType };
+              const altResult = await doPerSimFetch({
+                fullUrl,
+                method: altMethod,
+                contentType,
+                body: { ...tpl.body },
+                auth,
+                timeoutMs: 25_000,
+              });
+              if (altResult.tag === 'ok') {
+                successFound = true;
+                successRaw = altResult.body;
+                const status = toSimStatus(altResult.body, iccid);
+                if (status.status || status.imsi || status.msisdn || status.activatedAt) return status;
+              } else {
+                pushRanked(altMeta, altResult);
+                if (altResult.tag === 'error') lastErrorResult = altResult;
+              }
+            }
           }
         }
       }
@@ -507,7 +594,7 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
     { method: 'POST', pathTpl: '/sims/{iccid}/suspend', body: { ...bodyBase, iccid: undefined } },
     { method: 'POST', pathTpl: '/simcards/{iccid}/deactivate', body: { ...bodyBase, iccid: undefined } },
     { method: 'PUT', pathTpl: '/sims/{iccid}', body: { ...bodyBase, status: 'inactive' } },
-    { method: 'PATCH', pathTpl: '/sims/{iccid}', body: { iccid, status: 'inactive' } },
+    { method: 'PATCH', pathTpl: '/sims/{iccid}', body: { ...bodyBase, status: 'inactive' } },
   ];
 
   function pushRanked(meta: PerSimAttemptMeta, result: PerSimAttemptResult) {
@@ -518,8 +605,19 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
   function topRanked(n: number): RankedAttempt[] {
     return [...rankedAttempts].sort((a, b) => b.score - a.score).slice(0, n);
   }
+  function altMethodFor405(method: 'POST' | 'PUT' | 'PATCH'): 'POST' | 'PUT' | 'PATCH' {
+    if (method === 'POST') return 'PUT';
+    return 'POST';
+  }
 
-  for (const prefix of prefixes) {
+  // Eerst LEEGE prefix (geen /api/v1), omdat /sims/{iccid} zonder prefix al 405 gaf = endpoint bestaat!
+  const orderedPrefixes = [...prefixes].sort((a, b) => {
+    const aEmpty = a === '' ? 0 : 1;
+    const bEmpty = b === '' ? 0 : 1;
+    return aEmpty - bEmpty;
+  });
+
+  for (const prefix of orderedPrefixes) {
     for (const tpl of templates) {
       for (const auth of allAuthVariants) {
         const contentTypes: Array<'json' | 'form'> = ['json', 'form'];
@@ -543,6 +641,31 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
           } else {
             pushRanked(meta, result);
             if (result.tag === 'error') lastErrorResult = result;
+          }
+
+          // 405 → direct andere methode proberen op dezelfde URL
+          if (result.statusCode === 405) {
+            const altMethod = altMethodFor405(tpl.method);
+            if (altMethod !== tpl.method) {
+              const altMeta: PerSimAttemptMeta = { endpointPath, method: altMethod, authTag: toAuthTag(auth), contentType };
+              const altResult = await doPerSimFetch({
+                fullUrl,
+                method: altMethod,
+                contentType,
+                body: { ...tpl.body },
+                auth,
+                timeoutMs: 25_000,
+              });
+              if (altResult.tag === 'ok') {
+                successFound = true;
+                successRaw = altResult.body;
+                const status = toSimStatus(altResult.body, iccid);
+                if (status.status || status.imsi || status.msisdn || status.ip !== undefined) return status;
+              } else {
+                pushRanked(altMeta, altResult);
+                if (altResult.tag === 'error') lastErrorResult = altResult;
+              }
+            }
           }
         }
       }
