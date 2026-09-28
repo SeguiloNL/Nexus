@@ -211,6 +211,14 @@ function isLikelyMongoId(c: unknown): c is string {
   return typeof c === 'string' && c.trim().length >= 12 && /^[0-9a-f]{12,}$/i.test(c.trim());
 }
 
+function isLikelyUuid(s: unknown): s is string {
+  return typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.trim());
+}
+
+function isAccountIdShape(c: unknown): c is string {
+  return typeof c === 'string' && c.trim().length >= 8 && (isLikelyUuid(c) || isLikelyMongoId(c));
+}
+
 function _collectStrings(acc: string[], o: unknown, depth = 0): void {
   if (depth > 5 || o === null || o === undefined) return;
   if (typeof o === 'string') { acc.push(o); return; }
@@ -221,42 +229,71 @@ function _collectStrings(acc: string[], o: unknown, depth = 0): void {
 function extractAccountIdFromUserObj(userObj: unknown): string | null {
   if (!userObj || typeof userObj !== 'object') return null;
   const u = userObj as Record<string, any>;
-  // Prio 1: expliciete accountId / tenantId in permissions object / profile (RBAC-achtig)
-  const nestedPrio1: Record<string, any>[] = [u.permissions, u.profile, u.account, u.setup, u.meta, u.ztp];
+
+  // ✅ PRIO 1 (UIT LOGS BEVESTIGD!): permissions[] ARRAY. Elke element = permission: [{accountId: UUID, roles:[...]}
+  // permissions[0].accountId = 6ffd71bb-c164-525f-ac89-64d086177d52 (UUID VORM = DE ECHTE accountId!
+  if (Array.isArray(u.permissions)) {
+    for (const perm of u.permissions) {
+      if (!perm || typeof perm !== 'object') continue;
+      const a = (perm as any).accountId ?? (perm as any).account_id ?? (perm as any).tenantId ?? (perm as any).id;
+      if (isAccountIdShape(a)) return String(a).trim();
+      // fallback permissions mag ook {id} zijn zonder prefix
+      if (typeof a === 'string' && a.trim().length >= 8) return a.trim();
+    }
+  }
+
+  // PRIO 2: setup.currentAccountId (ingesteld in portal-sessie)
+  if (u.setup && typeof u.setup === 'object' && isAccountIdShape((u.setup as any).currentAccountId)) {
+    return String((u.setup as any).currentAccountId).trim();
+  }
+  if (u.setup && typeof u.setup === 'object' && typeof (u.setup as any).currentAccountId === 'string' && (u.setup as any).currentAccountId.trim().length >= 8) {
+    return (u.setup as any).currentAccountId.trim();
+  }
+
+  // PRIO 3: expliciete accountId / tenantId in profile / account / setup / meta / ztp
+  const nestedPrio3: Record<string, any>[] = [u.profile, u.account, u.setup, u.meta, u.ztp];
   const keysToScan = [
     'accountId', 'account_id', 'accountIDs', 'accountIds', 'accounts', 'account',
     'tenantId', 'tenant_id', 'tenants', 'tenant',
     'orgId', 'org', 'organizationId', 'customerId', 'resellerId',
   ];
-  for (const n of nestedPrio1) {
+  for (const n of nestedPrio3) {
     if (!n || typeof n !== 'object') continue;
     for (const k of keysToScan) {
       const v = (n as any)[k];
       if (Array.isArray(v)) {
-        for (const elem of v) if (isLikelyMongoId(elem)) return String(elem).trim();
+        for (const elem of v) if (isAccountIdShape(elem)) return String(elem).trim();
       }
-      if (isLikelyMongoId(v)) return String(v).trim();
+      if (isAccountIdShape(v)) return String(v).trim();
+      if (typeof v === 'string' && v.trim().length >= 10) return v.trim();
     }
   }
-  // Prio 2: Diep zoeken in permissions / profile naar mongo-achtige IDs (meerdere accounts mogelijk → 1e gebruiken)
-  for (const n of nestedPrio1) {
+  // PRIO 4: Diep zoeken in permissions + profile (collect strings - eerst UUID want permissions)
+  for (const n of [...nestedPrio3, u.permissions]) {
     if (!n) continue;
     const pool: string[] = [];
     _collectStrings(pool, n, 0);
+    for (const s of pool) if (isLikelyUuid(s)) return s.trim();
     for (const s of pool) if (isLikelyMongoId(s)) return s.trim();
   }
-  // Prio 3: Top-level primaries
+  // PRIO 5: Top-level primaries (accountId / tenantId eerst
+  const primariesUuidFirst = [u.accountId, u.tenantId, u.orgId, u.customerId, u.resellerId];
+  for (const c of primariesUuidFirst) {
+    if (isLikelyUuid(c)) return String(c).trim();
+  }
   const primaries = [
     u.accountId, u.account_id, u.tenantId, u.tenant_id, u.orgId, u.org_id,
     u.customerId, u.customer_id, u.resellerId, u.reseller_id,
   ];
-  for (const c of primaries) if (isLikelyMongoId(c)) return String(c).trim();
-  // Prio 4: user._id / user.id (mongodb user-document id)
+  for (const c of primaries) if (isAccountIdShape(c)) return String(c).trim();
+  for (const c of primaries) if (typeof c === 'string' && c.trim().length >= 10) return c.trim();
+  // PRIO 6: user._id / user.id (mongodb user-document id = LAATSTE (was eerst, verkeerd! Alleen als geen andere!
   if (isLikelyMongoId(u._id)) return String(u._id).trim();
   if (isLikelyMongoId(u.id)) return String(u.id).trim();
-  // Prio 5: Hele user object diep scannen voor mongo-id
+  // PRIO 7: Hele user object diep scannen eerst UUID, daarna mongo
   const fullPool: string[] = [];
   _collectStrings(fullPool, u, 0);
+  for (const s of fullPool) if (isLikelyUuid(s)) return s.trim();
   for (const s of fullPool) if (isLikelyMongoId(s)) return s.trim();
   return null;
 }
@@ -1260,33 +1297,31 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       }
       return u;
     };
-    // FASE -1: ALLEEN BEARER-token voor SIM-list endpoints!
-    // (Basic geeft perse 401/InvalidCredentials voor eSIMs/assets — dat was alleen voor auth/token endpoint.)
+    // ✅ FASE -1: ALLEEN de 2 ECHTE AirOn360 SIM-endpoints EERST! (Allow-header bevestigd.)
+    // Fout van vorige run: /v3/accounts/... /tenants/... gaven 405 Allow: OPTIONS = BESTAAN NIET!
+    // Dus: begint DIRECT met GET /v3/esims + GET /v3/assets (met Bearer + correct UUID accountId uit permissions!)
     const accountIdVal = bearerAuthOnly ? getSimhuisAccountId() : null;
     const baseAidQuery = accountIdVal
-      ? { accountId: accountIdVal, page: 1, limit: 50 }
-      : { page: 1, limit: 50 };
+      ? { accountId: accountIdVal, page: 1, limit: 200 }
+      : { page: 1, limit: 200 };
+    const baseAidBody = accountIdVal
+      ? { accountId: accountIdVal, page: 1, limit: 200 }
+      : { page: 1, limit: 200 };
     const testCases: Array<{ method: 'GET' | 'POST'; path: string; auth: AuthStyle; kind: 'json-body' | 'query' | 'form-body'; body?: Record<string, any>; query?: Record<string, any> }> = [];
     if (bearerAuthOnly) {
-      if (accountIdVal) {
-        // Accounts-scoped endpoints (meest waarschijnlijk — AirOn360 plaatst SIM-lijsten onder account!)
-        testCases.push(
-          { method: 'GET', path: `/v3/accounts/${accountIdVal}/esims`, auth: bearerAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
-          { method: 'GET', path: `/v3/accounts/${accountIdVal}/assets`, auth: bearerAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
-          { method: 'GET', path: `/v3/tenants/${accountIdVal}/esims`, auth: bearerAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
-          { method: 'GET', path: `/v3/tenants/${accountIdVal}/assets`, auth: bearerAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
-        );
-      }
+      // ↓↓↓ DEZE 4 PROBES = EERSTE 4 POGINGEN, zouden de RAAK moeten zijn! ↓↓↓
       testCases.push(
-        { method: 'GET', path: '/v3/esims', auth: bearerAuthOnly, kind: 'query', query: { ...baseAidQuery } },
-        { method: 'GET', path: '/v3/assets', auth: bearerAuthOnly, kind: 'query', query: { ...baseAidQuery } },
+        { method: 'GET',  path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query',     query: { ...baseAidQuery } },
+        { method: 'GET',  path: '/v3/assets', auth: bearerAuthOnly, kind: 'query',     query: { ...baseAidQuery } },
+        { method: 'POST', path: '/v3/esims',  auth: bearerAuthOnly, kind: 'json-body', body: { ...baseAidBody } },
+        { method: 'POST', path: '/v3/assets', auth: bearerAuthOnly, kind: 'json-body', body: { ...baseAidBody } },
       );
     }
-    // Basic Auth hierna — alleen als bearer niet werkt. GEEN /v3/auth/me meer (405 Allow: OPTIONS = nutteloos).
+    // Daarna: Basic Auth (voor de zekerheid) + auth/token. GEEN /v3/auth/me (405).
     testCases.push(
+      { method: 'GET',  path: '/v3/esims',  auth: basicAuthOnly, kind: 'query',     query: { page: 1, limit: 50 } },
+      { method: 'GET',  path: '/v3/assets', auth: basicAuthOnly, kind: 'query',     query: { page: 1, limit: 50 } },
       { method: 'POST', path: '/v3/auth/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
-      { method: 'GET', path: '/v3/esims', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
-      { method: 'GET', path: '/v3/assets', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
     );
     for (const tc of testCases) {
       if (pogingen > MAX_ATTEMPTS || overallDeadline.aborted) break;
@@ -1397,81 +1432,49 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     query?: Record<string, any>;
   };
 
-  // FASE 0: GERICHTE AirOn360 probes — GEEN 405/legacy meer. ALLEEN account-scoped + Bearer EERST.
-  // Verwijderd uit oude lijst (allemaal 405 Allow: OPTIONS of 404): /v3/ulb/device, /v3/auth/me, /v3/auth/check-token, /sims, / (root), /v3 (POST), /esims (geen prefix), /assets (geen prefix), -basic varianten na de hoofd-bearer probes.
+  // ✅ FASE 0: MINIMALE AirOn360 probes — ALLEEN endpoints die ECHT bestaan (Allow-header bevestigd!)
+  // Vorige run: ALLEN 404 of 405 op: /v3/assets/filter|search, /v3/imsis, /v3/iot/device, /v3/accounts/*|tenants/*|customers/*|resellers/*, PUT /v3/esims|assets, GET with body (TypeError!)
+  // Allow-header bevestigd: /v3/esims & /v3/assets accepteren ENKEL GET, OPTIONS, POST. → alleen die 2 paden!
   const probes: Phase0Probe[] = [];
   const probeAuth = bearerAuthOnly ?? basicAuthOnly;
   const aid = getSimhuisAccountId();
 
-  // === NIEUW: Parameter varianten op accountId (404 "Account not found" → de naam kan afwijken!) ===
-  //  - accountId (query) [reeds gedaan bij inject] + accountId in BODY (ook al is het GET) +
-  //  - tenantId / account_id / account / X-Account-Id header
   const pageQuery = { page: 1, limit: 200 };
-  const pageBody = { page: 1, limit: 200 };
+  const pageBody  = { page: 1, limit: 200 };
   if (bearerAuthOnly) {
-    // === A. Account-SCOPED endpoints (grootste kans dat het hier zit — AirOn360 SIMs onder account/tenant path) ===
     if (aid) {
+      // ↓↓↓ EERSTE 8 probes — binnen 8 pogingen RAAK! (met VERSCHILLENDE param-naam-varianten, want 404 betekent param naam fout).
       probes.push(
-        { label: 'GET-v3-accounts-esims', method: 'GET', path: `/v3/accounts/${aid}/esims`, auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
-        { label: 'GET-v3-accounts-assets', method: 'GET', path: `/v3/accounts/${aid}/assets`, auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
-        { label: 'GET-v3-accounts-sims',   method: 'GET', path: `/v3/accounts/${aid}/sims`,   auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
-        { label: 'GET-v3-tenants-esims',  method: 'GET', path: `/v3/tenants/${aid}/esims`,  auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
-        { label: 'GET-v3-tenants-assets', method: 'GET', path: `/v3/tenants/${aid}/assets`, auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
-        { label: 'GET-v3-customers-esims', method: 'GET', path: `/v3/customers/${aid}/esims`, auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
-        { label: 'GET-v3-resellers-esims', method: 'GET', path: `/v3/resellers/${aid}/esims`, auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
+        { label: 'GET-v3-esims-aid',       method: 'GET',  path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, accountId: aid } },
+        { label: 'GET-v3-assets-aid',      method: 'GET',  path: '/v3/assets', auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, accountId: aid } },
+        { label: 'GET-v3-esims-tenantId',  method: 'GET',  path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, tenantId: aid } },
+        { label: 'GET-v3-assets-tenantId', method: 'GET',  path: '/v3/assets', auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, tenantId: aid } },
+        { label: 'GET-v3-esims-id',        method: 'GET',  path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, id: aid } },
+        { label: 'GET-v3-assets-id',       method: 'GET',  path: '/v3/assets', auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, id: aid } },
+        { label: 'POST-v3-esims-aid',      method: 'POST', path: '/v3/esims',  auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody, accountId: aid, tenantId: aid, id: aid } },
+        { label: 'POST-v3-assets-aid',     method: 'POST', path: '/v3/assets', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody, accountId: aid, tenantId: aid, id: aid } },
       );
     }
-    // === B. Unscoped endpoints met VERSCHILLENDE account-naam parameters (404 "Account not found" → verkeerde param naam?) ===
-    // accountId, tenantId, account_id, account, organizationId, customerId, resellerId
-    if (aid) {
-      const tenantQuery: any = { ...pageQuery, tenantId: aid };
-      const idQuery: any     = { ...pageQuery, id: aid };
-      const acctQuery: any   = { ...pageQuery, account: aid };
-      probes.push(
-        { label: 'GET-v3-esims-tenantId',  method: 'GET', path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query', query: tenantQuery },
-        { label: 'GET-v3-assets-tenantId', method: 'GET', path: '/v3/assets', auth: bearerAuthOnly, kind: 'query', query: tenantQuery },
-        { label: 'GET-v3-esims-id',        method: 'GET', path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query', query: idQuery },
-        { label: 'GET-v3-assets-id',       method: 'GET', path: '/v3/assets', auth: bearerAuthOnly, kind: 'query', query: idQuery },
-        { label: 'GET-v3-esims-account',   method: 'GET', path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query', query: acctQuery },
-        { label: 'GET-v3-assets-account',  method: 'GET', path: '/v3/assets', auth: bearerAuthOnly, kind: 'query', query: acctQuery },
-        // PUT/GET /v3/assets/filter + search met accountId / tenantId
-        { label: 'GET-v3-assets-filter-aid',    method: 'GET', path: '/v3/assets/filter', auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, ...(options.status ? { status: options.status } : {}) } },
-        { label: 'GET-v3-assets-search-aid',    method: 'GET', path: '/v3/assets/search', auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
-        { label: 'PUT-v3-assets-filter-aid',    method: 'PUT', path: '/v3/assets/filter', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody, ...(options.status ? { status: options.status } : {}) } },
-        { label: 'PUT-v3-assets-search-aid',    method: 'PUT', path: '/v3/assets/search', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
-      );
-    }
-    // === C. Hoofd endpoints (accountId inject gebeurt later centraal in de fetch-loop) ===
+    // Fallback zonder expliciete aid (wordt later nog centraal geinjecteerd met X-Account-Id headers)
     probes.push(
-      { label: 'GET-v3-esims',           method: 'GET', path: '/v3/esims',            auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
-      { label: 'GET-v3-assets',          method: 'GET', path: '/v3/assets',           auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
-      { label: 'GET-v3-esims-status',    method: 'GET', path: '/v3/esims',            auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, status: options.status ?? 'active' } },
-      { label: 'GET-v3-assets-status',   method: 'GET', path: '/v3/assets',           auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, status: options.status ?? 'active' } },
-      { label: 'GET-v3-imsis',           method: 'GET', path: '/v3/imsis',            auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
-      { label: 'GET-v3-iot-device',      method: 'GET', path: '/v3/iot/device',       auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
-      { label: 'POST-v3-esims',          method: 'POST', path: '/v3/esims',           auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
-      { label: 'POST-v3-assets',         method: 'POST', path: '/v3/assets',          auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
+      { label: 'GET-v3-esims',           method: 'GET',  path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query',     query: { ...pageQuery } },
+      { label: 'GET-v3-assets',          method: 'GET',  path: '/v3/assets', auth: bearerAuthOnly, kind: 'query',     query: { ...pageQuery } },
+      { label: 'POST-v3-esims',          method: 'POST', path: '/v3/esims',  auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
+      { label: 'POST-v3-assets',         method: 'POST', path: '/v3/assets', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
+      { label: 'GET-v3-esims-status',    method: 'GET',  path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query',     query: { ...pageQuery, status: options.status ?? 'active' } },
+      { label: 'GET-v3-assets-status',   method: 'GET',  path: '/v3/assets', auth: bearerAuthOnly, kind: 'query',     query: { ...pageQuery, status: options.status ?? 'active' } },
     );
-    if (aid) {
-      // D. Body-variant (accountId IN BODY, ook al is het GET — sommige APIs accepteren body op GET)
-      probes.push(
-        { label: 'GET-v3-esims-bodyAid',  method: 'GET', path: '/v3/esims',  auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
-        { label: 'GET-v3-assets-bodyAid', method: 'GET', path: '/v3/assets', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
-        { label: 'PUT-v3-esims-bodyAid',  method: 'PUT', path: '/v3/esims',  auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
-        { label: 'PUT-v3-assets-bodyAid', method: 'PUT', path: '/v3/assets', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
-      );
-    }
   }
-  // === E. Basic auth en auth/token (als laatste, niet eerst — geen onnodige 401s die de teller verstoren) ===
+  // Basic auth en auth/token (als laatste, onnodige 401s vermijden)
   probes.push(
-    { label: 'POST-v3-auth-token', method: 'POST', path: '/v3/auth/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
-    { label: 'GET-v3-esims-basic',  method: 'GET', path: '/v3/esims',  auth: basicAuthOnly, kind: 'query', query: { ...pageQuery } },
-    { label: 'GET-v3-assets-basic', method: 'GET', path: '/v3/assets', auth: basicAuthOnly, kind: 'query', query: { ...pageQuery } },
+    { label: 'GET-v3-esims-basic',     method: 'GET',  path: '/v3/esims',  auth: basicAuthOnly, kind: 'query',     query: { ...pageQuery } },
+    { label: 'GET-v3-assets-basic',    method: 'GET',  path: '/v3/assets', auth: basicAuthOnly, kind: 'query',     query: { ...pageQuery } },
+    { label: 'POST-v3-auth-token',     method: 'POST', path: '/v3/auth/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
   );
   if (resellerFragment) {
     probes.push(
-      { label: 'GET-v3-reseller-assets', method: 'GET', path: `/v3/resellers/${resellerFragment}/assets`, auth: probeAuth, kind: 'query', query: { ...pageQuery } },
       { label: 'GET-v3-reseller-esims',  method: 'GET', path: `/v3/resellers/${resellerFragment}/esims`,  auth: probeAuth, kind: 'query', query: { ...pageQuery } },
+      { label: 'GET-v3-reseller-assets', method: 'GET', path: `/v3/resellers/${resellerFragment}/assets`, auth: probeAuth, kind: 'query', query: { ...pageQuery } },
     );
   }
 
