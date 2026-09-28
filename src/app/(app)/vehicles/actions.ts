@@ -57,12 +57,16 @@ export async function createVehicleAction(
 }
 
 export async function updateVehicleAction(
-  vehicleId: string,
   _prev: VehicleActionState,
   formData: FormData
 ): Promise<VehicleActionState> {
   const user = await getCurrentUser();
   requirePermission(user.role, "edit", "vehicle");
+
+  const vehicleId = String(formData.get("vehicleId"));
+  if (!vehicleId) {
+    return { message: "Voertuig-ID ontbreekt." };
+  }
 
   const data: any = {
     licensePlate: formData.get("licensePlate") || null,
@@ -91,9 +95,17 @@ export async function updateVehicleAction(
   redirect(`/vehicles/${vehicleId}`);
 }
 
-export async function deleteVehicleAction(vehicleId: string) {
+export async function deleteVehicleAction(
+  _prev: unknown,
+  formData: FormData
+) {
   const user = await getCurrentUser();
   requirePermission(user.role, "delete", "vehicle");
+
+  const vehicleId = String(formData.get("vehicleId"));
+  if (!vehicleId) {
+    return;
+  }
 
   const ctx = { userId: user.id, userRole: user.role };
   const vehicle = await softDeleteVehicle(vehicleId, ctx);

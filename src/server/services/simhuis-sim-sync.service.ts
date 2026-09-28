@@ -6,6 +6,33 @@ import type { SimStatus, UserRole } from "@/types/enums";
 
 type Ctx = { userId?: string; userRole?: UserRole };
 
+function truncate(v: string | null | undefined, max: number): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v);
+  return s.length > max ? s.slice(0, max) : s;
+}
+
+function normIccid(v: string | null | undefined): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).replace(/\s+/g, "").trim();
+  if (!s) return null;
+  return s.length > 40 ? s.slice(0, 40) : s;
+}
+
+function normMsisdn(v: string | null | undefined): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).replace(/\s+/g, "").replace(/[^\d+]/g, "").trim();
+  if (!s) return null;
+  return s.length > 30 ? s.slice(0, 30) : s;
+}
+
+function normImsi(v: string | null | undefined): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).replace(/\s+/g, "").trim();
+  if (!s) return null;
+  return s.length > 20 ? s.slice(0, 20) : s;
+}
+
 export interface SimhuisSyncResult {
   totalInSimhuis: number;
   eligibleInSimhuis: number;
@@ -87,6 +114,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
       provider: true,
       msisdn: true,
       imsi: true,
+      simType: true,
       notes: true,
       deletedAt: true,
     },
@@ -98,10 +126,24 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
   let auditUpdatedEntries: Array<{ iccid: string; old: any; new: any }> = [];
 
   for (const simhuis of eligible) {
-    const iccid = simhuis.iccid;
+    const rawIccid = simhuis.iccid;
+    const iccid = normIccid(rawIccid);
+    if (!iccid) {
+      skipped++;
+      continue;
+    }
     try {
       const existing = existingByIccid.get(iccid);
       const { status, skipIfLocked } = mapSimhuisStatusToNexus(simhuis.status, existing?.status as any);
+
+      const rawMsisdn = simhuis.msisdn;
+      const rawImsi = simhuis.imsi;
+      const rawNetwork = simhuis.network;
+      const rawPlanName = simhuis.planName;
+      const msisdnVal = normMsisdn(rawMsisdn);
+      const imsiVal = normImsi(rawImsi);
+      const networkVal = truncate(rawNetwork, 100);
+      const planVal = truncate(rawPlanName, 500);
 
       if (existing) {
         if (existing.deletedAt) {
@@ -117,6 +159,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           msisdn: existing.msisdn,
           imsi: existing.imsi,
           provider: existing.provider,
+          simType: existing.simType,
         };
         const newData: Record<string, any> = { ...oldData };
         let changed = false;
@@ -124,17 +167,21 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           newData.status = status;
           changed = true;
         }
-        if (simhuis.msisdn && existing.msisdn !== simhuis.msisdn) {
-          newData.msisdn = simhuis.msisdn;
+        if (msisdnVal && existing.msisdn !== msisdnVal) {
+          newData.msisdn = msisdnVal;
           changed = true;
         }
-        if (simhuis.imsi && existing.imsi !== simhuis.imsi) {
-          newData.imsi = simhuis.imsi;
+        if (imsiVal && existing.imsi !== imsiVal) {
+          newData.imsi = imsiVal;
+          changed = true;
+        }
+        if (networkVal && existing.simType !== networkVal) {
+          newData.simType = networkVal;
           changed = true;
         }
         const providerTag = "Simhuis";
         if (!existing.provider?.toLowerCase().includes("simhuis")) {
-          newData.provider = existing.provider ? `${existing.provider} + ${providerTag}` : providerTag;
+          newData.provider = existing.provider ? truncate(`${existing.provider} + ${providerTag}`, 150) ?? providerTag : providerTag;
           changed = true;
         }
         if (!changed) {
@@ -148,6 +195,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
               status: newData.status,
               msisdn: newData.msisdn,
               imsi: newData.imsi,
+              simType: newData.simType,
               provider: newData.provider,
             },
           })
@@ -165,22 +213,23 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           ? ("IN_STOCK" as any)
           : ("RESERVED" as any);
         const providerTag = "Simhuis";
+        const notesBase = planVal
+          ? `Geïmporteerd vanuit Simhuis. Plan: ${planVal}`
+          : "Geïmporteerd vanuit Simhuis.";
         const p = prisma.sIM
           .create({
             data: {
               iccid,
-              msisdn: simhuis.msisdn ?? null,
-              imsi: simhuis.imsi ?? null,
+              msisdn: msisdnVal,
+              imsi: imsiVal,
               provider: providerTag,
-              simType: simhuis.network ?? null,
+              simType: networkVal,
               status: statusForNew,
-              notes: simhuis.planName
-                ? `Geïmporteerd vanuit Simhuis. Plan: ${simhuis.planName}`
-                : "Geïmporteerd vanuit Simhuis.",
+              notes: notesBase,
             },
           })
           .then(() => {
-            auditCreatedEntries.push({ iccid, msisdn: simhuis.msisdn, imsi: simhuis.imsi });
+            auditCreatedEntries.push({ iccid, msisdn: msisdnVal, imsi: imsiVal });
             created++;
           })
           .catch((err) => {

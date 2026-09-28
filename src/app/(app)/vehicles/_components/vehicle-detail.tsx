@@ -33,6 +33,7 @@ import {
 import { canUserRole } from "@/lib/auth/session";
 import type { UserRole } from "@/types/enums";
 import type { Vehicle } from "@prisma/client";
+import { updateVehicleAction, deleteVehicleAction } from "../actions";
 
 type DetailVehicle = Vehicle & {
   customer: { id: string; companyName: string; customerNumber: string } | null;
@@ -54,12 +55,6 @@ type VehicleDetailProps = {
   vehicle: DetailVehicle;
   role: UserRole;
   customerOptions: { id: string; label: string }[];
-  updateAction: (
-    vehicleId: string,
-    prev: any,
-    formData: FormData
-  ) => Promise<any>;
-  deleteAction: (vehicleId: string) => Promise<void>;
   vehicleId: string;
 };
 
@@ -67,17 +62,12 @@ export function VehicleDetail({
   vehicle,
   role,
   customerOptions,
-  updateAction,
-  deleteAction,
   vehicleId,
 }: VehicleDetailProps) {
   const canEdit = canUserRole(role, "edit", "vehicle");
   const canDelete = canUserRole(role, "delete", "vehicle");
 
-  const [, deleteFormAction] = useFormState(
-    async (_p: unknown) => deleteAction(vehicleId),
-    undefined
-  );
+  const [, deleteFormAction] = useFormState(deleteVehicleAction, undefined);
 
   return (
     <div className="space-y-6">
@@ -132,6 +122,7 @@ export function VehicleDetail({
           ) : null}
           {canDelete ? (
             <form action={deleteFormAction}>
+              <input type="hidden" name="vehicleId" value={vehicleId} />
               <Button variant="destructive" type="submit">
                 <Trash2 className="h-4 w-4" /> Verwijderen
               </Button>
@@ -260,9 +251,7 @@ export function VehicleDetail({
               customerOptions={customerOptions.filter(
                 (o) => !vehicle.customer || o.id !== vehicle.customer.id
               )}
-              action={async (prev, form) =>
-                updateAction(vehicleId, prev, form)
-              }
+              action={updateVehicleAction}
             />
           </TabsContent>
         ) : null}

@@ -104,6 +104,11 @@ enum AuditAction {
   MARK_INVOICE_PAID
   SEND_INVOICE
   UPDATE_SETTINGS
+  BATCH_CREATE
+  BATCH_UPDATE
+  BATCH_ERROR
+  SIMHUIS_SYNCED
+  SIMHUIS_SYNC_FAILED
 }
 
 enum InserveSyncStatus {
@@ -291,12 +296,12 @@ model Tracker {
 
 model SIM {
   id                       String    @id @default(cuid())
-  iccid                    String    @unique @db.VarChar(20)
-  msisdn                   String?   @unique
-  imsi                     String?
-  provider                 String
-  simType                  String?
-  apn                      String?
+  iccid                    String    @unique @db.VarChar(40)
+  msisdn                   String?   @unique @db.VarChar(30)
+  imsi                     String?   @db.VarChar(20)
+  provider                 String    @db.VarChar(150)
+  simType                  String?   @db.VarChar(100)
+  apn                      String?   @db.VarChar(200)
   status                   SimStatus @default(IN_STOCK)
   providerActivationDate   DateTime? @db.Date
   providerDeactivationDate DateTime? @db.Date

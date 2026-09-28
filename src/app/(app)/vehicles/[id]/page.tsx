@@ -4,7 +4,6 @@ import { findVehicleById } from "@/server/services/vehicle.service";
 import { VehicleDetail } from "../_components/vehicle-detail";
 import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
-import { updateVehicleAction, deleteVehicleAction } from "../actions";
 import { prisma } from "@/lib/prisma";
 
 export default async function VehicleDetailPage({
@@ -27,12 +26,6 @@ export default async function VehicleDetailPage({
     orderBy: { companyName: "asc" },
   });
 
-  const updateAction: any = async (
-    _: any,
-    prev: any,
-    formData: FormData
-  ) => updateVehicleAction(params.id, prev, formData);
-
   return (
     <VehicleDetail
       vehicle={vehicle as any}
@@ -41,8 +34,6 @@ export default async function VehicleDetailPage({
         id: c.id,
         label: `${c.companyName} (${c.customerNumber})`,
       }))}
-      updateAction={updateAction}
-      deleteAction={deleteVehicleAction as any}
       vehicleId={params.id}
     />
   );
