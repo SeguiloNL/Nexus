@@ -1002,6 +1002,14 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   const allowHeadersByPath = new Map<string, string>();
   const authBasic = basicAuthHeader(creds.username, creds.password);
 
+  let bearerToken: string | null = null;
+  try {
+    const simhuisCreds = await getSimhuisCreds();
+    bearerToken = await acquireBearerToken(simhuisCreds);
+  } catch {
+    bearerToken = null;
+  }
+
   // === WAF-BYPASS HEADERS V2 (EXTREME Chrome-browser spoofing) ===
   // Simhuis/apicontrolcenter.com staat achter een reverse-proxy WAF (Netscaler/Citrix/Cloudflare).
   // De WAF weigert ALLE requests die niet 100% op een echte browser lijken → generieke 405 Allow: OPTIONS.
@@ -1026,6 +1034,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   };
 
   const basicAuthOnly: AuthStyle = { tag: 'basic-header', header: authBasic };
+  const bearerAuthOnly: AuthStyle | null = bearerToken ? { tag: 'bearer-header', header: `Bearer ${bearerToken}` } : null;
   const noAuth: AuthStyle = { tag: 'custom-headers', headers: {} };
   const xUserPassHeaders: AuthStyle = {
     tag: 'custom-headers',
@@ -1035,12 +1044,11 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       ...(resellerId ? { 'X-Reseller-ID': String(resellerId) } : {}),
     },
   };
+  const primaryAuthOrder: AuthStyle[] = bearerAuthOnly ? [bearerAuthOnly, basicAuthOnly, xUserPassHeaders, noAuth] : [basicAuthOnly, xUserPassHeaders, noAuth];
 
   const resellerFragment = resellerId ? encodeURIComponent(String(resellerId)) : null;
 
-  // ===== FASE -1: MULTI-BASE PROBE — probeer eerst 6 waarschijnlijke base URLs met 3 tests per base =====
-  // Want: historische sessie gaf WEL app-level response op POST /v3/sims, NU alles 405 Allow: OPTIONS.
-  // Dus base URL is waarschijnlijk verkeerd ingesteld in GUI.
+  // ===== FASE -1: MULTI-BASE PROBE — probeer eerst waarschijnlijke base URLs met AirOn360 endpoints =====
   const origBase = creds.baseUrl.replace(/\/+$/, '');
   const baseCandidates = Array.from(new Set<string>([
     origBase,
@@ -1067,11 +1075,12 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       }
       return u;
     };
-    // 3 tests per base: POST /sims basic met {page:1,limit:100}, POST /auth/login noauth, GET / basic
+    // AirOn360 eerst: GET /v3/esims, GET /v3/assets, dan auth/ping tests
     const testCases: Array<{ method: 'GET' | 'POST'; path: string; auth: AuthStyle; kind: 'json-body' | 'query' | 'form-body'; body?: Record<string, any>; query?: Record<string, any> }> = [
-      { method: 'POST', path: '/sims', auth: basicAuthOnly, kind: 'json-body', body: { page: 1, limit: 100 } },
-      { method: 'POST', path: '/auth/login', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password } },
-      { method: 'GET', path: '/auth/me', auth: basicAuthOnly, kind: 'query' },
+      { method: 'GET', path: '/v3/esims', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
+      { method: 'GET', path: '/v3/assets', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
+      { method: 'POST', path: '/v3/auth/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
+      { method: 'GET', path: '/v3/auth/me', auth: basicAuthOnly, kind: 'query' },
     ];
     for (const tc of testCases) {
       if (pogingen > MAX_ATTEMPTS || overallDeadline.aborted) break;
@@ -1182,34 +1191,48 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     query?: Record<string, any>;
   };
 
-  // FASE 0: 20 SNELLE probes (max 5 seconden) — alleen de KENNIS opdoen welke (path,method,auth) combinaties uberhaupt de app bereiken (geen Allow:OPTIONS 405).
-  // Dit is informatiever dan 100+ wilde pogingen.
-  const probes: Phase0Probe[] = [
-    { label: 'POST-login-json-noauth', method: 'POST', path: '/auth/login', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password } },
-    { label: 'POST-login-form-noauth', method: 'POST', path: '/auth/login', auth: noAuth, kind: 'form-body', body: { username: creds.username, password: creds.password } },
-    { label: 'POST-login-json-noauth', method: 'POST', path: '/login', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password } },
-    { label: 'POST-login-form-noauth', method: 'POST', path: '/login', auth: noAuth, kind: 'form-body', body: { username: creds.username, password: creds.password } },
-    { label: 'POST-token-json-noauth', method: 'POST', path: '/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
-    { label: 'GET-auth-me-basic', method: 'GET', path: '/auth/me', auth: basicAuthOnly, kind: 'query' },
-    { label: 'GET-me-basic', method: 'GET', path: '/me', auth: basicAuthOnly, kind: 'query' },
-    { label: 'POST-sims-empty-body-basic', method: 'POST', path: '/sims', auth: basicAuthOnly, kind: 'json-body', body: {} },
+  // FASE 0: SNELLE probes — AirOn360 /v3 endpoints EERST, daarna legacy
+  const probes: Phase0Probe[] = [];
+  const probeAuth = bearerAuthOnly ?? basicAuthOnly;
+  // === AirOn360 eSIMS & ASSETS (absolute prio) ===
+  probes.push(
+    { label: 'GET-v3-esims', method: 'GET', path: '/v3/esims', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
+    { label: 'GET-v3-esims-basic', method: 'GET', path: '/v3/esims', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 200 } },
+    { label: 'GET-v3-assets', method: 'GET', path: '/v3/assets', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
+    { label: 'GET-v3-assets-basic', method: 'GET', path: '/v3/assets', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 200 } },
+    { label: 'POST-v3-assets-filter', method: 'POST', path: '/v3/assets/filter', auth: probeAuth, kind: 'json-body', body: { page: 1, limit: 200, ...(options.status ? { status: options.status } : {}) } },
+    { label: 'POST-v3-assets-search', method: 'POST', path: '/v3/assets/search', auth: probeAuth, kind: 'json-body', body: { page: 1, limit: 200 } },
+    { label: 'GET-v3-esims-status', method: 'GET', path: '/v3/esims', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200, status: options.status ?? 'active' } },
+    { label: 'GET-v3-assets-status', method: 'GET', path: '/v3/assets', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200, status: options.status ?? 'active' } },
+    { label: 'GET-v3-imsis', method: 'GET', path: '/v3/imsis', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
+    { label: 'GET-v3-iot-device', method: 'GET', path: '/v3/iot/device', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
+    { label: 'GET-v3-ulb-device', method: 'GET', path: '/v3/ulb/device', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
+    { label: 'POST-v3-esims', method: 'POST', path: '/v3/esims', auth: probeAuth, kind: 'json-body', body: { page: 1, limit: 200 } },
+    { label: 'POST-v3-assets', method: 'POST', path: '/v3/assets', auth: probeAuth, kind: 'json-body', body: { page: 1, limit: 200 } },
+  );
+  // === Auth tests ===
+  probes.push(
+    { label: 'POST-v3-auth-token', method: 'POST', path: '/v3/auth/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
+    { label: 'GET-v3-auth-check', method: 'GET', path: '/v3/auth/check-token', auth: probeAuth, kind: 'query' },
+    { label: 'GET-v3-auth-me', method: 'GET', path: '/v3/auth/me', auth: basicAuthOnly, kind: 'query' },
+  );
+  // === Legacy zonder /v3 prefix ===
+  probes.push(
+    { label: 'GET-esims', method: 'GET', path: '/esims', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
+    { label: 'GET-assets', method: 'GET', path: '/assets', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
     { label: 'POST-sims-page-limit-basic', method: 'POST', path: '/sims', auth: basicAuthOnly, kind: 'json-body', body: { page: 1, limit: 100 } },
     { label: 'GET-sims-page-limit-basic', method: 'GET', path: '/sims', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 100 } },
-    { label: 'POST-sims-creds-body-noauth', method: 'POST', path: '/sims', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, page: 1, limit: 100 } },
-    { label: 'POST-sims-creds-body-xheaders', method: 'POST', path: '/sims', auth: xUserPassHeaders, kind: 'json-body', body: { page: 1, limit: 100 } },
-    { label: 'POST-sims-reseller-creds-body-basic', method: 'POST', path: '/sims', auth: basicAuthOnly, kind: 'json-body', body: { username: creds.username, password: creds.password, page: 1, limit: 100 } },
-  ];
+  );
   if (resellerFragment) {
     probes.push(
+      { label: 'GET-v3-reseller-assets', method: 'GET', path: `/v3/resellers/${resellerFragment}/assets`, auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
+      { label: 'GET-v3-reseller-esims', method: 'GET', path: `/v3/resellers/${resellerFragment}/esims`, auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
       { label: 'GET-reseller-sims-basic', method: 'GET', path: `/resellers/${resellerFragment}/sims`, auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 100 } },
-      { label: 'POST-reseller-sims-basic', method: 'POST', path: `/resellers/${resellerFragment}/sims`, auth: basicAuthOnly, kind: 'json-body', body: { page: 1, limit: 100 } },
-      { label: 'GET-reseller-sims-noauth-credsquery', method: 'GET', path: `/resellers/${resellerFragment}/sims`, auth: noAuth, kind: 'query', query: { username: creds.username, password: creds.password, page: 1, limit: 100 } },
     );
   } else {
     probes.push(
       { label: 'GET-root-basic', method: 'GET', path: '/', auth: basicAuthOnly, kind: 'query' },
-      { label: 'POST-root-basic-empty', method: 'POST', path: '/', auth: basicAuthOnly, kind: 'json-body', body: {} },
-      { label: 'POST-v3-basic-empty', method: 'POST', path: '/', auth: basicAuthOnly, kind: 'json-body', body: {} },
+      { label: 'POST-v3-basic-empty', method: 'POST', path: '/v3', auth: basicAuthOnly, kind: 'json-body', body: {} },
     );
   }
 
@@ -1487,8 +1510,12 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       }
     }
   } else {
-    // ===== FASE 1 B: Geen interessante response gevonden → classic fallback naar 22 kansrijke (reseller+inventory+subscription) paden met basic auth =====
+    // ===== FASE 1 B: Geen interessante response gevonden → AIRON360 EERST, daarna legacy =====
     const backupPaths: string[] = [
+      '/v3/esims', '/v3/assets', '/v3/assets/filter', '/v3/assets/search',
+      '/v3/imsis', '/v3/iot/device', '/v3/ulb/device',
+      '/esims', '/assets', '/assets/filter', '/assets/search',
+      '/imsis', '/iot/device', '/ulb/device',
       '/inventory', '/inventory/sims', '/inventory/list', '/inventory/search',
       '/subscriptions', '/subscriptions/list', '/simcards', '/sim-cards',
       '/pool/sims', '/stock/sims', '/available/sims', '/inactive/sims',
@@ -1497,40 +1524,45 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     ];
     if (resellerFragment) {
       backupPaths.unshift(
+        `/v3/resellers/${resellerFragment}/assets`,
+        `/v3/resellers/${resellerFragment}/esims`,
         `/resellers/${resellerFragment}/sims`,
         `/resellers/${resellerFragment}/inventory`,
         `/resellers/${resellerFragment}/subscriptions`,
       );
     }
+    const authsFor1b = primaryAuthOrder.slice(0, 2);
     for (const path of backupPaths) {
-      for (const inject of injectStylesFast) {
-        for (const method of httpMethodsFast) {
-          if (method === 'GET') {
-            const query = augmentQuery(inject);
-            const r = await doDirectFetch({
-              fullUrl: buildFinalUrl(path, query),
-              method: 'GET',
-              contentType: 'none',
-              body: null,
-              auth: basicAuthOnly,
-              meta: { method: 'GET', path, kind: 'query', signature: `fase=1b;auth=basic;inject=${inject}` },
-              pathForAllowHeader: path,
-            });
-            if (r) return r;
-          } else {
-            const body = augmentBody(inject);
-            const r1 = await doDirectFetch({
-              fullUrl: buildFinalUrl(path, null),
-              method,
-              contentType: 'json',
-              body,
-              auth: basicAuthOnly,
-              meta: { method, path, kind: 'json-body', signature: `fase=1b;auth=basic;inject=${inject}` },
-              pathForAllowHeader: path,
-            });
-            if (r1) return r1;
+      for (const auth of authsFor1b) {
+        for (const inject of injectStylesFast) {
+          for (const method of httpMethodsFast) {
+            if (method === 'GET') {
+              const query = augmentQuery(inject);
+              const r = await doDirectFetch({
+                fullUrl: buildFinalUrl(path, query),
+                method: 'GET',
+                contentType: 'none',
+                body: null,
+                auth,
+                meta: { method: 'GET', path, kind: 'query', signature: `fase=1b;auth=${auth.tag};inject=${inject}` },
+                pathForAllowHeader: path,
+              });
+              if (r) return r;
+            } else {
+              const body = augmentBody(inject);
+              const r1 = await doDirectFetch({
+                fullUrl: buildFinalUrl(path, null),
+                method,
+                contentType: 'json',
+                body,
+                auth,
+                meta: { method, path, kind: 'json-body', signature: `fase=1b;auth=${auth.tag};inject=${inject}` },
+                pathForAllowHeader: path,
+              });
+              if (r1) return r1;
+            }
+            if (pogingen > MAX_ATTEMPTS || overallDeadline.aborted) break;
           }
-          if (pogingen > MAX_ATTEMPTS || overallDeadline.aborted) break;
         }
       }
     }
