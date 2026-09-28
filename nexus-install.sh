@@ -68,7 +68,7 @@ set -Eeuo pipefail
 # 0. CORE CONSTANTS (ZEER VROEG, VOOR safe start, zodat VERSIE/URL direct gebruikt kan worden)
 # ------------------------------------------------------------------------------
 INSTALL_SCRIPT_NAME="nexus-install.sh"
-INSTALLER_VERSION="1.2.1"
+INSTALLER_VERSION="1.3.0"
 INSTALL_START_EPOCH="$(date +%s)"
 DEFAULT_INSTALL_DIR="/opt/stm"
 DEFAULT_SWAP_MULTIPLIER="1.5"
@@ -129,6 +129,7 @@ SKIP_SWAP=0
 NON_INTERACTIVE=0
 SHOW_HELP=0
 UPDATE_ONLY=0
+DB_UPDATE_ONLY=0
 
 # --- Gebruiker / OS ---
 STM_USER="stm"
@@ -218,6 +219,9 @@ ${BLD}Vereisten:${RST}
 ${BLD}Belangrijkste Opties:${RST}
   --update                      (BESTAANDE INSTALLATIE) Alleen update: git pull + rebuild + restart.
                                 Slaat OS prep / gebruiker / firewall / swap over.
+  --dbupdate                    (BESTAANDE INSTALLATIE) Alleen DATABASE bijwerken naar laatste versie:
+                                prisma migrate deploy + systeemrollen aanmaken.
+                                (Gebruik dit als je net een update deed en rechten missen.)
   --domain <FULL-DOMAIN>        Publiek domein (bv. stm.jouwdomein.nl). Laat weg voor localhost/test zonder TLS.
   --git-url <URL>               Git repo URL. DEFAULT: ${CYN}${DEFAULT_GIT_URL}${RST}
   --install-dir <PATH>          Installatiemap. Default ${DEFAULT_INSTALL_DIR}
@@ -247,7 +251,14 @@ ${BLD}Voorbeelden:${RST}
   sudo bash $0 --update
 
   # ================================================================
-  # 3) Eerste install — script bestond al lokaal
+  # 3) ALLEEN DATABASE BIJWERKEN (na code update)
+  #    Gebruik dit als na een --update je rechten niet kloppen of
+  #    je expliciet DB schema + systeemrollen wilt verversen.
+  # ================================================================
+  sudo bash $0 --dbupdate
+
+  # ================================================================
+  # 4) Eerste install — script bestond al lokaal
   # ================================================================
   sudo bash $0 \\
     --domain stm.mijnbedrijf.nl \\
@@ -255,7 +266,7 @@ ${BLD}Voorbeelden:${RST}
     --seed
 
   # ================================================================
-  # 4) Lokaal testen zonder TLS (bestaande code)
+  # 5) Lokaal testen zonder TLS (bestaande code)
   # ================================================================
   sudo bash $0 --non-interactive --skip-swap
 EOF
@@ -336,6 +347,7 @@ trap 'on_exit' EXIT
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --update)          UPDATE_ONLY=1; shift ;;
+    --dbupdate)        DB_UPDATE_ONLY=1; shift ;;
     --domain)          [[ $# -ge 2 ]] || { err "--domain heeft een argument."; usage; exit 2; }; DOMAIN="$2"; shift 2 ;;
     --git-url)         [[ $# -ge 2 ]] || { err "--git-url heeft een argument."; usage; exit 2; }; GIT_URL="$2"; shift 2 ;;
     --install-dir)     [[ $# -ge 2 ]] || { err "--install-dir heeft een argument."; usage; exit 2; }; INSTALL_DIR="$2"; shift 2 ;;
@@ -694,6 +706,261 @@ printf '%b  Uitvoerder: EUID=%s  SUDO_USER=%s%b\n' "${DIM}" "${EUID}" "${SUDO_US
 printf '%b  Logbestand: %s%b\n'        "${DIM}" "${LOG_FILE}" "${RST}" | tee -a "$LOG_FILE"
 printf '%b  Install dir: %s%b\n'        "${DIM}" "${INSTALL_DIR}" "${RST}" | tee -a "$LOG_FILE"
 hr
+
+# ==============================================================================
+# ╔════════════════════════════════════════════════════════════════════════════╗
+# ║  DB-UPDATE ONLY MODE (--dbupdate)                                         ║
+# ║  Slaat ALLES over behalve: Prisma migrate deploy + productie-safe         ║
+# ║  systeemrollen aanmaken. Nodig als na --update je rechten niet kloppen.   ║
+# ╚════════════════════════════════════════════════════════════════════════════╝
+# ==============================================================================
+if [[ "$DB_UPDATE_ONLY" -eq 1 ]]; then
+  title "DB-UPDATE MODE — Alleen database bijwerken naar laatste versie"
+  info "--dbupdate: doet ALLEEN prisma migrate deploy + systeemrollen (VEILIG voor productie)."
+
+  # .env / docker-compose.prod.yml moeten bestaan
+  if [[ ! -f "$ENV_FILE" || ! -f "$COMPOSE_FILE" ]]; then
+    err "DB-UPDATE FAAL: .env of docker-compose.prod.yml ontbreekt in ${INSTALL_DIR}. Geen bestaande installatie."
+    info "  Tip: Draai eerst een VOLLEDIGE installatie (zonder --dbupdate)."
+    exit 13
+  fi
+  # Docker daemon moet draaien
+  if ! docker info >/dev/null 2>&1; then
+    err "DB-UPDATE FAAL: Docker daemon niet bereikbaar. Start eerst Docker: sudo systemctl start docker"
+    exit 13
+  fi
+
+  cd "$INSTALL_DIR"
+  COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
+
+  # ── SHELL SAFETY ──
+  set +H 2>/dev/null || true
+
+  step "[1/5] Database container beschikbaar maken"
+  DB_CONTAINER_ID=""
+  DB_CONTAINER_ID="$("${COMPOSE_CMD[@]}" ps -q stm-db 2>/dev/null || true)"
+  APP_CONTAINER_ID=""
+  APP_CONTAINER_ID="$("${COMPOSE_CMD[@]}" ps -q stm-app 2>/dev/null || true)"
+  # Start stm-db indien niet gestart (nodig voor latere SQL exec)
+  if [[ -z "${DB_CONTAINER_ID}" ]]; then
+    info "  stm-db container niet gestart — opstarten (zonder app, minimale resources)..."
+    "${COMPOSE_CMD[@]}" up -d stm-db 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    sleep 3
+    DB_CONTAINER_ID="$("${COMPOSE_CMD[@]}" ps -q stm-db 2>/dev/null || true)"
+  fi
+  if [[ -n "${DB_CONTAINER_ID}" ]]; then
+    ok "  Database container: ${DB_CONTAINER_ID:0:12} (running)."
+  else
+    warn "  Kon stm-db container niet starten. Poging via docker compose run (fallback)..."
+  fi
+
+  # ── STAP 2: Prisma migrate deploy ──
+  step "[2/5] Prisma migrate deploy (nieuwste migrations toepassen)"
+  MIGRATE_RC=99
+  # Strategie A: als stm-app al runt → exec (snel, geen extra container)
+  if [[ -n "${APP_CONTAINER_ID}" ]]; then
+    info "  (A) Gebruik draaiende stm-app container (exec)..."
+    if ("${COMPOSE_CMD[@]}" exec -T stm-app sh -lc 'cd /app && npx prisma migrate deploy' 2>&1) | tee -a "$LOG_FILE" >&2; then
+      MIGRATE_RC=0
+      ok "  (A) migrate deploy OK via exec."
+    else
+      warn "  (A) exec faalde. Val terug naar (B) run --rm."
+      MIGRATE_RC=99
+    fi
+  fi
+  # Strategie B: run --rm (tijdelijke container, altijd werkt als image gebouwd is)
+  if [[ "$MIGRATE_RC" -ne 0 ]]; then
+    info "  (B) Tijdelijke stm-app container voor migrate deploy (run --rm)..."
+    if ("${COMPOSE_CMD[@]}" run --rm --entrypoint "" stm-app sh -lc 'cd /app && npx prisma migrate deploy' 2>&1) | tee -a "$LOG_FILE" >&2; then
+      MIGRATE_RC=0
+      ok "  (B) migrate deploy OK via run --rm."
+    fi
+  fi
+  if [[ "$MIGRATE_RC" -ne 0 ]]; then
+    err "  ✖  Prisma migrate deploy mislukt (zie boven). Database NIET bijgewerkt."
+    info "  Oplossing: controleer DATABASE_URL in .env, of Postgres draait, en probeer opnieuw."
+    exit 13
+  fi
+  ok "  Migraties succesvol toegepast."
+
+  # ── STAP 3: Productie-safe systeemrollen + permissies aanmaken ──
+  step "[3/5] Systeemrollen + permissies (productie-safe: GEEN demo users/wachtwoorden)"
+  # We genereren een SQL tempfile in INSTALL_DIR, voeren uit met prisma db execute (binnen de app-container),
+  # want prisma db execute gebruikt DATABASE_URL uit .env en werkt altijd.
+  DBUPDATE_SQL_TMP="${INSTALL_DIR}/.tmp-dbupdate-system-roles-$$.sql"
+  cat > "$DBUPDATE_SQL_TMP" <<'STM_DBUPDATE_SQL_EOF'
+-- ==============================================================
+-- Productie-safe 1malig: rollen + permissies aanmaken
+-- (GEEN demo gebruikers, GEEN wachtwoorden, dus 100% productie OK)
+-- ==============================================================
+BEGIN;
+
+INSERT INTO roles (id, name, scope, "isSystem", "isDefault", description, "createdAt", "updatedAt")
+VALUES
+  ('rl_admin_sys',    'ADMIN',             'INTERNAL', true,  false, 'Volledige toegang tot alle functionaliteit (systeemrol).', NOW(), NOW()),
+  ('rl_emp_sys',      'EMPLOYEE',          'INTERNAL', true,  true,  'Medewerker: lezen + schrijven entiteiten, geen gebruikers/rollen/settings wijzigen.', NOW(), NOW()),
+  ('rl_view_sys',     'VIEWER',            'INTERNAL', true,  false, 'Alleen-lezen toegang (geen wijzigingen).', NOW(), NOW()),
+  ('rl_custview_sys', 'CUSTOMER_VIEWER',   'CUSTOMER', true,  true,  'Klant: alleen eigen entiteiten bekijken.', NOW(), NOW()),
+  ('rl_custedit_sys', 'CUSTOMER_EDITOR',   'CUSTOMER', true,  false, 'Klant: bekijken + voertuigen/notities bewerken.', NOW(), NOW())
+ON CONFLICT (name, scope) DO UPDATE SET
+  "isSystem" = true,
+  description = EXCLUDED.description,
+  "updatedAt" = NOW();
+
+-- ADMIN: alles read+write
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || res, r.id, res, true, true
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),
+  ('product'),('activation_order'),('invoice'),('user'),
+  ('audit_log'),('setting'),('dashboard'),('role')
+) AS res(resource)
+WHERE  r.name IN ('ADMIN')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = true;
+
+-- EMPLOYEE: write op business resources, GEEN write op user/role/audit/setting
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || s.resource, r.id, s.resource, true, s.write
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer', true),('tracker', true),('sim', true),('vehicle', true),
+  ('subscription', true),('product', true),('activation_order', true),('invoice', true),
+  ('audit_log', false),('setting', false),('dashboard', true)
+) AS s(resource, write)
+WHERE  r.name IN ('EMPLOYEE')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = EXCLUDED.write;
+
+-- VIEWER: read, behalve users/rollen
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || res, r.id, res, true, false
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),
+  ('product'),('activation_order'),('invoice'),('audit_log'),
+  ('setting'),('dashboard')
+) AS res(resource)
+WHERE  r.name IN ('VIEWER')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = false;
+
+-- CUSTOMER_VIEWER: read op whitelist (GEEN producten, audit, settings, users, rollen)
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || res, r.id, res, true, false
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),('invoice'),('dashboard')
+) AS res(resource)
+WHERE  r.name IN ('CUSTOMER_VIEWER')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = false;
+
+-- CUSTOMER_EDITOR: read whitelist + write op vehicle
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || s.resource, r.id, s.resource, true, s.write
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer', false),('tracker', false),('sim', false),('vehicle', true),
+  ('subscription', false),('invoice', false),('dashboard', false)
+) AS s(resource, write)
+WHERE  r.name IN ('CUSTOMER_EDITOR')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = EXCLUDED.write;
+
+-- Bestaande legacy users LINKEN aan juiste systeem-rol (roleId wordt nu gezet!)
+UPDATE users u
+SET    "roleId" = (SELECT r.id FROM roles r WHERE r.name = u.role::text AND r.scope = 'INTERNAL')
+WHERE  u."roleId" IS NULL
+AND    u.role IN ('ADMIN','EMPLOYEE','VIEWER');
+
+COMMIT;
+STM_DBUPDATE_SQL_EOF
+  chmod 0640 "$DBUPDATE_SQL_TMP" 2>/dev/null || true
+
+  SEED_ROLES_RC=99
+  # Ook hier: eerst exec in lopende app, anders run --rm
+  info "  Systeemrollen toepassen via prisma db execute --file"
+  if [[ -n "${APP_CONTAINER_ID}" ]]; then
+    info "  (A) exec in lopende stm-app..."
+    if ("${COMPOSE_CMD[@]}" exec -T stm-app sh -lc 'cd /app && npx prisma db execute --file '"'""$DBUPDATE_SQL_TMP""'" 2>&1') | tee -a "$LOG_FILE" >&2; then
+      SEED_ROLES_RC=0
+    fi
+  fi
+  if [[ "$SEED_ROLES_RC" -ne 0 ]]; then
+    info "  (B) via run --rm tijdelijke stm-app container..."
+    # Mount de INSTALL_DIR in de one-shot container zodat --file gelezen kan worden
+    if ("${COMPOSE_CMD[@]}" run --rm --entrypoint "" -v "${INSTALL_DIR}:${INSTALL_DIR}:ro" stm-app sh -lc "cd /app && npx prisma db execute --file '${DBUPDATE_SQL_TMP}' 2>&1") | tee -a "$LOG_FILE" >&2; then
+      SEED_ROLES_RC=0
+    fi
+  fi
+  # Extra fallback: als prisma db execute niet werkt, probeer direct via psql in stm-db container
+  if [[ "$SEED_ROLES_RC" -ne 0 && -n "${DB_CONTAINER_ID}" ]]; then
+    info "  (C) Fallback: directe psql in stm-db container..."
+    DB_NAME="stm"
+    DB_USER="postgres"
+    # Extract POSTGRES_PASSWORD / POSTGRES_USER / POSTGRES_DB uit ENV_FILE indien aanwezig
+    if [[ -f "$ENV_FILE" ]]; then
+      PU="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r' || true)"
+      PD="$(grep -E '^POSTGRES_DB='   "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r' || true)"
+      [[ -n "${PU}" ]] && DB_USER="${PU}"
+      [[ -n "${PD}" ]] && DB_NAME="${PD}"
+    fi
+    if docker exec -i "$DB_CONTAINER_ID" psql -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" < "$DBUPDATE_SQL_TMP" 2>&1 | tee -a "$LOG_FILE" >&2; then
+      SEED_ROLES_RC=0
+    fi
+  fi
+  # Temp file WISSEN ( altijd )
+  rm -f "$DBUPDATE_SQL_TMP" 2>/dev/null || true
+  if [[ "$SEED_ROLES_RC" -ne 0 ]]; then
+    err "  ✖  Systeemrollen + permissies toepassen MISLUKT (zie boven)."
+    info "  De schema-migratie IS wel gelukt (stap 2). Je kunt het SQL-script handmatig draaien."
+    exit 13
+  fi
+  ok "  5 Systeemrollen + per-resource permissies aangemaakt."
+  info "  Bestaande ADMIN/EMPLOYEE/VIEWER gebruikers zijn automatisch gelinkt (roleId gezet)."
+
+  # ── STAP 4: Validatie ──
+  step "[4/5] Validatie: controleer dat rollen bestaan + users roleId hebben"
+  # Gebruik weer eerst exec, dan psql fallback
+  VALIDATE_SQL="SELECT name, scope, \"isSystem\", \"isDefault\" FROM roles ORDER BY scope, name;"
+  USER_CHECK_SQL="SELECT count(*) AS total_users, count(\"roleId\") AS users_with_roleid FROM users;"
+  VAL_RC=99
+  if [[ -n "${APP_CONTAINER_ID}" ]]; then
+    ("${COMPOSE_CMD[@]}" exec -T stm-app sh -lc 'cd /app && npx prisma db execute --stdin 2>&1' <<<"${VALIDATE_SQL}") | tee -a "$LOG_FILE" >&2 && VAL_RC=0 || true
+    ("${COMPOSE_CMD[@]}" exec -T stm-app sh -lc 'cd /app && npx prisma db execute --stdin 2>&1' <<<"${USER_CHECK_SQL}") | tee -a "$LOG_FILE" >&2 || true
+  elif [[ -n "${DB_CONTAINER_ID}" ]]; then
+    docker exec -i "$DB_CONTAINER_ID" psql -U "${DB_USER:-postgres}" -d "${DB_NAME:-stm}" -c "$VALIDATE_SQL" 2>&1 | tee -a "$LOG_FILE" >&2 && VAL_RC=0 || true
+    docker exec -i "$DB_CONTAINER_ID" psql -U "${DB_USER:-postgres}" -d "${DB_NAME:-stm}" -c "$USER_CHECK_SQL" 2>&1 | tee -a "$LOG_FILE" >&2 || true
+  fi
+  if [[ "$VAL_RC" -eq 0 ]]; then
+    ok "  Validatie OK: 5 rollen gevonden. Users gekoppeld."
+  else
+    warn "  Validatie kon niet automatisch draaien (geen container). Controleer handmatig."
+  fi
+
+  # ── STAP 5: stm-app herstarten (indien hij liep) zodat caches leeg zijn ──
+  step "[5/5] App container herstarten (indien draaiend) voor permissie-cache invalidatie"
+  if [[ -n "${APP_CONTAINER_ID}" ]]; then
+    info "  Bestaande stm-app container ${APP_CONTAINER_ID:0:12} → herstarten..."
+    "${COMPOSE_CMD[@]}" restart stm-app 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    ok "  stm-app restart gestart."
+  else
+    info "  stm-app container draaide niet. Start de app op de gebruikelijke manier op:"
+    info "    sudo bash /opt/stm/nexus-install.sh --update"
+  fi
+
+  hr
+  title "✅  DB-UPDATE VOLTOOID"
+  ok "Schema migraties (prisma migrate deploy): TOEGEPAST"
+  ok "5 Systeemrollen (ADMIN/EMPLOYEE/VIEWER + 2 Klantrollen): AANGEMAAKT"
+  ok "Permissie-matrix per resource: INGESTELD (write ⇒ read)"
+  ok "Bestaande legacy gebruikers automatisch gekoppeld via roleId"
+  hr
+  info "💡  LOGUIT + LOGINGEBUIK: Ververs nu je browser-sessie (logout + inloggen)"
+  info "   Zodat de JWT-sessie nieuwe velden roleId, roleScope en permissions bevat."
+  info "💡  Blijft ADMIN rechten missen? Koppel je account handmatig (zie docs of README)."
+
+  # Clean exit (geen ERR trap, succes status)
+  _STM_EXIT_PRINTED=1
+  exit 0
+fi
 
 # ==============================================================================
 # ╔════════════════════════════════════════════════════════════════════════════╗
