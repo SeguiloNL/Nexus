@@ -63,6 +63,7 @@ SKIP_DOCKER=0
 FORCE_REBUILD=0
 NON_INTERACTIVE=0
 SKIP_BACKUP_INSTALL=0
+SKIP_SIMHUIS_USAGE_SYNC_INSTALL=0
 SHOW_HELP=0
 
 # ANSI colors (uitschakelbaar via NO_COLOR=1)
@@ -138,6 +139,7 @@ while [[ $# -gt 0 ]]; do
     --non-interactive)      NON_INTERACTIVE=1; shift ;;
     --skip-preflight)       SKIP_PREFLIGHT=1; shift ;;
     --skip-backup-install)  SKIP_BACKUP_INSTALL=1; shift ;;
+    --skip-simhuis-usage-sync-install)  SKIP_SIMHUIS_USAGE_SYNC_INSTALL=1; shift ;;
     -h|--help)              SHOW_HELP=1; shift ;;
     *) err "Onbekende optie: $1"; usage; exit 1 ;;
   esac
@@ -627,6 +629,67 @@ else
 fi
 
 # ------------------------------------------------------------------------------
+# STAP 10.5 — Simhuis Usage Sync (uurlijk, systemd timer)
+# Roept /api/integrations/simhuis/sync-usage aan via curl + Bearer token.
+# Vereist: SIMHUIS_SYNC_API_TOKEN is gezet in /opt/stm/.env
+# ------------------------------------------------------------------------------
+title "Simhuis Usage Sync (uurlijk, systemd timer)"
+
+if [[ "$SKIP_SIMHUIS_USAGE_SYNC_INSTALL" -eq 1 ]]; then
+  info "--skip-simhuis-usage-sync-install: usage-sync script/timer installatie overgeslagen."
+else
+  USAGE_SCRIPT_SRC="${ROOT_DIR}/scripts/sync-simhuis-usage.sh"
+  USAGE_SERVICE_SRC="${ROOT_DIR}/deploy/stm-simhuis-usage-sync.service"
+  USAGE_TIMER_SRC="${ROOT_DIR}/deploy/stm-simhuis-usage-sync.timer"
+
+  USAGE_SCRIPT_DEST="/opt/stm/scripts/sync-simhuis-usage.sh"
+  USAGE_SERVICE_DEST="/etc/systemd/system/stm-simhuis-usage-sync.service"
+  USAGE_TIMER_DEST="/etc/systemd/system/stm-simhuis-usage-sync.timer"
+
+  MISSING_FILES=()
+  [[ -f "$USAGE_SCRIPT_SRC"  ]] || MISSING_FILES+=("${USAGE_SCRIPT_SRC}")
+  [[ -f "$USAGE_SERVICE_SRC" ]] || MISSING_FILES+=("${USAGE_SERVICE_SRC}")
+  [[ -f "$USAGE_TIMER_SRC"   ]] || MISSING_FILES+=("${USAGE_TIMER_SRC}")
+
+  if [[ ${#MISSING_FILES[@]} -gt 0 ]]; then
+    warn "Simhuis usage-sync bestanden ontbreken (${#MISSING_FILES[@]}):"
+    for f in "${MISSING_FILES[@]}"; do warn "  - $f"; done
+    warn "Usage-sync installatie wordt overgeslagen."
+  elif [[ "$NON_INTERACTIVE" -eq 0 ]] && ! confirm "Simhuis usage-sync systemd timer installeren? (wordt elk heel uur uitgevoerd)"; then
+    info "Simhuis usage-sync timer niet geïnstalleerd (gebruiker geweigerd). Je kunt hem later alsnog installeren:"
+    info "  sudo cp ${USAGE_SERVICE_SRC} ${USAGE_SERVICE_DEST}"
+    info "  sudo cp ${USAGE_TIMER_SRC}   ${USAGE_TIMER_DEST}"
+    info "  sudo mkdir -p /opt/stm/scripts && sudo cp ${USAGE_SCRIPT_SRC} ${USAGE_SCRIPT_DEST} && sudo chmod 750 ${USAGE_SCRIPT_DEST}"
+    info "  sudo systemctl daemon-reload && sudo systemctl enable --now stm-simhuis-usage-sync.timer"
+  else
+    step "Kopiëren usage-sync script + systemd unit/timer..."
+    sudo mkdir -p /opt/stm/scripts
+    sudo cp -f "$USAGE_SCRIPT_SRC"  "$USAGE_SCRIPT_DEST"
+    sudo cp -f "$USAGE_SERVICE_SRC" "$USAGE_SERVICE_DEST"
+    sudo cp -f "$USAGE_TIMER_SRC"   "$USAGE_TIMER_DEST"
+    sudo chown root:root "$USAGE_SCRIPT_DEST"
+    sudo chmod 750 "$USAGE_SCRIPT_DEST"
+
+    step "systemctl daemon-reload + enable --now stm-simhuis-usage-sync.timer..."
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now stm-simhuis-usage-sync.timer
+
+    sleep 1
+    TIMER_ACTIVE="$(sudo systemctl is-active stm-simhuis-usage-sync.timer 2>/dev/null || echo unknown)"
+    TIMER_NEXT="$(sudo systemctl list-timers stm-simhuis-usage-sync.timer --no-pager 2>/dev/null | tail -1 | awk '{print $1, $2, $3}' || echo '?')"
+    if [[ "${TIMER_ACTIVE}" == "active" ]]; then
+      ok "Simhuis usage-sync timer actief. Volgende geplande run: ${TIMER_NEXT}"
+      info "Tip: Zet in /opt/stm/.env een SIMHUIS_SYNC_API_TOKEN (minimaal 32 tekens) als je dat nog niet gedaan hebt."
+      info "Handmatige trigger: sudo bash /opt/stm/scripts/sync-simhuis-usage.sh"
+    else
+      warn "Usage-sync timer NIET actief (status=${TIMER_ACTIVE}). Check handmatig:"
+      warn "  sudo systemctl list-timers stm-simhuis-usage-sync.timer"
+      warn "  sudo systemctl status stm-simhuis-usage-sync.service"
+    fi
+  fi
+fi
+
+# ------------------------------------------------------------------------------
 # STAP 11 — Samenvatting + handige opdrachten
 # ------------------------------------------------------------------------------
 title "Deploy afgerond — Samenvatting"
@@ -651,6 +714,11 @@ cat <<EOF | tee -a "$LOG_FILE"
   ${CYN}Restore backup      :${RST}  pg_restore --format=custom --clean --if-exists \
                                        -d postgresql://stm:<pw>@localhost:5432/stm \
                                        /opt/stm/backups/daily/stm-db-YYYYMMDD-HHMM.dump
+
+  ${CYN}SIM usage-sync (uurl.)  :${RST}  sudo systemctl list-timers stm-simhuis-usage-sync.timer
+  ${CYN}Usage-sync nu draaien   :${RST}  sudo bash /opt/stm/scripts/sync-simhuis-usage.sh
+  ${CYN}SIM voll. sync (token)  :${RST}  curl -X POST -H "Authorization: Bearer <token>" \
+                                          \${APP_URL:-http://127.0.0.1:3000}/api/integrations/simhuis/sync-sims
 
   ${DIM}Defaults seed admin (indien je PRISMA SEED gedraaid hebt):
     admin@nexus.local  /  Test1234!${RST}

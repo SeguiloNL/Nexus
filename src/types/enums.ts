@@ -7,6 +7,17 @@ export enum UserRole {
   VIEWER = "VIEWER",
 }
 
+export enum RoleScope {
+  INTERNAL = "INTERNAL",
+  CUSTOMER = "CUSTOMER",
+}
+
+export enum AccessLevel {
+  NONE = "NONE",
+  READ = "READ",
+  WRITE = "WRITE",
+}
+
 export enum CustomerStatus {
   PROSPECT = "PROSPECT",
   ACTIVE = "ACTIVE",
@@ -118,4 +129,31 @@ export type ResourceType =
   | "user"
   | "audit_log"
   | "setting"
-  | "dashboard";
+  | "dashboard"
+  | "role";
+
+export const ALL_RESOURCE_TYPES: ResourceType[] = [
+  "customer",
+  "tracker",
+  "sim",
+  "vehicle",
+  "subscription",
+  "product",
+  "activation_order",
+  "invoice",
+  "user",
+  "audit_log",
+  "setting",
+  "dashboard",
+  "role",
+];
+
+export const CUSTOMER_SCOPE_RESOURCES: ResourceType[] = [
+  "customer",
+  "tracker",
+  "sim",
+  "vehicle",
+  "subscription",
+  "invoice",
+  "dashboard",
+];

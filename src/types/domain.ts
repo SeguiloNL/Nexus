@@ -1,5 +1,6 @@
 import type {
   UserRole,
+  RoleScope,
   CustomerStatus,
   SubscriptionStatus,
   TrackerStatus,
@@ -8,6 +9,7 @@ import type {
   BillingCycle,
   AssignmentReason,
   AuditAction,
+  ResourceType,
 } from "./enums";
 
 // ------------------------------
@@ -59,6 +61,11 @@ export interface UserListItem {
   email: string;
   name: string;
   role: UserRole;
+  roleId: string | null;
+  roleName?: string;
+  roleScope?: RoleScope;
+  customerId: string | null;
+  customerName?: string;
   lastLoginAt: Date | null;
   createdAt: Date;
 }
@@ -68,13 +75,57 @@ export interface CreateUserInput {
   name: string;
   password: string;
   role: UserRole;
+  roleId: string;
+  customerId?: string | null;
 }
 
 export interface UpdateUserInput {
   name?: string;
   email?: string;
   role?: UserRole;
+  roleId?: string;
+  customerId?: string | null;
   password?: string;
+}
+
+// ------------------------------
+// Role / Dynamic RBAC
+// ------------------------------
+
+export type PermissionLevel = "NONE" | "READ" | "WRITE";
+
+export type PermissionMatrix = Partial<Record<ResourceType, PermissionLevel>>;
+
+export interface RoleListItem {
+  id: string;
+  name: string;
+  scope: RoleScope;
+  isSystem: boolean;
+  isDefault: boolean;
+  description: string | null;
+  userCount: number;
+  permissionCount: { read: number; write: number };
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface RoleDetail extends RoleListItem {
+  permissions: Record<ResourceType, { read: boolean; write: boolean }>;
+}
+
+export interface CreateRoleInput {
+  name: string;
+  scope: RoleScope;
+  description?: string | null;
+  isDefault?: boolean;
+  permissions: PermissionMatrix;
+}
+
+export interface UpdateRoleInput {
+  name?: string;
+  description?: string | null;
+  isDefault?: boolean;
+  permissions?: PermissionMatrix;
 }
 
 // ------------------------------

@@ -116,6 +116,18 @@ export interface SimhuisSyncResult {
   durationMs: number;
 }
 
+export interface SimhuisUsageSyncResult {
+  totalActiveInDb: number;
+  totalInSimhuis: number;
+  matched: number;
+  updated: number;
+  skipped: number;
+  errors: number;
+  errorMessages: string[];
+  lastSyncedAt: Date;
+  durationMs: number;
+}
+
 function isSimAvailableForStock(status: SimhuisSimStatus["status"]): boolean {
   if (!status) return false;
   const s = String(status).toLowerCase();
@@ -477,6 +489,278 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
     totalInSimhuis,
     eligibleInSimhuis: eligible.length,
     created,
+    updated,
+    skipped,
+    errors: errorCount,
+    errorMessages: errors,
+    lastSyncedAt: new Date(),
+    durationMs: Date.now() - startedAt,
+  };
+}
+
+// ============================================================
+// Usage-only sync (snelle variant, hourly)
+// - Alleen voor ACTIVE SIMs (status = ACTIVE in DB)
+// - Alleen data/SMS velden bijwerken (GEEN create, GEEN status-wijzigingen,
+//   GEEN SIM-veld-discovery)
+// - Gebruikt listAllSims() (1-2 API calls voor alle SIMs tegelijk)
+//   in plaats van per-SIM discovery; veel sneller.
+// ============================================================
+export async function syncActiveSimsUsageFromSimhuis(
+  ctx: Ctx = {}
+): Promise<SimhuisUsageSyncResult> {
+  const configured = await simhuisClient.isConfigured();
+  if (!configured) {
+    throw new Error(
+      "Simhuis niet geconfigureerd (username en/of password ontbreekt)."
+    );
+  }
+
+  const startedAt = Date.now();
+  const errors: string[] = [];
+  let updated = 0;
+  let skipped = 0;
+  let errorCount = 0;
+
+  // 1. Haal alle ACTIVE en recent ACTIVE SIMs op uit de lokale DB.
+  //    (We nemen ook SUSPENDED/RESERVED op met bestaande usage-data zodat
+  //    die niet ineens lege waarden krijgen; alleen CANCELLED / RETIRED /
+  //    IN_STOCK zonder data slaan we over.)
+  const targetSims = await prisma.sIM.findMany({
+    where: {
+      deletedAt: null,
+      OR: [
+        { status: SimStatus.ACTIVE },
+        { status: SimStatus.SUSPENDED },
+        { status: SimStatus.RESERVED },
+        {
+          AND: [
+            { dataUsedBytes: { not: null } },
+            {
+              status: {
+                notIn: [SimStatus.CANCELLED, SimStatus.RETIRED],
+              },
+            },
+          ],
+        },
+      ],
+    },
+    select: {
+      id: true,
+      iccid: true,
+      status: true,
+      dataUsedBytes: true,
+      dataLimitBytes: true,
+      lowestDataLimitBytes: true,
+      smsUsedCount: true,
+      smsLimitCount: true,
+      lowestSmsLimitCount: true,
+      lastUsageSyncAt: true,
+    },
+  });
+
+  const totalActiveInDb = targetSims.length;
+  const byIccid = new Map(targetSims.map((s) => [s.iccid, s]));
+
+  // 2. Vraag alle SIMs met 1 call op bij Simhuis.
+  let allSimsFromSimhuis: SimhuisSimStatus[] = [];
+  try {
+    allSimsFromSimhuis = await listAllSims();
+  } catch (e: any) {
+    throw new Error(
+      `Ophalen SIMs van Simhuis mislukt: ${e?.message ?? e}`
+    );
+  }
+  const totalInSimhuis = allSimsFromSimhuis.length;
+
+  // 3. Alleen diegene die in de lokale target set zitten
+  //    (per ICCID normaal-vorm voor de zekerheid).
+  const matchedFromSimhuis: Array<{
+    iccid: string;
+    simhuis: SimhuisSimStatus;
+  }> = [];
+  for (const s of allSimsFromSimhuis) {
+    const n = normIccid(s.iccid);
+    if (!n) continue;
+    if (byIccid.has(n)) {
+      matchedFromSimhuis.push({ iccid: n, simhuis: s });
+    }
+  }
+  const matched = matchedFromSimhuis.length;
+
+  // 4. Update parallel per match.
+  const updatePromises: Promise<unknown>[] = [];
+  const auditUsageUpdates: Array<{
+    iccid: string;
+    old: any;
+    new: any;
+  }> = [];
+
+  for (const { iccid, simhuis } of matchedFromSimhuis) {
+    try {
+      const existing = byIccid.get(iccid)!;
+
+      const dataUsedBytesVal = toBigIntOrNull(simhuis.dataUsedBytes);
+      const dataLimitBytesVal = toBigIntOrNull(simhuis.dataLimitBytes);
+      const lowestDataLimitBytesVal = toBigIntOrNull(
+        simhuis.lowestDataLimitBytes
+      );
+      const smsUsedCountVal: number | null =
+        typeof simhuis.smsUsedCount === "number" &&
+        Number.isFinite(simhuis.smsUsedCount)
+          ? Math.round(simhuis.smsUsedCount)
+          : null;
+      const smsLimitCountVal: number | null =
+        typeof simhuis.smsLimitCount === "number" &&
+        Number.isFinite(simhuis.smsLimitCount)
+          ? Math.round(simhuis.smsLimitCount)
+          : null;
+      const lowestSmsLimitCountVal: number | null =
+        typeof simhuis.lowestSmsLimitCount === "number" &&
+        Number.isFinite(simhuis.lowestSmsLimitCount)
+          ? Math.round(simhuis.lowestSmsLimitCount)
+          : null;
+
+      const oldData = {
+        dataUsedBytes: existing.dataUsedBytes,
+        dataLimitBytes: existing.dataLimitBytes,
+        lowestDataLimitBytes: existing.lowestDataLimitBytes,
+        smsUsedCount: existing.smsUsedCount,
+        smsLimitCount: existing.smsLimitCount,
+        lowestSmsLimitCount: existing.lowestSmsLimitCount,
+        lastUsageSyncAt: existing.lastUsageSyncAt,
+      };
+
+      let changed = false;
+      const newData: typeof oldData = { ...oldData };
+      if (!bigIntEq(existing.dataUsedBytes, dataUsedBytesVal)) {
+        newData.dataUsedBytes = dataUsedBytesVal;
+        changed = true;
+      }
+      if (!bigIntEq(existing.dataLimitBytes, dataLimitBytesVal)) {
+        newData.dataLimitBytes = dataLimitBytesVal;
+        changed = true;
+      }
+      if (!bigIntEq(existing.lowestDataLimitBytes, lowestDataLimitBytesVal)) {
+        newData.lowestDataLimitBytes = lowestDataLimitBytesVal;
+        changed = true;
+      }
+      if (existing.smsUsedCount !== smsUsedCountVal) {
+        newData.smsUsedCount = smsUsedCountVal;
+        changed = true;
+      }
+      if (existing.smsLimitCount !== smsLimitCountVal) {
+        newData.smsLimitCount = smsLimitCountVal;
+        changed = true;
+      }
+      if (existing.lowestSmsLimitCount !== lowestSmsLimitCountVal) {
+        newData.lowestSmsLimitCount = lowestSmsLimitCountVal;
+        changed = true;
+      }
+
+      const hasAnyUsageData =
+        newData.dataUsedBytes !== null ||
+        newData.dataLimitBytes !== null ||
+        newData.lowestDataLimitBytes !== null ||
+        newData.smsUsedCount !== null ||
+        newData.smsLimitCount !== null ||
+        newData.lowestSmsLimitCount !== null;
+      if (hasAnyUsageData) {
+        newData.lastUsageSyncAt = new Date();
+        changed = true;
+      }
+
+      if (!changed) {
+        skipped++;
+        continue;
+      }
+
+      const p = prisma.sIM
+        .update({
+          where: { id: existing.id },
+          data: {
+            dataUsedBytes: newData.dataUsedBytes,
+            dataLimitBytes: newData.dataLimitBytes,
+            lowestDataLimitBytes: newData.lowestDataLimitBytes,
+            smsUsedCount: newData.smsUsedCount,
+            smsLimitCount: newData.smsLimitCount,
+            lowestSmsLimitCount: newData.lowestSmsLimitCount,
+            lastUsageSyncAt: newData.lastUsageSyncAt,
+          },
+        })
+        .then(() => {
+          auditUsageUpdates.push({ iccid, old: oldData, new: newData });
+          updated++;
+        })
+        .catch((err) => {
+          errorCount++;
+          errors.push(`[${iccid}] Usage update mislukt: ${err?.message ?? err}`);
+        });
+      updatePromises.push(p);
+    } catch (e: any) {
+      errorCount++;
+      errors.push(
+        `[${iccid}] Onverwachte fout in usage-sync: ${e?.message ?? e}`
+      );
+    }
+  }
+
+  await Promise.all(updatePromises);
+
+  // 5. Audit logging (apart van de grote sync)
+  try {
+    await prisma.$transaction(async (tx) => {
+      const userId = ctx.userId;
+      const finishedAt = new Date();
+      const durationMs = Date.now() - startedAt;
+      const meta = {
+        scope: "simhuis_usage_sync",
+        totalActiveInDb,
+        totalInSimhuis,
+        matched,
+        updated,
+        skipped,
+        errors: errorCount,
+        startedAt: new Date(startedAt).toISOString(),
+        finishedAt: finishedAt.toISOString(),
+        durationMs,
+      };
+      if (auditUsageUpdates.length > 0) {
+        await logAudit(tx, {
+          entityType: "SIM",
+          entityId: `usage_sync_simhuis_batch_${Date.now()}`,
+          action: "BATCH_UPDATE",
+          userId: userId ?? "SYSTEM",
+          oldValues: { source: "simhuis_usage_sync", count: auditUsageUpdates.length },
+          newValues: {
+            items: auditUsageUpdates.slice(0, 100),
+            total: auditUsageUpdates.length,
+          },
+          metadata: meta,
+          timestamp: finishedAt,
+        });
+      }
+      if (errorCount > 0) {
+        await logAudit(tx, {
+          entityType: "SIM",
+          entityId: `usage_sync_simhuis_batch_${Date.now()}_err`,
+          action: "BATCH_ERROR",
+          userId: userId ?? "SYSTEM",
+          oldValues: { errorCount },
+          newValues: { errorMessages: errors.slice(0, 50) },
+          metadata: meta,
+          timestamp: finishedAt,
+        });
+      }
+    });
+  } catch (auditErr) {
+    console.error("[simhuis-usage-sync] Audit logging failed:", auditErr);
+  }
+
+  return {
+    totalActiveInDb,
+    totalInSimhuis,
+    matched,
     updated,
     skipped,
     errors: errorCount,

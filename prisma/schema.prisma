@@ -20,6 +20,11 @@ enum UserRole {
   VIEWER
 }
 
+enum RoleScope {
+  INTERNAL
+  CUSTOMER
+}
+
 enum CustomerStatus {
   PROSPECT
   ACTIVE
@@ -131,12 +136,47 @@ enum InvoiceStatus {
 // Models
 // ------------------------------
 
+model Role {
+  id           String           @id @default(cuid())
+  name         String
+  scope        RoleScope
+  isSystem     Boolean          @default(false)
+  isDefault    Boolean          @default(false)
+  description  String?          @db.Text
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  permissions  RolePermission[]
+  users        User[]
+
+  @@unique([name, scope])
+  @@index([scope])
+  @@map("roles")
+}
+
+model RolePermission {
+  id       String   @id @default(cuid())
+  roleId   String
+  role     Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  resource String
+  read     Boolean  @default(false)
+  write    Boolean  @default(false)
+
+  @@unique([roleId, resource])
+  @@index([roleId])
+  @@map("role_permissions")
+}
+
 model User {
   id            String    @id @default(cuid())
   email         String    @unique
   name          String
   passwordHash  String
   role          UserRole  @default(EMPLOYEE)
+  roleId        String?
+  roleObj       Role?     @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  customerId    String?
+  customer      Customer? @relation("CustomerUsers", fields: [customerId], references: [id], onDelete: SetNull)
   lastLoginAt   DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -146,6 +186,8 @@ model User {
   createdTrackerAssignments TrackerAssignment[] @relation("CreatedTrackers")
   createdSimAssignments     SimAssignment[]     @relation("CreatedSims")
 
+  @@index([roleId])
+  @@index([customerId])
   @@map("users")
 }
 
@@ -177,6 +219,7 @@ model Customer {
   activationOrders  ActivationOrder[] @relation("CustomerOrders")
   subCustomerOrders ActivationOrder[] @relation("SubCustomerOrders")
   invoices          Invoice[]
+  users             User[]           @relation("CustomerUsers")
 
   @@index([status])
   @@index([parentCustomerId])

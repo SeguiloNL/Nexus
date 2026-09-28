@@ -9,11 +9,20 @@ import type {
   PaginatedResult,
   UpdateCustomerInput,
 } from "@/types/domain";
-import type { CustomerStatus, UserRole } from "@/types/enums";
+import type { CustomerStatus, UserRole, RoleScope } from "@/types/enums";
 import type { Prisma, Customer as PrismaCustomer } from "@prisma/client";
 import { CreateCustomerSchema } from "@/server/validators/customer";
+import type { PermissionBits } from "@/types/next-auth";
+import { requirePermission } from "@/lib/rbac";
 
-type Ctx = { userId: string; userRole: UserRole };
+type Ctx = {
+  userId: string;
+  userRole: UserRole;
+  roleId?: string;
+  roleScope?: RoleScope;
+  customerScope?: string[];
+  permissions?: PermissionBits;
+};
 
 function includeDetail(): Prisma.CustomerInclude {
   return {
@@ -126,7 +135,7 @@ function includeDetail(): Prisma.CustomerInclude {
 }
 
 export async function findManyCustomers(
-  params: CustomerFilterParams & { viewerRole?: UserRole }
+  params: CustomerFilterParams & { viewerRole?: UserRole; customerScope?: string[] }
 ): Promise<PaginatedResult<PrismaCustomer>> {
   const {
     page = 1,
@@ -137,9 +146,14 @@ export async function findManyCustomers(
     status,
     parentCustomerId,
     isParent,
+    customerScope,
   } = params;
 
   const where: Prisma.CustomerWhereInput = { deletedAt: null };
+
+  if (customerScope && customerScope.length > 0) {
+    where.id = { in: customerScope };
+  }
 
   if (status) (where.status as any) = status;
   if (parentCustomerId) where.parentCustomerId = parentCustomerId;
@@ -193,9 +207,13 @@ export async function findManyCustomers(
   };
 }
 
-export async function findCustomerById(id: string) {
+export async function findCustomerById(id: string, customerScope?: string[]) {
+  const where: Prisma.CustomerWhereUniqueInput & Prisma.CustomerWhereInput = { id, deletedAt: null };
+  if (customerScope && customerScope.length > 0) {
+    if (!customerScope.includes(id)) return null;
+  }
   return prisma.customer.findUnique({
-    where: { id, deletedAt: null },
+    where: where as Prisma.CustomerWhereUniqueInput,
     include: includeDetail(),
   });
 }
@@ -204,9 +222,17 @@ export async function createCustomer(
   input: CreateCustomerInput,
   ctx: Ctx
 ): Promise<PrismaCustomer> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "customer");
+
+  if (ctx.customerScope && ctx.customerScope.length > 0) {
+    if (input.parentCustomerId && !ctx.customerScope.includes(input.parentCustomerId)) {
+      throw new Error("Parent customer valt niet binnen je toegang");
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     const customerNumber =
-      input.customerNumber?.trim() || (await generateCustomerNumber());
+      input.customerNumber?.trim() || (await generateCustomerNumber(tx as any));
 
     const created = await tx.customer.create({
       data: {
@@ -225,7 +251,7 @@ export async function createCustomer(
       },
     });
 
-    await logAudit(tx, {
+    await logAudit(tx as any, {
       entityType: "customer",
       entityId: created.id,
       action: "CREATE",
@@ -242,6 +268,17 @@ export async function updateCustomer(
   input: UpdateCustomerInput,
   ctx: Ctx
 ): Promise<PrismaCustomer> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "customer");
+
+  if (ctx.customerScope && ctx.customerScope.length > 0) {
+    if (!ctx.customerScope.includes(id)) {
+      throw new Error("Customer valt niet binnen je toegang");
+    }
+    if (input.parentCustomerId && !ctx.customerScope.includes(input.parentCustomerId)) {
+      throw new Error("Parent customer valt niet binnen je toegang");
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.customer.findUniqueOrThrow({
       where: { id, deletedAt: null },
@@ -258,7 +295,7 @@ export async function updateCustomer(
     );
 
     if (oldValues || newValues) {
-      await logAudit(tx, {
+      await logAudit(tx as any, {
         entityType: "customer",
         entityId: updated.id,
         action: "UPDATE",
@@ -276,6 +313,14 @@ export async function softDeleteCustomer(
   id: string,
   ctx: Ctx
 ): Promise<PrismaCustomer> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "customer");
+
+  if (ctx.customerScope && ctx.customerScope.length > 0) {
+    if (!ctx.customerScope.includes(id)) {
+      throw new Error("Customer valt niet binnen je toegang");
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.customer.findUniqueOrThrow({
       where: { id, deletedAt: null },
@@ -286,7 +331,7 @@ export async function softDeleteCustomer(
       data: { deletedAt: new Date() },
     });
 
-    await logAudit(tx, {
+    await logAudit(tx as any, {
       entityType: "customer",
       entityId: updated.id,
       action: "DELETE",
@@ -298,10 +343,14 @@ export async function softDeleteCustomer(
   });
 }
 
-export async function listParentCustomers() {
+export async function listParentCustomers(customerScope?: string[]) {
+  const where: Prisma.CustomerWhereInput = { deletedAt: null, parentCustomerId: null };
+  if (customerScope && customerScope.length > 0) {
+    where.id = { in: customerScope };
+  }
   return prisma.customer
     .findMany({
-      where: { deletedAt: null, parentCustomerId: null },
+      where,
       select: { id: true, companyName: true, customerNumber: true },
       orderBy: { companyName: "asc" },
     })
@@ -364,6 +413,16 @@ export async function bulkImportCustomers(
   validRows: CustomerCsvImportPreviewResult["valid"],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "customer");
+
+  if (ctx.customerScope && ctx.customerScope.length > 0) {
+    for (const { data } of validRows) {
+      if (data.parentCustomerId && !ctx.customerScope.includes(data.parentCustomerId)) {
+        throw new Error("Een of meer parent customers vallen niet binnen je toegang");
+      }
+    }
+  }
+
   const ids: string[] = [];
   await prisma.$transaction(async (tx) => {
     for (const { row, data } of validRows) {

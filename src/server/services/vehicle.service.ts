@@ -6,10 +6,18 @@ import type {
   PaginatedResult,
   UpdateVehicleInput,
 } from "@/types/domain";
-import type { UserRole } from "@/types/enums";
+import type { UserRole, RoleScope } from "@/types/enums";
 import type { Prisma, Vehicle as PrismaVehicle } from "@prisma/client";
+import type { PermissionBits } from "@/types/next-auth";
 
-type Ctx = { userId: string; userRole: UserRole };
+type Ctx = {
+  userId: string;
+  userRole: UserRole;
+  roleId?: string;
+  roleScope?: RoleScope;
+  customerScope?: string[];
+  permissions?: PermissionBits;
+};
 
 function includeDetail(): Prisma.VehicleInclude {
   return {
@@ -44,6 +52,7 @@ export async function findManyVehicles(
     order?: "asc" | "desc";
     search?: string;
     customerId?: string;
+    customerScope?: string[];
   } & { viewerRole?: UserRole }
 ): Promise<PaginatedResult<PrismaVehicle>> {
   const {
@@ -53,9 +62,13 @@ export async function findManyVehicles(
     order = "desc",
     search,
     customerId,
+    customerScope,
   } = params;
 
   const where: Prisma.VehicleWhereInput = { deletedAt: null };
+  if (customerScope && customerScope.length > 0) {
+    where.customerId = { in: customerScope };
+  }
   if (customerId) where.customerId = customerId;
 
   if (search) {
@@ -102,9 +115,13 @@ export async function findManyVehicles(
   };
 }
 
-export async function findVehicleById(id: string) {
-  return prisma.vehicle.findUnique({
-    where: { id, deletedAt: null },
+export async function findVehicleById(id: string, customerScope?: string[]) {
+  const where: Prisma.VehicleWhereInput = { id, deletedAt: null };
+  if (customerScope && customerScope.length > 0) {
+    where.customerId = { in: customerScope };
+  }
+  return prisma.vehicle.findFirst({
+    where,
     include: includeDetail(),
   });
 }
@@ -113,6 +130,14 @@ export async function createVehicle(
   input: CreateVehicleInput,
   ctx: Ctx
 ): Promise<PrismaVehicle> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "vehicle");
+
+  if (ctx.customerScope && ctx.customerScope.length > 0) {
+    if (!ctx.customerScope.includes(input.customerId)) {
+      throw new Error("Customer valt niet binnen je toegang");
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     const created = await tx.vehicle.create({
       data: {
@@ -141,10 +166,22 @@ export async function updateVehicle(
   input: UpdateVehicleInput,
   ctx: Ctx
 ): Promise<PrismaVehicle> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "vehicle");
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.vehicle.findUniqueOrThrow({
       where: { id, deletedAt: null },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      if (!ctx.customerScope.includes(existing.customerId)) {
+        throw new Error("Vehicle valt niet binnen je toegang");
+      }
+      if (input.customerId && !ctx.customerScope.includes(input.customerId)) {
+        throw new Error("Nieuwe customer valt niet binnen je toegang");
+      }
+    }
+
     const data: Prisma.VehicleUpdateInput = {};
     for (const [k, v] of Object.entries(input)) {
       if (v !== undefined) (data as any)[k] = v;
@@ -172,10 +209,19 @@ export async function softDeleteVehicle(
   id: string,
   ctx: Ctx
 ): Promise<PrismaVehicle> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "vehicle");
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.vehicle.findUniqueOrThrow({
       where: { id, deletedAt: null },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      if (!ctx.customerScope.includes(existing.customerId)) {
+        throw new Error("Vehicle valt niet binnen je toegang");
+      }
+    }
+
     const updated = await tx.vehicle.update({
       where: { id },
       data: { deletedAt: new Date() },
@@ -195,12 +241,14 @@ export async function bulkSoftDeleteVehicles(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  requirePermission(ctx.userRole, "delete", "vehicle");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "vehicle");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
-    const rows = await tx.vehicle.findMany({
-      where: { id: { in: ids }, deletedAt: null },
-    });
+    const where: Prisma.VehicleWhereInput = { id: { in: ids }, deletedAt: null };
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      where.customerId = { in: ctx.customerScope };
+    }
+    const rows = await tx.vehicle.findMany({ where });
     if (!rows.length) return { count: 0, ids: [] };
     const targets = rows.map((r) => r.id);
     const deletedAt = new Date();

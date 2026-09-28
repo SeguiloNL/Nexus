@@ -1,0 +1,19 @@
+# ============================================================
+# STM Simhuis Usage Sync timer: ELK HEEL UUR
+# (Persistent=true: als de VPS tijdens een run offline was,
+# wordt de taak alsnog uitgevoerd zodra de server weer online
+# komt.)
+# ============================================================
+[Unit]
+Description=Uurlijkse Simhuis usage/data/SMS synchronisatie (actieve SIMs)
+Documentation=https://github.com/SeguiloNL/Nexus/
+
+[Timer]
+OnCalendar=*-*-* *:00:00 Europe/Amsterdam
+Persistent=true
+RandomizedDelaySec=90
+AccuracySec=1min
+Unit=stm-simhuis-usage-sync.service
+
+[Install]
+WantedBy=timers.target

@@ -4,6 +4,7 @@ const {
   Prisma,
   PrismaClient,
   UserRole,
+  RoleScope,
   CustomerStatus,
   TrackerStatus,
   SimStatus,
@@ -18,43 +19,187 @@ const BCRYPT_ROUNDS = 10;
 
 const PASSWORD = "Test1234!";
 
+const ALL_RESOURCES = [
+  "customer",
+  "tracker",
+  "sim",
+  "vehicle",
+  "subscription",
+  "product",
+  "activation_order",
+  "invoice",
+  "user",
+  "audit_log",
+  "setting",
+  "dashboard",
+  "role",
+];
+
+const INTERNAL_READ_ALL_WRITE = [
+  "customer",
+  "tracker",
+  "sim",
+  "vehicle",
+  "subscription",
+  "product",
+  "activation_order",
+  "invoice",
+];
+
+const CUSTOMER_BASE_READ = [
+  "customer",
+  "tracker",
+  "sim",
+  "vehicle",
+  "subscription",
+  "invoice",
+  "dashboard",
+];
+
+function perms(resources, { write = [], readExtra = [] } = {}) {
+  const writeSet = new Set(write);
+  const readSet = new Set([...resources, ...readExtra]);
+  return ALL_RESOURCES.map((resource) => {
+    const w = writeSet.has(resource);
+    const r = w || readSet.has(resource);
+    return { resource, read: r, write: w };
+  });
+}
+
+const DEFAULT_ROLES = [
+  {
+    name: "ADMIN",
+    scope: RoleScope.INTERNAL,
+    isSystem: true,
+    isDefault: false,
+    description: "Volledige toegang tot alle functionaliteit (systeemrol).",
+    permissions: perms(ALL_RESOURCES, { write: ALL_RESOURCES }),
+  },
+  {
+    name: "EMPLOYEE",
+    scope: RoleScope.INTERNAL,
+    isSystem: true,
+    isDefault: true,
+    description: "Medewerker: lezen + schrijven entiteiten, geen delete / userbeheer / instellingen-wijziging.",
+    permissions: perms(
+      [
+        ...ALL_RESOURCES.filter((r) => r !== "user"),
+        "setting",
+      ],
+      {
+        write: INTERNAL_READ_WRITE,
+        readExtra: ["audit_log"],
+      }
+    ),
+  },
+  {
+    name: "VIEWER",
+    scope: RoleScope.INTERNAL,
+    isSystem: true,
+    isDefault: false,
+    description: "Alleen-lezen toegang (geen wijzigingen).",
+    permissions: perms(ALL_RESOURCES.filter((r) => r !== "user" && r !== "role")),
+  },
+  {
+    name: "CUSTOMER_VIEWER",
+    scope: RoleScope.CUSTOMER,
+    isSystem: true,
+    isDefault: true,
+    description: "Klant: alleen eigen entiteiten bekijken.",
+    permissions: perms(CUSTOMER_BASE_READ),
+  },
+  {
+    name: "CUSTOMER_EDITOR",
+    scope: RoleScope.CUSTOMER,
+    isSystem: true,
+    isDefault: false,
+    description: "Klant: bekijken + voertuigen/notities bewerken.",
+    permissions: perms(CUSTOMER_BASE_READ, { write: ["vehicle"] }),
+  },
+];
+
+async function seedDefaultRoles() {
+  const result = {};
+  for (const def of DEFAULT_ROLES) {
+    const role = await prisma.role.upsert({
+      where: {
+        name_scope: { name: def.name, scope: def.scope },
+      },
+      update: {
+        description: def.description,
+        isSystem: def.isSystem,
+        isDefault: def.isDefault,
+      },
+      create: {
+        name: def.name,
+        scope: def.scope,
+        isSystem: def.isSystem,
+        isDefault: def.isDefault,
+        description: def.description,
+      },
+    });
+    for (const p of def.permissions) {
+      await prisma.rolePermission.upsert({
+        where: {
+          roleId_resource: { roleId: role.id, resource: p.resource },
+        },
+        update: { read: p.read, write: p.write },
+        create: {
+          roleId: role.id,
+          resource: p.resource,
+          read: p.read,
+          write: p.write,
+        },
+      });
+    }
+    result[def.name] = role;
+    console.log(`  ✅ ROLE: ${def.name} (${def.scope}) – ${def.permissions.filter(p => p.write).length} write, ${def.permissions.filter(p => p.read && !p.write).length} read-only`);
+  }
+  return result;
+}
+
 async function main() {
   console.log("🌱 Seeding Nexus development database...");
+
+  const rolesById = await seedDefaultRoles();
 
   const pwd = await bcrypt.hash(PASSWORD, BCRYPT_ROUNDS);
 
   const admin = await prisma.user.upsert({
     where: { email: "admin@nexus.local" },
-    update: {},
+    update: { roleId: rolesById.ADMIN.id },
     create: {
       email: "admin@nexus.local",
       name: "Administrator",
       passwordHash: pwd,
       role: UserRole.ADMIN,
+      roleId: rolesById.ADMIN.id,
     },
   });
   console.log(`  ✅ ADMIN: ${admin.email} / ${PASSWORD}`);
 
   const employee = await prisma.user.upsert({
     where: { email: "medewerker@nexus.local" },
-    update: {},
+    update: { roleId: rolesById.EMPLOYEE.id },
     create: {
       email: "medewerker@nexus.local",
       name: "Medewerker Nexus",
       passwordHash: pwd,
       role: UserRole.EMPLOYEE,
+      roleId: rolesById.EMPLOYEE.id,
     },
   });
   console.log(`  ✅ EMPLOYEE: ${employee.email} / ${PASSWORD}`);
 
   const viewer = await prisma.user.upsert({
     where: { email: "viewer@nexus.local" },
-    update: {},
+    update: { roleId: rolesById.VIEWER.id },
     create: {
       email: "viewer@nexus.local",
       name: "Viewer Account",
       passwordHash: pwd,
       role: UserRole.VIEWER,
+      roleId: rolesById.VIEWER.id,
     },
   });
   console.log(`  ✅ VIEWER: ${viewer.email} / ${PASSWORD}`);

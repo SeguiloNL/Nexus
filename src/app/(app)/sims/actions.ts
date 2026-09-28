@@ -20,6 +20,7 @@ import {
   bulkSoftDeleteSims,
   type SimCsvImportRow,
 } from "@/server/services/sim.service";
+import { syncActiveSimsUsageFromSimhuis } from "@/server/services/simhuis-sim-sync.service";
 
 export type SimActionState = {
   errors?: Partial<Record<keyof CreateSimInput, string[]>>;
@@ -320,5 +321,37 @@ export async function bulkSoftDeleteSimsAction(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return { ok: false, error: msg };
+  }
+}
+
+export async function syncUsageSimsAction(
+  _prev: BulkActionState,
+  _formData: FormData
+): Promise<BulkActionState> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "edit", "sim");
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await syncActiveSimsUsageFromSimhuis(ctx);
+    revalidatePath("/sims");
+    const message =
+      `Usage-sync uitgevoerd. Bijgewerkt: ${result.updated}, ` +
+      `overgeslagen: ${result.skipped}, gematcht: ${result.matched}, ` +
+      `fouten: ${result.errors}. Duur: ${result.durationMs} ms.`;
+    if (result.errors > 0) {
+      return {
+        ok: false,
+        count: result.updated,
+        error: `${result.errors} fout(en). ${message}`,
+      };
+    }
+    return {
+      ok: true,
+      count: result.updated,
+      message,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: `Usage-sync mislukt: ${msg}` };
   }
 }

@@ -7,13 +7,21 @@ import type {
   CreateSubscriptionInput,
   UpdateSubscriptionStatusInput,
 } from "@/types/domain";
-import type { UserRole } from "@/types/enums";
+import type { UserRole, RoleScope } from "@/types/enums";
 import type { Prisma, Subscription as PrismaSub, $Enums } from "@prisma/client";
 import { syncSubscriptionToInserve } from "./inserve-sync.service";
+import type { PermissionBits } from "@/types/next-auth";
 
 type SubscriptionStatus = $Enums.SubscriptionStatus;
 
-type Ctx = { userId: string; userRole: UserRole };
+type Ctx = {
+  userId: string;
+  userRole: UserRole;
+  roleId?: string;
+  roleScope?: RoleScope;
+  customerScope?: string[];
+  permissions?: PermissionBits;
+};
 
 const STATUS_TRANSITIONS: Record<
   keyof typeof SubStatus,
@@ -90,6 +98,7 @@ export async function findManySubscriptions(
     customerId?: string;
     productId?: string;
     status?: SubscriptionStatus;
+    customerScope?: string[];
   }
 ): Promise<PaginatedResult<PrismaSub>> {
   const {
@@ -101,9 +110,13 @@ export async function findManySubscriptions(
     customerId,
     productId,
     status,
+    customerScope,
   } = params;
 
   const where: Prisma.SubscriptionWhereInput = { deletedAt: null };
+  if (customerScope && customerScope.length > 0) {
+    where.customerId = { in: customerScope };
+  }
   if (customerId) where.customerId = customerId;
   if (productId) where.productId = productId;
   if (status) where.status = status as any;
@@ -156,9 +169,13 @@ export async function findManySubscriptions(
   };
 }
 
-export async function findSubscriptionById(id: string) {
-  return prisma.subscription.findUnique({
-    where: { id, deletedAt: null },
+export async function findSubscriptionById(id: string, customerScope?: string[]) {
+  const where: Prisma.SubscriptionWhereInput = { id, deletedAt: null };
+  if (customerScope && customerScope.length > 0) {
+    where.customerId = { in: customerScope };
+  }
+  return prisma.subscription.findFirst({
+    where,
     include: includeSub(),
   });
 }
@@ -167,6 +184,14 @@ export async function createSubscription(
   input: CreateSubscriptionInput,
   ctx: Ctx
 ): Promise<PrismaSub> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "subscription");
+
+  if (ctx.customerScope && ctx.customerScope.length > 0) {
+    if (!ctx.customerScope.includes(input.customerId)) {
+      throw new Error("Customer valt niet binnen je toegang");
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     const subscriptionNumber = await generateSubscriptionNumber(tx);
     const created = await tx.subscription.create({
@@ -200,10 +225,19 @@ async function transitionStatus(
   auditAction: any,
   reason?: string
 ): Promise<PrismaSub> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "subscription");
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.subscription.findUniqueOrThrow({
       where: { id, deletedAt: null },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      if (!ctx.customerScope.includes(existing.customerId)) {
+        throw new Error("Subscription valt niet binnen je toegang");
+      }
+    }
+
     assertValidSubscriptionTransition(existing.status, next as any);
     const updated = await tx.subscription.update({
       where: { id },
@@ -277,10 +311,19 @@ export async function updateSubscription(
   input: Partial<Pick<CreateSubscriptionInput, "notes" | "billingCycle" | "monthlyPrice" | "endDate">>,
   ctx: Ctx
 ): Promise<PrismaSub> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "subscription");
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.subscription.findUniqueOrThrow({
       where: { id, deletedAt: null },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      if (!ctx.customerScope.includes(existing.customerId)) {
+        throw new Error("Subscription valt niet binnen je toegang");
+      }
+    }
+
     const data: Prisma.SubscriptionUpdateInput = {};
     for (const [k, v] of Object.entries(input)) {
       if (v !== undefined) (data as any)[k] = v;
@@ -305,10 +348,19 @@ export async function updateSubscription(
 }
 
 export async function softDeleteSubscription(id: string, ctx: Ctx) {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "subscription");
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.subscription.findUniqueOrThrow({
       where: { id, deletedAt: null },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      if (!ctx.customerScope.includes(existing.customerId)) {
+        throw new Error("Subscription valt niet binnen je toegang");
+      }
+    }
+
     const updated = await tx.subscription.update({
       where: { id },
       data: { deletedAt: new Date() },
@@ -328,12 +380,14 @@ export async function bulkSoftDeleteSubscriptions(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  requirePermission(ctx.userRole, "delete", "subscription");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "subscription");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
-    const rows = await tx.subscription.findMany({
-      where: { id: { in: ids }, deletedAt: null },
-    });
+    const where: Prisma.SubscriptionWhereInput = { id: { in: ids }, deletedAt: null };
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      where.customerId = { in: ctx.customerScope };
+    }
+    const rows = await tx.subscription.findMany({ where });
     if (!rows.length) return { count: 0, ids: [] };
     const targets = rows.map((r) => r.id);
     const deletedAt = new Date();
@@ -361,15 +415,19 @@ export async function bulkCancelSubscriptions(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  requirePermission(ctx.userRole, "delete", "subscription");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "subscription");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
+    const where: Prisma.SubscriptionWhereInput = {
+      id: { in: ids },
+      deletedAt: null,
+      status: { notIn: ["CANCELLED", "TERMINATED"] as any },
+    };
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      where.customerId = { in: ctx.customerScope };
+    }
     const rows = await tx.subscription.findMany({
-      where: {
-        id: { in: ids },
-        deletedAt: null,
-        status: { notIn: ["CANCELLED", "TERMINATED"] as any },
-      },
+      where,
       select: { id: true, status: true },
     });
     if (!rows.length) return { count: 0, ids: [] };

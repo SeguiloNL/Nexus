@@ -1,0 +1,59 @@
+# ============================================================
+# systemd: STM Simhuis Usage Sync (uurlijks, hourlies)
+# Roept scripts/sync-simhuis-usage.sh aan in /opt/stm.
+#
+# Handmatig installeren (door deploy-stm.sh gedaan):
+#   cp deploy/stm-simhuis-usage-sync.service /etc/systemd/system/
+#   cp deploy/stm-simhuis-usage-sync.timer   /etc/systemd/system/
+#   cp scripts/sync-simhuis-usage.sh          /opt/stm/scripts/
+#   chmod +x /opt/stm/scripts/sync-simhuis-usage.sh
+#   systemctl daemon-reload
+#   systemctl enable --now stm-simhuis-usage-sync.timer
+#
+# Handmatige test:
+#   systemctl start stm-simhuis-usage-sync.service
+#   journalctl -u stm-simhuis-usage-sync.service -f
+# ============================================================
+[Unit]
+Description=STM Simhuis Usage Sync (uurlijks: data/SMS velden voor actieve SIMs)
+Documentation=https://github.com/SeguiloNL/Nexus/
+Wants=network-online.target
+After=network-online.target docker.service
+# Wacht even (optioneel) zodat de Next.js container zeker gestart is
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/stm
+Environment=TZ=Europe/Amsterdam
+# Optioneel: override via EnvironmentFile
+# EnvironmentFile=-/opt/stm/.env.backup
+ExecStart=/bin/bash -lc 'cd /opt/stm && ./scripts/sync-simhuis-usage.sh'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stm-simhuis-usage-sync
+TimeoutStartSec=15min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/stm
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+[Install]
+WantedBy=multi-user.target

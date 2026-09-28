@@ -1,19 +1,47 @@
 import { auth } from "@/auth";
-import { PermissionError, can, requirePermission } from "@/lib/rbac";
+import {
+  PermissionError,
+  canWithBits,
+  requirePermission,
+  canWithRoleId,
+} from "@/lib/rbac";
 import type {
   ResourceAction,
   ResourceType,
   UserRole,
+  RoleScope,
 } from "@/types/enums";
+import type { PermissionBits } from "@/types/next-auth";
 
-/**
- * Haal de huidige sessie gebruiker op (Server Component / Server Action context).
- * Gooit indien geen sessie: unauthorized.
- */
-export async function getCurrentUser() {
+export interface SessionUser {
+  id: string;
+  role: UserRole;
+  roleId: string;
+  roleScope: RoleScope;
+  roleName: string;
+  email: string;
+  name: string;
+  customerId: string | null;
+  customerIds: string[];
+  permissions: PermissionBits;
+}
+
+export async function getCurrentUser(): Promise<SessionUser> {
   const session = await auth();
   if (!session?.user) throw new PermissionError("Je bent niet ingelogd.");
-  return session.user;
+  const u = session.user as unknown as Partial<SessionUser>;
+  return {
+    id: u.id ?? "",
+    role: (u.role ?? "VIEWER") as UserRole,
+    roleId: u.roleId ?? "",
+    roleScope: (u.roleScope ?? "INTERNAL") as RoleScope,
+    roleName: u.roleName ?? "",
+    email: u.email ?? "",
+    name: u.name ?? "",
+    customerId: u.customerId ?? null,
+    customerIds: Array.isArray(u.customerIds) ? u.customerIds : [],
+    permissions: u.permissions ?? ({} as PermissionBits),
+  };
 }
 
 export async function getCurrentSession() {
@@ -25,61 +53,89 @@ export async function isAuthenticated(): Promise<boolean> {
   return Boolean(s?.user);
 }
 
-/**
- * Wrapper voor Server Actions die een permissie-check uitvoeren VOOR de actie start.
- *
- * Gebruik:
- * ```ts
- * const createCustomer = withAuth(
- *   { action: "create", resource: "customer" },
- *   async (input: CreateCustomerInput, ctx) => {
- *     // ctx.userId, ctx.userRole beschikbaar
- *   }
- * );
- * ```
- */
+export type AuthContext = {
+  userId: string;
+  userRole: UserRole;
+  userName: string;
+  userEmail: string;
+  roleId: string;
+  roleScope: RoleScope;
+  customerId: string | null;
+  customerScope: string[];
+  permissions: PermissionBits;
+};
+
 export function withAuth<Input extends unknown[], Output>(
-  permission: { action: ResourceAction; resource: ResourceType; minRole?: UserRole },
-  action: (
-    ...args: [
-      ...Input,
-      { userId: string; userRole: UserRole; userName: string; userEmail: string }
-    ]
-  ) => Promise<Output> | Output
+  permission: {
+    action: ResourceAction;
+    resource: ResourceType;
+    minRole?: UserRole;
+    requireInternal?: boolean;
+  },
+  action: (...args: [...Input, AuthContext]) => Promise<Output> | Output
 ) {
   return async function wrapped(...args: Input): Promise<Output> {
     const user = await getCurrentUser();
+
+    if (permission.requireInternal && user.roleScope !== "INTERNAL") {
+      throw new PermissionError(
+        "Deze functionaliteit is alleen beschikbaar voor medewerkers."
+      );
+    }
 
     if (permission.minRole) {
       const order: UserRole[] = ["VIEWER", "EMPLOYEE", "ADMIN"] as UserRole[];
       if (order.indexOf(user.role) < order.indexOf(permission.minRole)) {
         throw new PermissionError(
-          `Onvoldoende rechten (vereist: ${permission.minRole}).`
+          `Onvoldoende rechten (vereist minimaal: ${permission.minRole}).`
         );
       }
     }
 
-    requirePermission(user.role, permission.action, permission.resource);
+    await requirePermission(user.permissions, permission.action, permission.resource);
 
-    const ctx = {
+    const ctx: AuthContext = {
       userId: user.id,
       userRole: user.role,
-      userName: user.name ?? "",
-      userEmail: user.email ?? "",
+      userName: user.name,
+      userEmail: user.email,
+      roleId: user.roleId,
+      roleScope: user.roleScope,
+      customerId: user.customerId,
+      customerScope: user.customerIds,
+      permissions: user.permissions,
     };
     return action(...args, ctx);
   };
 }
 
-/**
- * Hulpfunctie voor UI conditionele rendering (client side).
- * Negeert permission als de sessie nog niet geladen is.
- */
 export function canUserRole(
-  role: UserRole | null | undefined,
+  permissionsOrRole: PermissionBits | UserRole | null | undefined,
   action: ResourceAction,
   resource: ResourceType
 ): boolean {
-  if (!role) return false;
-  return can(role, action, resource);
+  if (!permissionsOrRole) return false;
+  if (
+    typeof permissionsOrRole === "object" &&
+    permissionsOrRole !== null &&
+    !Array.isArray(permissionsOrRole)
+  ) {
+    return canWithBits(permissionsOrRole as PermissionBits, action, resource);
+  }
+  if (typeof permissionsOrRole === "string") {
+    return false;
+  }
+  return false;
+}
+
+export async function canUserRoleAsync(
+  roleIdOrPerms: string | PermissionBits | null | undefined,
+  action: ResourceAction,
+  resource: ResourceType
+): Promise<boolean> {
+  if (typeof roleIdOrPerms === "string") {
+    if (!roleIdOrPerms) return false;
+    return canWithRoleId(roleIdOrPerms, action, resource);
+  }
+  return canWithBits(roleIdOrPerms as PermissionBits | null | undefined, action, resource);
 }
