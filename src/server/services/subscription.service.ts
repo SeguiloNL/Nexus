@@ -225,7 +225,7 @@ async function transitionStatus(
   auditAction: any,
   reason?: string
 ): Promise<PrismaSub> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "subscription");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "subscription");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.subscription.findUniqueOrThrow({
@@ -311,7 +311,7 @@ export async function updateSubscription(
   input: Partial<Pick<CreateSubscriptionInput, "notes" | "billingCycle" | "monthlyPrice" | "endDate">>,
   ctx: Ctx
 ): Promise<PrismaSub> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "subscription");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "subscription");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.subscription.findUniqueOrThrow({

@@ -164,7 +164,7 @@ export async function updateSim(
   input: UpdateSimInput,
   ctx: Ctx
 ): Promise<PrismaSim> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "sim");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "sim");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.sIM.findUniqueOrThrow({

@@ -7,7 +7,6 @@ import { requirePermission } from "@/lib/rbac";
 import {
   CreateUserSchema,
   UpdateUserSchema,
-  type CreateUserInput,
 } from "@/server/validators/user";
 import {
   createUser,
@@ -16,7 +15,9 @@ import {
 } from "@/server/services/user.service";
 
 export type UserActionState = {
-  errors?: Partial<Record<keyof CreateUserInput | "generic", string[]>>;
+  errors?: Partial<Record<string, string[] | undefined>> & {
+    generic?: string[];
+  };
   message?: string | null;
   userId?: string;
 };
@@ -26,13 +27,19 @@ export async function createUserAction(
   formData: FormData
 ): Promise<UserActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "create", "user");
+  await requirePermission(
+    user.permissions ?? user.roleId ?? user.role,
+    "create",
+    "user"
+  );
 
   const raw: any = {
     email: formData.get("email") || undefined,
     name: formData.get("name") || undefined,
     password: formData.get("password") || undefined,
+    roleId: formData.get("roleId") || undefined,
     role: formData.get("role") || undefined,
+    customerId: formData.get("customerId") || null,
   };
 
   const validated = CreateUserSchema.safeParse(raw);
@@ -43,7 +50,14 @@ export async function createUserAction(
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    permissions: user.permissions,
+    customerScope: user.customerIds,
+  };
   try {
     const created = await createUser(validated.data, ctx);
     revalidatePath("/users");
@@ -59,13 +73,19 @@ export async function updateUserAction(
   formData: FormData
 ): Promise<UserActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "user");
+  await requirePermission(
+    user.permissions ?? user.roleId ?? user.role,
+    "edit",
+    "user"
+  );
 
   const raw: any = {
     email: formData.get("email") || undefined,
     name: formData.get("name") || undefined,
     password: formData.get("password") || "",
+    roleId: formData.get("roleId") || undefined,
     role: formData.get("role") || undefined,
+    customerId: formData.get("customerId") ?? undefined,
   };
 
   const validated = UpdateUserSchema.safeParse(raw);
@@ -76,7 +96,14 @@ export async function updateUserAction(
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    permissions: user.permissions,
+    customerScope: user.customerIds,
+  };
   try {
     await updateUser(userId, validated.data, ctx);
     revalidatePath("/users");
@@ -88,8 +115,19 @@ export async function updateUserAction(
 
 export async function deleteUserAction(userId: string) {
   const user = await getCurrentUser();
-  requirePermission(user.role, "delete", "user");
-  const ctx = { userId: user.id, userRole: user.role };
+  await requirePermission(
+    user.permissions ?? user.roleId ?? user.role,
+    "delete",
+    "user"
+  );
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    permissions: user.permissions,
+    customerScope: user.customerIds,
+  };
   try {
     await deleteUser(userId, ctx);
   } catch (e: any) {

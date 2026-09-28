@@ -74,8 +74,8 @@ export interface CreateUserInput {
   email: string;
   name: string;
   password: string;
-  role: UserRole;
-  roleId: string;
+  role?: UserRole;
+  roleId?: string;
   customerId?: string | null;
 }
 

@@ -1605,8 +1605,24 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       ? { accountId: accountIdVal, page: 1, limit: 200 }
       : { page: 1, limit: 200 };
     const testCases: Array<{ method: 'GET' | 'POST'; path: string; auth: AuthStyle; kind: 'json-body' | 'query' | 'form-body'; body?: Record<string, any>; query?: Record<string, any> }> = [];
+    const simOnlyPageQuery = { page: 1, limit: 200 };
+    const simOnlyPageBody  = { page: 1, limit: 200 };
+    // ===== EERST: /v3/sims (standaard AirOn360 SIM-lijst endpoint!) met ALLE auth-varianten =====
+    // (Vorige runs: /v3/esims en /v3/assets gaven 401 InvalidCredentials met Bearer, dus /v3/sims eerst proberen!)
     if (bearerAuthOnly) {
-      // ↓↓↓ DEZE 4 PROBES = EERSTE 4 POGINGEN, zouden de RAAK moeten zijn! ↓↓↓
+      testCases.push(
+        { method: 'GET',  path: '/v3/sims',   auth: bearerAuthOnly, kind: 'query',     query: { ...baseAidQuery } },
+        { method: 'POST', path: '/v3/sims',   auth: bearerAuthOnly, kind: 'json-body', body: { ...baseAidBody } },
+      );
+    }
+    testCases.push(
+      { method: 'GET',  path: '/v3/sims',   auth: basicAuthOnly, kind: 'query',     query: { ...simOnlyPageQuery } },
+      { method: 'POST', path: '/v3/sims',   auth: basicAuthOnly, kind: 'json-body', body: { ...simOnlyPageBody } },
+      { method: 'GET',  path: '/v3/sims',   auth: xUserPassHeaders, kind: 'query',  query: { ...simOnlyPageQuery } },
+      { method: 'POST', path: '/v3/sims',   auth: xUserPassHeaders, kind: 'json-body', body: { ...simOnlyPageBody } },
+    );
+    // ===== DAARNA: /v3/esims + /v3/assets (met Bearer, Basic, custom) =====
+    if (bearerAuthOnly) {
       testCases.push(
         { method: 'GET',  path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query',     query: { ...baseAidQuery } },
         { method: 'GET',  path: '/v3/assets', auth: bearerAuthOnly, kind: 'query',     query: { ...baseAidQuery } },
@@ -1614,10 +1630,11 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         { method: 'POST', path: '/v3/assets', auth: bearerAuthOnly, kind: 'json-body', body: { ...baseAidBody } },
       );
     }
-    // Daarna: Basic Auth (voor de zekerheid) + auth/token. GEEN /v3/auth/me (405).
     testCases.push(
       { method: 'GET',  path: '/v3/esims',  auth: basicAuthOnly, kind: 'query',     query: { page: 1, limit: 50 } },
       { method: 'GET',  path: '/v3/assets', auth: basicAuthOnly, kind: 'query',     query: { page: 1, limit: 50 } },
+      { method: 'GET',  path: '/v3/esims',  auth: xUserPassHeaders, kind: 'query',  query: { page: 1, limit: 50 } },
+      { method: 'GET',  path: '/v3/assets', auth: xUserPassHeaders, kind: 'query',  query: { page: 1, limit: 50 } },
       { method: 'POST', path: '/v3/auth/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
     );
     for (const tc of testCases) {
@@ -1666,7 +1683,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
           trace.error = `Body: ${snippet || '(leeg)'}`;
           attempts.push(trace);
           baseHits.push({ base: baseClean, method: tc.method, path: tc.path, auth: tc.auth, statusCode: resp.status, body: parsed });
-          // App-level response! Stop multi-base probe en gebruik deze base.
+          // ✅ ECHTE 200 OK = base EN endpoint geldig! Stop met FASE -1 → dit is ons beginpunt.
           break;
         } else {
           trace.statusCode = resp.status;
@@ -1678,9 +1695,14 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
           trace.errorClass = 'HTTPError';
           attempts.push(trace);
           if (resp.status !== 404 && resp.status !== 405 && resp.status < 500) {
-            // App-level response! (401 InvalidCredentials, 400, etc)
+            // App-level response! (401 InvalidCredentials, 400, etc.)
+            // ✅ NIEUW: ALBIJ 401 NIET meer breaken! 401 betekent "pad BESTAAT, alleen auth verkeerd".
+            // → BLIJF probeeren met ANDERE auth-methodes (Basic, custom) voor hetzelfde pad.
+            // ✅ Alleen breaken op 2xx (boven) of 403 (abort).
             baseHits.push({ base: baseClean, method: tc.method, path: tc.path, auth: tc.auth, statusCode: resp.status, body: parsed });
-            break;
+            if (resp.status === 403) throw new SimhuisApiError(403, parsed ?? {}, fullUrl, trace.error);
+            // ✅ Blijf de ANDERE testCases (zelfde pad, andere auth) uitvoeren!
+            continue;
           }
           if (resp.status === 403) throw new SimhuisApiError(403, parsed ?? {}, fullUrl, trace.error);
         }
@@ -1730,17 +1752,42 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   };
 
   // ✅ FASE 0: MINIMALE AirOn360 probes — ALLEEN endpoints die ECHT bestaan (Allow-header bevestigd!)
-  // Vorige run: ALLEN 404 of 405 op: /v3/assets/filter|search, /v3/imsis, /v3/iot/device, /v3/accounts/*|tenants/*|customers/*|resellers/*, PUT /v3/esims|assets, GET with body (TypeError!)
-  // Allow-header bevestigd: /v3/esims & /v3/assets accepteren ENKEL GET, OPTIONS, POST. → alleen die 2 paden!
+  // NIEUW: /v3/sims EERST (volgens Swagger standaard SIM-lijst endpoint).
+  // Vorige run: /v3/esims en /v3/assets gaven ALTIJD 401 InvalidCredentials met Bearer → /v3/sims eerst!
   const probes: Phase0Probe[] = [];
   const probeAuth = bearerAuthOnly ?? basicAuthOnly;
   const aid = getSimhuisAccountId();
 
   const pageQuery = { page: 1, limit: 200 };
   const pageBody  = { page: 1, limit: 200 };
+
+  // ===== PRIORITEIT 1: /v3/sims (standaard SIM endpoint!) met alle combos =====
   if (bearerAuthOnly) {
     if (aid) {
-      // ↓↓↓ EERSTE 8 probes — binnen 8 pogingen RAAK! (met VERSCHILLENDE param-naam-varianten, want 404 betekent param naam fout).
+      probes.push(
+        { label: 'GET-v3-sims-aid',       method: 'GET',  path: '/v3/sims', auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, accountId: aid } },
+        { label: 'GET-v3-sims-tenantId',  method: 'GET',  path: '/v3/sims', auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, tenantId: aid } },
+        { label: 'GET-v3-sims-id',        method: 'GET',  path: '/v3/sims', auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, id: aid } },
+        { label: 'POST-v3-sims-aid',      method: 'POST', path: '/v3/sims', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody, accountId: aid, tenantId: aid, id: aid } },
+      );
+    }
+    probes.push(
+      { label: 'GET-v3-sims',           method: 'GET',  path: '/v3/sims', auth: bearerAuthOnly, kind: 'query',     query: { ...pageQuery } },
+      { label: 'POST-v3-sims',          method: 'POST', path: '/v3/sims', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
+      { label: 'GET-v3-sims-status',    method: 'GET',  path: '/v3/sims', auth: bearerAuthOnly, kind: 'query',     query: { ...pageQuery, status: options.status ?? 'active' } },
+    );
+  }
+  // Basic + custom-headers voor /v3/sims
+  probes.push(
+    { label: 'GET-v3-sims-basic',      method: 'GET',  path: '/v3/sims', auth: basicAuthOnly,   kind: 'query',     query: { ...pageQuery } },
+    { label: 'POST-v3-sims-basic',     method: 'POST', path: '/v3/sims', auth: basicAuthOnly,   kind: 'json-body', body: { ...pageBody } },
+    { label: 'GET-v3-sims-xheaders',   method: 'GET',  path: '/v3/sims', auth: xUserPassHeaders, kind: 'query',    query: { ...pageQuery } },
+    { label: 'POST-v3-sims-xheaders',  method: 'POST', path: '/v3/sims', auth: xUserPassHeaders, kind: 'json-body', body: { ...pageBody } },
+  );
+
+  // ===== PRIORITEIT 2: /v3/esims + /v3/assets (alleen als /v3/sims niet werkt) =====
+  if (bearerAuthOnly) {
+    if (aid) {
       probes.push(
         { label: 'GET-v3-esims-aid',       method: 'GET',  path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, accountId: aid } },
         { label: 'GET-v3-assets-aid',      method: 'GET',  path: '/v3/assets', auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, accountId: aid } },
@@ -1752,7 +1799,6 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         { label: 'POST-v3-assets-aid',     method: 'POST', path: '/v3/assets', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody, accountId: aid, tenantId: aid, id: aid } },
       );
     }
-    // Fallback zonder expliciete aid (wordt later nog centraal geinjecteerd met X-Account-Id headers)
     probes.push(
       { label: 'GET-v3-esims',           method: 'GET',  path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query',     query: { ...pageQuery } },
       { label: 'GET-v3-assets',          method: 'GET',  path: '/v3/assets', auth: bearerAuthOnly, kind: 'query',     query: { ...pageQuery } },
@@ -1766,10 +1812,13 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   probes.push(
     { label: 'GET-v3-esims-basic',     method: 'GET',  path: '/v3/esims',  auth: basicAuthOnly, kind: 'query',     query: { ...pageQuery } },
     { label: 'GET-v3-assets-basic',    method: 'GET',  path: '/v3/assets', auth: basicAuthOnly, kind: 'query',     query: { ...pageQuery } },
+    { label: 'GET-v3-esims-xheaders',  method: 'GET',  path: '/v3/esims',  auth: xUserPassHeaders, kind: 'query',  query: { ...pageQuery } },
+    { label: 'GET-v3-assets-xheaders', method: 'GET',  path: '/v3/assets', auth: xUserPassHeaders, kind: 'query',  query: { ...pageQuery } },
     { label: 'POST-v3-auth-token',     method: 'POST', path: '/v3/auth/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
   );
   if (resellerFragment) {
     probes.push(
+      { label: 'GET-v3-reseller-sims',    method: 'GET', path: `/v3/resellers/${resellerFragment}/sims`,    auth: probeAuth, kind: 'query', query: { ...pageQuery } },
       { label: 'GET-v3-reseller-esims',  method: 'GET', path: `/v3/resellers/${resellerFragment}/esims`,  auth: probeAuth, kind: 'query', query: { ...pageQuery } },
       { label: 'GET-v3-reseller-assets', method: 'GET', path: `/v3/resellers/${resellerFragment}/assets`, auth: probeAuth, kind: 'query', query: { ...pageQuery } },
     );
@@ -1860,8 +1909,8 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     }
     try {
       const headers: Record<string, string> = { ...wafBypassHeaders };
-      const isBearer = args.auth.tag === 'bearer-header';
-      const listAccountId = isBearer ? getSimhuisAccountId() : null;
+      // ✅ NIEUW: accountId voor ALLE auth-methodes (niet alleen Bearer).
+      const listAccountId = getSimhuisAccountId();
 
       if (args.auth.tag === 'basic-header' || args.auth.tag === 'bearer-header' ||
           args.auth.tag === 'apikey-header-x' || args.auth.tag === 'api-key-auth-header') {
@@ -1871,7 +1920,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       }
       let body: BodyInit | undefined;
       let mergedBody: Record<string, any> | null = args.body ? { ...args.body } : null;
-      if (isBearer && listAccountId) {
+      if (listAccountId) {
         // X-Headers: SaaS APIs gebruiken vaak X-Account-Id / X-Tenant-Id!
         headers['X-Account-Id'] = listAccountId;
         headers['X-Tenant-Id']  = listAccountId;
@@ -1901,7 +1950,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         body = JSON.stringify({});
       }
       let finalUrl = args.fullUrl;
-      if (isBearer && listAccountId) {
+      if (listAccountId) {
         const sep = finalUrl.includes('?') ? '&' : '?';
         const sp = new URLSearchParams();
         sp.append('accountId', listAccountId);
@@ -2001,18 +2050,19 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       if (probe.auth.tag === 'custom-headers') Object.assign(headers, probe.auth.headers);
       else headers.Authorization = probe.auth.header;
 
-      const phase0IsBearer = probe.auth.tag === 'bearer-header';
-      const phase0AccountId = phase0IsBearer ? getSimhuisAccountId() : null;
+      // ✅ NIEUW: accountId voor ALLE auth-methodes (niet alleen Bearer).
+      // (Simhuis API accepteert Basic/Custom maar wil vaak WEL accountId in query/body/headers!)
+      const phase0AccountId = getSimhuisAccountId();
 
       let queryExtra: Record<string, any> = (probe.query ?? {}) as Record<string, any>;
-      if (phase0IsBearer && phase0AccountId) {
+      if (phase0AccountId) {
         queryExtra = { ...queryExtra };
         if (!queryExtra.accountId) queryExtra.accountId = phase0AccountId;
       }
 
       let bodyInit: BodyInit | undefined;
       let bodyPayload: Record<string, any> | null = probe.body ? { ...probe.body } : null;
-      if (phase0IsBearer && phase0AccountId) {
+      if (phase0AccountId) {
         // 1) Query-param met ALLE veel-voorkomende namen (404 Account not found = param name kan afwijken!)
         if (!queryExtra) queryExtra = {};
         // Alleen toevoegen als die specifieke key er nog NIET in zat (geen redundant overschrijven).
@@ -2150,9 +2200,12 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     }
   } else {
     // ===== FASE 1 B: Geen interessante response gevonden → AIRON360 EERST, daarna legacy =====
+    // NIEUW: /v3/sims eerst! (Swagger standaard SIM-lijst endpoint; /v3/esims + /v3/assets gaven 401)
     const backupPaths: string[] = [
+      '/v3/sims', '/v3/sims/list', '/v3/sims/filter', '/v3/sims/search', '/v3/sims/query',
       '/v3/esims', '/v3/assets', '/v3/assets/filter', '/v3/assets/search',
       '/v3/imsis', '/v3/iot/device', '/v3/ulb/device',
+      '/sims', '/sims/list', '/sims/filter', '/sims/search', '/sims/query',
       '/esims', '/assets', '/assets/filter', '/assets/search',
       '/imsis', '/iot/device', '/ulb/device',
       '/inventory', '/inventory/sims', '/inventory/list', '/inventory/search',
@@ -2163,6 +2216,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     ];
     if (resellerFragment) {
       backupPaths.unshift(
+        `/v3/resellers/${resellerFragment}/sims`,
         `/v3/resellers/${resellerFragment}/assets`,
         `/v3/resellers/${resellerFragment}/esims`,
         `/resellers/${resellerFragment}/sims`,

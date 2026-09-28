@@ -166,7 +166,7 @@ export async function updateVehicle(
   input: UpdateVehicleInput,
   ctx: Ctx
 ): Promise<PrismaVehicle> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "vehicle");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "vehicle");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.vehicle.findUniqueOrThrow({

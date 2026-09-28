@@ -6,10 +6,25 @@ import type {
   CreateUserInput,
   UpdateUserInput,
 } from "@/types/domain";
-import type { UserRole } from "@/types/enums";
+import type { PermissionBits } from "@/types/next-auth.d";
+import { RoleScope, type UserRole } from "@/types/enums";
 import type { Prisma, User } from "@prisma/client";
+import { requirePermission } from "@/lib/rbac";
 
-type Ctx = { userId: string; userRole: UserRole };
+type Ctx = {
+  userId: string;
+  userRole: UserRole;
+  roleId?: string | null;
+  roleScope?: RoleScope | null;
+  permissions?: PermissionBits | null;
+  customerScope?: string[] | null;
+};
+
+const DEFAULT_ROLE_NAMES: Record<UserRole, string> = {
+  ADMIN: "Beheerder",
+  EMPLOYEE: "Medewerker",
+  VIEWER: "Alleen-lezen",
+};
 
 export async function findManyUsers(
   params: {
@@ -19,8 +34,17 @@ export async function findManyUsers(
     order?: "asc" | "desc";
     search?: string;
     role?: UserRole;
-  } = {}
+  } = {},
+  ctx?: Ctx
 ): Promise<PaginatedResult<User>> {
+  if (ctx) {
+    await requirePermission(
+      ctx.permissions ?? ctx.roleId ?? ctx.userRole,
+      "view",
+      "user"
+    );
+  }
+
   const {
     page = 1,
     perPage = 25,
@@ -39,9 +63,20 @@ export async function findManyUsers(
       { name: { contains: s, mode: "insensitive" } },
     ];
   }
+  if (ctx?.customerScope && ctx.customerScope.length > 0) {
+    where.customerId = { in: ctx.customerScope };
+  } else if (ctx?.roleScope === "CUSTOMER") {
+    where.customerId = "";
+  }
 
   const sortKey: keyof Prisma.UserOrderByWithRelationInput =
-    sort === "email" ? "email" : sort === "name" ? "name" : sort === "role" ? "role" : "createdAt";
+    sort === "email"
+      ? "email"
+      : sort === "name"
+        ? "name"
+        : sort === "role"
+          ? "role"
+          : "createdAt";
 
   const skip = (page - 1) * perPage;
   const [total, data] = await Promise.all([
@@ -63,22 +98,105 @@ export async function findManyUsers(
   };
 }
 
-export async function findUserById(id: string) {
-  return prisma.user.findUnique({ where: { id } });
+export async function findUserById(id: string, ctx?: Ctx) {
+  if (ctx) {
+    await requirePermission(
+      ctx.permissions ?? ctx.roleId ?? ctx.userRole,
+      "view",
+      "user"
+    );
+  }
+  const user = await prisma.user.findUnique({ where: { id } });
+  if (!user) return null;
+  if (ctx?.customerScope && ctx.customerScope.length > 0) {
+    if (!user.customerId || !ctx.customerScope.includes(user.customerId)) {
+      return null;
+    }
+  }
+  return user;
 }
 
 export async function findUserByEmail(email: string) {
   return prisma.user.findUnique({ where: { email } });
 }
 
+async function resolveRoleIdForLegacy(
+  tx: Prisma.TransactionClient,
+  legacyRole?: UserRole,
+  explicitRoleId?: string
+): Promise<{ roleId: string; scope: RoleScope }> {
+  if (explicitRoleId) {
+    const role = await tx.role.findUnique({
+      where: { id: explicitRoleId },
+      select: { id: true, scope: true },
+    });
+    if (!role) throw new Error("De geselecteerde rol bestaat niet.");
+    return { roleId: role.id, scope: role.scope as RoleScope };
+  }
+  if (legacyRole) {
+    const roleName = DEFAULT_ROLE_NAMES[legacyRole] ?? legacyRole;
+    const role = await tx.role.findFirst({
+      where: { name: roleName, isSystem: true },
+      select: { id: true, scope: true },
+    });
+    if (!role) {
+      const fallback = await tx.role.findFirst({
+        select: { id: true, scope: true },
+        orderBy: { createdAt: "asc" },
+      });
+      if (!fallback) throw new Error("Geen standaard rol gevonden.");
+      return { roleId: fallback.id, scope: fallback.scope as RoleScope };
+    }
+    return { roleId: role.id, scope: role.scope as RoleScope };
+  }
+  throw new Error("Een rol is verplicht.");
+}
+
 export async function createUser(
   input: CreateUserInput,
   ctx: Ctx
 ): Promise<User> {
+  await requirePermission(
+    ctx.permissions ?? ctx.roleId ?? ctx.userRole,
+    "create",
+    "user"
+  );
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.user.findUnique({ where: { email: input.email } });
     if (existing) {
       throw new Error("Er bestaat al een gebruiker met dit e-mailadres.");
+    }
+
+    const { roleId, scope } = await resolveRoleIdForLegacy(
+      tx,
+      input.role,
+      input.roleId
+    );
+
+    let finalCustomerId: string | null = input.customerId ?? null;
+
+    if (scope === RoleScope.CUSTOMER) {
+      if (!finalCustomerId) {
+        throw new Error(
+          "Een klant is verplicht voor rollen met klant-scope."
+        );
+      }
+    } else if (finalCustomerId) {
+      throw new Error(
+        "Interne rollen mogen geen klant toegewezen krijgen."
+      );
+    }
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      if (scope !== RoleScope.CUSTOMER) {
+        throw new Error(
+          "Je kunt alleen gebruikers met een klant-rol aanmaken."
+        );
+      }
+      if (!finalCustomerId || !ctx.customerScope.includes(finalCustomerId)) {
+        throw new Error("Ongeldige klant voor deze gebruiker.");
+      }
     }
 
     const passwordHash = await hashPassword(input.password);
@@ -86,7 +204,9 @@ export async function createUser(
       data: {
         email: input.email,
         name: input.name,
-        role: input.role,
+        role: input.role ?? "VIEWER",
+        roleId,
+        customerId: finalCustomerId,
         passwordHash,
       },
     });
@@ -101,6 +221,8 @@ export async function createUser(
         email: created.email,
         name: created.name,
         role: created.role,
+        roleId: created.roleId,
+        customerId: created.customerId,
       } as any,
     });
 
@@ -113,8 +235,21 @@ export async function updateUser(
   input: UpdateUserInput,
   ctx: Ctx
 ): Promise<User> {
+  await requirePermission(
+    ctx.permissions ?? ctx.roleId ?? ctx.userRole,
+    "edit",
+    "user"
+  );
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.user.findUniqueOrThrow({ where: { id } });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      if (!existing.customerId || !ctx.customerScope.includes(existing.customerId)) {
+        throw new Error("Je bent niet bevoegd deze gebruiker te wijzigen.");
+      }
+    }
+
     const data: Prisma.UserUpdateInput = {};
 
     if (input.email != null && input.email !== existing.email) {
@@ -125,7 +260,58 @@ export async function updateUser(
       data.email = input.email;
     }
     if (input.name != null) data.name = input.name;
-    if (input.role != null) data.role = input.role;
+
+    const changingRole = input.roleId !== undefined || input.role !== undefined;
+    if (changingRole) {
+      const resolved = await resolveRoleIdForLegacy(tx, input.role, input.roleId);
+      (data as any).roleId = resolved.roleId;
+      if (input.role !== undefined) data.role = input.role;
+
+      if (resolved.scope === RoleScope.CUSTOMER) {
+        const nextCustomerId =
+          input.customerId !== undefined ? input.customerId : existing.customerId;
+        if (!nextCustomerId) {
+          throw new Error(
+            "Een klant is verplicht voor rollen met klant-scope."
+          );
+        }
+        if (ctx.customerScope && ctx.customerScope.length > 0) {
+          if (!ctx.customerScope.includes(nextCustomerId)) {
+            throw new Error("Ongeldige klant voor deze gebruiker.");
+          }
+        }
+      } else if (
+        ctx.customerScope &&
+        ctx.customerScope.length > 0
+      ) {
+        throw new Error(
+          "Je kunt alleen gebruikers met een klant-rol wijzigen naar een klant-rol."
+        );
+      }
+    }
+
+    if (input.customerId !== undefined) {
+      const currentRoleScope = await (async () => {
+        const r = await tx.role.findUnique({
+          where: { id: ((existing.roleId ?? (data as any).roleId) ?? "") as string },
+          select: { scope: true },
+        });
+        return r?.scope ?? RoleScope.INTERNAL;
+      })();
+      if (currentRoleScope === RoleScope.CUSTOMER && !input.customerId) {
+        throw new Error("Klant is verplicht voor een klant-rol.");
+      }
+      if (currentRoleScope !== RoleScope.CUSTOMER && input.customerId) {
+        throw new Error("Interne rollen mogen geen klant toegewezen krijgen.");
+      }
+      if (ctx.customerScope && ctx.customerScope.length > 0 && input.customerId) {
+        if (!ctx.customerScope.includes(input.customerId)) {
+          throw new Error("Ongeldige klant voor deze gebruiker.");
+        }
+      }
+      (data as any).customerId = input.customerId;
+    }
+
     if (input.password != null && input.password !== "") {
       data.passwordHash = await hashPassword(input.password);
     }
@@ -148,7 +334,10 @@ export async function updateUser(
         oldValues: {
           ...(input.email != null ? { email: existing.email } : {}),
           ...(input.name != null ? { name: existing.name } : {}),
-          ...(input.role != null ? { role: existing.role } : {}),
+          ...(changingRole ? { role: existing.role, roleId: existing.roleId } : {}),
+          ...(input.customerId !== undefined
+            ? { customerId: existing.customerId }
+            : {}),
           ...(input.password != null ? { password: "[redacted]" } : {}),
         },
         newValues: {
@@ -163,11 +352,25 @@ export async function updateUser(
 }
 
 export async function deleteUser(id: string, ctx: Ctx): Promise<User> {
+  await requirePermission(
+    ctx.permissions ?? ctx.roleId ?? ctx.userRole,
+    "delete",
+    "user"
+  );
+
   return prisma.$transaction(async (tx) => {
     if (id === ctx.userId) {
       throw new Error("Je kunt je eigen account niet verwijderen.");
     }
     const existing = await tx.user.findUniqueOrThrow({ where: { id } });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      if (!existing.customerId || !ctx.customerScope.includes(existing.customerId)) {
+        throw new Error(
+          "Je bent niet bevoegd deze gebruiker te verwijderen."
+        );
+      }
+    }
 
     await logAudit(tx, {
       entityType: "user",
@@ -179,6 +382,8 @@ export async function deleteUser(id: string, ctx: Ctx): Promise<User> {
         email: existing.email,
         name: existing.name,
         role: existing.role,
+        roleId: existing.roleId,
+        customerId: existing.customerId,
       } as any,
     });
 

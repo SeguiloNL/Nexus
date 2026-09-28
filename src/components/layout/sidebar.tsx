@@ -15,10 +15,12 @@ import {
   History,
   Settings,
   FileText,
+  Shield,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { UserRole } from "@/types/enums";
+import type { UserRole, RoleScope, ResourceType } from "@/types/enums";
+import type { PermissionBits } from "@/types/next-auth.d";
 import { canUserRole } from "@/lib/auth/session";
 
 type NavItem = {
@@ -26,7 +28,20 @@ type NavItem = {
   href: string;
   icon: LucideIcon;
   action: "view";
-  resource: "dashboard" | "customer" | "tracker" | "sim" | "vehicle" | "product" | "subscription" | "invoice" | "activation_order" | "user" | "audit_log" | "setting";
+  resource:
+    | "dashboard"
+    | "customer"
+    | "tracker"
+    | "sim"
+    | "vehicle"
+    | "product"
+    | "subscription"
+    | "invoice"
+    | "activation_order"
+    | "user"
+    | "audit_log"
+    | "setting"
+    | "role";
 };
 
 const NAV_ITEMS: NavItem[] = [
@@ -37,7 +52,13 @@ const NAV_ITEMS: NavItem[] = [
     action: "view",
     resource: "dashboard",
   },
-  { label: "Klanten", href: "/customers", icon: Users, action: "view", resource: "customer" },
+  {
+    label: "Klanten",
+    href: "/customers",
+    icon: Users,
+    action: "view",
+    resource: "customer",
+  },
   {
     label: "Trackers",
     href: "/trackers",
@@ -95,6 +116,13 @@ const NAV_ITEMS: NavItem[] = [
     resource: "user",
   },
   {
+    label: "Rollen",
+    href: "/roles",
+    icon: Shield,
+    action: "view",
+    resource: "role",
+  },
+  {
     label: "Auditlog",
     href: "/audit-log",
     icon: History,
@@ -112,22 +140,37 @@ const NAV_ITEMS: NavItem[] = [
 
 type SidebarProps = {
   userRole: UserRole | null | undefined;
+  roleId: string | null;
+  roleScope: RoleScope | null;
+  permissions: PermissionBits | null;
 };
 
-function DashboardNavItem() {
-  // speciaal geval: dashboard is altijd zichtbaar
-  return { action: "view" as const, resource: "customer" as const };
-}
-
-export function Sidebar({ userRole }: SidebarProps) {
+export function Sidebar({
+  userRole,
+  roleId,
+  roleScope,
+  permissions,
+}: SidebarProps) {
   const pathname = usePathname();
+  const authzArg: PermissionBits | UserRole | string | null =
+    permissions ?? roleId ?? userRole ?? null;
 
   const visibleItems = NAV_ITEMS.filter((item) => {
-    // Dashboard is altijd zichtbaar voor ingelogden
+    if (roleScope === "CUSTOMER") {
+      if (
+        item.resource !== "dashboard" &&
+        item.resource !== "customer" &&
+        item.resource !== "tracker" &&
+        item.resource !== "sim" &&
+        item.resource !== "vehicle" &&
+        item.resource !== "subscription" &&
+        item.resource !== "invoice"
+      ) {
+        return false;
+      }
+    }
     if (item.resource === "dashboard") return true;
-    // Overige items via RBAC canUserRole
-    const perm = DashboardNavItem();
-    return canUserRole(userRole, item.action, item.resource as never);
+    return canUserRole(authzArg, item.action, item.resource as ResourceType);
   });
 
   return (

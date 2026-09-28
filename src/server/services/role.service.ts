@@ -7,7 +7,7 @@ import type {
   RoleDetail,
   RoleListItem,
 } from "@/types/domain";
-import type { RoleScope, ResourceType } from "@/types/enums";
+import { RoleScope, type ResourceType } from "@/types/enums";
 import { ALL_RESOURCE_TYPES, CUSTOMER_SCOPE_RESOURCES } from "@/types/enums";
 
 export type RoleCacheInvalidator = () => void;

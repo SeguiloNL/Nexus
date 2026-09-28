@@ -268,7 +268,7 @@ export async function updateCustomer(
   input: UpdateCustomerInput,
   ctx: Ctx
 ): Promise<PrismaCustomer> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "customer");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "customer");
 
   if (ctx.customerScope && ctx.customerScope.length > 0) {
     if (!ctx.customerScope.includes(id)) {

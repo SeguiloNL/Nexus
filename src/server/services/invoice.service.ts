@@ -335,7 +335,7 @@ export async function markInvoicePaid(
   ctx: Ctx,
   paidAt?: Date
 ): Promise<PrismaInvoice> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "write", "invoice");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "invoice");
   return prisma.$transaction(async (tx) => {
     const existing = await tx.invoice.findUniqueOrThrow({ where: { id } });
     if (ctx.customerScope && ctx.customerScope.length > 0) {
@@ -371,7 +371,7 @@ export async function markInvoiceSent(
   ctx: Ctx,
   sentAt?: Date
 ): Promise<PrismaInvoice> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "write", "invoice");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "invoice");
   return prisma.$transaction(async (tx) => {
     const existing = await tx.invoice.findUniqueOrThrow({ where: { id } });
     if (ctx.customerScope && ctx.customerScope.length > 0) {
@@ -409,7 +409,7 @@ export async function updateInvoiceStatus(
   ctx: Ctx,
   note?: string
 ): Promise<PrismaInvoice> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "write", "invoice");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "invoice");
   return prisma.$transaction(async (tx) => {
     const existing = await tx.invoice.findUniqueOrThrow({ where: { id } });
     if (ctx.customerScope && ctx.customerScope.length > 0) {
@@ -543,7 +543,7 @@ export async function bulkMarkInvoicesSent(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "write", "invoice");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "invoice");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
     const rows = await tx.invoice.findMany({
@@ -587,7 +587,7 @@ export async function bulkMarkInvoicesPaid(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "write", "invoice");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "invoice");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
     const rows = await tx.invoice.findMany({

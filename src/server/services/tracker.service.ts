@@ -185,7 +185,7 @@ export async function updateTracker(
   input: UpdateTrackerInput,
   ctx: Ctx
 ): Promise<PrismaTracker> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "tracker");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "tracker");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.tracker.findUniqueOrThrow({

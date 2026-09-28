@@ -12,15 +12,25 @@ export default async function AppLayout({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
+  const user = session.user;
 
   return (
     <AppShell
-      sidebar={<Sidebar userRole={session.user.role} />}
+      sidebar={
+        <Sidebar
+          userRole={user.role}
+          roleId={user.roleId ?? null}
+          roleScope={user.roleScope ?? null}
+          permissions={user.permissions ?? null}
+        />
+      }
       header={
         <Header
           userName={session.user.name ?? "Gebruiker"}
           userEmail={session.user.email ?? ""}
           userRole={session.user.role}
+          roleName={user.roleName ?? null}
+          customerIds={user.customerIds ?? []}
         />
       }
     >

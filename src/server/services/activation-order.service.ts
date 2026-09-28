@@ -242,7 +242,7 @@ export async function updateOrder(
   input: Partial<UpdateActivationOrderInput>,
   ctx: Ctx
 ): Promise<ActivationOrder> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "activation_order");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "activation_order");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.activationOrder.findUniqueOrThrow({
@@ -292,7 +292,7 @@ export async function updateOrder(
 }
 
 export async function markReady(id: string, ctx: Ctx): Promise<ActivationOrder> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "activation_order");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "activation_order");
 
   return prisma.$transaction(async (tx) => {
     const existing: any = await tx.activationOrder.findUniqueOrThrow({
@@ -355,7 +355,7 @@ export async function cancelOrder(
   ctx: Ctx,
   reason?: string
 ): Promise<ActivationOrder> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "activation_order");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "activation_order");
 
   return prisma.$transaction(async (tx) => {
     const existing: any = await tx.activationOrder.findUniqueOrThrow({
@@ -393,7 +393,7 @@ export async function cancelOrder(
 }
 
 export async function retryFailed(id: string, ctx: Ctx): Promise<ActivationOrder> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "activation_order");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "activation_order");
 
   return prisma.$transaction(async (tx) => {
     const existing: any = await tx.activationOrder.findUniqueOrThrow({
@@ -530,7 +530,7 @@ function buildDeviceModel(brand: string | null | undefined, model: string | null
  *  5. Na succes: Inserve sync queue.
  */
 export async function completeActivation(id: string, ctx: Ctx) {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "activation_order");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "activation_order");
 
   const initial = await prisma.activationOrder.findUnique({
     where: { id },

@@ -70,7 +70,7 @@ export async function findManyAuditLogs(
   >
 > {
   if (ctx) {
-    await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "read", "audit");
+    await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "view", "audit_log");
   }
 
   const {
