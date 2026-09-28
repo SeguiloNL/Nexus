@@ -3,24 +3,55 @@ import type { ActivateSimOptions, SimhuisApiResponse, SimhuisSimStatus } from '.
 
 function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   const r = (raw ?? {}) as Record<string, any>;
-  const statusRaw = String(r.status ?? r.state ?? r.sim_status ?? r.simState ?? '').toLowerCase();
+  const nestedSim = r.simCard ?? r.sim ?? r.asset ?? r.device ?? r.subscription ?? r.subscriber ?? {};
+  const statusRaw = String(
+    r.status ?? r.state ?? r.sim_status ?? r.simState ?? r.lifeCycleStatus ?? r.lifecycle_status
+      ?? nestedSim?.status ?? nestedSim?.state ?? nestedSim?.lifeCycleStatus
+      ?? (typeof r.status === 'object' && r.status ? (r.status.value ?? r.status.name ?? '') : '')
+      ?? ''
+  ).toLowerCase();
   let status: SimhuisSimStatus['status'] = statusRaw as any;
-  if (['active', 'enabled', 'online'].includes(statusRaw)) status = 'active';
-  else if (['inactive', 'disabled', 'offline'].includes(statusRaw)) status = 'inactive';
-  else if (['suspended', 'paused', 'barred'].includes(statusRaw)) status = 'suspended';
-  else if (['terminated', 'deleted', 'cancelled'].includes(statusRaw)) status = 'terminated';
-  else if (['provisioning', 'activating', 'pending'].includes(statusRaw)) status = 'provisioning';
+  if (['active', 'enabled', 'online', 'activated', 'in_service', 'provisioned'].includes(statusRaw)) status = 'active';
+  else if (['inactive', 'disabled', 'offline', 'deactivated', 'retired', 'stock', 'in_stock', 'available'].includes(statusRaw)) status = 'inactive';
+  else if (['suspended', 'paused', 'barred', 'suspend', 'bar', 'hibernated', 'hibernate'].includes(statusRaw)) status = 'suspended';
+  else if (['terminated', 'deleted', 'cancelled', 'canceled', 'cancel', 'destroyed', 'expired'].includes(statusRaw)) status = 'terminated';
+  else if (['provisioning', 'activating', 'pending', 'activating_subscription', 'pre_active'].includes(statusRaw)) status = 'provisioning';
   return {
-    iccid: String(r.iccid ?? r.sim_iccid ?? iccid),
-    imsi: typeof r.imsi === 'string' ? r.imsi : null,
-    msisdn: typeof r.msisdn === 'string' ? r.msisdn : (typeof r.phone_number === 'string' ? r.phone_number : null),
+    iccid: String(
+      r.iccid ?? r.sim_iccid ?? r.simIccid ?? r.eid
+        ?? nestedSim?.iccid ?? nestedSim?.sim_iccid ?? nestedSim?.simIccid ?? nestedSim?.eid
+        ?? iccid
+    ),
+    imsi: typeof r.imsi === 'string' ? r.imsi : (typeof nestedSim?.imsi === 'string' ? nestedSim.imsi : null),
+    msisdn: typeof r.msisdn === 'string' ? r.msisdn
+      : (typeof r.phone_number === 'string' ? r.phone_number
+        : (typeof nestedSim?.msisdn === 'string' ? nestedSim.msisdn
+          : (typeof nestedSim?.phone_number === 'string' ? nestedSim.phone_number : null))),
     status,
-    ip: typeof r.ip === 'string' ? r.ip : (typeof r.ip_address === 'string' ? r.ip_address : null),
-    network: typeof r.network === 'string' ? r.network : (typeof r.carrier === 'string' ? r.carrier : null),
-    planName: typeof r.plan_name === 'string' ? r.plan_name : (typeof r.offer_name === 'string' ? r.offer_name : (typeof r.tariff === 'string' ? r.tariff : null)),
-    dataUsedBytes: typeof r.data_used_bytes === 'number' ? r.data_used_bytes : (typeof r.used_bytes === 'number' ? r.used_bytes : null),
-    dataLimitBytes: typeof r.data_limit_bytes === 'number' ? r.data_limit_bytes : (typeof r.limit_bytes === 'number' ? r.limit_bytes : null),
-    activatedAt: typeof r.activated_at === 'string' ? r.activated_at : (typeof r.activation_date === 'string' ? r.activation_date : null),
+    ip: typeof r.ip === 'string' ? r.ip : (typeof r.ip_address === 'string' ? r.ip_address : (typeof nestedSim?.ip === 'string' ? nestedSim.ip : (typeof nestedSim?.ip_address === 'string' ? nestedSim.ip_address : null))),
+    network: typeof r.network === 'string' ? r.network
+      : (typeof r.carrier === 'string' ? r.carrier
+        : (typeof r.provider === 'string' ? r.provider
+          : (typeof r.operator === 'string' ? r.operator
+            : (typeof r.country_iso === 'string' ? r.country_iso : null)))),
+    planName: typeof r.plan_name === 'string' ? r.plan_name
+      : (typeof r.offer_name === 'string' ? r.offer_name
+        : (typeof r.tariff === 'string' ? r.tariff
+          : (typeof r.rate_plan === 'string' ? r.rate_plan
+            : (typeof r.plan === 'string' ? r.plan : (typeof r.package_name === 'string' ? r.package_name : null))))),
+    dataUsedBytes: typeof r.data_used_bytes === 'number' ? r.data_used_bytes
+      : (typeof r.used_bytes === 'number' ? r.used_bytes
+        : (typeof r.total_usage === 'number' ? r.total_usage
+          : (typeof (r.usage ?? nestedSim?.usage)?.data_bytes === 'number' ? r.usage.data_bytes
+            : (typeof (r.usage ?? nestedSim?.usage)?.bytes === 'number' ? r.usage.bytes : null)))),
+    dataLimitBytes: typeof r.data_limit_bytes === 'number' ? r.data_limit_bytes
+      : (typeof r.limit_bytes === 'number' ? r.limit_bytes
+        : (typeof r.data_quota === 'number' ? r.data_quota
+          : (typeof (r.plan ?? nestedSim?.plan)?.data_limit_bytes === 'number' ? r.plan.data_limit_bytes : null))),
+    activatedAt: typeof r.activated_at === 'string' ? r.activated_at
+      : (typeof r.activation_date === 'string' ? r.activation_date
+        : (typeof r.created_at === 'string' ? r.created_at
+          : (typeof r.provisioned_at === 'string' ? r.provisioned_at : null))),
     raw,
   };
 }
@@ -977,9 +1008,26 @@ function extractSimList(raw: unknown): Array<Record<string, any>> {
     r.results,
     r.rows,
     r.list,
+    r.assets,
+    r.esims,
+    r.content,
+    r.records,
+    r.subscribers,
+    r.subscriptions,
+    r.inventory,
     r?.data?.sims,
     r?.data?.items,
     r?.data?.results,
+    r?.data?.assets,
+    r?.data?.esims,
+    r?.data?.content,
+    r?.data?.records,
+    r?.data?.data,
+    r?.data?.subscribers,
+    r?.payload?.sims,
+    r?.payload?.data,
+    r?.response?.data,
+    r?.response?.items,
   ];
   for (const c of candidates) {
     if (Array.isArray(c)) return c as Array<Record<string, any>>;
@@ -987,10 +1035,29 @@ function extractSimList(raw: unknown): Array<Record<string, any>> {
   return [];
 }
 
+function shapeOf(obj: unknown): string {
+  if (obj === null) return 'null';
+  if (obj === undefined) return 'undefined';
+  if (Array.isArray(obj)) return `Array(len=${obj.length})`;
+  const t: string = typeof obj;
+  if (t !== 'object') return t;
+  const r = obj as Record<string, any>;
+  const keys = Object.keys(r);
+  const desc: string[] = keys.slice(0, 20).map((k) => {
+    const v = r[k];
+    let vtype: string = typeof v;
+    if (v === null) vtype = 'null';
+    else if (Array.isArray(v)) vtype = `Array(len=${v.length})`;
+    else if (typeof v === 'object') vtype = `Obj(keys=${(Object.keys(v).slice(0, 10).join(',') as string) || '0'})`;
+    return `${k}:${vtype}`;
+  });
+  return `{${desc.join('; ')}}`;
+}
+
 function extractTotal(raw: unknown, fallback: number): number | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const r = raw as Record<string, any>;
-  const candidates = [r.total, r.total_count, r.totalCount, r.count, r?.meta?.total, r?.pagination?.total, r?.data?.total];
+  const candidates = [r.total, r.total_count, r.totalCount, r.count, r?.meta?.total, r?.pagination?.total, r?.data?.total, r?.meta?.totalElements, r?.page?.totalItems, r?.data?.count, r?.response?.total];
   for (const c of candidates) {
     if (typeof c === 'number' && isFinite(c)) return c;
     if (typeof c === 'string') {
@@ -1313,18 +1380,27 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     const rawArray = extractSimList(respBodyRaw);
     if (!rawArray || rawArray.length === 0) {
       const bodyAsObj = respBodyRaw as Record<string, any> | null;
-      if (bodyAsObj && typeof bodyAsObj === 'object' && ('iccid' in bodyAsObj || 'sim_iccid' in bodyAsObj)) {
-        const iccid = String(bodyAsObj.iccid ?? bodyAsObj.sim_iccid ?? '').trim();
-        if (iccid) {
-          return { items: [toSimStatus(bodyAsObj, iccid)], total: 1, page: page, limit: limit, hasMore: false, raw: respBodyRaw };
+      if (bodyAsObj && typeof bodyAsObj === 'object') {
+        const nested = bodyAsObj.simCard ?? bodyAsObj.sim ?? bodyAsObj.asset ?? bodyAsObj.device ?? bodyAsObj.subscription ?? bodyAsObj.subscriber ?? bodyAsObj;
+        const hasAny = 'iccid' in bodyAsObj || 'sim_iccid' in bodyAsObj || 'eid' in bodyAsObj || 'imsi' in bodyAsObj
+          || 'iccid' in (nested ?? {}) || 'eid' in (nested ?? {});
+        if (hasAny) {
+          const iccid = String(bodyAsObj.iccid ?? bodyAsObj.sim_iccid ?? bodyAsObj.eid ?? nested?.iccid ?? nested?.sim_iccid ?? nested?.eid ?? '').trim();
+          if (iccid) {
+            return { items: [toSimStatus(bodyAsObj, iccid)], total: 1, page: page, limit: limit, hasMore: false, raw: respBodyRaw };
+          }
         }
       }
       return null;
     }
     const items = rawArray.map((item) => {
-      const iccid = String(item.iccid ?? item.sim_iccid ?? item.simIccid ?? (item as any)?.sim?.iccid ?? '').trim();
+      const nested = item?.simCard ?? item?.sim ?? item?.asset ?? item?.device ?? item?.subscription ?? item?.subscriber ?? {};
+      const iccid = String(
+        item.iccid ?? item.sim_iccid ?? item.simIccid ?? item.eid
+          ?? nested.iccid ?? nested.sim_iccid ?? nested.simIccid ?? nested.eid ?? ''
+      ).trim();
       return toSimStatus(item, iccid);
-    });
+    }).filter((s) => s.iccid);
     const total = extractTotal(respBodyRaw, items.length);
     const hasMore = typeof total === 'number' ? (page * limit) < total : items.length === limit;
     return { items, total, page: page, limit: limit, hasMore, raw: respBodyRaw };
@@ -1435,9 +1511,29 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       const parsed = parseFetchResponse(text, ct);
       if (resp.ok) {
         const result = processResponse(parsed);
-        if (result) return result;
+        if (result) {
+          if (result.items.length === 0) {
+            // Lijst-endpoint herkend, maar 0 items. Vraag: is dit het juiste endpoint (check of account echt leeg is)?
+            // Doorgaan met andere paden (mogelijk zit inventory op een andere path).
+            try {
+              console.error(`[listSims][${args.meta.signature ?? ''}] [WARN] ✅ 200 OK op ${args.method} ${args.meta.path} — endpoint herkend MAAR 0 SIMs (leeg account of verkeerde path). Shape raw: ${shapeOf(parsed)}`);
+            } catch { /* ignore */ }
+          } else {
+            return result;
+          }
+        }
         if (resp.status === 200 || resp.status === 201 || resp.status === 204) {
-          return { items: [], total: 0, page: page, limit: limit, hasMore: false, raw: parsed };
+          // 200 OK, maar processResponse vond geen SIM-lijst-structuur.
+          // Log de structuur zodat we weten welke keys extractSimList nog mist.
+          try {
+            console.error(`[listSims][${args.meta.signature ?? ''}] [DEBUG] ✅ 200 OK op ${args.method} ${args.meta.path} — NIET herkend als SIM-lijst! Shape: ${shapeOf(parsed)}. Body (eerste 4000 chars):\n${JSON.stringify(parsed).slice(0, 4000)}`);
+          } catch { /* ignore */ }
+          trace.statusCode = resp.status;
+          trace.errorClass = 'OK-no-list-shape';
+          trace.error = `200 OK maar geen SIM-lijst-structuur herkend. Shape=${shapeOf(parsed)}`;
+          attempts.push(trace);
+          // NIET returnen — blijf proberen met andere paden/auth!
+          return null;
         }
       } else {
         trace.statusCode = resp.status;
@@ -1537,14 +1633,25 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       const parsed = parseFetchResponse(text, ct);
       if (resp.ok) {
         const result = processResponse(parsed);
-        if (result) return result;
-        if (resp.status === 200 || resp.status === 204) {
+        if (result) {
+          if (result.items.length === 0) {
+            try {
+              console.error(`[listSims][fase0:${probe.label}] [WARN] ✅ 200 OK — endpoint HERKEND MAAR 0 SIMs (leeg of verkeerd). Shape: ${shapeOf(parsed)}`);
+            } catch { /* ignore */ }
+          } else {
+            return result;
+          }
+        }
+        if (resp.status === 200 || resp.status === 201 || resp.status === 204) {
           interesting.push({ probe, statusCode: resp.status, respBody: parsed });
           trace.statusCode = resp.status;
-          trace.errorClass = 'OK-200';
+          trace.errorClass = result ? (result.items.length ? 'OK-200' : 'OK-200-empty') : 'OK-200-no-shape-match';
           const snippet = typeof parsed === 'string' ? parsed.slice(0, 120) : JSON.stringify(parsed).slice(0, 120);
-          trace.error = `Body: ${snippet || '(leeg)'}`;
+          trace.error = `Body: ${snippet || '(leeg)'}. Shape=${shapeOf(parsed)}`;
           attempts.push(trace);
+          try {
+            console.error(`[listSims][fase0:${probe.label}] [DEBUG] ✅ 200 OK op ${probe.method} ${probe.path} auth=${probe.auth.tag} — ${result ? (result.items.length ? `${result.items.length} SIMs!` : 'ENDPOINT HERKEND MAAR 0 SIMs') : 'NIET als SIM-lijst HERKEND!'}. Shape: ${shapeOf(parsed)}. Body:\n${JSON.stringify(parsed).slice(0, 4000)}`);
+          } catch { /* ignore */ }
           continue;
         }
       } else {

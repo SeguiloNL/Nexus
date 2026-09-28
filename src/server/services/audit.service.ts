@@ -18,12 +18,21 @@ export interface LogAuditInput {
   oldValues?: Record<string, unknown> | null;
   newValues?: Record<string, unknown> | null;
   metadata?: Record<string, unknown> | null;
+  timestamp?: Date | string | null;
 }
 
 export async function logAudit(
   db: AuditLogDb,
   input: LogAuditInput
 ): Promise<PrismaAuditLog> {
+  const effectiveTimestamp = input.timestamp
+    ? (typeof input.timestamp === "string" ? new Date(input.timestamp) : input.timestamp)
+    : new Date();
+
+  const enrichedMetadata = input.metadata
+    ? { ...input.metadata, timestamp: effectiveTimestamp.toISOString() }
+    : { timestamp: effectiveTimestamp.toISOString() };
+
   return db.auditLog.create({
     data: {
       entityType: input.entityType,
@@ -32,7 +41,8 @@ export async function logAudit(
       userId: input.userId,
       oldValues: input.oldValues as Prisma.InputJsonValue | undefined,
       newValues: input.newValues as Prisma.InputJsonValue | undefined,
-      metadata: input.metadata as Prisma.InputJsonValue | undefined,
+      metadata: enrichedMetadata as Prisma.InputJsonValue | undefined,
+      timestamp: effectiveTimestamp,
     },
   });
 }

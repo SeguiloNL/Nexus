@@ -200,6 +200,8 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
   try {
     await prisma.$transaction(async (tx) => {
       const userId = ctx.userId;
+      const finishedAt = new Date();
+      const durationMs = Date.now() - startedAt;
       const meta = {
         scope: "simhuis_sim_sync",
         totalInSimhuis,
@@ -208,6 +210,9 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
         updated,
         skipped,
         errors: errorCount,
+        startedAt: new Date(startedAt).toISOString(),
+        finishedAt: finishedAt.toISOString(),
+        durationMs,
       };
       if (auditCreatedEntries.length > 0) {
         await logAudit(tx, {
@@ -218,6 +223,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           oldValues: { source: "simhuis_sync", count: auditCreatedEntries.length },
           newValues: { items: auditCreatedEntries.slice(0, 100), total: auditCreatedEntries.length },
           metadata: meta,
+          timestamp: finishedAt,
         });
       }
       if (auditUpdatedEntries.length > 0) {
@@ -229,6 +235,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           oldValues: { source: "simhuis_sync", count: auditUpdatedEntries.length },
           newValues: { items: auditUpdatedEntries.slice(0, 100), total: auditUpdatedEntries.length },
           metadata: meta,
+          timestamp: finishedAt,
         });
       }
       if (errorCount > 0) {
@@ -240,6 +247,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           oldValues: { errorCount },
           newValues: { errorMessages: errors.slice(0, 50) },
           metadata: meta,
+          timestamp: finishedAt,
         });
       }
     });
