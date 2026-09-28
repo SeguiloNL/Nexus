@@ -4,11 +4,55 @@ import type { ActivateSimOptions, SimhuisApiResponse, SimhuisSimStatus } from '.
 function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   const r = (raw ?? {}) as Record<string, any>;
   const nestedSim = r.simCard ?? r.sim ?? r.asset ?? r.device ?? r.subscription ?? r.subscriber ?? r.esimProfile ?? r.esim ?? {};
+
+  const DEBUG = (process.env.DEBUG_SIMHUIS_EXTRACT ?? '0') === '1';
+
+  // ============================================================
+  // Robuuste key-alias lookup
+  // - Accepteert case-insensitive
+  // - Negeert spaties, underscores, streepjes, punten
+  // ============================================================
+  const KEY_CACHE = new WeakMap<Record<string, any>, Map<string, string>>();
+  function normalizeKey(k: string): string {
+    return k
+      .toLowerCase()
+      .replace(/[\s_./\-()]+/g, '');
+  }
+  function buildKeyIndex(obj: Record<string, any>): Map<string, string> {
+    if (!obj || typeof obj !== 'object') return new Map();
+    const cached = KEY_CACHE.get(obj);
+    if (cached) return cached;
+    const idx = new Map<string, string>();
+    for (const k of Object.keys(obj)) {
+      const norm = normalizeKey(k);
+      if (norm && !idx.has(norm)) idx.set(norm, k);
+    }
+    KEY_CACHE.set(obj, idx);
+    return idx;
+  }
+  // findKey: zoek 1 value in r, dan in nestedSim, d.m.v. alias-normalizatie.
+  // Retourneert [gevondenValue, sourceRecordKey] of [undefined, null].
+  function findKey(...aliases: string[]): any {
+    const normAliases = aliases.map(normalizeKey).filter(Boolean);
+    for (const obj of [r, nestedSim, (r as any).plan ?? {}, (r as any).usage ?? {}, nestedSim.plan ?? {}, nestedSim.usage ?? {}]) {
+      if (!obj || typeof obj !== 'object') continue;
+      const idx = buildKeyIndex(obj);
+      for (const na of normAliases) {
+        const realKey = idx.get(na);
+        if (realKey && obj[realKey] !== undefined && obj[realKey] !== null) {
+          return obj[realKey];
+        }
+      }
+    }
+    return undefined;
+  }
+
   const statusRaw = String(
-    r.status ?? r.state ?? r.sim_status ?? r.simState ?? r.lifeCycleStatus ?? r.lifecycle_status
-      ?? nestedSim?.status ?? nestedSim?.state ?? nestedSim?.lifeCycleStatus
-      ?? (typeof r.status === 'object' && r.status ? (r.status.value ?? r.status.name ?? '') : '')
-      ?? ''
+    findKey(
+      'status', 'state', 'sim_status', 'simState', 'lifeCycleStatus',
+      'lifecycle_status', 'lifecycleStatus'
+    ) ?? (typeof r.status === 'object' && r.status ? (r.status.value ?? r.status.name ?? '') : '')
+    ?? ''
   ).toLowerCase();
   let status: SimhuisSimStatus['status'] = statusRaw as any;
   if (['active', 'enabled', 'online', 'activated', 'in_service', 'provisioned'].includes(statusRaw)) status = 'active';
@@ -17,21 +61,105 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   else if (['terminated', 'deleted', 'cancelled', 'canceled', 'cancel', 'destroyed', 'expired'].includes(statusRaw)) status = 'terminated';
   else if (['provisioning', 'activating', 'pending', 'activating_subscription', 'pre_active'].includes(statusRaw)) status = 'provisioning';
 
-  const pickString = (...paths: Array<string | undefined | null>): string | null => {
+  // ============================================================
+  // pickString: zoek eerst via findKey (alias-normalizatie),
+  // daarna fallback op de expliciete paden als strings/numbers.
+  // ============================================================
+  const pickString = (...paths: Array<unknown>): string | null => {
+    // Eerst: aliassen die findKey begrijpt
+    for (const p of paths) {
+      if (typeof p === 'string') {
+        const v = findKey(p);
+        if (v !== undefined && v !== null) {
+          const s = String(v).trim();
+          if (s && s !== '-' && s !== 'null' && s !== 'undefined') return s;
+        }
+      }
+    }
+    // Daarna expliciete waarden
     for (const p of paths) {
       if (p === null || p === undefined) continue;
+      if (typeof p === 'object') continue; // als object is al door findKey geprobeerd
       const s = String(p).trim();
       if (s && s !== '-' && s !== 'null' && s !== 'undefined') return s;
     }
     return null;
   };
 
+  // ============================================================
+  // parseBytes: accepteert "322.49 MB", "2,00GB", 33816576 (bytes), enz.
+  // Retourneert number | null (aantal bytes).
+  // ============================================================
+  const BYTE_MULTIPLIERS: Record<string, number> = {
+    b: 1,
+    k: 1024, kb: 1024, kbit: 128,
+    m: 1024 ** 2, mb: 1024 ** 2, mib: 1024 ** 2, mbit: (1024 ** 2) / 8,
+    g: 1024 ** 3, gb: 1024 ** 3, gib: 1024 ** 3, gbit: (1024 ** 3) / 8,
+    t: 1024 ** 4, tb: 1024 ** 4, tib: 1024 ** 4,
+    p: 1024 ** 5, pb: 1024 ** 5, pib: 1024 ** 5,
+  };
+  function parseBytes(raw: unknown): number | null {
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw === 'bigint') {
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    }
+    if (typeof raw === 'number') {
+      return Number.isFinite(raw) ? raw : null;
+    }
+    if (typeof raw !== 'string') return null;
+    let s = raw.trim();
+    if (!s || s === '-' || s === 'null' || s === 'undefined') return null;
+    // Vervang Nederlands/Continentaal decimaal komma door punt
+    s = s.replace(/,(\d)/g, '.$1');
+    // Strip spaties tussen getal en unit
+    s = s.replace(/\s+/g, '');
+    const match = s.match(/^(-?\d+(?:\.\d+)?)([a-zA-Z]*)$/);
+    if (!match) {
+      // Misschien is het een getal met duizendtalseparator? Probeer te parsen als gewoon getal (bytes)
+      const justNum = Number(s.replace(/[^\d.]/g, ''));
+      return Number.isFinite(justNum) ? justNum : null;
+    }
+    const num = Number(match[1]);
+    if (!Number.isFinite(num)) return null;
+    const unit = (match[2] || 'b').toLowerCase();
+    const mult = BYTE_MULTIPLIERS[unit] ?? 1;
+    return num * mult;
+  }
+
+  // ============================================================
+  // pickNumber: eerst findKey, dan expliciete paden. Accepteert
+  // strings "100", numbers, bigints.
+  // ============================================================
   const pickNumber = (...paths: Array<unknown>): number | null => {
+    for (const p of paths) {
+      if (typeof p === 'string') {
+        const v = findKey(p);
+        if (v !== undefined && v !== null) {
+          if (typeof v === 'number' && Number.isFinite(v)) return v;
+          if (typeof v === 'string') {
+            const cleaned = v.trim().replace(/,(\d)/g, '.$1');
+            const n = Number(cleaned.replace(/[^\d.\-]/g, ''));
+            if (Number.isFinite(n)) return n;
+            if (cleaned && !/[a-zA-Z]/.test(cleaned)) {
+              // geen units, pure nummerieke poging
+              const raw = Number(cleaned);
+              if (Number.isFinite(raw)) return raw;
+            }
+          }
+          if (typeof v === 'bigint') {
+            const n = Number(v);
+            if (Number.isFinite(n)) return n;
+          }
+        }
+      }
+    }
     for (const p of paths) {
       if (p === null || p === undefined) continue;
       if (typeof p === 'number' && Number.isFinite(p)) return p;
       if (typeof p === 'string') {
-        const n = Number(p.trim());
+        const cleaned = p.trim().replace(/,(\d)/g, '.$1');
+        const n = Number(cleaned.replace(/[^\d.\-]/g, ''));
         if (Number.isFinite(n)) return n;
       }
       if (typeof p === 'bigint') {
@@ -42,58 +170,153 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     return null;
   };
 
+  // ============================================================
+  // pickBytes: zoek eerst via findKey op data-aliassen, parset
+  // daarna met parseBytes (units zoals MB/GB), fallback op
+  // pickNumber voor plain bytes.
+  // ============================================================
+  const pickBytes = (...aliases: string[]): number | null => {
+    // Eerst via findKey (unit-string OK, of number OK)
+    for (const a of aliases) {
+      const v = findKey(a);
+      if (v !== undefined && v !== null) {
+        const pb = parseBytes(v);
+        if (pb !== null) return pb;
+        const nb = pickNumber(v);
+        if (nb !== null) return nb;
+      }
+    }
+    // Daarna via expliciete waardes als die in de args zitten
+    for (const a of aliases) {
+      if (typeof a !== 'string') {
+        const pb = parseBytes(a);
+        if (pb !== null) return pb;
+        const nb = pickNumber(a);
+        if (nb !== null) return nb;
+      }
+    }
+    return null;
+  };
+
   const iccidVal = pickString(
-    r.iccid, r.sim_iccid, r.simIccid, r.eid,
+    'iccid', r.iccid, r.sim_iccid, r.simIccid, r.eid,
     nestedSim?.iccid, nestedSim?.sim_iccid, nestedSim?.simIccid, nestedSim?.eid,
     iccid,
   ) ?? '';
 
   const eidVal = pickString(
-    r.eid, r.esimId, r.esim_id, r.esimID, r.eSimId, r['eSIM ID'],
-    nestedSim?.eid, nestedSim?.esimId, nestedSim?.esim_id, nestedSim?.esimID, nestedSim?.eSimId,
+    'eid', 'esimId', 'esim_id', 'esimID', 'eSimId', 'eSIM ID',
+    r.eid, r.esimId, nestedSim?.eid,
   );
 
   const subscriberIdVal = pickString(
-    r.id, r.assetId, r.asset_id, r.asssetID,
-    r.subscriberId, r.subscriber_id, r.subscriptionId, r.subscription_id,
-    r.esimProfileId, r.esim_profile_id, r.profileId, r.profile_id,
-    nestedSim?.id, nestedSim?.subscriberId, nestedSim?.subscriber_id, nestedSim?.subscriptionId, nestedSim?.esimProfileId,
+    'id', 'assetId', 'asset_id', 'asssetID',
+    'subscriberId', 'subscriber_id', 'subscriptionId', 'subscription_id',
+    'esimProfileId', 'esim_profile_id', 'profileId', 'profile_id',
+    r.id, nestedSim?.id, nestedSim?.subscriberId,
   );
 
   const simNameVal = pickString(
-    r.name, r.simName, r.sim_name, r.assetName, r.asset_name, r.displayName, r.display_name, r.label, r.title,
-    nestedSim?.name, nestedSim?.simName, nestedSim?.displayName, nestedSim?.label, nestedSim?.title,
+    'SIM Name', 'SIM_NAME', 'simName', 'name', 'assetName', 'asset_name',
+    'displayName', 'display_name', 'label', 'title',
+    r.name, r.simName, nestedSim?.name, nestedSim?.simName, nestedSim?.displayName,
   );
 
   const groupIdVal = pickString(
-    r.groupId, r.group_id, r.groupID,
-    nestedSim?.groupId, nestedSim?.group_id,
+    'groupId', 'group_id', 'groupID',
+    r.groupId, nestedSim?.groupId,
   );
 
   const groupNameVal = pickString(
-    r.group, r.groupName, r.group_name, r.groupLabel, r.poolName, r.pool_name, r.batch, r.batchName,
-    nestedSim?.group, nestedSim?.groupName, nestedSim?.poolName,
+    'Group', 'group', 'groupName', 'group_name', 'groupLabel',
+    'poolName', 'pool_name', 'batch', 'batchName',
+    r.group, r.groupName, nestedSim?.group, nestedSim?.poolName,
   );
 
   const productNameVal = pickString(
-    r.productName, r.product_name, r.product, r.productCode, r.product_code, r.productId,
-    r.tariffName, r.ratePlan, r.rate_plan, r.planName,
-    nestedSim?.productName, nestedSim?.product, nestedSim?.planName, nestedSim?.ratePlan,
+    'Product Name', 'productName', 'product_name', 'product',
+    'productCode', 'product_code', 'productId',
+    'tariffName', 'ratePlan', 'rate_plan', 'planName',
+    r.productName, r.product, nestedSim?.productName, nestedSim?.planName,
   );
 
   const productTypeVal = pickString(
-    r.productType, r.product_type, r.productTypeName, r.product_category, r.productCategory,
-    r.type, r.assetType, r.asset_type, r.category, r.simCategory, r.simType,
-    r.assetCategory, r.subscriptionType, r.subscription_type, r.kind,
-    nestedSim?.productType, nestedSim?.product_type, nestedSim?.type, nestedSim?.category,
-    nestedSim?.assetType, nestedSim?.subscriptionType, nestedSim?.kind,
+    'Product Type', 'productType', 'product_type', 'productTypeName',
+    'product_category', 'productCategory', 'type', 'assetType', 'asset_type',
+    'category', 'simCategory', 'simType', 'assetCategory',
+    'subscriptionType', 'subscription_type', 'kind',
+    r.productType, nestedSim?.productType, nestedSim?.type,
   );
+
+  // Data / Usage velden — gebruiken pickBytes (units OK)
+  const dataUsedBytesVal = pickBytes(
+    'Data Used', 'Data_Used', 'dataUsed', 'data_used_bytes',
+    'used_bytes', 'total_usage', 'dataUsage', 'data_usage',
+    'usage data_bytes', 'data_bytes', 'bytes',
+    'usedData', 'used_data', 'consumed_bytes',
+    r.dataUsed, r.data_used_bytes,
+  );
+  const dataLimitBytesVal = pickBytes(
+    'Data Limit', 'Data_Limit', 'dataLimit', 'data_limit_bytes',
+    'limit_bytes', 'data_quota', 'dataQuota',
+    'plan data_limit_bytes', 'data_quota_plan',
+    'max_data_bytes', 'total_data_bytes', 'allowance_data',
+    r.dataLimit, r.data_limit_bytes,
+  );
+  const lowestDataLimitBytesVal = pickBytes(
+    'Lowest Data Limit', 'lowest_data_limit_bytes',
+    'data_threshold_bytes', 'data alert bytes', 'dataAlertBytes',
+    'data_warning_limit', 'lowDataLimit', 'threshold_data_bytes',
+    'warning_data_bytes', 'min_data_limit_bytes', 'dataLowLimit',
+    'data_low_limit',
+    r.lowestDataLimit, r.lowest_data_limit_bytes, r.dataLowLimit,
+  );
+  // SMS velden — gebruiken pickNumber (geen units, alleen integers)
+  const smsUsedCountVal = pickNumber(
+    'sms used', 'SMS Used', 'smsUsed', 'sms_used',
+    'sms_used_count', 'sms_count', 'total_sms',
+    'sms_usage', 'smsUsage', 'totalSms', 'smsSent', 'sms_sent',
+    'usage sms_count', 'usage sms', 'consumed_sms',
+    r.smsUsed, r.sms_used, r.sms_count,
+  );
+  const smsLimitCountVal = pickNumber(
+    'SMS Limit', 'sms_limit', 'sms_quota', 'smsLimit', 'max_sms',
+    'sms_max', 'maximum_sms', 'smsBundle', 'sms_bundle',
+    'allowance_sms', 'smsAllowance', 'plan sms_limit',
+    'total_sms_bundle',
+    r.smsLimit, r.sms_limit, r.max_sms,
+  );
+  const lowestSmsLimitCountVal = pickNumber(
+    'Lowest SMS limit', 'Lowest SMS Limit', 'lowest_sms_limit',
+    'sms_threshold', 'sms_alert', 'lowSmsLimit',
+    'sms_warning', 'smsWarning', 'min_sms_limit', 'smsLowLimit',
+    'sms_low_limit', 'plan lowest_sms_limit',
+    r.lowestSmsLimit, r.lowest_sms_limit, r.lowSmsLimit,
+  );
+
+  if (DEBUG) {
+    // eslint-disable-next-line no-console
+    console.log(
+      '[DEBUG][toSimStatus] iccid=%s\n  keys(r)=%O\n  productName=%s productType=%s simName=%s group=%s\n  dataUsed=%s (raw=%s) dataLimit=%s (raw=%s) lowestData=%s\n  smsUsed=%s smsLimit=%s lowestSms=%s',
+      iccidVal || iccid,
+      Object.keys(r),
+      productNameVal, productTypeVal, simNameVal, groupNameVal,
+      dataUsedBytesVal, findKey('Data Used', 'dataUsed', 'data_used_bytes'),
+      dataLimitBytesVal, findKey('Data Limit', 'dataLimit', 'data_limit_bytes'),
+      lowestDataLimitBytesVal,
+      smsUsedCountVal, smsLimitCountVal, lowestSmsLimitCountVal,
+    );
+  }
 
   return {
     iccid: iccidVal,
     eid: eidVal,
-    imsi: pickString(r.imsi, nestedSim?.imsi),
-    msisdn: pickString(r.msisdn, r.phone_number, nestedSim?.msisdn, nestedSim?.phone_number, r.primaryMsisdn, r['MSISDN'], nestedSim?.primaryMsisdn),
+    imsi: pickString('imsi', r.imsi, nestedSim?.imsi),
+    msisdn: pickString(
+      'msisdn', 'phone_number', 'primaryMsisdn', 'MSISDN',
+      'Virtual MSISDN', 'virtual_msisdn',
+      r.msisdn, nestedSim?.msisdn, r.primaryMsisdn,
+    ),
     subscriberId: subscriberIdVal,
     simName: simNameVal,
     groupId: groupIdVal,
@@ -101,52 +324,31 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     productName: productNameVal,
     productType: productTypeVal,
     status,
-    ip: pickString(r.ip, r.ip_address, nestedSim?.ip, nestedSim?.ip_address, r.lastIp, r.last_ip, nestedSim?.lastIp),
-    network: pickString(r.network, r.carrier, r.provider, r.operator, r.country_iso, r.networkName, r.network_name, nestedSim?.network, nestedSim?.networkName),
-    planName: pickString(r.plan_name, r.offer_name, r.tariff, r.rate_plan, r.plan, r.package_name, r.planName, nestedSim?.planName, nestedSim?.plan_name, nestedSim?.rate_plan),
-    dataUsedBytes: pickNumber(
-      r.data_used_bytes, r.used_bytes, r.total_usage, r.dataUsage, r.data_usage,
-      (r.usage ?? nestedSim?.usage)?.data_bytes, (r.usage ?? nestedSim?.usage)?.bytes,
-      (r.usage ?? nestedSim?.usage)?.data,
-      r.usedData, r.used_data, r.consumed_bytes,
+    ip: pickString(
+      'ip', 'ip_address', 'lastIp', 'last_ip', 'Last IP',
+      r.ip, nestedSim?.lastIp,
     ),
-    dataLimitBytes: pickNumber(
-      r.data_limit_bytes, r.limit_bytes, r.data_quota, r.dataQuota, r.dataLimit,
-      (r.plan ?? nestedSim?.plan)?.data_limit_bytes,
-      (r.plan ?? nestedSim?.plan)?.data_quota,
-      (r.plan ?? nestedSim?.plan)?.dataLimit,
-      r.max_data_bytes, r.total_data_bytes, r.allowance_data,
+    network: pickString(
+      'network', 'carrier', 'provider', 'operator', 'country_iso',
+      'networkName', 'network_name',
+      r.network, nestedSim?.networkName,
     ),
-    lowestDataLimitBytes: pickNumber(
-      r.lowest_data_limit_bytes, r.data_threshold_bytes, r.data_alert_bytes,
-      r.data_warning_limit, r.lowDataLimit, r.threshold_data_bytes, r.warning_data_bytes,
-      r.min_data_limit_bytes, r.dataLowLimit, r.data_low_limit,
-      (r.plan ?? nestedSim?.plan)?.lowest_data_limit_bytes,
-      (r.plan ?? nestedSim?.plan)?.data_threshold_bytes,
-      (r.plan ?? nestedSim?.plan)?.data_warning_limit,
+    planName: pickString(
+      'plan_name', 'offer_name', 'tariff', 'rate_plan', 'plan',
+      'package_name', 'planName',
+      nestedSim?.planName, nestedSim?.plan_name,
     ),
-    smsUsedCount: pickNumber(
-      r.sms_used, r.sms_count, r.smsUsed, r.sms_used_count, r.total_sms,
-      r.sms_usage, r.smsUsage, r.totalSms, r.smsSent, r.sms_sent,
-      (r.usage ?? nestedSim?.usage)?.sms_count, (r.usage ?? nestedSim?.usage)?.sms,
-      (r.usage ?? nestedSim?.usage)?.smsUsed,
-      r.consumed_sms,
+    dataUsedBytes: dataUsedBytesVal,
+    dataLimitBytes: dataLimitBytesVal,
+    lowestDataLimitBytes: lowestDataLimitBytesVal,
+    smsUsedCount: smsUsedCountVal,
+    smsLimitCount: smsLimitCountVal,
+    lowestSmsLimitCount: lowestSmsLimitCountVal,
+    activatedAt: pickString(
+      'activated_at', 'activation_date', 'created_at', 'provisioned_at',
+      'startDate', 'start_date',
+      nestedSim?.activatedAt, nestedSim?.provisioned_at,
     ),
-    smsLimitCount: pickNumber(
-      r.sms_limit, r.sms_quota, r.smsLimit, r.max_sms, r.sms_max,
-      r.maximum_sms, r.smsBundle, r.sms_bundle, r.allowance_sms, r.smsAllowance,
-      (r.plan ?? nestedSim?.plan)?.sms_limit, (r.plan ?? nestedSim?.plan)?.sms_quota,
-      (r.plan ?? nestedSim?.plan)?.smsLimit, (r.plan ?? nestedSim?.plan)?.smsBundle,
-      r.total_sms_bundle,
-    ),
-    lowestSmsLimitCount: pickNumber(
-      r.lowest_sms_limit, r.sms_threshold, r.sms_alert, r.lowSmsLimit,
-      r.sms_warning, r.smsWarning, r.min_sms_limit, r.smsLowLimit, r.sms_low_limit,
-      (r.plan ?? nestedSim?.plan)?.lowest_sms_limit,
-      (r.plan ?? nestedSim?.plan)?.sms_threshold,
-      (r.plan ?? nestedSim?.plan)?.sms_warning,
-    ),
-    activatedAt: pickString(r.activated_at, r.activation_date, r.created_at, r.provisioned_at, nestedSim?.activatedAt, nestedSim?.provisioned_at, r.startDate, r.start_date),
     raw,
   };
 }

@@ -7,10 +7,18 @@ import type {
   SimFilterParams,
   UpdateSimInput,
 } from "@/types/domain";
-import type { SimStatus, UserRole } from "@/types/enums";
+import type { SimStatus, UserRole, RoleScope } from "@/types/enums";
 import type { Prisma, SIM as PrismaSim } from "@prisma/client";
+import type { PermissionBits } from "@/types/next-auth";
 
-type Ctx = { userId: string; userRole: UserRole };
+type Ctx = {
+  userId: string;
+  userRole: UserRole;
+  roleId?: string;
+  roleScope?: RoleScope;
+  customerScope?: string[];
+  permissions?: PermissionBits;
+};
 
 function includeDetail(): Prisma.SIMInclude {
   return {
@@ -38,7 +46,7 @@ function includeDetail(): Prisma.SIMInclude {
 }
 
 export async function findManySims(
-  params: SimFilterParams & { viewerRole?: UserRole }
+  params: SimFilterParams & { viewerRole?: UserRole; customerScope?: string[] }
 ): Promise<PaginatedResult<PrismaSim>> {
   const {
     page = 1,
@@ -48,9 +56,16 @@ export async function findManySims(
     search,
     status,
     provider,
+    customerScope,
   } = params;
 
   const where: Prisma.SIMWhereInput = { deletedAt: null };
+
+  if (customerScope && customerScope.length > 0) {
+    where.assignments = {
+      some: { subscription: { customerId: { in: customerScope } } },
+    };
+  }
 
   if (status) (where.status as any) = status;
   if (provider) where.provider = { contains: provider, mode: "insensitive" };
@@ -97,9 +112,15 @@ export async function findManySims(
   };
 }
 
-export async function findSimById(id: string) {
-  return prisma.sIM.findUnique({
-    where: { id, deletedAt: null },
+export async function findSimById(id: string, customerScope?: string[]) {
+  const where: Prisma.SIMWhereInput = { id, deletedAt: null };
+  if (customerScope && customerScope.length > 0) {
+    where.assignments = {
+      some: { subscription: { customerId: { in: customerScope } } },
+    };
+  }
+  return prisma.sIM.findFirst({
+    where,
     include: includeDetail(),
   });
 }
@@ -108,6 +129,8 @@ export async function createSim(
   input: CreateSimInput,
   ctx: Ctx
 ): Promise<PrismaSim> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "sim");
+
   return prisma.$transaction(async (tx) => {
     const created = await tx.sIM.create({
       data: {
@@ -141,10 +164,28 @@ export async function updateSim(
   input: UpdateSimInput,
   ctx: Ctx
 ): Promise<PrismaSim> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "sim");
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.sIM.findUniqueOrThrow({
       where: { id, deletedAt: null },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      const inScopeCount = await tx.simAssignment.count({
+        where: {
+          simId: id,
+          endAt: null,
+          subscription: { customerId: { in: ctx.customerScope } },
+        },
+      });
+      const hasAnyActive = await tx.simAssignment.count({
+        where: { simId: id, endAt: null },
+      });
+      if (hasAnyActive > 0 && inScopeCount === 0) {
+        throw new Error("SIM valt niet binnen je toegang");
+      }
+    }
 
     const data: Prisma.SIMUpdateInput = {};
     for (const [k, v] of Object.entries(input)) {
@@ -180,10 +221,28 @@ export async function softDeleteSim(
   id: string,
   ctx: Ctx
 ): Promise<PrismaSim> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "sim");
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.sIM.findUniqueOrThrow({
       where: { id, deletedAt: null },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      const inScopeCount = await tx.simAssignment.count({
+        where: {
+          simId: id,
+          endAt: null,
+          subscription: { customerId: { in: ctx.customerScope } },
+        },
+      });
+      const hasAnyActive = await tx.simAssignment.count({
+        where: { simId: id, endAt: null },
+      });
+      if (hasAnyActive > 0 && inScopeCount === 0) {
+        throw new Error("SIM valt niet binnen je toegang");
+      }
+    }
 
     const updated = await tx.sIM.update({
       where: { id },
@@ -206,12 +265,16 @@ export async function bulkSoftDeleteSims(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  requirePermission(ctx.userRole, "delete", "sim");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "sim");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
-    const rows = await tx.sIM.findMany({
-      where: { id: { in: ids }, deletedAt: null },
-    });
+    const where: Prisma.SIMWhereInput = { id: { in: ids }, deletedAt: null };
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      where.assignments = {
+        some: { subscription: { customerId: { in: ctx.customerScope } } },
+      };
+    }
+    const rows = await tx.sIM.findMany({ where });
     if (!rows.length) return { count: 0, ids: [] };
     const targets = rows.map((r) => r.id);
     const deletedAt = new Date();
@@ -306,6 +369,8 @@ export async function bulkImportSims(
   validRows: SimCsvImportPreviewResult["valid"],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "sim");
+
   const ids: string[] = [];
   await prisma.$transaction(async (tx) => {
     for (const { row, data } of validRows) {

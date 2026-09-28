@@ -3,16 +3,16 @@ import Credentials from "next-auth/providers/credentials";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword } from "@/lib/auth/password";
 import { LoginSchema } from "@/server/validators/user";
-import type { UserRole as UserRoleEnum, RoleScope } from "@/types/enums";
+import { UserRole as UserRoleEnum, RoleScope } from "@/types/enums";
 import type { PermissionBits } from "@/types/next-auth";
 import { emptyPermissionBits } from "@/lib/rbac";
 
 type LegacyRoleName = "ADMIN" | "EMPLOYEE" | "VIEWER";
 
 const LEGACY_TO_DEFAULT_ROLE: Record<LegacyRoleName, { name: string; scope: RoleScope }> = {
-  ADMIN: { name: "ADMIN", scope: "INTERNAL" },
-  EMPLOYEE: { name: "EMPLOYEE", scope: "INTERNAL" },
-  VIEWER: { name: "VIEWER", scope: "INTERNAL" },
+  ADMIN: { name: "ADMIN", scope: RoleScope.INTERNAL },
+  EMPLOYEE: { name: "EMPLOYEE", scope: RoleScope.INTERNAL },
+  VIEWER: { name: "VIEWER", scope: RoleScope.INTERNAL },
 };
 
 async function resolveRoleForUser(
@@ -49,7 +49,7 @@ async function resolveRoleForUser(
   if (!roleId) {
     return {
       roleId: "",
-      roleScope: "INTERNAL",
+      roleScope: RoleScope.INTERNAL,
       roleName: "UNKNOWN",
       permissions: emptyPermissionBits(),
     };
@@ -64,7 +64,7 @@ async function resolveRoleForUser(
 
   return {
     roleId,
-    roleScope: (role?.scope as RoleScope) ?? "INTERNAL",
+    roleScope: (role?.scope as RoleScope) ?? RoleScope.INTERNAL,
     roleName: role?.name ?? "Rol",
     permissions,
   };

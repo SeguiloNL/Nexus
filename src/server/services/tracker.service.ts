@@ -7,10 +7,18 @@ import type {
   TrackerFilterParams,
   UpdateTrackerInput,
 } from "@/types/domain";
-import type { TrackerStatus, UserRole } from "@/types/enums";
+import type { TrackerStatus, UserRole, RoleScope } from "@/types/enums";
 import type { Prisma, Tracker as PrismaTracker } from "@prisma/client";
+import type { PermissionBits } from "@/types/next-auth";
 
-type Ctx = { userId: string; userRole: UserRole };
+type Ctx = {
+  userId: string;
+  userRole: UserRole;
+  roleId?: string;
+  roleScope?: RoleScope;
+  customerScope?: string[];
+  permissions?: PermissionBits;
+};
 
 function includeDetail(): Prisma.TrackerInclude {
   return {
@@ -41,7 +49,7 @@ function includeDetail(): Prisma.TrackerInclude {
 }
 
 export async function findManyTrackers(
-  params: TrackerFilterParams & { viewerRole?: UserRole }
+  params: TrackerFilterParams & { viewerRole?: UserRole; customerScope?: string[] }
 ): Promise<PaginatedResult<PrismaTracker>> {
   const {
     page = 1,
@@ -53,16 +61,27 @@ export async function findManyTrackers(
     brand,
     model,
     assignedOnly,
+    customerScope,
   } = params;
 
   const where: Prisma.TrackerWhereInput = { deletedAt: null };
+
+  if (customerScope && customerScope.length > 0) {
+    where.assignments = {
+      some: { subscription: { customerId: { in: customerScope } }, endAt: null },
+    };
+  }
 
   if (status) (where.status as any) = status;
   if (brand) where.brand = { contains: brand, mode: "insensitive" };
   if (model) where.model = { contains: model, mode: "insensitive" };
 
   if (assignedOnly === true) {
-    where.assignments = { some: { endAt: null } };
+    if (where.assignments && (where.assignments as any).some) {
+      (where.assignments as any).some.endAt = null;
+    } else {
+      where.assignments = { some: { endAt: null } };
+    }
   } else if (assignedOnly === false) {
     where.assignments = { none: { endAt: null } };
   }
@@ -114,9 +133,15 @@ export async function findManyTrackers(
   };
 }
 
-export async function findTrackerById(id: string) {
-  return prisma.tracker.findUnique({
-    where: { id, deletedAt: null },
+export async function findTrackerById(id: string, customerScope?: string[]) {
+  const where: Prisma.TrackerWhereInput = { id, deletedAt: null };
+  if (customerScope && customerScope.length > 0) {
+    where.assignments = {
+      some: { subscription: { customerId: { in: customerScope } } },
+    };
+  }
+  return prisma.tracker.findFirst({
+    where,
     include: includeDetail(),
   });
 }
@@ -125,6 +150,8 @@ export async function createTracker(
   input: CreateTrackerInput,
   ctx: Ctx
 ): Promise<PrismaTracker> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "tracker");
+
   return prisma.$transaction(async (tx) => {
     const created = await tx.tracker.create({
       data: {
@@ -158,10 +185,28 @@ export async function updateTracker(
   input: UpdateTrackerInput,
   ctx: Ctx
 ): Promise<PrismaTracker> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "tracker");
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.tracker.findUniqueOrThrow({
       where: { id, deletedAt: null },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      const inScopeCount = await tx.trackerAssignment.count({
+        where: {
+          trackerId: id,
+          endAt: null,
+          subscription: { customerId: { in: ctx.customerScope } },
+        },
+      });
+      const hasAnyActive = await tx.trackerAssignment.count({
+        where: { trackerId: id, endAt: null },
+      });
+      if (hasAnyActive > 0 && inScopeCount === 0) {
+        throw new Error("Tracker valt niet binnen je toegang");
+      }
+    }
 
     const data: Prisma.TrackerUpdateInput = {};
     for (const [k, v] of Object.entries(input)) {
@@ -197,10 +242,28 @@ export async function softDeleteTracker(
   id: string,
   ctx: Ctx
 ): Promise<PrismaTracker> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "tracker");
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.tracker.findUniqueOrThrow({
       where: { id, deletedAt: null },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      const inScopeCount = await tx.trackerAssignment.count({
+        where: {
+          trackerId: id,
+          endAt: null,
+          subscription: { customerId: { in: ctx.customerScope } },
+        },
+      });
+      const hasAnyActive = await tx.trackerAssignment.count({
+        where: { trackerId: id, endAt: null },
+      });
+      if (hasAnyActive > 0 && inScopeCount === 0) {
+        throw new Error("Tracker valt niet binnen je toegang");
+      }
+    }
 
     const updated = await tx.tracker.update({
       where: { id },
@@ -223,12 +286,16 @@ export async function bulkSoftDeleteTrackers(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  requirePermission(ctx.userRole, "delete", "tracker");
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "tracker");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
-    const rows = await tx.tracker.findMany({
-      where: { id: { in: ids }, deletedAt: null },
-    });
+    const where: Prisma.TrackerWhereInput = { id: { in: ids }, deletedAt: null };
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      where.assignments = {
+        some: { subscription: { customerId: { in: ctx.customerScope } } },
+      };
+    }
+    const rows = await tx.tracker.findMany({ where });
     if (!rows.length) return { count: 0, ids: [] };
     const targets = rows.map((r) => r.id);
     const deletedAt = new Date();
@@ -328,6 +395,8 @@ export async function bulkImportTrackers(
   validRows: CsvImportPreviewResult["valid"],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "tracker");
+
   const ids: string[] = [];
   await prisma.$transaction(async (tx) => {
     for (const { row, data } of validRows) {

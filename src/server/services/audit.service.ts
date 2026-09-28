@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
-import type { UserRole } from "@/types/enums";
+import { requirePermission } from "@/lib/rbac";
+import type { UserRole, RoleScope } from "@/types/enums";
+import type { PermissionBits } from "@/types/next-auth";
 import type {
   AuditLogFilterParams,
   PaginatedResult,
@@ -47,13 +49,30 @@ export async function logAudit(
   });
 }
 
+type AuditCtx = {
+  userRole?: UserRole;
+  roleId?: string;
+  roleScope?: RoleScope;
+  customerScope?: string[];
+  permissions?: PermissionBits;
+};
+
 export async function findManyAuditLogs(
-  params: AuditLogFilterParams & { viewerUserId?: string; viewerRole?: UserRole }
+  params: AuditLogFilterParams & {
+    viewerUserId?: string;
+    viewerRole?: UserRole;
+    customerScope?: string[];
+  },
+  ctx?: AuditCtx
 ): Promise<
   PaginatedResult<
     PrismaAuditLog & { user: { name: string | null; email: string } | null }
   >
 > {
+  if (ctx) {
+    await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "read", "audit");
+  }
+
   const {
     page = 1,
     perPage = 25,
@@ -67,12 +86,13 @@ export async function findManyAuditLogs(
     toDate,
     viewerUserId,
     viewerRole,
+    customerScope,
   } = params;
 
   const where: Prisma.AuditLogWhereInput = {};
 
-  if (viewerRole === "VIEWER" && viewerUserId) {
-    where.userId = viewerUserId;
+  if ((customerScope && customerScope.length > 0) || (viewerRole === "VIEWER" && viewerUserId)) {
+    if (viewerUserId) where.userId = viewerUserId;
   } else if (userId) {
     where.userId = userId;
   }

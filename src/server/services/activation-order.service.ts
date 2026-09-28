@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
 import { generateOrderNumber, generateSubscriptionNumber } from "@/lib/identifiers";
+import { requirePermission } from "@/lib/rbac";
 import type { Prisma, ActivationOrder } from "@prisma/client";
 import {
   assignSim,
@@ -11,7 +12,8 @@ import type {
   CreateActivationOrderInput,
   UpdateActivationOrderInput,
 } from "@/server/validators/activationOrder";
-import type { UserRole } from "@/types/enums";
+import type { UserRole, RoleScope } from "@/types/enums";
+import type { PermissionBits } from "@/types/next-auth";
 
 import {
   activateSim as simhuisActivateSim,
@@ -31,7 +33,14 @@ import {
 } from "../integrations/navixy/service";
 import type { NavixyTracker } from "../integrations/navixy/types";
 
-type Ctx = { userId: string; userRole: UserRole };
+type Ctx = {
+  userId: string;
+  userRole: UserRole;
+  roleId?: string;
+  roleScope?: RoleScope;
+  customerScope?: string[];
+  permissions?: PermissionBits;
+};
 
 const READY_TRANSITIONS = {
   DRAFT: ["READY", "CANCELLED"],
@@ -63,6 +72,7 @@ export async function findManyActivationOrders(
     search?: string;
     customerId?: string;
     status?: string;
+    customerScope?: string[];
   }
 ) {
   const {
@@ -73,22 +83,42 @@ export async function findManyActivationOrders(
     search,
     customerId,
     status,
+    customerScope,
   } = params;
 
   const where: Prisma.ActivationOrderWhereInput = {};
+
+  if (customerScope && customerScope.length > 0) {
+    where.AND = [
+      {
+        OR: [
+          { customerId: { in: customerScope } },
+          { subCustomerId: { in: customerScope } },
+        ],
+      },
+    ];
+  }
+
   if (customerId) where.customerId = customerId;
   if (status) where.status = status as any;
   if (search) {
     const s = search.trim();
-    where.OR = [
-      { orderNumber: { contains: s, mode: "insensitive" } },
-      { tracker: { serialNumber: { contains: s, mode: "insensitive" } } },
-      { tracker: { imei: { contains: s, mode: "insensitive" } } },
-      { sim: { iccid: { contains: s, mode: "insensitive" } } },
-      { sim: { msisdn: { contains: s, mode: "insensitive" } } },
-      { customer: { companyName: { contains: s, mode: "insensitive" } } },
-      { customer: { customerNumber: { contains: s, mode: "insensitive" } } },
-    ];
+    const searchOr: Prisma.ActivationOrderWhereInput = {
+      OR: [
+        { orderNumber: { contains: s, mode: "insensitive" } },
+        { tracker: { serialNumber: { contains: s, mode: "insensitive" } } },
+        { tracker: { imei: { contains: s, mode: "insensitive" } } },
+        { sim: { iccid: { contains: s, mode: "insensitive" } } },
+        { sim: { msisdn: { contains: s, mode: "insensitive" } } },
+        { customer: { companyName: { contains: s, mode: "insensitive" } } },
+        { customer: { customerNumber: { contains: s, mode: "insensitive" } } },
+      ],
+    };
+    if (where.AND) {
+      (where.AND as any[]).push(searchOr);
+    } else {
+      Object.assign(where, searchOr);
+    }
   }
   const sortKey: keyof Prisma.ActivationOrderOrderByWithRelationInput =
     sort === "orderNumber"
@@ -135,9 +165,16 @@ export async function findManyActivationOrders(
   };
 }
 
-export async function findActivationOrderById(id: string) {
-  return prisma.activationOrder.findUnique({
-    where: { id },
+export async function findActivationOrderById(id: string, customerScope?: string[]) {
+  const where: Prisma.ActivationOrderWhereInput = { id };
+  if (customerScope && customerScope.length > 0) {
+    where.OR = [
+      { customerId: { in: customerScope } },
+      { subCustomerId: { in: customerScope } },
+    ];
+  }
+  return prisma.activationOrder.findFirst({
+    where,
     include: {
       customer: { select: { id: true, customerNumber: true, companyName: true } },
       subCustomer: { select: { id: true, customerNumber: true, companyName: true } },
@@ -159,6 +196,17 @@ export async function createDraftOrder(
   input: CreateActivationOrderInput,
   ctx: Ctx
 ): Promise<ActivationOrder> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "activation_order");
+
+  if (ctx.customerScope && ctx.customerScope.length > 0) {
+    if (!ctx.customerScope.includes(input.customerId)) {
+      throw new Error("Customer valt niet binnen je toegang");
+    }
+    if (input.subCustomerId && !ctx.customerScope.includes(input.subCustomerId)) {
+      throw new Error("Sub-customer valt niet binnen je toegang");
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     const orderNumber = await generateOrderNumber();
     const order = await tx.activationOrder.create({
@@ -194,10 +242,27 @@ export async function updateOrder(
   input: Partial<UpdateActivationOrderInput>,
   ctx: Ctx
 ): Promise<ActivationOrder> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "activation_order");
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.activationOrder.findUniqueOrThrow({
       where: { id },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      const customerInScope = existing.customerId && ctx.customerScope.includes(existing.customerId);
+      const subCustomerInScope = existing.subCustomerId && ctx.customerScope.includes(existing.subCustomerId);
+      if (!customerInScope && !subCustomerInScope) {
+        throw new Error("Activation order valt niet binnen je toegang");
+      }
+      if (input.customerId && !ctx.customerScope.includes(input.customerId)) {
+        throw new Error("Nieuwe customer valt niet binnen je toegang");
+      }
+      if (input.subCustomerId && !ctx.customerScope.includes(input.subCustomerId)) {
+        throw new Error("Nieuwe sub-customer valt niet binnen je toegang");
+      }
+    }
+
     if (existing.status !== "DRAFT") {
       throw new Error(
         `Alleen DRAFT orders kunnen bewerkt worden (huidige status: ${existing.status}).`
@@ -227,6 +292,8 @@ export async function updateOrder(
 }
 
 export async function markReady(id: string, ctx: Ctx): Promise<ActivationOrder> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "activation_order");
+
   return prisma.$transaction(async (tx) => {
     const existing: any = await tx.activationOrder.findUniqueOrThrow({
       where: { id },
@@ -237,6 +304,15 @@ export async function markReady(id: string, ctx: Ctx): Promise<ActivationOrder> 
         product: true,
       },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      const customerInScope = existing.customerId && ctx.customerScope.includes(existing.customerId);
+      const subCustomerInScope = existing.subCustomerId && ctx.customerScope.includes(existing.subCustomerId);
+      if (!customerInScope && !subCustomerInScope) {
+        throw new Error("Activation order valt niet binnen je toegang");
+      }
+    }
+
     assertOrderTransition(existing.status, "READY");
 
     const missing: string[] = [];
@@ -279,10 +355,21 @@ export async function cancelOrder(
   ctx: Ctx,
   reason?: string
 ): Promise<ActivationOrder> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "activation_order");
+
   return prisma.$transaction(async (tx) => {
     const existing: any = await tx.activationOrder.findUniqueOrThrow({
       where: { id },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      const customerInScope = existing.customerId && ctx.customerScope.includes(existing.customerId);
+      const subCustomerInScope = existing.subCustomerId && ctx.customerScope.includes(existing.subCustomerId);
+      if (!customerInScope && !subCustomerInScope) {
+        throw new Error("Activation order valt niet binnen je toegang");
+      }
+    }
+
     assertOrderTransition(existing.status, "CANCELLED");
     const updated = await tx.activationOrder.update({
       where: { id },
@@ -306,10 +393,21 @@ export async function cancelOrder(
 }
 
 export async function retryFailed(id: string, ctx: Ctx): Promise<ActivationOrder> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "activation_order");
+
   return prisma.$transaction(async (tx) => {
     const existing: any = await tx.activationOrder.findUniqueOrThrow({
       where: { id },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      const customerInScope = existing.customerId && ctx.customerScope.includes(existing.customerId);
+      const subCustomerInScope = existing.subCustomerId && ctx.customerScope.includes(existing.subCustomerId);
+      if (!customerInScope && !subCustomerInScope) {
+        throw new Error("Activation order valt niet binnen je toegang");
+      }
+    }
+
     assertOrderTransition(existing.status, "READY");
     const updated = await tx.activationOrder.update({
       where: { id },
@@ -332,10 +430,21 @@ export async function retryFailed(id: string, ctx: Ctx): Promise<ActivationOrder
 }
 
 export async function deleteOrder(id: string, ctx: Ctx): Promise<void> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "activation_order");
+
   await prisma.$transaction(async (tx) => {
     const existing: any = await tx.activationOrder.findUniqueOrThrow({
       where: { id },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      const customerInScope = existing.customerId && ctx.customerScope.includes(existing.customerId);
+      const subCustomerInScope = existing.subCustomerId && ctx.customerScope.includes(existing.subCustomerId);
+      if (!customerInScope && !subCustomerInScope) {
+        throw new Error("Activation order valt niet binnen je toegang");
+      }
+    }
+
     if (existing.status !== "CANCELLED" && existing.status !== "DRAFT") {
       throw new Error(
         `Alleen CANCELLED of DRAFT orders kunnen verwijderd worden (huidige status: ${existing.status}).`
@@ -421,6 +530,8 @@ function buildDeviceModel(brand: string | null | undefined, model: string | null
  *  5. Na succes: Inserve sync queue.
  */
 export async function completeActivation(id: string, ctx: Ctx) {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "update", "activation_order");
+
   const initial = await prisma.activationOrder.findUnique({
     where: { id },
     include: {
@@ -432,6 +543,15 @@ export async function completeActivation(id: string, ctx: Ctx) {
     },
   });
   if (!initial) throw new Error("Order niet gevonden");
+
+  if (ctx.customerScope && ctx.customerScope.length > 0) {
+    const customerInScope = initial.customerId && ctx.customerScope.includes(initial.customerId);
+    const subCustomerInScope = initial.subCustomerId && ctx.customerScope.includes(initial.subCustomerId);
+    if (!customerInScope && !subCustomerInScope) {
+      throw new Error("Activation order valt niet binnen je toegang");
+    }
+  }
+
   if (initial.status !== "READY" && initial.status !== "FAILED") {
     throw new Error(`Alleen READY of FAILED orders kunnen geactiveerd worden (status ${initial.status}).`);
   }

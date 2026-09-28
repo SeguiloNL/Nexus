@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "./audit.service";
+import { requirePermission, PermissionError } from "@/lib/rbac";
 import type { Prisma } from "@prisma/client";
 import type {
   TrackerAssignment,
@@ -10,9 +11,17 @@ import type {
   SimStatus as SimStatusEnum,
   AssignmentReason,
 } from "@prisma/client";
-import type { UserRole } from "@/types/enums";
+import type { UserRole, RoleScope } from "@/types/enums";
+import type { PermissionBits } from "@/types/next-auth";
 
-type Ctx = { userId: string; userRole: UserRole };
+type Ctx = {
+  userId: string;
+  userRole: UserRole;
+  roleId?: string;
+  roleScope?: RoleScope;
+  customerScope?: string[];
+  permissions?: PermissionBits;
+};
 
 export async function findActiveTrackerAssignment(tx: any, trackerId: string) {
   return tx.trackerAssignment.findFirst({
@@ -34,10 +43,17 @@ export async function assignTracker(
   ctx: Ctx,
   opts: { vehicleId?: string; reason?: AssignmentReason } = {}
 ): Promise<TrackerAssignment> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "write", "subscription");
   return prisma.$transaction(async (tx) => {
     const sub = await tx.subscription.findUniqueOrThrow({
       where: { id: subscriptionId, deletedAt: null },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      if (!ctx.customerScope.includes(sub.customerId)) {
+        throw new PermissionError("Onvoldoende rechten: deze subscription valt niet binnen je toegang.");
+      }
+    }
 
     const tracker = await tx.tracker.findUniqueOrThrow({
       where: { id: trackerId, deletedAt: null },
@@ -94,11 +110,23 @@ export async function unassignTracker(
   ctx: Ctx,
   opts: { newStatus?: TrackerStatusEnum; reason?: string } = {}
 ): Promise<TrackerAssignment> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "write", "subscription");
   return prisma.$transaction(async (tx) => {
     const active: any = await findActiveTrackerAssignment(tx, trackerId);
     if (!active) {
       throw new Error(`Geen actieve tracker assignment gevonden.`);
     }
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      const sub = await tx.subscription.findUnique({
+        where: { id: active.subscriptionId },
+        select: { customerId: true },
+      });
+      if (!sub || !ctx.customerScope.includes(sub.customerId)) {
+        throw new PermissionError("Onvoldoende rechten: deze subscription valt niet binnen je toegang.");
+      }
+    }
+
     const closed = await tx.trackerAssignment.update({
       where: { id: active.id },
       data: {
@@ -136,9 +164,20 @@ export async function replaceTracker(
   ctx: Ctx,
   reason?: AssignmentReason
 ): Promise<{ old: TrackerAssignment; replacement: TrackerAssignment }> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "write", "subscription");
   return prisma.$transaction(async (tx) => {
     if (oldTrackerId === newTrackerId) {
       throw new Error("Nieuwe tracker is dezelfde als de oude.");
+    }
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      const sub = await tx.subscription.findUnique({
+        where: { id: subscriptionId },
+        select: { customerId: true },
+      });
+      if (!sub || !ctx.customerScope.includes(sub.customerId)) {
+        throw new PermissionError("Onvoldoende rechten: deze subscription valt niet binnen je toegang.");
+      }
     }
 
     const newTracker = await tx.tracker.findUniqueOrThrow({
@@ -210,10 +249,17 @@ export async function assignSim(
   ctx: Ctx,
   opts: { reason?: AssignmentReason } = {}
 ): Promise<SimAssignment> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "write", "subscription");
   return prisma.$transaction(async (tx) => {
     const sub = await tx.subscription.findUniqueOrThrow({
       where: { id: subscriptionId, deletedAt: null },
     });
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      if (!ctx.customerScope.includes(sub.customerId)) {
+        throw new PermissionError("Onvoldoende rechten: deze subscription valt niet binnen je toegang.");
+      }
+    }
 
     const sim = await tx.sIM.findUniqueOrThrow({
       where: { id: simId, deletedAt: null },
@@ -266,11 +312,23 @@ export async function unassignSim(
   ctx: Ctx,
   opts: { newStatus?: SimStatusEnum; reason?: string } = {}
 ): Promise<SimAssignment> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "write", "subscription");
   return prisma.$transaction(async (tx) => {
     const active: any = await findActiveSimAssignment(tx, simId);
     if (!active) {
       throw new Error(`Geen actieve SIM assignment gevonden.`);
     }
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      const sub = await tx.subscription.findUnique({
+        where: { id: active.subscriptionId },
+        select: { customerId: true },
+      });
+      if (!sub || !ctx.customerScope.includes(sub.customerId)) {
+        throw new PermissionError("Onvoldoende rechten: deze subscription valt niet binnen je toegang.");
+      }
+    }
+
     const closed = await tx.simAssignment.update({
       where: { id: active.id },
       data: {
@@ -308,10 +366,22 @@ export async function replaceSim(
   ctx: Ctx,
   reason?: AssignmentReason
 ): Promise<{ old: SimAssignment; replacement: SimAssignment }> {
+  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "write", "subscription");
   return prisma.$transaction(async (tx) => {
     if (oldSimId === newSimId) {
       throw new Error("Nieuwe SIM is dezelfde als de oude.");
     }
+
+    if (ctx.customerScope && ctx.customerScope.length > 0) {
+      const sub = await tx.subscription.findUnique({
+        where: { id: subscriptionId },
+        select: { customerId: true },
+      });
+      if (!sub || !ctx.customerScope.includes(sub.customerId)) {
+        throw new PermissionError("Onvoldoende rechten: deze subscription valt niet binnen je toegang.");
+      }
+    }
+
     const newSim = await tx.sIM.findUniqueOrThrow({
       where: { id: newSimId, deletedAt: null },
     });

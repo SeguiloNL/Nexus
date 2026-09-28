@@ -31,7 +31,7 @@ type Ctx = { userId: string; userRole: any; userName?: string };
 const CUSTOMER_ALLOWED_RESOURCES = new Set<ResourceType>(CUSTOMER_SCOPE_RESOURCES);
 
 function allowedResourcesForScope(scope: RoleScope): Set<ResourceType> {
-  if (scope === "CUSTOMER") return CUSTOMER_ALLOWED_RESOURCES;
+  if (scope === RoleScope.CUSTOMER) return CUSTOMER_ALLOWED_RESOURCES;
   return new Set(ALL_RESOURCE_TYPES);
 }
 
@@ -150,7 +150,7 @@ export async function getPermissionsByRoleId(
     select: { scope: true, permissions: { select: { resource: true, read: true, write: true } } },
   });
   if (!role) {
-    return defaultPermissionsForScope("INTERNAL");
+    return defaultPermissionsForScope(RoleScope.INTERNAL);
   }
   const base = defaultPermissionsForScope(role.scope as RoleScope);
   for (const p of role.permissions) {
