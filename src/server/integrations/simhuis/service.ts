@@ -157,13 +157,49 @@ function attemptRankScore(statusCode: number, error: string | null): number {
   return 500;
 }
 
-let _bearerTokenCache: { token: string; expiresAt: number; baseUrl: string } | null = null;
+let _bearerTokenCache: { token: string; expiresAt: number; baseUrl: string; accountId: string | null } | null = null;
+
+function parseJwtPayload(token: string): Record<string, any> | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2) return null;
+    let payload = parts[1];
+    if (!payload) return null;
+    payload = payload.replace(/-/g, '+').replace(/_/g, '/');
+    while (payload.length % 4) payload += '=';
+    const decoded = typeof Buffer !== 'undefined'
+      ? Buffer.from(payload, 'base64').toString('utf-8')
+      : atob(payload);
+    return JSON.parse(decoded);
+  } catch {
+    return null;
+  }
+}
+
+function extractAccountIdFromToken(token: string): string | null {
+  const payload = parseJwtPayload(token);
+  if (!payload) return null;
+  const candidates = [
+    payload.iss, payload.account_id, payload.accountId, payload.sub,
+    payload.aud?.[0] || payload.aud, payload.tenant_id, payload.tenantId,
+    payload.customer_id, payload.reseller_id, payload.org_id,
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim().length >= 10 && /^[0-9a-f]{20,}$/i.test(c.trim())) {
+      return c.trim();
+    }
+  }
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim().length > 3) return c.trim();
+  }
+  return null;
+}
+
 async function acquireBearerToken(creds: { baseUrl: string; username: string; password: string }): Promise<string | null> {
   const now = Date.now();
   if (_bearerTokenCache && _bearerTokenCache.baseUrl === creds.baseUrl && _bearerTokenCache.expiresAt > now + 30_000) {
     return _bearerTokenCache.token;
   }
-  // Probeer alle gangbare auth-token endpoint paden, met zowel JSON als form body
   const tokenEndpointVariants: Array<{ path: string; body: Record<string, any>; ctype: 'json' | 'form'; auth: 'none' | 'basic' }> = [
     { path: '/v3/auth/token', body: { username: creds.username, password: creds.password }, ctype: 'json', auth: 'basic' },
     { path: '/v3/auth/token', body: { username: creds.username, password: creds.password, grant_type: 'password' }, ctype: 'form', auth: 'basic' },
@@ -208,7 +244,8 @@ async function acquireBearerToken(creds: { baseUrl: string; username: string; pa
             const ei = Number(p.expires_in || p.expiresIn || p.exp || 0);
             if (Number.isFinite(ei) && ei > 0) expiresIn = ei;
           }
-          _bearerTokenCache = { token, expiresAt: Date.now() + expiresIn * 1000, baseUrl: creds.baseUrl };
+          const accountId = extractAccountIdFromToken(token);
+          _bearerTokenCache = { token, expiresAt: Date.now() + expiresIn * 1000, baseUrl: creds.baseUrl, accountId };
           return token;
         }
       }
@@ -216,6 +253,11 @@ async function acquireBearerToken(creds: { baseUrl: string; username: string; pa
       // negeer
     }
   }
+  return null;
+}
+
+function getSimhuisAccountId(): string | null {
+  if (_bearerTokenCache && _bearerTokenCache.expiresAt > Date.now()) return _bearerTokenCache.accountId;
   return null;
 }
 
@@ -246,6 +288,9 @@ async function doPerSimFetch(args: {
   const effectiveTimeoutMs = args.timeoutMs ?? 20_000;
   const signal = (AbortSignal as any).timeout ? (AbortSignal as any).timeout(effectiveTimeoutMs) : undefined;
   const headers: Record<string, string> = { ...PER_SIM_WAF_HEADERS };
+  const isBearer = args.auth.tag === 'bearer-token';
+  const accountId = isBearer ? getSimhuisAccountId() : null;
+
   if (args.auth.tag === 'basic-header') {
     headers.Authorization = args.auth.header;
   } else if (args.auth.tag === 'bearer-token') {
@@ -262,6 +307,13 @@ async function doPerSimFetch(args: {
     mergedBody.username = args.auth.username;
     mergedBody.password = args.auth.password;
     if (args.auth.resellerId) mergedBody.reseller_id = args.auth.resellerId;
+  }
+  if (isBearer && accountId && mergedBody) {
+    if (!mergedBody.accountId && !mergedBody.account_id) mergedBody.account_id = accountId;
+    if (args.auth.tag === 'bearer-token') {
+      // Sommige endpoints willen 'accountId' (camelCase), anderen 'account_id' — meesturen allebei
+      if (!mergedBody.accountId) mergedBody.accountId = accountId;
+    }
   }
   if ((args.method === 'POST' || args.method === 'PUT' || args.method === 'PATCH') && mergedBody) {
     if (args.contentType === 'json') {
@@ -280,13 +332,21 @@ async function doPerSimFetch(args: {
   }
 
   let finalUrl = args.fullUrl;
+  let queryParams: URLSearchParams | null = null;
   if (args.auth.tag === 'creds-query') {
+    queryParams = new URLSearchParams();
+    queryParams.append('username', args.auth.username);
+    queryParams.append('password', args.auth.password);
+    if (args.auth.resellerId) queryParams.append('reseller_id', String(args.auth.resellerId));
+  }
+  if (isBearer && accountId) {
+    if (!queryParams) queryParams = new URLSearchParams();
+    queryParams.append('accountId', accountId);
+    queryParams.append('account_id', accountId);
+  }
+  if (queryParams && queryParams.size > 0) {
     const sep = finalUrl.includes('?') ? '&' : '?';
-    const sp = new URLSearchParams();
-    sp.append('username', args.auth.username);
-    sp.append('password', args.auth.password);
-    if (args.auth.resellerId) sp.append('reseller_id', String(args.auth.resellerId));
-    finalUrl = `${finalUrl}${sep}${sp.toString()}`;
+    finalUrl = `${finalUrl}${sep}${queryParams.toString()}`;
   }
 
   try {
@@ -996,7 +1056,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   if (options.status) basePayload.status = options.status;
 
   const attempts: ListAttempt[] = [];
-  const MAX_ATTEMPTS = 80;
+  const MAX_ATTEMPTS = 300;
   let pogingen = 0;
   const overallDeadline = AbortSignal.timeout(45000);
   const allowHeadersByPath = new Map<string, string>();
@@ -1075,13 +1135,24 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       }
       return u;
     };
-    // AirOn360 eerst: GET /v3/esims, GET /v3/assets, dan auth/ping tests
-    const testCases: Array<{ method: 'GET' | 'POST'; path: string; auth: AuthStyle; kind: 'json-body' | 'query' | 'form-body'; body?: Record<string, any>; query?: Record<string, any> }> = [
+    // AirOn360 eerst: eerst BEARER (accountId-inject), daarna basic, daarna auth/ping tests
+    const accountIdVal = bearerAuthOnly ? getSimhuisAccountId() : null;
+    const baseAidQuery = accountIdVal
+      ? { accountId: accountIdVal, account_id: accountIdVal, page: 1, limit: 50 }
+      : { page: 1, limit: 50 };
+    const testCases: Array<{ method: 'GET' | 'POST'; path: string; auth: AuthStyle; kind: 'json-body' | 'query' | 'form-body'; body?: Record<string, any>; query?: Record<string, any> }> = [];
+    if (bearerAuthOnly) {
+      testCases.push(
+        { method: 'GET', path: '/v3/esims', auth: bearerAuthOnly, kind: 'query', query: { ...baseAidQuery } },
+        { method: 'GET', path: '/v3/assets', auth: bearerAuthOnly, kind: 'query', query: { ...baseAidQuery } },
+      );
+    }
+    testCases.push(
       { method: 'GET', path: '/v3/esims', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
       { method: 'GET', path: '/v3/assets', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
       { method: 'POST', path: '/v3/auth/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
       { method: 'GET', path: '/v3/auth/me', auth: basicAuthOnly, kind: 'query' },
-    ];
+    );
     for (const tc of testCases) {
       if (pogingen > MAX_ATTEMPTS || overallDeadline.aborted) break;
       pogingen++;
@@ -1183,7 +1254,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
 
   type Phase0Probe = {
     label: string;
-    method: 'GET' | 'POST';
+    method: 'GET' | 'POST' | 'PUT';
     path: string;
     auth: AuthStyle;
     kind: 'query' | 'json-body' | 'form-body';
@@ -1200,8 +1271,10 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     { label: 'GET-v3-esims-basic', method: 'GET', path: '/v3/esims', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 200 } },
     { label: 'GET-v3-assets', method: 'GET', path: '/v3/assets', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
     { label: 'GET-v3-assets-basic', method: 'GET', path: '/v3/assets', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 200 } },
-    { label: 'POST-v3-assets-filter', method: 'POST', path: '/v3/assets/filter', auth: probeAuth, kind: 'json-body', body: { page: 1, limit: 200, ...(options.status ? { status: options.status } : {}) } },
-    { label: 'POST-v3-assets-search', method: 'POST', path: '/v3/assets/search', auth: probeAuth, kind: 'json-body', body: { page: 1, limit: 200 } },
+    { label: 'GET-v3-assets-filter', method: 'GET', path: '/v3/assets/filter', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200, ...(options.status ? { status: options.status } : {}) } },
+    { label: 'GET-v3-assets-search', method: 'GET', path: '/v3/assets/search', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
+    { label: 'PUT-v3-assets-filter', method: 'PUT', path: '/v3/assets/filter', auth: probeAuth, kind: 'json-body', body: { page: 1, limit: 200, ...(options.status ? { status: options.status } : {}) } },
+    { label: 'PUT-v3-assets-search', method: 'PUT', path: '/v3/assets/search', auth: probeAuth, kind: 'json-body', body: { page: 1, limit: 200 } },
     { label: 'GET-v3-esims-status', method: 'GET', path: '/v3/esims', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200, status: options.status ?? 'active' } },
     { label: 'GET-v3-assets-status', method: 'GET', path: '/v3/assets', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200, status: options.status ?? 'active' } },
     { label: 'GET-v3-imsis', method: 'GET', path: '/v3/imsis', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
@@ -1312,6 +1385,9 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     }
     try {
       const headers: Record<string, string> = { ...wafBypassHeaders };
+      const isBearer = args.auth.tag === 'bearer-header';
+      const listAccountId = isBearer ? getSimhuisAccountId() : null;
+
       if (args.auth.tag === 'basic-header' || args.auth.tag === 'bearer-header' ||
           args.auth.tag === 'apikey-header-x' || args.auth.tag === 'api-key-auth-header') {
         headers.Authorization = args.auth.header;
@@ -1319,13 +1395,18 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         Object.assign(headers, args.auth.headers);
       }
       let body: BodyInit | undefined;
-      if ((args.method === 'POST' || args.method === 'PUT' || args.method === 'PATCH') && args.body) {
+      const mergedBody: Record<string, any> | null = args.body ? { ...args.body } : null;
+      if (isBearer && listAccountId && mergedBody) {
+        if (!mergedBody.accountId) mergedBody.accountId = listAccountId;
+        if (!mergedBody.account_id) mergedBody.account_id = listAccountId;
+      }
+      if ((args.method === 'POST' || args.method === 'PUT' || args.method === 'PATCH') && mergedBody) {
         if (args.contentType === 'json') {
           headers['Content-Type'] = 'application/json';
-          body = JSON.stringify(args.body);
+          body = JSON.stringify(mergedBody);
         } else if (args.contentType === 'form') {
           const sp = new URLSearchParams();
-          for (const [k, v] of Object.entries(args.body)) {
+          for (const [k, v] of Object.entries(mergedBody)) {
             if (v === null || v === undefined || v === '') continue;
             if (typeof v === 'object') sp.append(k, JSON.stringify(v));
             else sp.append(k, String(v));
@@ -1334,7 +1415,15 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
           body = sp.toString();
         }
       }
-      const resp = await fetch(args.fullUrl, { method: args.method, headers, body, signal: overallDeadline });
+      let finalUrl = args.fullUrl;
+      if (isBearer && listAccountId) {
+        const sep = finalUrl.includes('?') ? '&' : '?';
+        const sp = new URLSearchParams();
+        sp.append('accountId', listAccountId);
+        sp.append('account_id', listAccountId);
+        finalUrl = `${finalUrl}${sep}${sp.toString()}`;
+      }
+      const resp = await fetch(finalUrl, { method: args.method, headers, body, signal: overallDeadline });
       const ct = resp.headers.get('content-type') ?? '';
       if (resp.status === 405) {
         const allow = resp.headers.get('allow') ?? resp.headers.get('Allow') ?? '';
@@ -1404,18 +1493,33 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       if (probe.auth.tag === 'custom-headers') Object.assign(headers, probe.auth.headers);
       else headers.Authorization = probe.auth.header;
 
+      const phase0IsBearer = probe.auth.tag === 'bearer-header';
+      const phase0AccountId = phase0IsBearer ? getSimhuisAccountId() : null;
+
+      let queryExtra: Record<string, any> = (probe.query ?? {}) as Record<string, any>;
+      if (phase0IsBearer && phase0AccountId) {
+        queryExtra = { ...queryExtra };
+        if (!queryExtra.accountId) queryExtra.accountId = phase0AccountId;
+        if (!queryExtra.account_id) queryExtra.account_id = phase0AccountId;
+      }
+
       let bodyInit: BodyInit | undefined;
+      let bodyPayload: Record<string, any> | null = probe.body ? { ...probe.body } : null;
+      if (phase0IsBearer && phase0AccountId && bodyPayload) {
+        if (!bodyPayload.accountId) bodyPayload.accountId = phase0AccountId;
+        if (!bodyPayload.account_id) bodyPayload.account_id = phase0AccountId;
+      }
       const fullUrl = probe.method === 'GET'
-        ? buildFinalUrl(probe.path, (probe.query ?? {}) as Record<string, any>)
+        ? buildFinalUrl(probe.path, queryExtra)
         : buildFinalUrl(probe.path, null);
 
-      if (probe.method === 'POST' && probe.body) {
+      if (probe.method !== 'GET' && bodyPayload) {
         if (probe.kind === 'json-body') {
           headers['Content-Type'] = 'application/json';
-          bodyInit = JSON.stringify(probe.body);
+          bodyInit = JSON.stringify(bodyPayload);
         } else if (probe.kind === 'form-body') {
           const sp = new URLSearchParams();
-          for (const [k, v] of Object.entries(probe.body)) {
+          for (const [k, v] of Object.entries(bodyPayload)) {
             if (v === null || v === undefined || v === '') continue;
             sp.append(k, String(v));
           }
