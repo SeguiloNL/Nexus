@@ -207,6 +207,52 @@ function parseJwtPayload(token: string): Record<string, any> | null {
   }
 }
 
+function isLikelyMongoId(c: unknown): c is string {
+  return typeof c === 'string' && c.trim().length >= 12 && /^[0-9a-f]{12,}$/i.test(c.trim());
+}
+
+function extractAccountIdFromUserObj(userObj: unknown): string | null {
+  if (!userObj || typeof userObj !== 'object') return null;
+  const u = userObj as Record<string, any>;
+  const primaries = [
+    u.accountId, u.account_id, u.tenantId, u.tenant_id, u.orgId, u.org_id,
+    u.customerId, u.customer_id, u.resellerId, u.reseller_id,
+  ];
+  const nestedCandidates = [
+    u.profile, u.account, u.tenant, u.organization, u.meta, u.setup, u.permissions,
+    u.profile?.account, u.profile?.tenant, u.ztp,
+  ];
+  // 1. user._id (mongodb) / user.id
+  if (isLikelyMongoId(u._id) || isLikelyMongoId(u.id)) {
+    return String(isLikelyMongoId(u._id) ? u._id : u.id).trim();
+  }
+  // 2. primaries: first mongo-looking
+  for (const c of primaries) if (isLikelyMongoId(c)) return String(c).trim();
+  // 3. nested candidate objects
+  for (const n of nestedCandidates) {
+    if (!n || typeof n !== 'object') continue;
+    const sub = n as Record<string, any>;
+    const subVals = [
+      sub._id, sub.id, sub.accountId, sub.account_id, sub.tenantId, sub.tenant_id,
+      sub.orgId, sub.customerId, sub.resellerId,
+    ];
+    for (const c of subVals) if (isLikelyMongoId(c)) return String(c).trim();
+  }
+  // 4. fallback — any value-like string long enough
+  for (const c of primaries) {
+    if (typeof c === 'string' && c.trim().length >= 10) return c.trim();
+  }
+  for (const n of nestedCandidates) {
+    if (!n || typeof n !== 'object') continue;
+    const sub = n as Record<string, any>;
+    for (const key of ['accountId', 'account_id', 'tenantId', '_id', 'id']) {
+      const v = sub[key];
+      if (typeof v === 'string' && v.trim().length >= 10) return v.trim();
+    }
+  }
+  return null;
+}
+
 function extractAccountIdFromToken(token: string): string | null {
   const payload = parseJwtPayload(token);
   if (!payload) return null;
@@ -216,7 +262,7 @@ function extractAccountIdFromToken(token: string): string | null {
     payload.customer_id, payload.reseller_id, payload.org_id,
   ];
   for (const c of candidates) {
-    if (typeof c === 'string' && c.trim().length >= 10 && /^[0-9a-f]{20,}$/i.test(c.trim())) {
+    if (typeof c === 'string' && c.trim().length >= 10 && /^[0-9a-f]{12,}$/i.test(c.trim())) {
       return c.trim();
     }
   }
@@ -262,9 +308,12 @@ async function acquireBearerToken(creds: { baseUrl: string; username: string; pa
         const txt = await resp.text();
         const parsed = parseFetchResponse(txt, ct);
         let token: string | null = null;
+        let userFromResponse: Record<string, any> | null = null;
         if (parsed && typeof parsed === 'object') {
           const p = parsed as Record<string, any>;
           token = String(p.access_token || p.accessToken || p.token || p.jwt || p.authToken || p.bearer || '');
+          if (p.user && typeof p.user === 'object') userFromResponse = p.user as Record<string, any>;
+          else if (p.data?.user && typeof p.data.user === 'object') userFromResponse = p.data.user as Record<string, any>;
           if (!token && p.data && typeof p.data === 'object') token = String(p.data.access_token || p.data.accessToken || p.data.token || '');
           if (!token) token = null;
         }
@@ -275,7 +324,13 @@ async function acquireBearerToken(creds: { baseUrl: string; username: string; pa
             const ei = Number(p.expires_in || p.expiresIn || p.exp || 0);
             if (Number.isFinite(ei) && ei > 0) expiresIn = ei;
           }
-          const accountId = extractAccountIdFromToken(token);
+          // PRIORITEIT: 1) accountId UIT USER OBJECT (vanuit login response!) → 2) pas JWT payload fallback
+          const accountIdFromUser = extractAccountIdFromUserObj(userFromResponse);
+          const accountIdFromJwt = extractAccountIdFromToken(token);
+          const accountId = accountIdFromUser ?? accountIdFromJwt;
+          try {
+            console.error(`[acquireBearerToken] ✅ Token OK. accountIdFromUser=${accountIdFromUser ?? 'N/A'}, accountIdFromJwt=${accountIdFromJwt ?? 'N/A'}. Gebruikt: ${accountId ?? 'N/A'}. user.shape=${shapeOf(userFromResponse)}`);
+          } catch { /* ignore */ }
           _bearerTokenCache = { token, expiresAt: Date.now() + expiresIn * 1000, baseUrl: creds.baseUrl, accountId };
           return token;
         }
@@ -340,11 +395,7 @@ async function doPerSimFetch(args: {
     if (args.auth.resellerId) mergedBody.reseller_id = args.auth.resellerId;
   }
   if (isBearer && accountId && mergedBody) {
-    if (!mergedBody.accountId && !mergedBody.account_id) mergedBody.account_id = accountId;
-    if (args.auth.tag === 'bearer-token') {
-      // Sommige endpoints willen 'accountId' (camelCase), anderen 'account_id' — meesturen allebei
-      if (!mergedBody.accountId) mergedBody.accountId = accountId;
-    }
+    if (!mergedBody.accountId) mergedBody.accountId = accountId;
   }
   if ((args.method === 'POST' || args.method === 'PUT' || args.method === 'PATCH') && mergedBody) {
     if (args.contentType === 'json') {
@@ -373,7 +424,6 @@ async function doPerSimFetch(args: {
   if (isBearer && accountId) {
     if (!queryParams) queryParams = new URLSearchParams();
     queryParams.append('accountId', accountId);
-    queryParams.append('account_id', accountId);
   }
   if (queryParams && queryParams.size > 0) {
     const sep = finalUrl.includes('?') ? '&' : '?';
@@ -1205,7 +1255,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     // AirOn360 eerst: eerst BEARER (accountId-inject), daarna basic, daarna auth/ping tests
     const accountIdVal = bearerAuthOnly ? getSimhuisAccountId() : null;
     const baseAidQuery = accountIdVal
-      ? { accountId: accountIdVal, account_id: accountIdVal, page: 1, limit: 50 }
+      ? { accountId: accountIdVal, page: 1, limit: 50 }
       : { page: 1, limit: 50 };
     const testCases: Array<{ method: 'GET' | 'POST'; path: string; auth: AuthStyle; kind: 'json-body' | 'query' | 'form-body'; body?: Record<string, any>; query?: Record<string, any> }> = [];
     if (bearerAuthOnly) {
@@ -1474,7 +1524,6 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       const mergedBody: Record<string, any> | null = args.body ? { ...args.body } : null;
       if (isBearer && listAccountId && mergedBody) {
         if (!mergedBody.accountId) mergedBody.accountId = listAccountId;
-        if (!mergedBody.account_id) mergedBody.account_id = listAccountId;
       }
       if ((args.method === 'POST' || args.method === 'PUT' || args.method === 'PATCH') && mergedBody) {
         if (args.contentType === 'json') {
@@ -1496,7 +1545,6 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         const sep = finalUrl.includes('?') ? '&' : '?';
         const sp = new URLSearchParams();
         sp.append('accountId', listAccountId);
-        sp.append('account_id', listAccountId);
         finalUrl = `${finalUrl}${sep}${sp.toString()}`;
       }
       const resp = await fetch(finalUrl, { method: args.method, headers, body, signal: overallDeadline });
@@ -1573,6 +1621,8 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     respBody: unknown;
   };
   const interesting: InterestingProbe[] = [];
+  const isListLikePath = (p: string) => !/\/(auth|login|logout|token|ping|health|me|docs?|swagger|metrics?)\b/i.test(p);
+  const isListLikeAuth = (a: AuthStyle) => a.tag === 'bearer-header' || a.tag === 'basic-header';
 
   // ===== FASE 0: Probes uitvoeren — snel (elk pad 1 keer met 1 specifieke payload/auth-combinatie) =====
   for (const probe of probes) {
@@ -1596,14 +1646,12 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       if (phase0IsBearer && phase0AccountId) {
         queryExtra = { ...queryExtra };
         if (!queryExtra.accountId) queryExtra.accountId = phase0AccountId;
-        if (!queryExtra.account_id) queryExtra.account_id = phase0AccountId;
       }
 
       let bodyInit: BodyInit | undefined;
       let bodyPayload: Record<string, any> | null = probe.body ? { ...probe.body } : null;
       if (phase0IsBearer && phase0AccountId && bodyPayload) {
         if (!bodyPayload.accountId) bodyPayload.accountId = phase0AccountId;
-        if (!bodyPayload.account_id) bodyPayload.account_id = phase0AccountId;
       }
       const fullUrl = probe.method === 'GET'
         ? buildFinalUrl(probe.path, queryExtra)
@@ -1643,7 +1691,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
           }
         }
         if (resp.status === 200 || resp.status === 201 || resp.status === 204) {
-          interesting.push({ probe, statusCode: resp.status, respBody: parsed });
+          if (isListLikePath(probe.path) && isListLikeAuth(probe.auth)) interesting.push({ probe, statusCode: resp.status, respBody: parsed });
           trace.statusCode = resp.status;
           trace.errorClass = result ? (result.items.length ? 'OK-200' : 'OK-200-empty') : 'OK-200-no-shape-match';
           const snippet = typeof parsed === 'string' ? parsed.slice(0, 120) : JSON.stringify(parsed).slice(0, 120);
@@ -1664,8 +1712,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         trace.errorClass = 'HTTPError';
         attempts.push(trace);
         if (resp.status !== 405 && resp.status !== 404 && resp.status < 500) {
-          // App-level response — houd deze bij als "interessant"
-          interesting.push({ probe, statusCode: resp.status, respBody: parsed });
+          if (isListLikePath(probe.path) && isListLikeAuth(probe.auth)) interesting.push({ probe, statusCode: resp.status, respBody: parsed });
         }
         if (resp.status === 403) throw new SimhuisApiError(403, parsed ?? {}, fullUrl, trace.error);
         if (resp.status === 401) {
@@ -1694,6 +1741,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       const path = hit.probe.path;
       const method = hit.probe.method;
       const probeAuth = hit.probe.auth;
+      if (!isListLikePath(path) || !isListLikeAuth(probeAuth)) continue;
       const payloadVariants: Array<{ label: string; body?: Record<string, any>; query?: Record<string, any> }> = [
         { label: 'p=1,l=200', body: method === 'POST' ? { ...basePayload, limit: 200 } : undefined, query: method === 'GET' ? { ...basePayload, limit: 200 } : undefined },
         { label: 'p=1,l=200,creds', body: method === 'POST' ? { ...basePayload, limit: 200, username: creds.username, password: creds.password, ...(resellerId ? { reseller_id: resellerId } : {}) } : undefined, query: method === 'GET' ? { ...basePayload, limit: 200, username: creds.username, password: creds.password, ...(resellerId ? { reseller_id: resellerId } : {}) } : undefined },
@@ -1701,7 +1749,9 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         { label: 'status=available', body: method === 'POST' ? { ...basePayload, limit: 200, status: 'available' } : undefined, query: method === 'GET' ? { ...basePayload, limit: 200, status: 'available' } : undefined },
         { label: 'empty', body: method === 'POST' ? {} : undefined, query: method === 'GET' ? {} : undefined },
       ];
-      const authVariants: AuthStyle[] = [probeAuth, basicAuthOnly, noAuth, xUserPassHeaders];
+      const authVariants: AuthStyle[] = bearerAuthOnly
+        ? (probeAuth.tag === 'bearer-header' ? [probeAuth, basicAuthOnly] : [bearerAuthOnly, basicAuthOnly])
+        : [basicAuthOnly];
       for (const payload of payloadVariants) {
         for (const auth of authVariants) {
           const result = await doDirectFetch({
