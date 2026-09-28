@@ -1597,31 +1597,76 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     // ✅ FASE -1: ALLEEN de 2 ECHTE AirOn360 SIM-endpoints EERST! (Allow-header bevestigd.)
     // Fout van vorige run: /v3/accounts/... /tenants/... gaven 405 Allow: OPTIONS = BESTAAN NIET!
     // Dus: begint DIRECT met GET /v3/esims + GET /v3/assets (met Bearer + correct UUID accountId uit permissions!)
-    const accountIdVal = bearerAuthOnly ? getSimhuisAccountId() : null;
+    const accountIdVal = getSimhuisAccountId(); // ✅ NIEUW: altijd accountId (niet alleen als Bearer bekend is)
     const baseAidQuery = accountIdVal
       ? { accountId: accountIdVal, page: 1, limit: 200 }
       : { page: 1, limit: 200 };
     const baseAidBody = accountIdVal
       ? { accountId: accountIdVal, page: 1, limit: 200 }
       : { page: 1, limit: 200 };
+    const credsBodyQuery = { username: creds.username, password: creds.password, ...(creds.resellerId ? { reseller_id: creds.resellerId } : {}), page: 1, limit: 200 };
     const testCases: Array<{ method: 'GET' | 'POST'; path: string; auth: AuthStyle; kind: 'json-body' | 'query' | 'form-body'; body?: Record<string, any>; query?: Record<string, any> }> = [];
     const simOnlyPageQuery = { page: 1, limit: 200 };
     const simOnlyPageBody  = { page: 1, limit: 200 };
-    // ===== EERST: /v3/sims (standaard AirOn360 SIM-lijst endpoint!) met ALLE auth-varianten =====
-    // (Vorige runs: /v3/esims en /v3/assets gaven 401 InvalidCredentials met Bearer, dus /v3/sims eerst proberen!)
-    if (bearerAuthOnly) {
+    const aidForPath = accountIdVal ?? '';
+    // ============================================================
+    // PRIORITEIT 1: /v3/sims endpoints — BASIC + CUSTOM eerst (Bearer gaf 401! Dus LAATSTE!)
+    // NIEUW: ook /v3/accounts/{aid}/sims en /v3/tenants/{aid}/sims
+    // NIEUW: ook POST met credentials IN BODY (login werkte ook met body zonder auth!)
+    // ============================================================
+    testCases.push(
+      // --- /v3/sims root ---
+      { method: 'GET',  path: '/v3/sims', auth: basicAuthOnly,   kind: 'query', query: { ...simOnlyPageQuery } },
+      { method: 'POST', path: '/v3/sims', auth: basicAuthOnly,   kind: 'json-body', body: { ...simOnlyPageBody } },
+      { method: 'GET',  path: '/v3/sims', auth: xUserPassHeaders, kind: 'query', query: { ...simOnlyPageQuery } },
+      { method: 'POST', path: '/v3/sims', auth: xUserPassHeaders, kind: 'json-body', body: { ...simOnlyPageBody } },
+      { method: 'POST', path: '/v3/sims', auth: noAuth,          kind: 'json-body', body: { ...credsBodyQuery } }, // credentials in body!
+      { method: 'GET',  path: '/v3/sims', auth: noAuth,          kind: 'query',     query: { ...credsBodyQuery } }, // credentials in query!
+    );
+    if (aidForPath) {
       testCases.push(
-        { method: 'GET',  path: '/v3/sims',   auth: bearerAuthOnly, kind: 'query',     query: { ...baseAidQuery } },
-        { method: 'POST', path: '/v3/sims',   auth: bearerAuthOnly, kind: 'json-body', body: { ...baseAidBody } },
+        // --- /v3/accounts/{aid}/sims ---
+        { method: 'GET',  path: `/v3/accounts/${aidForPath}/sims`, auth: basicAuthOnly,   kind: 'query', query: { page: 1, limit: 200 } },
+        { method: 'POST', path: `/v3/accounts/${aidForPath}/sims`, auth: basicAuthOnly,   kind: 'json-body', body: { page: 1, limit: 200 } },
+        { method: 'GET',  path: `/v3/accounts/${aidForPath}/sims`, auth: xUserPassHeaders, kind: 'query', query: { page: 1, limit: 200 } },
+        { method: 'POST', path: `/v3/accounts/${aidForPath}/sims`, auth: noAuth,          kind: 'json-body', body: { ...credsBodyQuery } },
+        // --- /v3/tenants/{aid}/sims ---
+        { method: 'GET',  path: `/v3/tenants/${aidForPath}/sims`,  auth: basicAuthOnly,   kind: 'query', query: { page: 1, limit: 200 } },
+        { method: 'POST', path: `/v3/tenants/${aidForPath}/sims`,  auth: xUserPassHeaders, kind: 'json-body', body: { page: 1, limit: 200 } },
       );
     }
+    // Bearer LAATSTE voor SIM endpoints (geeft consistent 401!)
+    if (bearerAuthOnly) {
+      testCases.push(
+        { method: 'GET',  path: '/v3/sims', auth: bearerAuthOnly, kind: 'query',     query: { ...baseAidQuery } },
+        { method: 'POST', path: '/v3/sims', auth: bearerAuthOnly, kind: 'json-body', body: { ...baseAidBody } },
+      );
+      if (aidForPath) {
+        testCases.push(
+          { method: 'GET',  path: `/v3/accounts/${aidForPath}/sims`, auth: bearerAuthOnly, kind: 'query', query: { page: 1, limit: 200 } },
+          { method: 'GET',  path: `/v3/tenants/${aidForPath}/sims`,  auth: bearerAuthOnly, kind: 'query', query: { page: 1, limit: 200 } },
+        );
+      }
+    }
+    // ============================================================
+    // PRIORITEIT 2: /v3/esims + /v3/assets (zelfde auth-volgorde: Basic/Custom eerst, Bearer laatst)
+    // ============================================================
     testCases.push(
-      { method: 'GET',  path: '/v3/sims',   auth: basicAuthOnly, kind: 'query',     query: { ...simOnlyPageQuery } },
-      { method: 'POST', path: '/v3/sims',   auth: basicAuthOnly, kind: 'json-body', body: { ...simOnlyPageBody } },
-      { method: 'GET',  path: '/v3/sims',   auth: xUserPassHeaders, kind: 'query',  query: { ...simOnlyPageQuery } },
-      { method: 'POST', path: '/v3/sims',   auth: xUserPassHeaders, kind: 'json-body', body: { ...simOnlyPageBody } },
+      { method: 'GET',  path: '/v3/esims',  auth: basicAuthOnly,   kind: 'query', query: { page: 1, limit: 50 } },
+      { method: 'GET',  path: '/v3/assets', auth: basicAuthOnly,   kind: 'query', query: { page: 1, limit: 50 } },
+      { method: 'GET',  path: '/v3/esims',  auth: xUserPassHeaders, kind: 'query', query: { page: 1, limit: 50 } },
+      { method: 'GET',  path: '/v3/assets', auth: xUserPassHeaders, kind: 'query', query: { page: 1, limit: 50 } },
+      { method: 'POST', path: '/v3/esims',  auth: noAuth,          kind: 'json-body', body: { ...credsBodyQuery, limit: 50 } },
+      { method: 'POST', path: '/v3/assets', auth: noAuth,          kind: 'json-body', body: { ...credsBodyQuery, limit: 50 } },
     );
-    // ===== DAARNA: /v3/esims + /v3/assets (met Bearer, Basic, custom) =====
+    if (aidForPath) {
+      testCases.push(
+        { method: 'GET', path: `/v3/accounts/${aidForPath}/assets`, auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
+        { method: 'GET', path: `/v3/accounts/${aidForPath}/esims`,  auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
+        { method: 'GET', path: `/v3/tenants/${aidForPath}/assets`,  auth: xUserPassHeaders, kind: 'query', query: { page: 1, limit: 50 } },
+        { method: 'GET', path: `/v3/tenants/${aidForPath}/esims`,   auth: xUserPassHeaders, kind: 'query', query: { page: 1, limit: 50 } },
+      );
+    }
     if (bearerAuthOnly) {
       testCases.push(
         { method: 'GET',  path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query',     query: { ...baseAidQuery } },
@@ -1630,11 +1675,8 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         { method: 'POST', path: '/v3/assets', auth: bearerAuthOnly, kind: 'json-body', body: { ...baseAidBody } },
       );
     }
+    // Auth/token als LAATSTE (niet een SIM endpoint, alleen om base-URL te bevestigen)
     testCases.push(
-      { method: 'GET',  path: '/v3/esims',  auth: basicAuthOnly, kind: 'query',     query: { page: 1, limit: 50 } },
-      { method: 'GET',  path: '/v3/assets', auth: basicAuthOnly, kind: 'query',     query: { page: 1, limit: 50 } },
-      { method: 'GET',  path: '/v3/esims',  auth: xUserPassHeaders, kind: 'query',  query: { page: 1, limit: 50 } },
-      { method: 'GET',  path: '/v3/assets', auth: xUserPassHeaders, kind: 'query',  query: { page: 1, limit: 50 } },
       { method: 'POST', path: '/v3/auth/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
     );
     for (const tc of testCases) {
@@ -1752,16 +1794,47 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
   };
 
   // ✅ FASE 0: MINIMALE AirOn360 probes — ALLEEN endpoints die ECHT bestaan (Allow-header bevestigd!)
-  // NIEUW: /v3/sims EERST (volgens Swagger standaard SIM-lijst endpoint).
-  // Vorige run: /v3/esims en /v3/assets gaven ALTIJD 401 InvalidCredentials met Bearer → /v3/sims eerst!
+  // NIEUW-2: Auth-volgorde = **Basic + X-Headers EERST** (Bearer geeft ALTIJD 401 op SIM endpoints!)
+  // NIEUW-2: Credentials in BODY / QUERY als extra auth-methode (werkte voor /v3/auth/token!)
+  // NIEUW-2: /v3/accounts/{aid} en /v3/tenants/{aid} als pad-scope
   const probes: Phase0Probe[] = [];
   const probeAuth = bearerAuthOnly ?? basicAuthOnly;
   const aid = getSimhuisAccountId();
 
   const pageQuery = { page: 1, limit: 200 };
   const pageBody  = { page: 1, limit: 200 };
+  const credsQuery = { username: creds.username, password: creds.password, ...(creds.resellerId ? { reseller_id: creds.resellerId } : {}), page: 1, limit: 200 };
+  const credsBody  = { username: creds.username, password: creds.password, ...(creds.resellerId ? { reseller_id: creds.resellerId } : {}), page: 1, limit: 200 };
 
-  // ===== PRIORITEIT 1: /v3/sims (standaard SIM endpoint!) met alle combos =====
+  // ============================================================
+  // PRIORITEIT 1: /v3/sims endpoints — BASIC + CUSTOM eerst!
+  // ============================================================
+  probes.push(
+    { label: 'GET-v3-sims-basic',       method: 'GET',  path: '/v3/sims', auth: basicAuthOnly,     kind: 'query',     query: { ...pageQuery } },
+    { label: 'POST-v3-sims-basic',      method: 'POST', path: '/v3/sims', auth: basicAuthOnly,     kind: 'json-body', body:  { ...pageBody } },
+    { label: 'GET-v3-sims-xheaders',    method: 'GET',  path: '/v3/sims', auth: xUserPassHeaders,  kind: 'query',     query: { ...pageQuery } },
+    { label: 'POST-v3-sims-xheaders',   method: 'POST', path: '/v3/sims', auth: xUserPassHeaders,  kind: 'json-body', body:  { ...pageBody } },
+    { label: 'POST-v3-sims-creds-body', method: 'POST', path: '/v3/sims', auth: noAuth,            kind: 'json-body', body:  { ...credsBody } }, // credentials IN body
+    { label: 'GET-v3-sims-creds-query', method: 'GET',  path: '/v3/sims', auth: noAuth,            kind: 'query',     query: { ...credsQuery } }, // credentials IN query
+  );
+  if (aid) {
+    // --- accountId / tenantId param varianten met BASIC eerst ---
+    probes.push(
+      { label: 'GET-v3-sims-basic-aid',       method: 'GET',  path: '/v3/sims', auth: basicAuthOnly,   kind: 'query', query: { ...pageQuery, accountId: aid } },
+      { label: 'GET-v3-sims-basic-tenantId',  method: 'GET',  path: '/v3/sims', auth: basicAuthOnly,   kind: 'query', query: { ...pageQuery, tenantId: aid } },
+      { label: 'GET-v3-sims-xheaders-aid',    method: 'GET',  path: '/v3/sims', auth: xUserPassHeaders, kind: 'query', query: { ...pageQuery, accountId: aid } },
+      { label: 'POST-v3-sims-basic-aid',      method: 'POST', path: '/v3/sims', auth: basicAuthOnly,   kind: 'json-body', body: { ...pageBody, accountId: aid, tenantId: aid, id: aid } },
+      { label: 'POST-v3-sims-xheaders-aid',   method: 'POST', path: '/v3/sims', auth: xUserPassHeaders, kind: 'json-body', body: { ...pageBody, accountId: aid, tenantId: aid, id: aid } },
+      // --- /v3/accounts/{aid}/sims en /v3/tenants/{aid}/sims ---
+      { label: 'GET-v3-accounts-sims-basic',  method: 'GET',  path: `/v3/accounts/${aid}/sims`, auth: basicAuthOnly,    kind: 'query', query: { page: 1, limit: 200 } },
+      { label: 'POST-v3-accounts-sims-basic', method: 'POST', path: `/v3/accounts/${aid}/sims`, auth: basicAuthOnly,    kind: 'json-body', body: { page: 1, limit: 200 } },
+      { label: 'GET-v3-accounts-sims-x',      method: 'GET',  path: `/v3/accounts/${aid}/sims`, auth: xUserPassHeaders, kind: 'query', query: { page: 1, limit: 200 } },
+      { label: 'POST-v3-accounts-sims-creds', method: 'POST', path: `/v3/accounts/${aid}/sims`, auth: noAuth,           kind: 'json-body', body: { ...credsBody } },
+      { label: 'GET-v3-tenants-sims-basic',   method: 'GET',  path: `/v3/tenants/${aid}/sims`,  auth: basicAuthOnly,    kind: 'query', query: { page: 1, limit: 200 } },
+      { label: 'POST-v3-tenants-sims-x',      method: 'POST', path: `/v3/tenants/${aid}/sims`,  auth: xUserPassHeaders, kind: 'json-body', body: { page: 1, limit: 200 } },
+    );
+  }
+  // --- Bearer LAATSTE op /v3/sims ---
   if (bearerAuthOnly) {
     if (aid) {
       probes.push(
@@ -1772,20 +1845,39 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       );
     }
     probes.push(
-      { label: 'GET-v3-sims',           method: 'GET',  path: '/v3/sims', auth: bearerAuthOnly, kind: 'query',     query: { ...pageQuery } },
-      { label: 'POST-v3-sims',          method: 'POST', path: '/v3/sims', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
-      { label: 'GET-v3-sims-status',    method: 'GET',  path: '/v3/sims', auth: bearerAuthOnly, kind: 'query',     query: { ...pageQuery, status: options.status ?? 'active' } },
+      { label: 'GET-v3-sims',             method: 'GET',  path: '/v3/sims', auth: bearerAuthOnly, kind: 'query',     query: { ...pageQuery } },
+      { label: 'POST-v3-sims',            method: 'POST', path: '/v3/sims', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
+      { label: 'GET-v3-sims-status',      method: 'GET',  path: '/v3/sims', auth: bearerAuthOnly, kind: 'query',     query: { ...pageQuery, status: options.status ?? 'active' } },
     );
   }
-  // Basic + custom-headers voor /v3/sims
-  probes.push(
-    { label: 'GET-v3-sims-basic',      method: 'GET',  path: '/v3/sims', auth: basicAuthOnly,   kind: 'query',     query: { ...pageQuery } },
-    { label: 'POST-v3-sims-basic',     method: 'POST', path: '/v3/sims', auth: basicAuthOnly,   kind: 'json-body', body: { ...pageBody } },
-    { label: 'GET-v3-sims-xheaders',   method: 'GET',  path: '/v3/sims', auth: xUserPassHeaders, kind: 'query',    query: { ...pageQuery } },
-    { label: 'POST-v3-sims-xheaders',  method: 'POST', path: '/v3/sims', auth: xUserPassHeaders, kind: 'json-body', body: { ...pageBody } },
-  );
 
-  // ===== PRIORITEIT 2: /v3/esims + /v3/assets (alleen als /v3/sims niet werkt) =====
+  // ============================================================
+  // PRIORITEIT 2: /v3/esims + /v3/assets (zelfde auth-volgorde)
+  // ============================================================
+  probes.push(
+    { label: 'GET-v3-esims-basic',       method: 'GET',  path: '/v3/esims',  auth: basicAuthOnly,    kind: 'query',     query: { ...pageQuery } },
+    { label: 'GET-v3-assets-basic',      method: 'GET',  path: '/v3/assets', auth: basicAuthOnly,    kind: 'query',     query: { ...pageQuery } },
+    { label: 'GET-v3-esims-xheaders',    method: 'GET',  path: '/v3/esims',  auth: xUserPassHeaders, kind: 'query',     query: { ...pageQuery } },
+    { label: 'GET-v3-assets-xheaders',   method: 'GET',  path: '/v3/assets', auth: xUserPassHeaders, kind: 'query',     query: { ...pageQuery } },
+    { label: 'POST-v3-esims-creds-body', method: 'POST', path: '/v3/esims',  auth: noAuth,           kind: 'json-body', body:  { ...credsBody } },
+    { label: 'POST-v3-assets-creds-body',method: 'POST', path: '/v3/assets', auth: noAuth,           kind: 'json-body', body:  { ...credsBody } },
+  );
+  if (aid) {
+    probes.push(
+      { label: 'GET-v3-esims-basic-aid',       method: 'GET',  path: '/v3/esims',  auth: basicAuthOnly, kind: 'query', query: { ...pageQuery, accountId: aid } },
+      { label: 'GET-v3-assets-basic-aid',      method: 'GET',  path: '/v3/assets', auth: basicAuthOnly, kind: 'query', query: { ...pageQuery, accountId: aid } },
+      { label: 'GET-v3-esims-basic-tenantId',  method: 'GET',  path: '/v3/esims',  auth: basicAuthOnly, kind: 'query', query: { ...pageQuery, tenantId: aid } },
+      { label: 'GET-v3-assets-basic-tenantId', method: 'GET',  path: '/v3/assets', auth: basicAuthOnly, kind: 'query', query: { ...pageQuery, tenantId: aid } },
+      { label: 'GET-v3-esims-xheaders-aid',    method: 'GET',  path: '/v3/esims',  auth: xUserPassHeaders, kind: 'query', query: { ...pageQuery, accountId: aid } },
+      { label: 'GET-v3-assets-xheaders-aid',   method: 'GET',  path: '/v3/assets', auth: xUserPassHeaders, kind: 'query', query: { ...pageQuery, accountId: aid } },
+      // accounts/tenant pad scoped
+      { label: 'GET-v3-accounts-assets-basic', method: 'GET',  path: `/v3/accounts/${aid}/assets`, auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 200 } },
+      { label: 'GET-v3-accounts-esims-basic',  method: 'GET',  path: `/v3/accounts/${aid}/esims`,  auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 200 } },
+      { label: 'GET-v3-tenants-assets-x',      method: 'GET',  path: `/v3/tenants/${aid}/assets`,  auth: xUserPassHeaders, kind: 'query', query: { page: 1, limit: 200 } },
+      { label: 'GET-v3-tenants-esims-x',       method: 'GET',  path: `/v3/tenants/${aid}/esims`,   auth: xUserPassHeaders, kind: 'query', query: { page: 1, limit: 200 } },
+    );
+  }
+  // Bearer LAATSTE voor esims/assets
   if (bearerAuthOnly) {
     if (aid) {
       probes.push(
@@ -1808,19 +1900,16 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       { label: 'GET-v3-assets-status',   method: 'GET',  path: '/v3/assets', auth: bearerAuthOnly, kind: 'query',     query: { ...pageQuery, status: options.status ?? 'active' } },
     );
   }
-  // Basic auth en auth/token (als laatste, onnodige 401s vermijden)
+  // Auth/token als LAATSTE (geen SIM endpoint, valt buiten discovery maar wel om baseHit te vullen)
   probes.push(
-    { label: 'GET-v3-esims-basic',     method: 'GET',  path: '/v3/esims',  auth: basicAuthOnly, kind: 'query',     query: { ...pageQuery } },
-    { label: 'GET-v3-assets-basic',    method: 'GET',  path: '/v3/assets', auth: basicAuthOnly, kind: 'query',     query: { ...pageQuery } },
-    { label: 'GET-v3-esims-xheaders',  method: 'GET',  path: '/v3/esims',  auth: xUserPassHeaders, kind: 'query',  query: { ...pageQuery } },
-    { label: 'GET-v3-assets-xheaders', method: 'GET',  path: '/v3/assets', auth: xUserPassHeaders, kind: 'query',  query: { ...pageQuery } },
     { label: 'POST-v3-auth-token',     method: 'POST', path: '/v3/auth/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
   );
   if (resellerFragment) {
     probes.push(
-      { label: 'GET-v3-reseller-sims',    method: 'GET', path: `/v3/resellers/${resellerFragment}/sims`,    auth: probeAuth, kind: 'query', query: { ...pageQuery } },
-      { label: 'GET-v3-reseller-esims',  method: 'GET', path: `/v3/resellers/${resellerFragment}/esims`,  auth: probeAuth, kind: 'query', query: { ...pageQuery } },
-      { label: 'GET-v3-reseller-assets', method: 'GET', path: `/v3/resellers/${resellerFragment}/assets`, auth: probeAuth, kind: 'query', query: { ...pageQuery } },
+      { label: 'GET-v3-reseller-sims',    method: 'GET', path: `/v3/resellers/${resellerFragment}/sims`,    auth: basicAuthOnly,   kind: 'query', query: { ...pageQuery } },
+      { label: 'GET-v3-reseller-sims-x',  method: 'GET', path: `/v3/resellers/${resellerFragment}/sims`,    auth: xUserPassHeaders, kind: 'query', query: { ...pageQuery } },
+      { label: 'GET-v3-reseller-esims',  method: 'GET', path: `/v3/resellers/${resellerFragment}/esims`,  auth: basicAuthOnly,   kind: 'query', query: { ...pageQuery } },
+      { label: 'GET-v3-reseller-assets', method: 'GET', path: `/v3/resellers/${resellerFragment}/assets`, auth: basicAuthOnly,   kind: 'query', query: { ...pageQuery } },
     );
   }
 
@@ -2200,8 +2289,22 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     }
   } else {
     // ===== FASE 1 B: Geen interessante response gevonden → AIRON360 EERST, daarna legacy =====
-    // NIEUW: /v3/sims eerst! (Swagger standaard SIM-lijst endpoint; /v3/esims + /v3/assets gaven 401)
-    const backupPaths: string[] = [
+    // NIEUW-2: accounts/tenant-SCOPED paden EERST (veel SaaS APIs zijn multi-tenant met pad-scope!)
+    // NIEUW-2: credentials in body / query extra inject stijl toevoegen
+    const backupPaths: string[] = [];
+    const aidForBackup = aid;
+    if (aidForBackup) {
+      backupPaths.push(
+        `/v3/accounts/${aidForBackup}/sims`,
+        `/v3/accounts/${aidForBackup}/assets`,
+        `/v3/accounts/${aidForBackup}/esims`,
+        `/v3/tenants/${aidForBackup}/sims`,
+        `/v3/tenants/${aidForBackup}/assets`,
+        `/v3/tenants/${aidForBackup}/esims`,
+        `/v3/organizations/${aidForBackup}/sims`,
+      );
+    }
+    backupPaths.push(
       '/v3/sims', '/v3/sims/list', '/v3/sims/filter', '/v3/sims/search', '/v3/sims/query',
       '/v3/esims', '/v3/assets', '/v3/assets/filter', '/v3/assets/search',
       '/v3/imsis', '/v3/iot/device', '/v3/ulb/device',
@@ -2213,7 +2316,7 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       '/pool/sims', '/stock/sims', '/available/sims', '/inactive/sims',
       '/iccids', '/devices', '/account/sims', '/account/inventory',
       '/customer/sims', '/packages', '/offers', '/plans', '/all/sims', '/sims.json',
-    ];
+    );
     if (resellerFragment) {
       backupPaths.unshift(
         `/v3/resellers/${resellerFragment}/sims`,
@@ -2224,7 +2327,13 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         `/resellers/${resellerFragment}/subscriptions`,
       );
     }
-    const authsFor1b = primaryAuthOrder.slice(0, 2);
+    // ✅ primaryAuthOrder was: Bearer (indien), dan Basic. Nu omdraaien: **Basic + custom eerst**!
+    // (Bearer gaf consistent 401 op SIM endpoints in alle voorgaande runs!)
+    const authsFor1b: AuthStyle[] = [
+      basicAuthOnly,
+      xUserPassHeaders,
+      ...(bearerAuthOnly ? [bearerAuthOnly] : []),
+    ].slice(0, 3);
     for (const path of backupPaths) {
       for (const auth of authsFor1b) {
         for (const inject of injectStylesFast) {

@@ -34,41 +34,84 @@ export default async function DashboardPage() {
     throw new PermissionError("Je hebt geen toegang tot het dashboard.");
   }
 
+  const customerIds = session.user.customerIds ?? [];
+  const hasScope = customerIds.length > 0;
+
+  const customerScopeCustomer: any = hasScope
+    ? { id: { in: customerIds } }
+    : undefined;
+  const customerScopeSubscription: any = hasScope
+    ? { customerId: { in: customerIds } }
+    : undefined;
+  const customerScopeVehicle: any = hasScope
+    ? { customerId: { in: customerIds } }
+    : undefined;
+  const customerScopeAssignment: any = hasScope
+    ? {
+        assignments: {
+          some: { subscription: { customerId: { in: customerIds } } },
+        },
+      }
+    : undefined;
+  const customerScopeActivation: any = hasScope
+    ? {
+        OR: [
+          { customerId: { in: customerIds } },
+          { subCustomerId: { in: customerIds } },
+        ],
+      }
+    : undefined;
+
   const counts = await Promise.all([
     prisma.subscription.count({
-      where: { deletedAt: null, status: "ACTIVE" },
+      where: { deletedAt: null, status: "ACTIVE", ...customerScopeSubscription },
     }),
     prisma.subscription.count({
-      where: { deletedAt: null, status: "PENDING_ACTIVATION" },
+      where: {
+        deletedAt: null,
+        status: "PENDING_ACTIVATION",
+        ...customerScopeSubscription,
+      },
     }),
     prisma.tracker.count({
-      where: { deletedAt: null, status: "IN_STOCK" },
+      where: { deletedAt: null, status: "IN_STOCK", ...customerScopeAssignment },
     }),
     prisma.tracker.count({
-      where: { deletedAt: null, status: "ACTIVE" },
+      where: { deletedAt: null, status: "ACTIVE", ...customerScopeAssignment },
     }),
     prisma.tracker.count({
-      where: { deletedAt: null, status: "DEFECTIVE" },
+      where: { deletedAt: null, status: "DEFECTIVE", ...customerScopeAssignment },
     }),
     prisma.sIM.count({
-      where: { deletedAt: null, status: "IN_STOCK" },
+      where: { deletedAt: null, status: "IN_STOCK", ...customerScopeAssignment },
     }),
     prisma.sIM.count({
-      where: { deletedAt: null, status: "ACTIVE" },
+      where: { deletedAt: null, status: "ACTIVE", ...customerScopeAssignment },
     }),
     prisma.activationOrder.count({
-      where: { status: { in: ["READY", "PROCESSING"] as any } },
+      where: {
+        status: { in: ["READY", "PROCESSING"] as any },
+        ...customerScopeActivation,
+      },
     }),
     prisma.activationOrder.count({
-      where: { status: "FAILED" as any, failedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } },
+      where: {
+        status: "FAILED" as any,
+        failedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
+        ...customerScopeActivation,
+      },
     }),
-    prisma.customer.count({ where: { deletedAt: null } }),
-    prisma.vehicle.count({ where: { deletedAt: null } }),
+    prisma.customer.count({
+      where: { deletedAt: null, ...customerScopeCustomer },
+    }),
+    prisma.vehicle.count({
+      where: { deletedAt: null, ...customerScopeVehicle },
+    }),
     prisma.product.count({ where: { isActive: true } }),
   ]);
 
   const recentActivations = await prisma.activationOrder.findMany({
-    where: { status: "COMPLETED" as any },
+    where: { status: "COMPLETED" as any, ...customerScopeActivation },
     orderBy: { completedAt: "desc" as any },
     take: 10,
     include: {
@@ -80,7 +123,7 @@ export default async function DashboardPage() {
   });
 
   const monthlyRevenueRaw: any = await prisma.subscription.aggregate({
-    where: { deletedAt: null, status: "ACTIVE" },
+    where: { deletedAt: null, status: "ACTIVE", ...customerScopeSubscription },
     _sum: { monthlyPrice: true },
   });
   const activeRevenue = monthlyRevenueRaw._sum.monthlyPrice
@@ -313,7 +356,14 @@ export default async function DashboardPage() {
                         colSpan={6}
                         className="px-4 py-10 text-center text-sm text-slate-400"
                       >
-                        Nog geen voltooide activaties. Start de <Link href="/activations/wizard" className="underline-offset-4 hover:underline">wizard</Link> om de eerste te maken.
+                        Nog geen voltooide activaties. Start de{" "}
+                        <Link
+                          href="/activations/wizard"
+                          className="underline-offset-4 hover:underline"
+                        >
+                          wizard
+                        </Link>{" "}
+                        om de eerste te maken.
                       </td>
                     </tr>
                   )}
@@ -369,7 +419,9 @@ function StatCard({
             <div className="text-xs font-medium uppercase tracking-wide opacity-80">
               {title}
             </div>
-            <div className={`h-8 w-8 flex items-center justify-center rounded-md ${BadgeTone[tone]}`}>
+            <div
+              className={`h-8 w-8 flex items-center justify-center rounded-md ${BadgeTone[tone]}`}
+            >
               {icon}
             </div>
           </div>

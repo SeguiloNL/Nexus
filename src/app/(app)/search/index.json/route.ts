@@ -10,10 +10,43 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const customerIds = session.user.customerIds ?? [];
+  const hasScope = customerIds.length > 0;
+
+  const customerScopeCustomer: any = hasScope
+    ? { id: { in: customerIds } }
+    : undefined;
+  const customerScopeSubscription: any = hasScope
+    ? { customerId: { in: customerIds } }
+    : undefined;
+  const customerScopeVehicle: any = hasScope
+    ? { customerId: { in: customerIds } }
+    : undefined;
+  const customerScopeAssignment: any = hasScope
+    ? {
+        assignments: {
+          some: { subscription: { customerId: { in: customerIds } } },
+        },
+      }
+    : undefined;
+  const customerScopeActivation: any = hasScope
+    ? {
+        OR: [
+          { customerId: { in: customerIds } },
+          { subCustomerId: { in: customerIds } },
+        ],
+      }
+    : undefined;
+  const customerScopeUser: any = hasScope
+    ? { customerId: { in: customerIds } }
+    : session.user.roleScope === "CUSTOMER"
+      ? { customerId: "" }
+      : undefined;
+
   const [customers, trackers, sims, vehicles, products, subscriptions, orders, users] =
     await Promise.all([
       prisma.customer.findMany({
-        where: { deletedAt: null },
+        where: { deletedAt: null, ...customerScopeCustomer },
         select: {
           id: true,
           customerNumber: true,
@@ -22,15 +55,15 @@ export async function GET() {
         },
       }),
       prisma.tracker.findMany({
-        where: { deletedAt: null },
+        where: { deletedAt: null, ...customerScopeAssignment },
         select: { id: true, serialNumber: true, imei: true, status: true },
       }),
       prisma.sIM.findMany({
-        where: { deletedAt: null },
+        where: { deletedAt: null, ...customerScopeAssignment },
         select: { id: true, iccid: true, imsi: true, status: true },
       }),
       prisma.vehicle.findMany({
-        where: { deletedAt: null },
+        where: { deletedAt: null, ...customerScopeVehicle },
         select: { id: true, licensePlate: true, vin: true },
       }),
       prisma.product.findMany({
@@ -38,7 +71,7 @@ export async function GET() {
         select: { id: true, productCode: true, name: true },
       }),
       prisma.subscription.findMany({
-        where: { deletedAt: null },
+        where: { deletedAt: null, ...customerScopeSubscription },
         select: { id: true, subscriptionNumber: true, status: true },
         take: 500,
       }),
@@ -46,9 +79,11 @@ export async function GET() {
         select: { id: true, orderNumber: true, status: true },
         take: 500,
         orderBy: { createdAt: "desc" },
+        where: customerScopeActivation ?? undefined,
       }),
       prisma.user.findMany({
         select: { id: true, name: true, email: true },
+        where: customerScopeUser ?? undefined,
       }),
     ]);
 

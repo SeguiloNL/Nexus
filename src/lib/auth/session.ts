@@ -110,7 +110,7 @@ export function withAuth<Input extends unknown[], Output>(
 }
 
 export function canUserRole(
-  permissionsOrRole: PermissionBits | UserRole | null | undefined,
+  permissionsOrRole: PermissionBits | UserRole | string | null | undefined,
   action: ResourceAction,
   resource: ResourceType
 ): boolean {
@@ -123,7 +123,24 @@ export function canUserRole(
     return canWithBits(permissionsOrRole as PermissionBits, action, resource);
   }
   if (typeof permissionsOrRole === "string") {
-    return false;
+    switch (permissionsOrRole as UserRole) {
+      case "ADMIN":
+        return true;
+      case "EMPLOYEE":
+        if (
+          resource === "user" ||
+          resource === "role" ||
+          resource === "audit_log" ||
+          resource === "setting"
+        ) {
+          return action === "view";
+        }
+        return true;
+      case "VIEWER":
+        return action === "view" && resource !== "audit_log";
+      default:
+        return false;
+    }
   }
   return false;
 }

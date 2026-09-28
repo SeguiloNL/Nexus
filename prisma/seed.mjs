@@ -87,7 +87,7 @@ const DEFAULT_ROLES = [
         "setting",
       ],
       {
-        write: INTERNAL_READ_WRITE,
+        write: INTERNAL_READ_ALL_WRITE,
         readExtra: ["audit_log"],
       }
     ),
@@ -222,6 +222,40 @@ async function main() {
     },
   });
   console.log(`  ✅ CUSTOMER: ${demoCustomer.companyName}`);
+
+  const custViewer = await prisma.user.upsert({
+    where: { email: "klant-viewer@vandertransport.test" },
+    update: {
+      roleId: rolesById.CUSTOMER_VIEWER.id,
+      customerId: demoCustomer.id,
+    },
+    create: {
+      email: "klant-viewer@vandertransport.test",
+      name: "Klant Viewer",
+      passwordHash: pwd,
+      role: UserRole.VIEWER,
+      roleId: rolesById.CUSTOMER_VIEWER.id,
+      customerId: demoCustomer.id,
+    },
+  });
+  console.log(`  ✅ CUSTOMER VIEWER: ${custViewer.email} / ${PASSWORD} (scoped to ${demoCustomer.companyName})`);
+
+  const custEditor = await prisma.user.upsert({
+    where: { email: "klant-beheerder@vandertransport.test" },
+    update: {
+      roleId: rolesById.CUSTOMER_EDITOR.id,
+      customerId: demoCustomer.id,
+    },
+    create: {
+      email: "klant-beheerder@vandertransport.test",
+      name: "Klant Beheerder",
+      passwordHash: pwd,
+      role: UserRole.EMPLOYEE,
+      roleId: rolesById.CUSTOMER_EDITOR.id,
+      customerId: demoCustomer.id,
+    },
+  });
+  console.log(`  ✅ CUSTOMER EDITOR: ${custEditor.email} / ${PASSWORD} (scoped to ${demoCustomer.companyName})`);
 
   const prodBasic = await prisma.product.upsert({
     where: { productCode: "TRK-BASIC" },

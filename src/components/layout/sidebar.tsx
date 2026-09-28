@@ -147,13 +147,12 @@ type SidebarProps = {
 
 export function Sidebar({
   userRole,
-  roleId,
+  roleId: _roleId,
   roleScope,
   permissions,
 }: SidebarProps) {
   const pathname = usePathname();
-  const authzArg: PermissionBits | UserRole | string | null =
-    permissions ?? roleId ?? userRole ?? null;
+  const authzArg: PermissionBits | UserRole | null = permissions ?? userRole ?? null;
 
   const visibleItems = NAV_ITEMS.filter((item) => {
     if (roleScope === "CUSTOMER") {

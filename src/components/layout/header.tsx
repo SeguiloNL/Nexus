@@ -29,6 +29,8 @@ type HeaderProps = {
   userName: string;
   userEmail: string;
   userRole: UserRole;
+  roleName?: string | null;
+  customerIds?: string[];
 };
 
 const ROLE_LABELS: Record<UserRole, string> = {
@@ -43,7 +45,13 @@ const ROLE_VARIANT: Record<UserRole, "success" | "info" | "muted"> = {
   VIEWER: "muted",
 };
 
-export function Header({ userName, userEmail, userRole }: HeaderProps) {
+export function Header({
+  userName,
+  userEmail,
+  userRole,
+  roleName,
+  customerIds,
+}: HeaderProps) {
   const router = useRouter();
 
   useEffect(() => {
@@ -90,7 +98,7 @@ export function Header({ userName, userEmail, userRole }: HeaderProps) {
           className="hidden sm:inline-flex"
         >
           <Shield className="mr-1 h-3 w-3" />
-          {ROLE_LABELS[userRole]}
+          {roleName ?? ROLE_LABELS[userRole]}
         </Badge>
 
         <DropdownMenu>
@@ -132,9 +140,16 @@ export function Header({ userName, userEmail, userRole }: HeaderProps) {
                 </p>
                 <p className="mt-1 text-[11px] leading-none">
                   <Badge variant={ROLE_VARIANT[userRole]}>
-                    {ROLE_LABELS[userRole]}
+                    {roleName ?? ROLE_LABELS[userRole]}
                   </Badge>
                 </p>
+                {customerIds && customerIds.length > 0 ? (
+                  <p className="mt-1 text-[11px] leading-none text-slate-500">
+                    {customerIds.length === 1
+                      ? `1 klant-scope`
+                      : `${customerIds.length} klant-scopes`}
+                  </p>
+                ) : null}
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
