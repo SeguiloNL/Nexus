@@ -33,6 +33,26 @@ function normImsi(v: string | null | undefined): string | null {
   return s.length > 20 ? s.slice(0, 20) : s;
 }
 
+function normEid(v: string | null | undefined): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).replace(/\s+/g, "").trim();
+  if (!s) return null;
+  return s.length > 40 ? s.slice(0, 40) : s;
+}
+
+function buildSimNotes(simhuis: SimhuisSimStatus): string | null {
+  const parts: string[] = [];
+  parts.push("Geïmporteerd vanuit Simhuis.");
+  if (simhuis.planName) parts.push(`Plan: ${simhuis.planName}.`);
+  if (simhuis.productName) parts.push(`Product: ${simhuis.productName}.`);
+  if (simhuis.subscriberId) parts.push(`Subscriber ID: ${simhuis.subscriberId}.`);
+  if (simhuis.eid) parts.push(`eSIM ID (EID): ${simhuis.eid}.`);
+  if (simhuis.simName && simhuis.simName !== "unnamed") parts.push(`SIM Name: ${simhuis.simName}.`);
+  if (simhuis.groupName) parts.push(`Groep: ${simhuis.groupName}.`);
+  if (simhuis.groupId) parts.push(`Groep ID: ${simhuis.groupId}.`);
+  return parts.join(" ");
+}
+
 export interface SimhuisSyncResult {
   totalInSimhuis: number;
   eligibleInSimhuis: number;
@@ -114,6 +134,11 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
       provider: true,
       msisdn: true,
       imsi: true,
+      eid: true,
+      subscriberId: true,
+      simName: true,
+      simGroup: true,
+      product: true,
       simType: true,
       notes: true,
       deletedAt: true,
@@ -138,12 +163,23 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
 
       const rawMsisdn = simhuis.msisdn;
       const rawImsi = simhuis.imsi;
+      const rawEid = simhuis.eid;
+      const rawSubscriberId = simhuis.subscriberId;
+      const rawSimName = simhuis.simName;
+      const rawGroupName = simhuis.groupName ?? simhuis.groupId;
+      const rawProduct = simhuis.productName ?? simhuis.planName;
       const rawNetwork = simhuis.network;
       const rawPlanName = simhuis.planName;
       const msisdnVal = normMsisdn(rawMsisdn);
       const imsiVal = normImsi(rawImsi);
+      const eidVal = normEid(rawEid);
+      const subscriberIdVal = truncate(rawSubscriberId, 100);
+      const simNameVal = truncate(rawSimName, 200);
+      const groupVal = truncate(rawGroupName, 100);
+      const productVal = truncate(rawProduct, 200);
       const networkVal = truncate(rawNetwork, 100);
       const planVal = truncate(rawPlanName, 500);
+      const notesVal = buildSimNotes(simhuis);
 
       if (existing) {
         if (existing.deletedAt) {
@@ -158,27 +194,27 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           status: existing.status,
           msisdn: existing.msisdn,
           imsi: existing.imsi,
+          eid: existing.eid,
+          subscriberId: existing.subscriberId,
+          simName: existing.simName,
+          simGroup: existing.simGroup,
+          product: existing.product,
           provider: existing.provider,
           simType: existing.simType,
+          notes: existing.notes,
         };
         const newData: Record<string, any> = { ...oldData };
         let changed = false;
-        if (existing.status !== status) {
-          newData.status = status;
-          changed = true;
-        }
-        if (msisdnVal && existing.msisdn !== msisdnVal) {
-          newData.msisdn = msisdnVal;
-          changed = true;
-        }
-        if (imsiVal && existing.imsi !== imsiVal) {
-          newData.imsi = imsiVal;
-          changed = true;
-        }
-        if (networkVal && existing.simType !== networkVal) {
-          newData.simType = networkVal;
-          changed = true;
-        }
+        if (existing.status !== status) { newData.status = status; changed = true; }
+        if (msisdnVal && existing.msisdn !== msisdnVal) { newData.msisdn = msisdnVal; changed = true; }
+        if (imsiVal && existing.imsi !== imsiVal) { newData.imsi = imsiVal; changed = true; }
+        if (eidVal && existing.eid !== eidVal) { newData.eid = eidVal; changed = true; }
+        if (subscriberIdVal && existing.subscriberId !== subscriberIdVal) { newData.subscriberId = subscriberIdVal; changed = true; }
+        if (simNameVal && simNameVal !== "unnamed" && existing.simName !== simNameVal) { newData.simName = simNameVal; changed = true; }
+        if (groupVal && existing.simGroup !== groupVal) { newData.simGroup = groupVal; changed = true; }
+        if (productVal && existing.product !== productVal) { newData.product = productVal; changed = true; }
+        if (networkVal && existing.simType !== networkVal) { newData.simType = networkVal; changed = true; }
+        if (notesVal && existing.notes !== notesVal) { newData.notes = notesVal; changed = true; }
         const providerTag = "Simhuis";
         if (!existing.provider?.toLowerCase().includes("simhuis")) {
           newData.provider = existing.provider ? truncate(`${existing.provider} + ${providerTag}`, 150) ?? providerTag : providerTag;
@@ -195,8 +231,14 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
               status: newData.status,
               msisdn: newData.msisdn,
               imsi: newData.imsi,
+              eid: newData.eid,
+              subscriberId: newData.subscriberId,
+              simName: newData.simName,
+              simGroup: newData.simGroup,
+              product: newData.product,
               simType: newData.simType,
               provider: newData.provider,
+              notes: newData.notes,
             },
           })
           .then(() => {
@@ -213,19 +255,21 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           ? ("IN_STOCK" as any)
           : ("RESERVED" as any);
         const providerTag = "Simhuis";
-        const notesBase = planVal
-          ? `Geïmporteerd vanuit Simhuis. Plan: ${planVal}`
-          : "Geïmporteerd vanuit Simhuis.";
         const p = prisma.sIM
           .create({
             data: {
               iccid,
+              eid: eidVal,
               msisdn: msisdnVal,
               imsi: imsiVal,
+              subscriberId: subscriberIdVal,
+              simName: simNameVal && simNameVal !== "unnamed" ? simNameVal : undefined,
+              simGroup: groupVal,
+              product: productVal,
               provider: providerTag,
               simType: networkVal,
               status: statusForNew,
-              notes: notesBase,
+              notes: notesVal,
             },
           })
           .then(() => {

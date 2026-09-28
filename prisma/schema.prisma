@@ -297,8 +297,13 @@ model Tracker {
 model SIM {
   id                       String    @id @default(cuid())
   iccid                    String    @unique @db.VarChar(40)
+  eid                      String?   @unique @db.VarChar(40)
   msisdn                   String?   @unique @db.VarChar(30)
   imsi                     String?   @db.VarChar(20)
+  subscriberId             String?   @db.VarChar(100)
+  simName                  String?   @db.VarChar(200)
+  simGroup                 String?   @db.VarChar(100)
+  product                  String?   @db.VarChar(200)
   provider                 String    @db.VarChar(150)
   simType                  String?   @db.VarChar(100)
   apn                      String?   @db.VarChar(200)

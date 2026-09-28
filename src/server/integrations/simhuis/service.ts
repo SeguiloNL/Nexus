@@ -3,7 +3,7 @@ import type { ActivateSimOptions, SimhuisApiResponse, SimhuisSimStatus } from '.
 
 function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   const r = (raw ?? {}) as Record<string, any>;
-  const nestedSim = r.simCard ?? r.sim ?? r.asset ?? r.device ?? r.subscription ?? r.subscriber ?? {};
+  const nestedSim = r.simCard ?? r.sim ?? r.asset ?? r.device ?? r.subscription ?? r.subscriber ?? r.esimProfile ?? r.esim ?? {};
   const statusRaw = String(
     r.status ?? r.state ?? r.sim_status ?? r.simState ?? r.lifeCycleStatus ?? r.lifecycle_status
       ?? nestedSim?.status ?? nestedSim?.state ?? nestedSim?.lifeCycleStatus
@@ -12,33 +12,73 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   ).toLowerCase();
   let status: SimhuisSimStatus['status'] = statusRaw as any;
   if (['active', 'enabled', 'online', 'activated', 'in_service', 'provisioned'].includes(statusRaw)) status = 'active';
-  else if (['inactive', 'disabled', 'offline', 'deactivated', 'retired', 'stock', 'in_stock', 'available'].includes(statusRaw)) status = 'inactive';
+  else if (['inactive', 'disabled', 'offline', 'deactivated', 'retired', 'stock', 'in_stock', 'available', 'ready'].includes(statusRaw)) status = 'inactive';
   else if (['suspended', 'paused', 'barred', 'suspend', 'bar', 'hibernated', 'hibernate'].includes(statusRaw)) status = 'suspended';
   else if (['terminated', 'deleted', 'cancelled', 'canceled', 'cancel', 'destroyed', 'expired'].includes(statusRaw)) status = 'terminated';
   else if (['provisioning', 'activating', 'pending', 'activating_subscription', 'pre_active'].includes(statusRaw)) status = 'provisioning';
+
+  const pickString = (...paths: Array<string | undefined | null>): string | null => {
+    for (const p of paths) {
+      if (p === null || p === undefined) continue;
+      const s = String(p).trim();
+      if (s && s !== '-' && s !== 'null' && s !== 'undefined') return s;
+    }
+    return null;
+  };
+
+  const iccidVal = pickString(
+    r.iccid, r.sim_iccid, r.simIccid, r.eid,
+    nestedSim?.iccid, nestedSim?.sim_iccid, nestedSim?.simIccid, nestedSim?.eid,
+    iccid,
+  ) ?? '';
+
+  const eidVal = pickString(
+    r.eid, r.esimId, r.esim_id, r.esimID, r.eSimId, r['eSIM ID'],
+    nestedSim?.eid, nestedSim?.esimId, nestedSim?.esim_id, nestedSim?.esimID, nestedSim?.eSimId,
+  );
+
+  const subscriberIdVal = pickString(
+    r.id, r.assetId, r.asset_id, r.asssetID,
+    r.subscriberId, r.subscriber_id, r.subscriptionId, r.subscription_id,
+    r.esimProfileId, r.esim_profile_id, r.profileId, r.profile_id,
+    nestedSim?.id, nestedSim?.subscriberId, nestedSim?.subscriber_id, nestedSim?.subscriptionId, nestedSim?.esimProfileId,
+  );
+
+  const simNameVal = pickString(
+    r.name, r.simName, r.sim_name, r.assetName, r.asset_name, r.displayName, r.display_name, r.label, r.title,
+    nestedSim?.name, nestedSim?.simName, nestedSim?.displayName, nestedSim?.label, nestedSim?.title,
+  );
+
+  const groupIdVal = pickString(
+    r.groupId, r.group_id, r.groupID,
+    nestedSim?.groupId, nestedSim?.group_id,
+  );
+
+  const groupNameVal = pickString(
+    r.group, r.groupName, r.group_name, r.groupLabel, r.poolName, r.pool_name, r.batch, r.batchName,
+    nestedSim?.group, nestedSim?.groupName, nestedSim?.poolName,
+  );
+
+  const productNameVal = pickString(
+    r.productName, r.product_name, r.product, r.productCode, r.product_code, r.productId,
+    r.tariffName, r.ratePlan, r.rate_plan, r.planName,
+    nestedSim?.productName, nestedSim?.product, nestedSim?.planName, nestedSim?.ratePlan,
+  );
+
   return {
-    iccid: String(
-      r.iccid ?? r.sim_iccid ?? r.simIccid ?? r.eid
-        ?? nestedSim?.iccid ?? nestedSim?.sim_iccid ?? nestedSim?.simIccid ?? nestedSim?.eid
-        ?? iccid
-    ),
-    imsi: typeof r.imsi === 'string' ? r.imsi : (typeof nestedSim?.imsi === 'string' ? nestedSim.imsi : null),
-    msisdn: typeof r.msisdn === 'string' ? r.msisdn
-      : (typeof r.phone_number === 'string' ? r.phone_number
-        : (typeof nestedSim?.msisdn === 'string' ? nestedSim.msisdn
-          : (typeof nestedSim?.phone_number === 'string' ? nestedSim.phone_number : null))),
+    iccid: iccidVal,
+    eid: eidVal,
+    imsi: pickString(r.imsi, nestedSim?.imsi),
+    msisdn: pickString(r.msisdn, r.phone_number, nestedSim?.msisdn, nestedSim?.phone_number, r.primaryMsisdn, r['MSISDN'], nestedSim?.primaryMsisdn),
+    subscriberId: subscriberIdVal,
+    simName: simNameVal,
+    groupId: groupIdVal,
+    groupName: groupNameVal,
+    productName: productNameVal,
     status,
-    ip: typeof r.ip === 'string' ? r.ip : (typeof r.ip_address === 'string' ? r.ip_address : (typeof nestedSim?.ip === 'string' ? nestedSim.ip : (typeof nestedSim?.ip_address === 'string' ? nestedSim.ip_address : null))),
-    network: typeof r.network === 'string' ? r.network
-      : (typeof r.carrier === 'string' ? r.carrier
-        : (typeof r.provider === 'string' ? r.provider
-          : (typeof r.operator === 'string' ? r.operator
-            : (typeof r.country_iso === 'string' ? r.country_iso : null)))),
-    planName: typeof r.plan_name === 'string' ? r.plan_name
-      : (typeof r.offer_name === 'string' ? r.offer_name
-        : (typeof r.tariff === 'string' ? r.tariff
-          : (typeof r.rate_plan === 'string' ? r.rate_plan
-            : (typeof r.plan === 'string' ? r.plan : (typeof r.package_name === 'string' ? r.package_name : null))))),
+    ip: pickString(r.ip, r.ip_address, nestedSim?.ip, nestedSim?.ip_address, r.lastIp, r.last_ip, nestedSim?.lastIp),
+    network: pickString(r.network, r.carrier, r.provider, r.operator, r.country_iso, r.networkName, r.network_name, nestedSim?.network, nestedSim?.networkName),
+    planName: pickString(r.plan_name, r.offer_name, r.tariff, r.rate_plan, r.plan, r.package_name, r.planName, nestedSim?.planName, nestedSim?.plan_name, nestedSim?.rate_plan),
     dataUsedBytes: typeof r.data_used_bytes === 'number' ? r.data_used_bytes
       : (typeof r.used_bytes === 'number' ? r.used_bytes
         : (typeof r.total_usage === 'number' ? r.total_usage
@@ -48,10 +88,7 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
       : (typeof r.limit_bytes === 'number' ? r.limit_bytes
         : (typeof r.data_quota === 'number' ? r.data_quota
           : (typeof (r.plan ?? nestedSim?.plan)?.data_limit_bytes === 'number' ? r.plan.data_limit_bytes : null))),
-    activatedAt: typeof r.activated_at === 'string' ? r.activated_at
-      : (typeof r.activation_date === 'string' ? r.activation_date
-        : (typeof r.created_at === 'string' ? r.created_at
-          : (typeof r.provisioned_at === 'string' ? r.provisioned_at : null))),
+    activatedAt: pickString(r.activated_at, r.activation_date, r.created_at, r.provisioned_at, nestedSim?.activatedAt, nestedSim?.provisioned_at, r.startDate, r.start_date),
     raw,
   };
 }
@@ -1955,22 +1992,163 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
 
 export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit'> = {}): Promise<SimhuisSimStatus[]> {
   const all: SimhuisSimStatus[] = [];
-  let page = 1;
-  const pageSize = 200;
   const seen = new Set<string>();
-  let safety = 0;
-  while (safety < 50) {
-    safety++;
-    const batch = await listSims({ ...options, page: page, limit: pageSize });
-    for (const s of batch.items) {
-      if (s.iccid && !seen.has(s.iccid)) {
-        seen.add(s.iccid);
-        all.push(s);
+  const dedupe = (items: SimhuisSimStatus[]) => {
+    for (const s of items) {
+      if (!s?.iccid) continue;
+      const key = s.iccid;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      all.push(s);
+    }
+  };
+
+  try {
+    const firstBatch = await listSims({ ...options, page: 1, limit: 200 });
+    dedupe(firstBatch.items);
+  } catch {
+    // ignore if discovery fails; we'll try explicit AirOn360 fetch below anyway
+  }
+
+  // ✅ CRITICAL FIX: Probeer DIRECT /v3/esims EN /v3/assets BEIDE endpoints met pagination!
+  // Vorige versie stopte na de EERSTE endpoint die data gaf (vaak alleen /v3/assets met 66 SIMs),
+  // en miste de resterende 261 in /v3/esims (of omgekeerd).
+  try {
+    const credsClient = await simhuisClient.getClient();
+    if (credsClient) {
+      const creds = (credsClient as any).creds as { baseUrl: string; username: string; password: string };
+      let base = (creds.baseUrl || '').replace(/\/+$/, '');
+      let bearerToken: string | null = null;
+      try {
+        const sc = await getSimhuisCreds();
+        bearerToken = await acquireBearerToken(sc);
+      } catch { bearerToken = null; }
+      const accountId = bearerToken ? getSimhuisAccountId() : null;
+
+      if (base && bearerToken && accountId) {
+        const wafHeaders: Record<string, string> = {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Accept': 'application/json, text/plain, */*',
+          'Accept-Language': 'en-US,en;q=0.9,nl;q=0.8',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+          'Origin': 'https://apicontrolcenter.com',
+          'Referer': 'https://apicontrolcenter.com/',
+          'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+          'Sec-Ch-Ua-Mobile': '?0',
+          'Sec-Ch-Ua-Platform': '"Windows"',
+          'Sec-Fetch-Dest': 'empty',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'same-origin',
+          'X-Requested-With': 'XMLHttpRequest',
+          'Connection': 'keep-alive',
+          'Authorization': `Bearer ${bearerToken}`,
+          'X-Account-Id': accountId,
+          'X-Tenant-Id': accountId,
+        };
+
+        const endpoints: Array<{ path: string; method: 'GET' | 'POST'; kind: 'query' | 'json-body'; paramName: 'accountId' | 'tenantId' | 'id' }> = [
+          { path: '/v3/esims',  method: 'GET', kind: 'query', paramName: 'accountId' },
+          { path: '/v3/assets', method: 'GET', kind: 'query', paramName: 'accountId' },
+          { path: '/v3/esims',  method: 'GET', kind: 'query', paramName: 'tenantId' },
+          { path: '/v3/assets', method: 'GET', kind: 'query', paramName: 'tenantId' },
+          { path: '/v3/esims',  method: 'POST', kind: 'json-body', paramName: 'accountId' },
+          { path: '/v3/assets', method: 'POST', kind: 'json-body', paramName: 'accountId' },
+        ];
+
+        for (const ep of endpoints) {
+          try {
+            const discovered = new Map<string, number>();
+            let page = 1;
+            let safety = 0;
+            while (safety < 50) {
+              safety++;
+              const cacheKey = `${ep.method}::${ep.path}::${ep.kind}::${ep.paramName}::p${page}`;
+              if (discovered.has(cacheKey)) break;
+              discovered.set(cacheKey, 1);
+              let url = `${base}${ep.path.startsWith('/') ? ep.path : `/${ep.path}`}`;
+              let body: BodyInit | undefined;
+              const headers: Record<string, string> = { ...wafHeaders };
+              const pageAndLimit = { page, limit: 500 };
+              if (ep.method === 'GET') {
+                const sp = new URLSearchParams();
+                sp.append(ep.paramName, String(accountId));
+                sp.append('page', String(pageAndLimit.page));
+                sp.append('limit', String(pageAndLimit.limit));
+                if (options.status) sp.append('status', String(options.status));
+                const qs = sp.toString();
+                if (qs) url += `?${qs}`;
+              } else {
+                headers['Content-Type'] = 'application/json';
+                const payload: Record<string, any> = { ...pageAndLimit };
+                payload.accountId = String(accountId);
+                payload.tenantId = String(accountId);
+                payload.id = String(accountId);
+                if (options.status) payload.status = String(options.status);
+                body = JSON.stringify(payload);
+              }
+              const resp = await fetch(url, { method: ep.method, headers, body, signal: AbortSignal.timeout(20000) });
+              const ct = resp.headers.get('content-type') ?? '';
+              const text = await resp.text();
+              let parsed: unknown = null;
+              if (ct.includes('application/json')) try { parsed = JSON.parse(text); } catch { parsed = text; }
+              else try { parsed = JSON.parse(text); } catch { parsed = text; }
+
+              if (!resp.ok) break;
+              const arr = extractSimList(parsed);
+              if (!arr || arr.length === 0) break;
+              const batchItems: SimhuisSimStatus[] = [];
+              for (const raw of arr) {
+                const nested = (raw as any)?.simCard ?? (raw as any)?.sim ?? (raw as any)?.asset ?? (raw as any)?.device ?? (raw as any)?.subscription ?? (raw as any)?.subscriber ?? {};
+                const iccidStr = String(
+                  (raw as any).iccid ?? (raw as any).sim_iccid ?? (raw as any).simIccid ?? (raw as any).eid
+                    ?? nested?.iccid ?? nested?.sim_iccid ?? nested?.simIccid ?? nested?.eid ?? ''
+                ).trim();
+                const s = toSimStatus(raw, iccidStr);
+                if (s?.iccid) batchItems.push(s);
+              }
+              const before = all.length;
+              dedupe(batchItems);
+              const added = all.length - before;
+              const total = extractTotal(parsed, batchItems.length);
+              const hasMore = typeof total === 'number'
+                ? (page * pageAndLimit.limit) < total
+                : batchItems.length >= pageAndLimit.limit;
+              if (!hasMore || batchItems.length === 0) break;
+              page++;
+              if (added === 0 && batchItems.length > 0) {
+                // Same page returned nothing new — duplicate endpoint / param combo → move on
+                break;
+              }
+            }
+          } catch {
+            // move on to next endpoint
+          }
+        }
       }
     }
-    if (!batch.hasMore || batch.items.length === 0) break;
-    page++;
+  } catch {
+    // ignore explicit endpoint failures; discovery fallback may have added items
   }
+
+  // Fallback indien discovery nog niets gevonden had: nogsteeds oude pagination loop
+  if (all.length === 0) {
+    let page = 1;
+    const pageSize = 200;
+    let safety = 0;
+    while (safety < 50) {
+      safety++;
+      const batch = await listSims({ ...options, page: page, limit: pageSize });
+      const before = all.length;
+      dedupe(batch.items);
+      const added = all.length - before;
+      if (!batch.hasMore || batch.items.length === 0) break;
+      if (added === 0 && batch.items.length > 0) break;
+      page++;
+    }
+  }
+
   return all;
 }
 

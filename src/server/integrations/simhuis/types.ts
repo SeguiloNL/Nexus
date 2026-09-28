@@ -17,8 +17,14 @@ export interface SimhuisCredentials {
 
 export interface SimhuisSimStatus {
   iccid: string;
+  eid?: string | null;
   imsi?: string | null;
   msisdn?: string | null;
+  subscriberId?: string | null;
+  simName?: string | null;
+  groupId?: string | null;
+  groupName?: string | null;
+  productName?: string | null;
   status?: 'active' | 'inactive' | 'suspended' | 'terminated' | 'provisioning' | string | null;
   ip?: string | null;
   network?: string | null;
