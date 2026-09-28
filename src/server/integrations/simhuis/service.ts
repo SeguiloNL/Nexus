@@ -211,45 +211,53 @@ function isLikelyMongoId(c: unknown): c is string {
   return typeof c === 'string' && c.trim().length >= 12 && /^[0-9a-f]{12,}$/i.test(c.trim());
 }
 
+function _collectStrings(acc: string[], o: unknown, depth = 0): void {
+  if (depth > 5 || o === null || o === undefined) return;
+  if (typeof o === 'string') { acc.push(o); return; }
+  if (Array.isArray(o)) { for (const e of o) _collectStrings(acc, e, depth + 1); return; }
+  if (typeof o === 'object') { for (const v of Object.values(o as Record<string, any>)) _collectStrings(acc, v, depth + 1); }
+}
+
 function extractAccountIdFromUserObj(userObj: unknown): string | null {
   if (!userObj || typeof userObj !== 'object') return null;
   const u = userObj as Record<string, any>;
+  // Prio 1: expliciete accountId / tenantId in permissions object / profile (RBAC-achtig)
+  const nestedPrio1: Record<string, any>[] = [u.permissions, u.profile, u.account, u.setup, u.meta, u.ztp];
+  const keysToScan = [
+    'accountId', 'account_id', 'accountIDs', 'accountIds', 'accounts', 'account',
+    'tenantId', 'tenant_id', 'tenants', 'tenant',
+    'orgId', 'org', 'organizationId', 'customerId', 'resellerId',
+  ];
+  for (const n of nestedPrio1) {
+    if (!n || typeof n !== 'object') continue;
+    for (const k of keysToScan) {
+      const v = (n as any)[k];
+      if (Array.isArray(v)) {
+        for (const elem of v) if (isLikelyMongoId(elem)) return String(elem).trim();
+      }
+      if (isLikelyMongoId(v)) return String(v).trim();
+    }
+  }
+  // Prio 2: Diep zoeken in permissions / profile naar mongo-achtige IDs (meerdere accounts mogelijk → 1e gebruiken)
+  for (const n of nestedPrio1) {
+    if (!n) continue;
+    const pool: string[] = [];
+    _collectStrings(pool, n, 0);
+    for (const s of pool) if (isLikelyMongoId(s)) return s.trim();
+  }
+  // Prio 3: Top-level primaries
   const primaries = [
     u.accountId, u.account_id, u.tenantId, u.tenant_id, u.orgId, u.org_id,
     u.customerId, u.customer_id, u.resellerId, u.reseller_id,
   ];
-  const nestedCandidates = [
-    u.profile, u.account, u.tenant, u.organization, u.meta, u.setup, u.permissions,
-    u.profile?.account, u.profile?.tenant, u.ztp,
-  ];
-  // 1. user._id (mongodb) / user.id
-  if (isLikelyMongoId(u._id) || isLikelyMongoId(u.id)) {
-    return String(isLikelyMongoId(u._id) ? u._id : u.id).trim();
-  }
-  // 2. primaries: first mongo-looking
   for (const c of primaries) if (isLikelyMongoId(c)) return String(c).trim();
-  // 3. nested candidate objects
-  for (const n of nestedCandidates) {
-    if (!n || typeof n !== 'object') continue;
-    const sub = n as Record<string, any>;
-    const subVals = [
-      sub._id, sub.id, sub.accountId, sub.account_id, sub.tenantId, sub.tenant_id,
-      sub.orgId, sub.customerId, sub.resellerId,
-    ];
-    for (const c of subVals) if (isLikelyMongoId(c)) return String(c).trim();
-  }
-  // 4. fallback — any value-like string long enough
-  for (const c of primaries) {
-    if (typeof c === 'string' && c.trim().length >= 10) return c.trim();
-  }
-  for (const n of nestedCandidates) {
-    if (!n || typeof n !== 'object') continue;
-    const sub = n as Record<string, any>;
-    for (const key of ['accountId', 'account_id', 'tenantId', '_id', 'id']) {
-      const v = sub[key];
-      if (typeof v === 'string' && v.trim().length >= 10) return v.trim();
-    }
-  }
+  // Prio 4: user._id / user.id (mongodb user-document id)
+  if (isLikelyMongoId(u._id)) return String(u._id).trim();
+  if (isLikelyMongoId(u.id)) return String(u.id).trim();
+  // Prio 5: Hele user object diep scannen voor mongo-id
+  const fullPool: string[] = [];
+  _collectStrings(fullPool, u, 0);
+  for (const s of fullPool) if (isLikelyMongoId(s)) return s.trim();
   return null;
 }
 
@@ -1252,23 +1260,33 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
       }
       return u;
     };
-    // AirOn360 eerst: eerst BEARER (accountId-inject), daarna basic, daarna auth/ping tests
+    // FASE -1: ALLEEN BEARER-token voor SIM-list endpoints!
+    // (Basic geeft perse 401/InvalidCredentials voor eSIMs/assets — dat was alleen voor auth/token endpoint.)
     const accountIdVal = bearerAuthOnly ? getSimhuisAccountId() : null;
     const baseAidQuery = accountIdVal
       ? { accountId: accountIdVal, page: 1, limit: 50 }
       : { page: 1, limit: 50 };
     const testCases: Array<{ method: 'GET' | 'POST'; path: string; auth: AuthStyle; kind: 'json-body' | 'query' | 'form-body'; body?: Record<string, any>; query?: Record<string, any> }> = [];
     if (bearerAuthOnly) {
+      if (accountIdVal) {
+        // Accounts-scoped endpoints (meest waarschijnlijk — AirOn360 plaatst SIM-lijsten onder account!)
+        testCases.push(
+          { method: 'GET', path: `/v3/accounts/${accountIdVal}/esims`, auth: bearerAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
+          { method: 'GET', path: `/v3/accounts/${accountIdVal}/assets`, auth: bearerAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
+          { method: 'GET', path: `/v3/tenants/${accountIdVal}/esims`, auth: bearerAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
+          { method: 'GET', path: `/v3/tenants/${accountIdVal}/assets`, auth: bearerAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
+        );
+      }
       testCases.push(
         { method: 'GET', path: '/v3/esims', auth: bearerAuthOnly, kind: 'query', query: { ...baseAidQuery } },
         { method: 'GET', path: '/v3/assets', auth: bearerAuthOnly, kind: 'query', query: { ...baseAidQuery } },
       );
     }
+    // Basic Auth hierna — alleen als bearer niet werkt. GEEN /v3/auth/me meer (405 Allow: OPTIONS = nutteloos).
     testCases.push(
+      { method: 'POST', path: '/v3/auth/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
       { method: 'GET', path: '/v3/esims', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
       { method: 'GET', path: '/v3/assets', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 50 } },
-      { method: 'POST', path: '/v3/auth/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
-      { method: 'GET', path: '/v3/auth/me', auth: basicAuthOnly, kind: 'query' },
     );
     for (const tc of testCases) {
       if (pogingen > MAX_ATTEMPTS || overallDeadline.aborted) break;
@@ -1379,50 +1397,81 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
     query?: Record<string, any>;
   };
 
-  // FASE 0: SNELLE probes — AirOn360 /v3 endpoints EERST, daarna legacy
+  // FASE 0: GERICHTE AirOn360 probes — GEEN 405/legacy meer. ALLEEN account-scoped + Bearer EERST.
+  // Verwijderd uit oude lijst (allemaal 405 Allow: OPTIONS of 404): /v3/ulb/device, /v3/auth/me, /v3/auth/check-token, /sims, / (root), /v3 (POST), /esims (geen prefix), /assets (geen prefix), -basic varianten na de hoofd-bearer probes.
   const probes: Phase0Probe[] = [];
   const probeAuth = bearerAuthOnly ?? basicAuthOnly;
-  // === AirOn360 eSIMS & ASSETS (absolute prio) ===
-  probes.push(
-    { label: 'GET-v3-esims', method: 'GET', path: '/v3/esims', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
-    { label: 'GET-v3-esims-basic', method: 'GET', path: '/v3/esims', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 200 } },
-    { label: 'GET-v3-assets', method: 'GET', path: '/v3/assets', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
-    { label: 'GET-v3-assets-basic', method: 'GET', path: '/v3/assets', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 200 } },
-    { label: 'GET-v3-assets-filter', method: 'GET', path: '/v3/assets/filter', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200, ...(options.status ? { status: options.status } : {}) } },
-    { label: 'GET-v3-assets-search', method: 'GET', path: '/v3/assets/search', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
-    { label: 'PUT-v3-assets-filter', method: 'PUT', path: '/v3/assets/filter', auth: probeAuth, kind: 'json-body', body: { page: 1, limit: 200, ...(options.status ? { status: options.status } : {}) } },
-    { label: 'PUT-v3-assets-search', method: 'PUT', path: '/v3/assets/search', auth: probeAuth, kind: 'json-body', body: { page: 1, limit: 200 } },
-    { label: 'GET-v3-esims-status', method: 'GET', path: '/v3/esims', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200, status: options.status ?? 'active' } },
-    { label: 'GET-v3-assets-status', method: 'GET', path: '/v3/assets', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200, status: options.status ?? 'active' } },
-    { label: 'GET-v3-imsis', method: 'GET', path: '/v3/imsis', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
-    { label: 'GET-v3-iot-device', method: 'GET', path: '/v3/iot/device', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
-    { label: 'GET-v3-ulb-device', method: 'GET', path: '/v3/ulb/device', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
-    { label: 'POST-v3-esims', method: 'POST', path: '/v3/esims', auth: probeAuth, kind: 'json-body', body: { page: 1, limit: 200 } },
-    { label: 'POST-v3-assets', method: 'POST', path: '/v3/assets', auth: probeAuth, kind: 'json-body', body: { page: 1, limit: 200 } },
-  );
-  // === Auth tests ===
+  const aid = getSimhuisAccountId();
+
+  // === NIEUW: Parameter varianten op accountId (404 "Account not found" → de naam kan afwijken!) ===
+  //  - accountId (query) [reeds gedaan bij inject] + accountId in BODY (ook al is het GET) +
+  //  - tenantId / account_id / account / X-Account-Id header
+  const pageQuery = { page: 1, limit: 200 };
+  const pageBody = { page: 1, limit: 200 };
+  if (bearerAuthOnly) {
+    // === A. Account-SCOPED endpoints (grootste kans dat het hier zit — AirOn360 SIMs onder account/tenant path) ===
+    if (aid) {
+      probes.push(
+        { label: 'GET-v3-accounts-esims', method: 'GET', path: `/v3/accounts/${aid}/esims`, auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
+        { label: 'GET-v3-accounts-assets', method: 'GET', path: `/v3/accounts/${aid}/assets`, auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
+        { label: 'GET-v3-accounts-sims',   method: 'GET', path: `/v3/accounts/${aid}/sims`,   auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
+        { label: 'GET-v3-tenants-esims',  method: 'GET', path: `/v3/tenants/${aid}/esims`,  auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
+        { label: 'GET-v3-tenants-assets', method: 'GET', path: `/v3/tenants/${aid}/assets`, auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
+        { label: 'GET-v3-customers-esims', method: 'GET', path: `/v3/customers/${aid}/esims`, auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
+        { label: 'GET-v3-resellers-esims', method: 'GET', path: `/v3/resellers/${aid}/esims`, auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
+      );
+    }
+    // === B. Unscoped endpoints met VERSCHILLENDE account-naam parameters (404 "Account not found" → verkeerde param naam?) ===
+    // accountId, tenantId, account_id, account, organizationId, customerId, resellerId
+    if (aid) {
+      const tenantQuery: any = { ...pageQuery, tenantId: aid };
+      const idQuery: any     = { ...pageQuery, id: aid };
+      const acctQuery: any   = { ...pageQuery, account: aid };
+      probes.push(
+        { label: 'GET-v3-esims-tenantId',  method: 'GET', path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query', query: tenantQuery },
+        { label: 'GET-v3-assets-tenantId', method: 'GET', path: '/v3/assets', auth: bearerAuthOnly, kind: 'query', query: tenantQuery },
+        { label: 'GET-v3-esims-id',        method: 'GET', path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query', query: idQuery },
+        { label: 'GET-v3-assets-id',       method: 'GET', path: '/v3/assets', auth: bearerAuthOnly, kind: 'query', query: idQuery },
+        { label: 'GET-v3-esims-account',   method: 'GET', path: '/v3/esims',  auth: bearerAuthOnly, kind: 'query', query: acctQuery },
+        { label: 'GET-v3-assets-account',  method: 'GET', path: '/v3/assets', auth: bearerAuthOnly, kind: 'query', query: acctQuery },
+        // PUT/GET /v3/assets/filter + search met accountId / tenantId
+        { label: 'GET-v3-assets-filter-aid',    method: 'GET', path: '/v3/assets/filter', auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, ...(options.status ? { status: options.status } : {}) } },
+        { label: 'GET-v3-assets-search-aid',    method: 'GET', path: '/v3/assets/search', auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
+        { label: 'PUT-v3-assets-filter-aid',    method: 'PUT', path: '/v3/assets/filter', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody, ...(options.status ? { status: options.status } : {}) } },
+        { label: 'PUT-v3-assets-search-aid',    method: 'PUT', path: '/v3/assets/search', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
+      );
+    }
+    // === C. Hoofd endpoints (accountId inject gebeurt later centraal in de fetch-loop) ===
+    probes.push(
+      { label: 'GET-v3-esims',           method: 'GET', path: '/v3/esims',            auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
+      { label: 'GET-v3-assets',          method: 'GET', path: '/v3/assets',           auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
+      { label: 'GET-v3-esims-status',    method: 'GET', path: '/v3/esims',            auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, status: options.status ?? 'active' } },
+      { label: 'GET-v3-assets-status',   method: 'GET', path: '/v3/assets',           auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery, status: options.status ?? 'active' } },
+      { label: 'GET-v3-imsis',           method: 'GET', path: '/v3/imsis',            auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
+      { label: 'GET-v3-iot-device',      method: 'GET', path: '/v3/iot/device',       auth: bearerAuthOnly, kind: 'query', query: { ...pageQuery } },
+      { label: 'POST-v3-esims',          method: 'POST', path: '/v3/esims',           auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
+      { label: 'POST-v3-assets',         method: 'POST', path: '/v3/assets',          auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
+    );
+    if (aid) {
+      // D. Body-variant (accountId IN BODY, ook al is het GET — sommige APIs accepteren body op GET)
+      probes.push(
+        { label: 'GET-v3-esims-bodyAid',  method: 'GET', path: '/v3/esims',  auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
+        { label: 'GET-v3-assets-bodyAid', method: 'GET', path: '/v3/assets', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
+        { label: 'PUT-v3-esims-bodyAid',  method: 'PUT', path: '/v3/esims',  auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
+        { label: 'PUT-v3-assets-bodyAid', method: 'PUT', path: '/v3/assets', auth: bearerAuthOnly, kind: 'json-body', body: { ...pageBody } },
+      );
+    }
+  }
+  // === E. Basic auth en auth/token (als laatste, niet eerst — geen onnodige 401s die de teller verstoren) ===
   probes.push(
     { label: 'POST-v3-auth-token', method: 'POST', path: '/v3/auth/token', auth: noAuth, kind: 'json-body', body: { username: creds.username, password: creds.password, grant_type: 'password' } },
-    { label: 'GET-v3-auth-check', method: 'GET', path: '/v3/auth/check-token', auth: probeAuth, kind: 'query' },
-    { label: 'GET-v3-auth-me', method: 'GET', path: '/v3/auth/me', auth: basicAuthOnly, kind: 'query' },
-  );
-  // === Legacy zonder /v3 prefix ===
-  probes.push(
-    { label: 'GET-esims', method: 'GET', path: '/esims', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
-    { label: 'GET-assets', method: 'GET', path: '/assets', auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
-    { label: 'POST-sims-page-limit-basic', method: 'POST', path: '/sims', auth: basicAuthOnly, kind: 'json-body', body: { page: 1, limit: 100 } },
-    { label: 'GET-sims-page-limit-basic', method: 'GET', path: '/sims', auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 100 } },
+    { label: 'GET-v3-esims-basic',  method: 'GET', path: '/v3/esims',  auth: basicAuthOnly, kind: 'query', query: { ...pageQuery } },
+    { label: 'GET-v3-assets-basic', method: 'GET', path: '/v3/assets', auth: basicAuthOnly, kind: 'query', query: { ...pageQuery } },
   );
   if (resellerFragment) {
     probes.push(
-      { label: 'GET-v3-reseller-assets', method: 'GET', path: `/v3/resellers/${resellerFragment}/assets`, auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
-      { label: 'GET-v3-reseller-esims', method: 'GET', path: `/v3/resellers/${resellerFragment}/esims`, auth: probeAuth, kind: 'query', query: { page: 1, limit: 200 } },
-      { label: 'GET-reseller-sims-basic', method: 'GET', path: `/resellers/${resellerFragment}/sims`, auth: basicAuthOnly, kind: 'query', query: { page: 1, limit: 100 } },
-    );
-  } else {
-    probes.push(
-      { label: 'GET-root-basic', method: 'GET', path: '/', auth: basicAuthOnly, kind: 'query' },
-      { label: 'POST-v3-basic-empty', method: 'POST', path: '/v3', auth: basicAuthOnly, kind: 'json-body', body: {} },
+      { label: 'GET-v3-reseller-assets', method: 'GET', path: `/v3/resellers/${resellerFragment}/assets`, auth: probeAuth, kind: 'query', query: { ...pageQuery } },
+      { label: 'GET-v3-reseller-esims',  method: 'GET', path: `/v3/resellers/${resellerFragment}/esims`,  auth: probeAuth, kind: 'query', query: { ...pageQuery } },
     );
   }
 
@@ -1521,11 +1570,19 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         Object.assign(headers, args.auth.headers);
       }
       let body: BodyInit | undefined;
-      const mergedBody: Record<string, any> | null = args.body ? { ...args.body } : null;
-      if (isBearer && listAccountId && mergedBody) {
+      let mergedBody: Record<string, any> | null = args.body ? { ...args.body } : null;
+      if (isBearer && listAccountId) {
+        // X-Headers: SaaS APIs gebruiken vaak X-Account-Id / X-Tenant-Id!
+        headers['X-Account-Id'] = listAccountId;
+        headers['X-Tenant-Id']  = listAccountId;
+        // Body: altijd proberen te vullen (ook als die leeg was!), met accountId/tenantId/id
+        if (!mergedBody) mergedBody = {};
         if (!mergedBody.accountId) mergedBody.accountId = listAccountId;
+        if (!mergedBody.tenantId)  mergedBody.tenantId  = listAccountId;
+        if (!mergedBody.id)        mergedBody.id        = listAccountId;
       }
-      if ((args.method === 'POST' || args.method === 'PUT' || args.method === 'PATCH') && mergedBody) {
+      // Body meesturen: bij PUT/POST/PATCH altijd; bij GET / ALLEEN als er een non-empty mergedBody is EN content-type = json (als het kind json is).
+      if (mergedBody && Object.keys(mergedBody).length > 0) {
         if (args.contentType === 'json') {
           headers['Content-Type'] = 'application/json';
           body = JSON.stringify(mergedBody);
@@ -1539,12 +1596,17 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
           headers['Content-Type'] = 'application/x-www-form-urlencoded;charset=UTF-8';
           body = sp.toString();
         }
+      } else if ((args.method === 'POST' || args.method === 'PUT' || args.method === 'PATCH') && args.contentType === 'json') {
+        headers['Content-Type'] = 'application/json';
+        body = JSON.stringify({});
       }
       let finalUrl = args.fullUrl;
       if (isBearer && listAccountId) {
         const sep = finalUrl.includes('?') ? '&' : '?';
         const sp = new URLSearchParams();
         sp.append('accountId', listAccountId);
+        sp.append('tenantId',  listAccountId);
+        sp.append('id',        listAccountId);
         finalUrl = `${finalUrl}${sep}${sp.toString()}`;
       }
       const resp = await fetch(finalUrl, { method: args.method, headers, body, signal: overallDeadline });
@@ -1650,14 +1712,30 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
 
       let bodyInit: BodyInit | undefined;
       let bodyPayload: Record<string, any> | null = probe.body ? { ...probe.body } : null;
-      if (phase0IsBearer && phase0AccountId && bodyPayload) {
-        if (!bodyPayload.accountId) bodyPayload.accountId = phase0AccountId;
+      if (phase0IsBearer && phase0AccountId) {
+        // 1) Query-param met ALLE veel-voorkomende namen (404 Account not found = param name kan afwijken!)
+        if (!queryExtra) queryExtra = {};
+        // Alleen toevoegen als die specifieke key er nog NIET in zat (geen redundant overschrijven).
+        if (queryExtra.accountId === undefined) queryExtra.accountId = phase0AccountId;
+        if (queryExtra.tenantId === undefined) queryExtra.tenantId = phase0AccountId;
+        if (queryExtra.id === undefined) queryExtra.id = phase0AccountId;
+        // 2) Body met dezelfde namen (indien body bestaat of FORCEREN bij kind=json-body)
+        if (bodyPayload || probe.kind === 'json-body') {
+          if (!bodyPayload) bodyPayload = {};
+          if (!bodyPayload.accountId) bodyPayload.accountId = phase0AccountId;
+          if (!bodyPayload.tenantId) bodyPayload.tenantId = phase0AccountId;
+          if (!bodyPayload.id) bodyPayload.id = phase0AccountId;
+        }
+        // 3) Header varianten: X-Account-Id, X-Tenant-Id, X-Organization-Id (SaaS APIs gebruiken vaak dit!)
+        headers['X-Account-Id'] = phase0AccountId;
+        headers['X-Tenant-Id']  = phase0AccountId;
       }
       const fullUrl = probe.method === 'GET'
         ? buildFinalUrl(probe.path, queryExtra)
         : buildFinalUrl(probe.path, null);
 
-      if (probe.method !== 'GET' && bodyPayload) {
+      // Body meesturen: zowel bij PUT/POST/PATCH als (optioneel) bij GET — als kind=json-body
+      if (bodyPayload) {
         if (probe.kind === 'json-body') {
           headers['Content-Type'] = 'application/json';
           bodyInit = JSON.stringify(bodyPayload);
