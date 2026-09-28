@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { logAudit } from "./audit.service";
 import { listAllSims, simhuisClient } from "@/server/integrations/simhuis/service";
 import type { SimhuisSimStatus } from "@/server/integrations/simhuis/types";
-import type { SimStatus, UserRole } from "@/types/enums";
+import { SimStatus, type UserRole } from "@/types/enums";
 
 type Ctx = { userId?: string; userRole?: UserRole };
 
@@ -10,6 +10,37 @@ function truncate(v: string | null | undefined, max: number): string | null {
   if (v === null || v === undefined) return null;
   const s = String(v);
   return s.length > max ? s.slice(0, max) : s;
+}
+
+const VALID_SIM_STATUSES: ReadonlySet<string> = new Set<string>(
+  Object.values(SimStatus).map((s) => String(s))
+);
+
+function validateAndNormalizeSimStatus(
+  value: string | null | undefined | SimStatus,
+  context: string
+): SimStatus {
+  if (value === null || value === undefined) {
+    console.warn(
+      `[simhuis-sync] ⚠️ Status is leeg voor ${context}. Fallback naar IN_STOCK.`
+    );
+    return SimStatus.IN_STOCK;
+  }
+  const normalized = String(value).toUpperCase().replace(/\s+/g, "_");
+  if (VALID_SIM_STATUSES.has(normalized)) {
+    return normalized as SimStatus;
+  }
+  if (VALID_SIM_STATUSES.has(String(value))) {
+    return value as SimStatus;
+  }
+  console.warn(
+    `[simhuis-sync] ⚠️ Ongeldige SimStatus "${String(
+      value
+    )}" (normalized="${normalized}") voor ${context}. Geldige waardes: ${Array.from(
+      VALID_SIM_STATUSES
+    ).join(", ")}. Fallback naar IN_STOCK.`
+  );
+  return SimStatus.IN_STOCK;
 }
 
 function normIccid(v: string | null | undefined): string | null {
@@ -83,22 +114,22 @@ function mapSimhuisStatusToNexus(
 ): { status: SimStatus; skipIfLocked: boolean } {
   const available = isSimAvailableForStock(simhuisStatus);
   if (available) {
-    return { status: "IN_STOCK" as any, skipIfLocked: true };
+    return { status: SimStatus.IN_STOCK, skipIfLocked: true };
   }
   const s = String(simhuisStatus ?? "").toLowerCase();
   if (s === "active" || s === "enabled" || s === "online") {
-    return { status: "ACTIVE" as any, skipIfLocked: true };
+    return { status: SimStatus.ACTIVE, skipIfLocked: true };
   }
   if (s === "suspended" || s === "paused" || s === "barred") {
-    return { status: "SUSPENDED" as any, skipIfLocked: false };
+    return { status: SimStatus.SUSPENDED, skipIfLocked: false };
   }
-  if (s === "terminated" || s === "deleted" || s === "cancelled") {
-    return { status: "TERMINATED" as any, skipIfLocked: false };
+  if (s === "terminated" || s === "deleted" || s === "cancelled" || s === "canceled") {
+    return { status: SimStatus.CANCELLED, skipIfLocked: false };
   }
   if (s === "provisioning" || s === "activating" || s === "pending") {
-    return { status: "RESERVED" as any, skipIfLocked: true };
+    return { status: SimStatus.RESERVED, skipIfLocked: true };
   }
-  return { status: "IN_STOCK" as any, skipIfLocked: true };
+  return { status: SimStatus.IN_STOCK, skipIfLocked: true };
 }
 
 export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<SimhuisSyncResult> {
@@ -159,7 +190,12 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
     }
     try {
       const existing = existingByIccid.get(iccid);
-      const { status, skipIfLocked } = mapSimhuisStatusToNexus(simhuis.status, existing?.status as any);
+      const mapped = mapSimhuisStatusToNexus(simhuis.status, existing?.status as any);
+      const status = validateAndNormalizeSimStatus(
+        mapped.status,
+        `iccid=${iccid} simhuis.status=${String(simhuis.status ?? "<null>")}`
+      );
+      const skipIfLocked = mapped.skipIfLocked;
 
       const rawMsisdn = simhuis.msisdn;
       const rawImsi = simhuis.imsi;
@@ -186,7 +222,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           skipped++;
           continue;
         }
-        if (skipIfLocked && existing.status !== "IN_STOCK" && status === "IN_STOCK") {
+        if (skipIfLocked && existing.status !== SimStatus.IN_STOCK && status === SimStatus.IN_STOCK) {
           skipped++;
           continue;
         }
@@ -224,11 +260,15 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           skipped++;
           continue;
         }
+        const validatedStatusForUpdate = validateAndNormalizeSimStatus(
+          newData.status,
+          `UPDATE iccid=${iccid} existingId=${existing.id}`
+        );
         const p = prisma.sIM
           .update({
             where: { id: existing.id },
             data: {
-              status: newData.status,
+              status: validatedStatusForUpdate,
               msisdn: newData.msisdn,
               imsi: newData.imsi,
               eid: newData.eid,
@@ -251,7 +291,11 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           });
         upsertPromises.push(p);
       } else {
-        const { status: statusForNew } = mapSimhuisStatusToNexus(simhuis.status, null);
+        const mappedNew = mapSimhuisStatusToNexus(simhuis.status, null);
+        const statusForNew = validateAndNormalizeSimStatus(
+          mappedNew.status,
+          `CREATE iccid=${iccid} simhuis.status=${String(simhuis.status ?? "<null>")}`
+        );
         const providerTag = "Simhuis";
         const p = prisma.sIM
           .create({
