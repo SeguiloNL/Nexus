@@ -362,15 +362,23 @@ export async function syncSimhuisSimsAction(): Promise<SimSyncActionResult> {
         const basicB64 = Buffer.from(`${username}:${password}`, "utf8").toString("base64");
         const publicIpCmd = "# Bepaal jouw Nexus server PUBLIC IP (geef dit IP op aan Simhuis Support):\ncurl -sS ifconfig.me";
         const curlCmd =
-          `# STAP 1 (JOUW computer / Postman): draai dit commando in jouw lokale terminal (post je uitkomst hier als het werkt)\n` +
-          `curl -sS -X POST '${base}/sims' \\\n` +
+          `# STAP 1 (JOUW computer / Postman): draai deze 2 curl-commando's in jouw lokale terminal (post je uitkomst hier als het werkt)\n` +
+          `# Test 1: AirOn360 eSIMS lijst (GET /v3/esims) — voorkeursendpoint\n` +
+          `curl -sS -X GET '${base}/v3/esims?page=1&limit=100' \\\n` +
           `  -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36' \\\n` +
           `  -H 'Accept: application/json' \\\n` +
           `  -H 'Origin: ${base.replace(/\/[^/]*$/, "")}' \\\n` +
           `  -H 'Referer: ${base.replace(/\/[^/]*$/, "")}/' \\\n` +
           `  -H 'Authorization: Basic ${basicB64}' \\\n` +
-          `  -H 'Content-Type: application/json' \\\n` +
-          `  --data-raw '{"page":1,"limit":100}'`;
+          `  -H 'Sec-Fetch-Dest: empty' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Site: same-origin'\n` +
+          `\n# Test 2: AirOn360 Assets lijst (GET /v3/assets) — fallback endpoint\n` +
+          `curl -sS -X GET '${base}/v3/assets?page=1&limit=100' \\\n` +
+          `  -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36' \\\n` +
+          `  -H 'Accept: application/json' \\\n` +
+          `  -H 'Origin: ${base.replace(/\/[^/]*$/, "")}' \\\n` +
+          `  -H 'Referer: ${base.replace(/\/[^/]*$/, "")}/' \\\n` +
+          `  -H 'Authorization: Basic ${basicB64}' \\\n` +
+          `  -H 'Sec-Fetch-Dest: empty' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Site: same-origin'`;
         const serverCurl =
           `# STAP 2 (NEXUS SERVER): log IN op de server waar Nexus draait, en voer daar HETZELFDE commando uit:\n` +
           `# (Als dit "405 MethodNotAllowed" geeft, en STAP 1 gaf WEL 200/401/400 → IP WHITELISTING = de oorzaak)\n\n` +
@@ -378,22 +386,27 @@ export async function syncSimhuisSimsAction(): Promise<SimSyncActionResult> {
         const emailTmpl =
           `Onderwerp: Whitelist verzoek API SIM-voorraad sync - [JOUW BEDRIJF]\n` +
           `\nGeachte heer/mevrouw Simhuis Support,\n\n` +
-          `Wij gebruiken jullie Control Center API (endpoint ${base}) voor het automatisch synchroniseren van onze SIM-voorraad vanuit ons Nexus-platform.\n\n` +
-          `Probleem: API calls vanaf onze Nexus-server krijgen consequent "HTTP 405 Allow: OPTIONS" (method not allowed) op alle endpoints. Dezelfde calls VANAF ONZE WERKPLEK (met Postman / curl naar hetzelfde endpoint, met dezelfde credentials) werken WEL en geven een app-level response (bv. 401 InvalidCredentials of 200 met data).\n\n` +
-          `Dit wijst erop dat jullie WAF / firewall ons SERVER-IP blokkeert.\n\n` +
-          `Verzoek: Whitelist het volgende PUBLIC IP-adres van onze Nexus-server (zowel inbound als outbound, poorten 80/443):\n` +
+          `Wij gebruiken jullie AirOn360 IoT Suite API v3.6 (base URL ${base}) voor het automatisch synchroniseren van onze SIM-voorraad / assets vanuit ons Nexus-platform.\n\n` +
+          `Gebruikte endpoints (allemaal GET op het AirOn360 platform):\n` +
+          `  - ${base}/v3/esims (eSIMS inventory)\n` +
+          `  - ${base}/v3/assets (Assets / SIM-kaarten inventory)\n` +
+          `  - ${base}/v3/assets/{iccid}/subscribe (SIM-activatie)\n\n` +
+          `Probleem: API calls vanaf onze Nexus-server krijgen consequent "HTTP 405 Allow: OPTIONS" (method not allowed) op bovenstaande endpoints. Dezelfde calls VANAF ONZE WERKPLEK (met Postman / curl naar dezelfde endpoints, met dezelfde credentials) werken WEL en geven een app-level response (bv. 401 InvalidCredentials of 200 met JSON data).\n\n` +
+          `Dit wijst erop dat jullie WAF (Web Application Firewall) / firewall / Citrix Netscaler ons SERVER-IP blokkeert.\n\n` +
+          `Verzoek: Whitelist het volgende PUBLIC IP-adres van onze Nexus-server (zowel inbound als outbound, poorten 80 en 443 TCP):\n` +
           `  [Plak hier de uitvoer van: curl -sS ifconfig.me  - uitgevoerd OP DE NEXUS SERVER]\n\n` +
           `Onze credentials / account naam: ${username}\n` +
-          `Base URL: ${base}\n\n` +
+          `Base URL: ${base}\n` +
+          `AirOn360 Swagger (indien nodig): ${base}/v3/docs/swagger/index.html\n\n` +
           `Alvast bedankt!\n\n` +
           `Met vriendelijke groet,\n` +
           `[JOUW NAAM] • [JOUW FUNCTIE] • [JOUW BEDRIJF]`;
         debugContext = {
           wafBlocked: true,
           wafSteps: [
-            "STAP 1: Kopieer het curl-commando (STAP 1) en voer het UIT OP JE EIGEN COMPUTER (lokaal). Noteer of je een 200/401/400-body terugkrijgt.",
-            "STAP 2: Log IN op de server waar Nexus draait, en voer HETZELFDE curl-commando DAAR UIT. Je PUBLIC IP van die server staat ook in STAP 2.",
-            "STAP 3: Als STAP 1 WEL werkt en STAP 2 geeft 405 Allow: OPTIONS → e-mail Simhuis Support met de template om dit IP te whitelisten.",
+            "STAP 1: Kopieer de 2 curl-commando's (Test 1 + Test 2) en voer ze UIT OP JE EIGEN COMPUTER (lokaal). Noteer of je een 200/401/400-body terugkrijgt (JSON met SIMs/assets of Unauthorized is OK = endpoint werkt).",
+            "STAP 2: Log IN op de server waar Nexus draait, en voer HETZELFDE 2 curl-commando DAAR UIT. Bepaal ook eerst je PUBLIC IP met het curl ifconfig.me commando (ook in STAP 2 te vinden).",
+            "STAP 3: Als STAP 1 WEL werkt (200/401/400) en STAP 2 geeft 405 Allow: OPTIONS → e-mail Simhuis Support met de onderstaande template om jouw Nexus-server IP te whitelisten.",
           ],
           wafCurlTest: curlCmd,
           wafCurlOnNexusServer: serverCurl,
