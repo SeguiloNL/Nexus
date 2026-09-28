@@ -66,6 +66,7 @@ const PER_SIM_WAF_HEADERS: Record<string, string> = {
 
 type PerSimAuth =
   | { tag: 'basic-header'; header: string }
+  | { tag: 'bearer-token'; token: string }
   | { tag: 'creds-body'; username: string; password: string; resellerId?: string | null }
   | { tag: 'creds-query'; username: string; password: string; resellerId?: string | null }
   | { tag: 'x-custom-headers'; username: string; password: string; resellerId?: string | null };
@@ -113,12 +114,16 @@ async function getSimhuisCreds(): Promise<{
 }
 
 function getSimhuisPathPrefixes(baseEndpointsSims: string): string[] {
-  const prefixes = new Set<string>(['']);
-  prefixes.add('/api');
-  prefixes.add('/api/v1');
-  prefixes.add('/api/v2');
-  prefixes.add('/v1');
+  const prefixes = new Set<string>();
+  // === AirOn360 (Simhuis backend) standaard base path: /v3 ===
+  prefixes.add('/v3');
+  prefixes.add('');
   prefixes.add('/v2');
+  prefixes.add('/api');
+  prefixes.add('/api/v3');
+  prefixes.add('/api/v2');
+  prefixes.add('/api/v1');
+  prefixes.add('/v1');
   prefixes.add('/sim-api');
   prefixes.add('/ccapi');
   prefixes.add('/control');
@@ -152,6 +157,68 @@ function attemptRankScore(statusCode: number, error: string | null): number {
   return 500;
 }
 
+let _bearerTokenCache: { token: string; expiresAt: number; baseUrl: string } | null = null;
+async function acquireBearerToken(creds: { baseUrl: string; username: string; password: string }): Promise<string | null> {
+  const now = Date.now();
+  if (_bearerTokenCache && _bearerTokenCache.baseUrl === creds.baseUrl && _bearerTokenCache.expiresAt > now + 30_000) {
+    return _bearerTokenCache.token;
+  }
+  // Probeer alle gangbare auth-token endpoint paden, met zowel JSON als form body
+  const tokenEndpointVariants: Array<{ path: string; body: Record<string, any>; ctype: 'json' | 'form'; auth: 'none' | 'basic' }> = [
+    { path: '/v3/auth/token', body: { username: creds.username, password: creds.password }, ctype: 'json', auth: 'basic' },
+    { path: '/v3/auth/token', body: { username: creds.username, password: creds.password, grant_type: 'password' }, ctype: 'form', auth: 'basic' },
+    { path: '/v3/auth/token', body: { username: creds.username, password: creds.password }, ctype: 'json', auth: 'none' },
+    { path: '/auth/token', body: { username: creds.username, password: creds.password }, ctype: 'json', auth: 'basic' },
+    { path: '/auth/token', body: { username: creds.username, password: creds.password, grant_type: 'password' }, ctype: 'form', auth: 'basic' },
+    { path: '/v3/auth/login', body: { username: creds.username, password: creds.password }, ctype: 'json', auth: 'basic' },
+    { path: '/auth/login', body: { username: creds.username, password: creds.password }, ctype: 'json', auth: 'basic' },
+  ];
+  const basic = basicAuthHeader(creds.username, creds.password);
+  for (const v of tokenEndpointVariants) {
+    const full = makePerSimFullUrl(creds.baseUrl, v.path, null);
+    try {
+      const headers: Record<string, string> = { ...PER_SIM_WAF_HEADERS };
+      if (v.auth === 'basic') headers.Authorization = basic;
+      let bi: BodyInit | undefined;
+      if (v.ctype === 'json') {
+        headers['Content-Type'] = 'application/json';
+        bi = JSON.stringify(v.body);
+      } else {
+        headers['Content-Type'] = 'application/x-www-form-urlencoded;charset=UTF-8';
+        const sp = new URLSearchParams();
+        for (const [k, val] of Object.entries(v.body)) if (val !== undefined && val !== null) sp.append(k, String(val));
+        bi = sp.toString();
+      }
+      const resp = await fetch(full, { method: 'POST', headers, body: bi, signal: (AbortSignal as any).timeout ? (AbortSignal as any).timeout(10_000) : undefined });
+      if (resp.ok) {
+        const ct = resp.headers.get('content-type') ?? '';
+        const txt = await resp.text();
+        const parsed = parseFetchResponse(txt, ct);
+        let token: string | null = null;
+        if (parsed && typeof parsed === 'object') {
+          const p = parsed as Record<string, any>;
+          token = String(p.access_token || p.accessToken || p.token || p.jwt || p.authToken || p.bearer || '');
+          if (!token && p.data && typeof p.data === 'object') token = String(p.data.access_token || p.data.accessToken || p.data.token || '');
+          if (!token) token = null;
+        }
+        if (token) {
+          let expiresIn = 3600;
+          if (parsed && typeof parsed === 'object') {
+            const p = parsed as Record<string, any>;
+            const ei = Number(p.expires_in || p.expiresIn || p.exp || 0);
+            if (Number.isFinite(ei) && ei > 0) expiresIn = ei;
+          }
+          _bearerTokenCache = { token, expiresAt: Date.now() + expiresIn * 1000, baseUrl: creds.baseUrl };
+          return token;
+        }
+      }
+    } catch {
+      // negeer
+    }
+  }
+  return null;
+}
+
 function makePerSimFullUrl(baseUrl: string, path: string, query: Record<string, any> | null): string {
   const cleanBase = baseUrl.replace(/\/+$/, '');
   const cleanPath = path.startsWith('/') ? path.slice(1) : path;
@@ -181,6 +248,8 @@ async function doPerSimFetch(args: {
   const headers: Record<string, string> = { ...PER_SIM_WAF_HEADERS };
   if (args.auth.tag === 'basic-header') {
     headers.Authorization = args.auth.header;
+  } else if (args.auth.tag === 'bearer-token') {
+    headers.Authorization = `Bearer ${args.auth.token}`;
   } else if (args.auth.tag === 'x-custom-headers') {
     headers['X-API-Username'] = args.auth.username;
     headers['X-API-Password'] = args.auth.password;
@@ -248,59 +317,66 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
   const creds = await getSimhuisCreds();
   const authBasic = basicAuthHeader(creds.username, creds.password);
 
-  const authVariantsFirst: PerSimAuth[] = [
-    { tag: 'basic-header', header: authBasic },
-    { tag: 'creds-body', username: creds.username, password: creds.password, resellerId: creds.resellerId },
-  ];
-  const authVariantsThen: PerSimAuth[] = [
-    { tag: 'creds-query', username: creds.username, password: creds.password, resellerId: creds.resellerId },
-    { tag: 'x-custom-headers', username: creds.username, password: creds.password, resellerId: creds.resellerId },
-  ];
+  const bearerToken = await acquireBearerToken(creds);
+
+  const authVariants: PerSimAuth[] = [];
+  if (bearerToken) authVariants.push({ tag: 'bearer-token', token: bearerToken });
+  authVariants.push({ tag: 'basic-header', header: authBasic });
+  authVariants.push({ tag: 'creds-body', username: creds.username, password: creds.password, resellerId: creds.resellerId });
+  authVariants.push({ tag: 'creds-query', username: creds.username, password: creds.password, resellerId: creds.resellerId });
+  authVariants.push({ tag: 'x-custom-headers', username: creds.username, password: creds.password, resellerId: creds.resellerId });
 
   const rankedAttempts: RankedAttempt[] = [];
   let lastErrorResult: PerSimAttemptResult | null = null;
 
-  const prefixes = getSimhuisPathPrefixes(creds.endpoints.sims).slice(0, 4);
+  const prefixes = getSimhuisPathPrefixes(creds.endpoints.sims).slice(0, 6);
 
-  type Template = { method: 'GET' | 'POST'; pathTpl: string; query?: Record<string, any>; body?: Record<string, any> };
+  type Template = { method: 'GET' | 'POST' | 'PUT' | 'PATCH'; pathTpl: string; query?: Record<string, any>; body?: Record<string, any>; multiBody?: Array<Record<string, any>> };
   const templates: Template[] = [
-    // Hoogste prioriteit: details/status/info sub-endpoints (deze zijn meestal expliciet GET/POST bedoeld)
-    { method: 'POST', pathTpl: '/sims/{iccid}/details', body: { iccid } },
-    { method: 'POST', pathTpl: '/sims/{iccid}/info', body: { iccid } },
-    { method: 'POST', pathTpl: '/sims/{iccid}/status', body: { iccid } },
-    { method: 'POST', pathTpl: '/sim/{iccid}/details', body: { iccid } },
-    { method: 'POST', pathTpl: '/sim/{iccid}/status', body: { iccid } },
-    { method: 'GET', pathTpl: '/sims/{iccid}/details' },
-    { method: 'GET', pathTpl: '/sims/{iccid}/info' },
-    { method: 'GET', pathTpl: '/sims/{iccid}/status' },
-    // Daarna de "search" endpoints (altijd POST)
-    { method: 'POST', pathTpl: '/sims/search', body: { iccid } },
-    { method: 'POST', pathTpl: '/sims/filter', body: { iccid } },
-    { method: 'POST', pathTpl: '/sims/list', body: { iccid } },
-    { method: 'POST', pathTpl: '/sim/status', body: { iccid } },
-    { method: 'POST', pathTpl: '/sims/find', body: { iccid } },
-    { method: 'POST', pathTpl: '/sims/query', body: { iccid } },
-    { method: 'POST', pathTpl: '/sims', body: { iccid } },
-    { method: 'POST', pathTpl: '/subscriptions/{iccid}', body: { iccid } },
-    { method: 'POST', pathTpl: '/simcards/{iccid}', body: { iccid } },
-    // Als laatste: de simpele /sims/{iccid} (GET/POST/PUT/PATCH door 405 fallback)
-    { method: 'POST', pathTpl: '/sims/{iccid}', body: { iccid } },
-    { method: 'POST', pathTpl: '/sim/{iccid}', body: { iccid } },
+    // === PRIORITEIT 1: AirOn360 /assets/{iccid} (echte endpoints uit Swagger!) ===
+    { method: 'GET', pathTpl: '/assets/{iccid}' },                             // Assets get Info (exact!)
+    { method: 'GET', pathTpl: '/assets/{iccid}/diagnostic' },                  // Get simcard information (exact!)
+    { method: 'GET', pathTpl: '/assets/{iccid}/sessions' },                    // asset sessions
+    { method: 'GET', pathTpl: '/assets/{iccid}/location' },                    // location
+    { method: 'GET', pathTpl: '/assets/diagnostic', query: { iccid } },        // /assets/diagnostic met iccid query
+
+    // === PRIORITEIT 2: AirOn360 /esims endpoints (via ICCID-query of via EID) ===
+    { method: 'GET', pathTpl: '/esims', query: { iccid } },
+    { method: 'GET', pathTpl: '/esims', query: { filter: { iccid } } },
+    { method: 'GET', pathTpl: '/esims', query: { search: iccid } },
+    { method: 'POST', pathTpl: '/esimsbulk', multiBody: [{ iccid }, { filter: { iccid } }, { query: { iccid } }, { filters: { iccid } }, { include: iccid }] },
+
+    // === PRIORITEIT 3: ICCID via list-query endpoints ===
+    { method: 'GET', pathTpl: '/assets', query: { iccid } },
+    { method: 'GET', pathTpl: '/assets', query: { filter: iccid } },
+    { method: 'GET', pathTpl: '/assets', query: { search: iccid } },
+    { method: 'GET', pathTpl: '/assets', query: { iccid, expand: 'true' } },
+    { method: 'GET', pathTpl: '/imsis', query: { iccid } },
+
+    // === PRIORITEIT 4: /iot/device & /ulb/device endpoints (subscribers/trackers, per IMEI of per {id}) ===
+    { method: 'GET', pathTpl: '/iot/device', query: { iccid } },
+    { method: 'GET', pathTpl: '/ulb/device', query: { iccid } },
+
+    // === PRIORITEIT 5: Legacy /sims/... fallback ===
     { method: 'GET', pathTpl: '/sims/{iccid}' },
     { method: 'GET', pathTpl: '/sim/{iccid}' },
-    { method: 'GET', pathTpl: '/sims', query: { iccid } },
     { method: 'GET', pathTpl: '/simcards/{iccid}' },
+    { method: 'GET', pathTpl: '/subscriptions/{iccid}' },
     { method: 'GET', pathTpl: '/iccids/{iccid}' },
     { method: 'GET', pathTpl: '/inventory/sims/{iccid}' },
-    { method: 'GET', pathTpl: '/subscriptions/{iccid}' },
+
+    { method: 'POST', pathTpl: '/assets', multiBody: [{ iccid }, { filter: { iccid } }, { query: { iccid } }, { filters: { iccid } }] },
+    { method: 'POST', pathTpl: '/assets/search', multiBody: [{ iccid }, { filter: { iccid } }, { query: { iccid } }] },
+    { method: 'POST', pathTpl: '/sims', multiBody: [{ iccid }, { filter: { iccid } }, { query: { iccid } }, { filters: { iccid } }] },
+    { method: 'POST', pathTpl: '/sims/search', multiBody: [{ iccid }, { filter: { iccid } }, { query: { iccid } }] },
+    { method: 'POST', pathTpl: '/sims/filter', multiBody: [{ iccid }, { filter: { iccid } }, { filters: { iccid } }] },
+    { method: 'POST', pathTpl: '/sims/list', multiBody: [{ iccid }] },
+    { method: 'POST', pathTpl: '/sims/query', multiBody: [{ iccid }, { query: { iccid } }] },
+    { method: 'POST', pathTpl: '/sim/status', multiBody: [{ iccid }] },
+    { method: 'POST', pathTpl: '/sims/lookup', multiBody: [{ iccid }] },
+    { method: 'POST', pathTpl: '/sims/get', multiBody: [{ iccid }] },
   ];
 
-  function alternativeMethodFor405(method: 'GET' | 'POST' | 'PUT' | 'PATCH'): 'GET' | 'POST' | 'PUT' | 'PATCH' {
-    if (method === 'GET') return 'POST';
-    if (method === 'POST') return 'PUT';
-    if (method === 'PUT') return 'PATCH';
-    return 'GET';
-  }
   const METHOD_CYCLE: Array<'GET' | 'POST' | 'PUT' | 'PATCH'> = ['GET', 'POST', 'PUT', 'PATCH'];
   function allMethodsAfter(start: 'GET' | 'POST' | 'PUT' | 'PATCH'): Array<'GET' | 'POST' | 'PUT' | 'PATCH'> {
     const idx = METHOD_CYCLE.indexOf(start);
@@ -312,97 +388,95 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
   function pushRanked(meta: PerSimAttemptMeta, result: PerSimAttemptResult) {
     if (result.tag === 'ok') return;
     const score = attemptRankScore(result.statusCode, result.error ?? null);
-    rankedAttempts.push({
-      meta,
-      statusCode: result.statusCode,
-      error: result.error ?? null,
-      score,
-    });
+    rankedAttempts.push({ meta, statusCode: result.statusCode, error: result.error ?? null, score });
   }
-
   function topRanked(n: number): RankedAttempt[] {
     return [...rankedAttempts].sort((a, b) => b.score - a.score).slice(0, n);
   }
 
-  const allAuthVariants = [...authVariantsFirst, ...authVariantsThen];
-
-  // Eerst LEEGE prefix (geen /api/v1), omdat /sims/{iccid} zonder prefix al 405 gaf = endpoint bestaat!
+  // EERST /v3 prefix, want dat is AirOn360 standaard
   const orderedPrefixes = [...prefixes].sort((a, b) => {
-    const aEmpty = a === '' ? 0 : 1;
-    const bEmpty = b === '' ? 0 : 1;
-    return aEmpty - bEmpty;
+    const score = (p: string) => {
+      if (p === '/v3') return 0;
+      if (p === '') return 1;
+      if (p.startsWith('/v3/')) return 2;
+      if (p.startsWith('/api/v3')) return 3;
+      if (p === '/v2') return 4;
+      if (p.startsWith('/api/v2')) return 5;
+      if (p.startsWith('/v1')) return 6;
+      if (p.startsWith('/api')) return 7;
+      return 9;
+    };
+    return score(a) - score(b);
   });
 
   for (const prefix of orderedPrefixes) {
     for (const tpl of templates) {
-      for (const auth of allAuthVariants) {
-        const contentTypes = tpl.method === 'GET'
-          ? (['none'] as const)
-          : (['json', 'form'] as const);
+      const bodyVariants: Array<Record<string, any> | null> = [];
+      if (tpl.method === 'GET') {
+        bodyVariants.push(null);
+      } else if (tpl.multiBody && tpl.multiBody.length > 0) {
+        for (const mb of tpl.multiBody) bodyVariants.push(mb);
+      } else {
+        bodyVariants.push(tpl.body ?? {});
+      }
 
-        for (const contentType of contentTypes) {
-          if (tpl.method === 'GET' && auth.tag === 'creds-body') continue;
+      for (const bodyVariant of bodyVariants) {
+        for (const auth of authVariants) {
+          const contentTypes = tpl.method === 'GET'
+            ? (['none'] as const)
+            : (['json', 'form'] as const);
 
-          const endpointPath = `${prefix}${tpl.pathTpl}`.replace('{iccid}', encodeURIComponent(iccid));
-          const fullUrl = makePerSimFullUrl(
-            creds.baseUrl,
-            endpointPath,
-            tpl.method === 'GET' ? (tpl.query ?? {}) : null,
-          );
-          const body = tpl.method === 'POST' ? (tpl.body ?? {}) : null;
-          const meta: PerSimAttemptMeta = {
-            endpointPath,
-            method: tpl.method,
-            authTag: toAuthTag(auth),
-            contentType,
-          };
+          for (const contentType of contentTypes) {
+            if (tpl.method === 'GET' && (auth.tag === 'creds-body')) continue;
 
-          const result = await doPerSimFetch({
-            fullUrl,
-            method: tpl.method,
-            contentType: contentType as any,
-            body,
-            auth,
-            timeoutMs: 15_000,
-          });
+            const endpointPath = `${prefix}${tpl.pathTpl}`.replace('{iccid}', encodeURIComponent(iccid));
+            const query = tpl.method === 'GET' ? (tpl.query ?? {}) : null;
+            const fullUrl = makePerSimFullUrl(creds.baseUrl, endpointPath, query);
+            const body = (tpl.method === 'POST' || tpl.method === 'PUT' || tpl.method === 'PATCH') ? (bodyVariant ?? {}) : null;
+            const meta: PerSimAttemptMeta = { endpointPath, method: tpl.method, authTag: toAuthTag(auth), contentType };
 
-          if (result.tag === 'ok') {
-            const status = toSimStatus(result.body, iccid);
-            return status;
-          }
+            const result = await doPerSimFetch({
+              fullUrl,
+              method: tpl.method,
+              contentType: contentType as any,
+              body,
+              auth,
+              timeoutMs: 15_000,
+            });
 
-          pushRanked(meta, result);
-          if (result.tag === 'error') lastErrorResult = result;
+            if (result.tag === 'ok') {
+              const status = toSimStatus(result.body, iccid);
+              if (status) return status;
+            }
 
-          // === MAGIE: 405 MethodNotAllowed → probeer ALLE andere HTTP-methodes op dezelfde URL! ===
-          if (result.statusCode === 405) {
-            const remaining = allMethodsAfter(tpl.method);
-            for (const altMethod of remaining) {
-              if (altMethod === 'GET' && auth.tag === 'creds-body') continue;
-              const altContentType: 'json' | 'form' | 'none' = altMethod === 'GET' ? 'none' : 'json';
-              const altQuery = altMethod === 'GET' ? { iccid, ...(tpl.query ?? {}) } : null;
-              const altBody = altMethod === 'GET' ? null : { iccid, ...(tpl.body ?? {}) };
-              const altFullUrl = makePerSimFullUrl(creds.baseUrl, endpointPath, altQuery);
-              const altMeta: PerSimAttemptMeta = {
-                endpointPath,
-                method: altMethod,
-                authTag: toAuthTag(auth),
-                contentType: altContentType,
-              };
-              const altResult = await doPerSimFetch({
-                fullUrl: altFullUrl,
-                method: altMethod,
-                contentType: altContentType,
-                body: altBody,
-                auth,
-                timeoutMs: 15_000,
-              });
-              if (altResult.tag === 'ok') {
-                const status = toSimStatus(altResult.body, iccid);
-                return status;
+            pushRanked(meta, result);
+            if (result.tag === 'error') lastErrorResult = result;
+
+            if (result.statusCode === 405) {
+              const remaining = allMethodsAfter(tpl.method);
+              for (const altMethod of remaining) {
+                if (altMethod === 'GET' && auth.tag === 'creds-body') continue;
+                const altContentType: 'json' | 'form' | 'none' = altMethod === 'GET' ? 'none' : 'json';
+                const altQuery = altMethod === 'GET' ? { iccid, ...(tpl.query ?? {}) } : null;
+                const altBody = altMethod === 'GET' ? null : { ...(bodyVariant ?? {}), iccid };
+                const altFullUrl = makePerSimFullUrl(creds.baseUrl, endpointPath, altQuery);
+                const altMeta: PerSimAttemptMeta = { endpointPath, method: altMethod, authTag: toAuthTag(auth), contentType: altContentType };
+                const altResult = await doPerSimFetch({
+                  fullUrl: altFullUrl,
+                  method: altMethod,
+                  contentType: altContentType,
+                  body: altBody,
+                  auth,
+                  timeoutMs: 15_000,
+                });
+                if (altResult.tag === 'ok') {
+                  const status = toSimStatus(altResult.body, iccid);
+                  if (status) return status;
+                }
+                pushRanked(altMeta, altResult);
+                if (altResult.tag === 'error') lastErrorResult = altResult;
               }
-              pushRanked(altMeta, altResult);
-              if (altResult.tag === 'error') lastErrorResult = altResult;
             }
           }
         }
@@ -410,36 +484,77 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
     }
   }
 
-  // === Laatste redmiddel: probeer listSims met een ICCID-filter! ===
-  // We weten dat listSims Discovery een werkend POST endpoint heeft (listSims heeft al gebruikt), dus dat werkt)
+  // === Laatste redmiddel: listSims EN GET /v3/esims meerdere keren! ===
+  const listAttempts: Array<{ label: string; items: any[] | null; iccidFound: boolean }> = [];
   try {
-    const listResult = await listSims({ status: undefined, page: 1, limit: 5 });
-    if (listResult && Array.isArray(listResult.items)) {
-      const match = listResult.items.find((s: SimhuisSimStatus) => s.iccid === iccid);
-      if (match) return match;
+    // 1. Eerst GET /v3/esims met iccid-query (rechtstreeks per prefix!)
+    for (const prefix of orderedPrefixes.slice(0, 3)) {
+      for (const auth of authVariants.slice(0, 3)) {
+        for (const q of [
+          { iccid },
+          { filter: iccid },
+          { search: iccid },
+          { query: iccid },
+          { 'filter[iccid]': iccid },
+          { 'iccid[]': iccid },
+          { page: 1, limit: 500, iccid } as any,
+        ]) {
+          try {
+            const fullUrl = makePerSimFullUrl(creds.baseUrl, `${prefix}/esims`, q);
+            const result = await doPerSimFetch({ fullUrl, method: 'GET', contentType: 'none', body: null, auth, timeoutMs: 20_000 });
+            if (result.tag === 'ok') {
+              const items: any[] = Array.isArray(result.body)
+                ? result.body
+                : ((result.body && typeof result.body === 'object' && Array.isArray((result.body as any).items)) ? (result.body as any).items : []);
+              const found = items.some((s: any) => String(s.iccid ?? '').trim() === iccid);
+              listAttempts.push({ label: `${prefix}/esims?${Object.keys(q)[0]} auth=${toAuthTag(auth)} (items=${items.length})`, items, iccidFound: found });
+              if (found) {
+                const match = items.find((s: any) => String(s.iccid ?? '').trim() === iccid);
+                if (match) return toSimStatus(match, iccid);
+              }
+            } else {
+              listAttempts.push({ label: `${prefix}/esims auth=${toAuthTag(auth)} HTTP ${result.statusCode}`, items: null, iccidFound: false });
+            }
+          } catch { /* negeer */ }
+        }
+      }
     }
-  } catch {
-    // negeer; we geven de echte pogingen
-  }
+  } catch { /* negeer */ }
 
-  // Probeer ten slotte nog een POST /sims (als list endpoint met filter in eenmalig 100 items om de sim te vinden
   try {
-    const bigList = await listSims({ status: undefined, page: 1, limit: 100 });
-    if (bigList && Array.isArray(bigList.items)) {
-      const match = bigList.items.find((s: SimhuisSimStatus) => s.iccid === iccid);
-      if (match) return match;
+    const statusVariants: Array<(string | undefined | null)> = [
+      undefined, null, 'active', 'inactive', 'available', 'ready', 'enabled', 'suspended', 'paused',
+    ];
+    for (const sv of statusVariants) {
+      try {
+        const opts: any = { page: 1, limit: 500 };
+        if (sv !== undefined) (opts as any).status = sv === null ? null : sv;
+        const lr = await listSims(opts);
+        const items: any[] = (lr && Array.isArray((lr as any).items)) ? (lr as any).items : [];
+        const found = items.some((s: any) => String(s.iccid ?? '').trim() === iccid);
+        listAttempts.push({
+          label: `listSims status=${sv === undefined ? 'unset' : (sv === null ? 'null' : sv)} (items=${items.length})`,
+          items,
+          iccidFound: found,
+        });
+        if (found) {
+          const match = items.find((s: any) => String(s.iccid ?? '').trim() === iccid);
+          if (match) return toSimStatus(match, iccid);
+        }
+      } catch { /* negeer */ }
     }
-  } catch {
-    // negeer
-  }
+  } catch { /* negeer */ }
 
-  const top = topRanked(3);
+  const top = topRanked(5);
   const topStr = top.length
     ? top.map(
         (t) =>
-          `  - [${t.score}pt] HTTP ${t.statusCode} | ${t.meta.method} ${t.meta.endpointPath} | auth=${t.meta.authTag} | ctype=${t.meta.contentType}${t.error ? ` → ${t.error.slice(0, 180)}` : ''}`,
+          `  - [${t.score}pt] HTTP ${t.statusCode} | ${t.meta.method} ${t.meta.endpointPath} | auth=${t.meta.authTag} | ctype=${t.meta.contentType}${t.error ? ` → ${t.error.slice(0, 220)}` : ''}`,
       ).join('\n')
     : '  (geen pogingen geregistreerd)';
+  const listDebugStr = listAttempts.length
+    ? '\n\nListSims / eSIMS query resultaten:\n' + listAttempts.map((la) => `  - ${la.label} → iccidFound=${la.iccidFound}`).join('\n')
+    : '';
 
   if (lastErrorResult) {
     const raw = lastErrorResult.raw ?? (top[0] ? undefined : undefined);
@@ -448,12 +563,11 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
       statusCode,
       raw ?? null,
       creds.baseUrl,
-      `[Simhuis] getSimStatus mislukt voor ICCID ${iccid}. Server-side fout: ${lastErrorResult.error}\n\nTop-3 meest veelbelovende pogingen:\n${topStr}`,
+      `[Simhuis] getSimStatus mislukt voor ICCID ${iccid}. Server-side fout: ${lastErrorResult.error}\n\nTop-5 meest veelbelovende pogingen:\n${topStr}${listDebugStr}`,
     );
   }
-
   throw new Error(
-    `[Simhuis] getSimStatus mislukt voor ICCID ${iccid}. Alle endpoints gaven 404/405/400/401/403; onvoldoende match.\n\nTop-3 meest veelbelovende pogingen:\n${topStr}`,
+    `[Simhuis] getSimStatus mislukt voor ICCID ${iccid}. Alle endpoints gaven 404/405/400/401/403; onvoldoende match.\n\nTop-5 meest veelbelovende pogingen:\n${topStr}${listDebugStr}`,
   );
 }
 
@@ -475,6 +589,15 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
     { tag: 'creds-query', username: creds.username, password: creds.password, resellerId: creds.resellerId },
     { tag: 'x-custom-headers', username: creds.username, password: creds.password, resellerId: creds.resellerId },
   ];
+  let bearerToken: string | null = null;
+  try {
+    bearerToken = await acquireBearerToken(creds);
+  } catch {
+    bearerToken = null;
+  }
+  if (bearerToken) {
+    allAuthVariants.unshift({ tag: 'bearer-token', token: bearerToken });
+  }
 
   const rankedAttempts: RankedAttempt[] = [];
   let lastErrorResult: PerSimAttemptResult | null = null;
@@ -486,6 +609,15 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
 
   type Template = { method: 'POST' | 'PUT' | 'PATCH'; pathTpl: string; body: Record<string, unknown> };
   const templates: Template[] = [
+    { method: 'PUT', pathTpl: '/assets/{iccid}/subscribe', body: { ...bodyBase, iccid: undefined } },
+    { method: 'PUT', pathTpl: '/assets/{iccid}/subscribe', body: { ...bodyBase } },
+    { method: 'PUT', pathTpl: '/assets/{iccid}/resubscribe', body: { ...bodyBase, iccid: undefined } },
+    { method: 'PUT', pathTpl: '/assets/{iccid}/unsuspend', body: { ...bodyBase, iccid: undefined } },
+    { method: 'PUT', pathTpl: '/esims/{iccid}/subscribe', body: { ...bodyBase, iccid: undefined } },
+    { method: 'PUT', pathTpl: '/esims/{iccid}/subscribe', body: { ...bodyBase } },
+    { method: 'POST', pathTpl: '/bulk/esims/subscribe', body: { iccids: [iccid], offer_id: options.offerId, plan_id: options.planId, customer_ref: options.customerRef, reseller_id: resellerId } },
+    { method: 'PUT', pathTpl: '/iot/device/{iccid}/subscribe', body: { ...bodyBase, iccid: undefined } },
+    { method: 'PUT', pathTpl: '/ulb/device/{iccid}/subscribe', body: { ...bodyBase, iccid: undefined } },
     { method: 'POST', pathTpl: '/sims/{iccid}/activate', body: { ...bodyBase, iccid: undefined } },
     { method: 'POST', pathTpl: '/sims/activate', body: { ...bodyBase } },
     { method: 'POST', pathTpl: '/sim/{iccid}/activate', body: { ...bodyBase, iccid: undefined } },
@@ -506,11 +638,6 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
   function topRanked(n: number): RankedAttempt[] {
     return [...rankedAttempts].sort((a, b) => b.score - a.score).slice(0, n);
   }
-  function altMethodFor405(method: 'POST' | 'PUT' | 'PATCH'): 'POST' | 'PUT' | 'PATCH' {
-    if (method === 'POST') return 'PUT';
-    if (method === 'PUT') return 'PATCH';
-    return 'POST';
-  }
   const ACTIVATE_METHODS: Array<'POST' | 'PUT' | 'PATCH'> = ['POST', 'PUT', 'PATCH'];
   function allActivateMethodsAfter(start: 'POST' | 'PUT' | 'PATCH'): Array<'POST' | 'PUT' | 'PATCH'> {
     const idx = ACTIVATE_METHODS.indexOf(start);
@@ -519,11 +646,10 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
     return rest;
   }
 
-  // Eerst LEEGE prefix (geen /api/v1), omdat /sims/{iccid} zonder prefix al 405 gaf = endpoint bestaat!
   const orderedPrefixes = [...prefixes].sort((a, b) => {
-    const aEmpty = a === '' ? 0 : 1;
-    const bEmpty = b === '' ? 0 : 1;
-    return aEmpty - bEmpty;
+    const aScore = a === '/v3' ? 0 : a === '' ? 1 : a === '/v2' ? 2 : a === '/api/v3' ? 3 : a === '/api/v2' ? 4 : 5;
+    const bScore = b === '/v3' ? 0 : b === '' ? 1 : b === '/v2' ? 2 : b === '/api/v3' ? 3 : b === '/api/v2' ? 4 : 5;
+    return aScore - bScore;
   });
 
   for (const prefix of orderedPrefixes) {
@@ -531,7 +657,7 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
       for (const auth of allAuthVariants) {
         const contentTypes: Array<'json' | 'form'> = ['json', 'form'];
         for (const contentType of contentTypes) {
-          const endpointPath = `${prefix}${tpl.pathTpl}`.replace('{iccid}', encodeURIComponent(iccid));
+          const endpointPath = `${prefix}${tpl.pathTpl}`.replaceAll('{iccid}', encodeURIComponent(iccid));
           const fullUrl = makePerSimFullUrl(creds.baseUrl, endpointPath, null);
           const meta: PerSimAttemptMeta = { endpointPath, method: tpl.method, authTag: toAuthTag(auth), contentType };
           const result = await doPerSimFetch({
@@ -540,7 +666,7 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
             contentType,
             body: tpl.body,
             auth,
-            timeoutMs: 25_000,
+            timeoutMs: 30_000,
           });
           if (result.tag === 'ok') {
             successFound = true;
@@ -552,7 +678,6 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
             if (result.tag === 'error') lastErrorResult = result;
           }
 
-          // 405 → probeer ALLE resterende methodes (POST/PUT/PATCH) op dezelfde URL!
           if (result.statusCode === 405) {
             const remaining = allActivateMethodsAfter(tpl.method);
             for (const altMethod of remaining) {
@@ -563,7 +688,7 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
                 contentType,
                 body: { ...tpl.body },
                 auth,
-                timeoutMs: 25_000,
+                timeoutMs: 30_000,
               });
               if (altResult.tag === 'ok') {
                 successFound = true;
@@ -581,11 +706,11 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
     }
   }
 
-  const top = topRanked(3);
+  const top = topRanked(5);
   const topStr = top.length
     ? top.map(
         (t) =>
-          `  - [${t.score}pt] HTTP ${t.statusCode} | ${t.meta.method} ${t.meta.endpointPath} | auth=${t.meta.authTag} | ctype=${t.meta.contentType}${t.error ? ` → ${t.error.slice(0, 180)}` : ''}`,
+          `  - [${t.score}pt] HTTP ${t.statusCode} | ${t.meta.method.padEnd(5)} ${t.meta.endpointPath} | auth=${t.meta.authTag} | ctype=${t.meta.contentType}${t.error ? ` → ${t.error.slice(0, 220)}` : ''}`,
       ).join('\n')
     : '  (geen pogingen geregistreerd)';
 
@@ -601,11 +726,11 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
       statusCode,
       lastErrorResult.raw ?? null,
       creds.baseUrl,
-      `[Simhuis] activateSim mislukt voor ICCID ${iccid}. Server-side fout: ${lastErrorResult.error}\n\nTop-3 meest veelbelovende pogingen:\n${topStr}`,
+      `[Simhuis] activateSim mislukt voor ICCID ${iccid}. Server-side fout: ${lastErrorResult.error}\n\nTop-5 meest veelbelovende pogingen:\n${topStr}`,
     );
   }
   throw new Error(
-    `[Simhuis] activateSim mislukt voor ICCID ${iccid}. Alle endpoints gaven 404/405/400/401/403; onvoldoende match.\n\nTop-3 meest veelbelovende pogingen:\n${topStr}`,
+    `[Simhuis] activateSim mislukt voor ICCID ${iccid}. Alle endpoints gaven 404/405/400/401/403; onvoldoende match.\n\nTop-5 meest veelbelovende pogingen:\n${topStr}`,
   );
 }
 
@@ -622,6 +747,15 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
     { tag: 'creds-query', username: creds.username, password: creds.password, resellerId: creds.resellerId },
     { tag: 'x-custom-headers', username: creds.username, password: creds.password, resellerId: creds.resellerId },
   ];
+  let bearerToken: string | null = null;
+  try {
+    bearerToken = await acquireBearerToken(creds);
+  } catch {
+    bearerToken = null;
+  }
+  if (bearerToken) {
+    allAuthVariants.unshift({ tag: 'bearer-token', token: bearerToken });
+  }
 
   const rankedAttempts: RankedAttempt[] = [];
   let lastErrorResult: PerSimAttemptResult | null = null;
@@ -632,6 +766,14 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
 
   type Template = { method: 'POST' | 'PUT' | 'PATCH'; pathTpl: string; body: Record<string, unknown> };
   const templates: Template[] = [
+    { method: 'PUT', pathTpl: '/assets/{iccid}/suspend', body: { ...bodyBase, iccid: undefined } },
+    { method: 'PUT', pathTpl: '/assets/{iccid}/suspend', body: { ...bodyBase } },
+    { method: 'PUT', pathTpl: '/assets/{iccid}/terminate', body: { ...bodyBase, iccid: undefined } },
+    { method: 'PUT', pathTpl: '/assets/{iccid}/unsubscribe', body: { ...bodyBase, iccid: undefined } },
+    { method: 'PUT', pathTpl: '/esims/{iccid}/suspend', body: { ...bodyBase, iccid: undefined } },
+    { method: 'PUT', pathTpl: '/bulk/esims/suspend', body: { iccids: [iccid], reseller_id: resellerId } },
+    { method: 'PUT', pathTpl: '/iot/device/{iccid}/suspend', body: { ...bodyBase, iccid: undefined } },
+    { method: 'PUT', pathTpl: '/ulb/device/{iccid}/suspend', body: { ...bodyBase, iccid: undefined } },
     { method: 'POST', pathTpl: '/sims/{iccid}/deactivate', body: { ...bodyBase, iccid: undefined } },
     { method: 'POST', pathTpl: '/sims/deactivate', body: { ...bodyBase } },
     { method: 'POST', pathTpl: '/sim/{iccid}/deactivate', body: { ...bodyBase, iccid: undefined } },
@@ -652,11 +794,6 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
   function topRanked(n: number): RankedAttempt[] {
     return [...rankedAttempts].sort((a, b) => b.score - a.score).slice(0, n);
   }
-  function altMethodFor405(method: 'POST' | 'PUT' | 'PATCH'): 'POST' | 'PUT' | 'PATCH' {
-    if (method === 'POST') return 'PUT';
-    if (method === 'PUT') return 'PATCH';
-    return 'POST';
-  }
   const ACTIVATE_METHODS: Array<'POST' | 'PUT' | 'PATCH'> = ['POST', 'PUT', 'PATCH'];
   function allActivateMethodsAfter(start: 'POST' | 'PUT' | 'PATCH'): Array<'POST' | 'PUT' | 'PATCH'> {
     const idx = ACTIVATE_METHODS.indexOf(start);
@@ -665,11 +802,10 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
     return rest;
   }
 
-  // Eerst LEEGE prefix (geen /api/v1), omdat /sims/{iccid} zonder prefix al 405 gaf = endpoint bestaat!
   const orderedPrefixes = [...prefixes].sort((a, b) => {
-    const aEmpty = a === '' ? 0 : 1;
-    const bEmpty = b === '' ? 0 : 1;
-    return aEmpty - bEmpty;
+    const aScore = a === '/v3' ? 0 : a === '' ? 1 : a === '/v2' ? 2 : a === '/api/v3' ? 3 : a === '/api/v2' ? 4 : 5;
+    const bScore = b === '/v3' ? 0 : b === '' ? 1 : b === '/v2' ? 2 : b === '/api/v3' ? 3 : b === '/api/v2' ? 4 : 5;
+    return aScore - bScore;
   });
 
   for (const prefix of orderedPrefixes) {
@@ -677,7 +813,7 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
       for (const auth of allAuthVariants) {
         const contentTypes: Array<'json' | 'form'> = ['json', 'form'];
         for (const contentType of contentTypes) {
-          const endpointPath = `${prefix}${tpl.pathTpl}`.replace('{iccid}', encodeURIComponent(iccid));
+          const endpointPath = `${prefix}${tpl.pathTpl}`.replaceAll('{iccid}', encodeURIComponent(iccid));
           const fullUrl = makePerSimFullUrl(creds.baseUrl, endpointPath, null);
           const meta: PerSimAttemptMeta = { endpointPath, method: tpl.method, authTag: toAuthTag(auth), contentType };
           const result = await doPerSimFetch({
@@ -686,7 +822,7 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
             contentType,
             body: tpl.body,
             auth,
-            timeoutMs: 25_000,
+            timeoutMs: 30_000,
           });
           if (result.tag === 'ok') {
             successFound = true;
@@ -698,10 +834,9 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
             if (result.tag === 'error') lastErrorResult = result;
           }
 
-          // 405 → direct andere methode proberen op dezelfde URL
           if (result.statusCode === 405) {
-            const altMethod = altMethodFor405(tpl.method);
-            if (altMethod !== tpl.method) {
+            const remaining = allActivateMethodsAfter(tpl.method);
+            for (const altMethod of remaining) {
               const altMeta: PerSimAttemptMeta = { endpointPath, method: altMethod, authTag: toAuthTag(auth), contentType };
               const altResult = await doPerSimFetch({
                 fullUrl,
@@ -709,7 +844,7 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
                 contentType,
                 body: { ...tpl.body },
                 auth,
-                timeoutMs: 25_000,
+                timeoutMs: 30_000,
               });
               if (altResult.tag === 'ok') {
                 successFound = true;
@@ -727,11 +862,11 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
     }
   }
 
-  const top = topRanked(3);
+  const top = topRanked(5);
   const topStr = top.length
     ? top.map(
         (t) =>
-          `  - [${t.score}pt] HTTP ${t.statusCode} | ${t.meta.method} ${t.meta.endpointPath} | auth=${t.meta.authTag} | ctype=${t.meta.contentType}${t.error ? ` → ${t.error.slice(0, 180)}` : ''}`,
+          `  - [${t.score}pt] HTTP ${t.statusCode} | ${t.meta.method.padEnd(5)} ${t.meta.endpointPath} | auth=${t.meta.authTag} | ctype=${t.meta.contentType}${t.error ? ` → ${t.error.slice(0, 220)}` : ''}`,
       ).join('\n')
     : '  (geen pogingen geregistreerd)';
 
@@ -747,11 +882,11 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
       statusCode,
       lastErrorResult.raw ?? null,
       creds.baseUrl,
-      `[Simhuis] deactivateSim mislukt voor ICCID ${iccid}. Server-side fout: ${lastErrorResult.error}\n\nTop-3 meest veelbelovende pogingen:\n${topStr}`,
+      `[Simhuis] deactivateSim mislukt voor ICCID ${iccid}. Server-side fout: ${lastErrorResult.error}\n\nTop-5 meest veelbelovende pogingen:\n${topStr}`,
     );
   }
   throw new Error(
-    `[Simhuis] deactivateSim mislukt voor ICCID ${iccid}. Alle endpoints gaven 404/405/400/401/403; onvoldoende match.\n\nTop-3 meest veelbelovende pogingen:\n${topStr}`,
+    `[Simhuis] deactivateSim mislukt voor ICCID ${iccid}. Alle endpoints gaven 404/405/400/401/403; onvoldoende match.\n\nTop-5 meest veelbelovende pogingen:\n${topStr}`,
   );
 }
 
