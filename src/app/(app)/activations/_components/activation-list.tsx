@@ -14,6 +14,7 @@ import {
   Play,
   AlertTriangle,
   RotateCcw,
+  Trash2,
 } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { Button } from "@/components/ui/button";
@@ -32,8 +33,10 @@ import type { ActivationOrder, Customer, Product, Tracker, SIM, Subscription, Ve
 import {
   retryFailedAction,
   cancelOrderAction,
+  deleteOrderAction,
   type RetryOrderState,
   type CancelOrderState,
+  type DeleteOrderState,
 } from "../actions";
 import {
   Dialog,
@@ -78,6 +81,17 @@ export function ActivationOrderList({ orders, canCreate, canEdit, canDelete }: P
     {}
   );
 
+  const [deleteOpenId, setDeleteOpenId] = useState<string | null>(null);
+  const deleteOpen = deleteOpenId !== null;
+  const [deleteState, deleteFormAction] = useFormState<DeleteOrderState, FormData>(
+    (prev, f) => {
+      const id = (f.get("id") as string) || "";
+      setBusyOrderId(id);
+      return (deleteOrderAction as any)(id, prev, f);
+    },
+    {}
+  );
+
   const runRetry = (id: string) => {
     setBusyOrderId(id);
     startRetry(async () => {
@@ -93,6 +107,7 @@ export function ActivationOrderList({ orders, canCreate, canEdit, canDelete }: P
   };
 
   const cancelTarget = orders.find((o) => o.id === cancelOpenId) ?? null;
+  const deleteTarget = orders.find((o) => o.id === deleteOpenId) ?? null;
 
   const columns: ColumnDef<Row>[] = [
     {
@@ -210,6 +225,7 @@ export function ActivationOrderList({ orders, canCreate, canEdit, canDelete }: P
         const rowBusy = busyOrderId === id;
         const canRetryRow = canEdit && st === "FAILED";
         const canCancelRow = canDelete && (st === "FAILED" || st === "DRAFT" || st === "READY");
+        const canDeleteRow = canDelete && (st === "CANCELLED" || st === "DRAFT");
         return (
           <div className="flex justify-end">
             <DropdownMenu>
@@ -243,7 +259,7 @@ export function ActivationOrderList({ orders, canCreate, canEdit, canDelete }: P
                     </DropdownMenuItem>
                   ) : null}
                 </DropdownMenuGroup>
-                {(canRetryRow || canCancelRow) ? (
+                {(canRetryRow || canCancelRow || canDeleteRow) ? (
                   <DropdownMenuSeparator />
                 ) : null}
                 {canRetryRow ? (
@@ -268,6 +284,18 @@ export function ActivationOrderList({ orders, canCreate, canEdit, canDelete }: P
                     className="text-red-600 focus:bg-red-50 focus:text-red-700"
                   >
                     <Ban className="mr-2 h-4 w-4" /> Annuleren…
+                  </DropdownMenuItem>
+                ) : null}
+                {canDeleteRow ? (
+                  <DropdownMenuItem
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setDeleteOpenId(id);
+                    }}
+                    disabled={rowBusy}
+                    className="text-red-700 focus:bg-red-50 focus:text-red-800"
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" /> Verwijderen…
                   </DropdownMenuItem>
                 ) : null}
               </DropdownMenuContent>
@@ -337,6 +365,44 @@ export function ActivationOrderList({ orders, canCreate, canEdit, canDelete }: P
               </Button>
               <Button type="submit" variant="destructive" disabled={!cancelOpenId}>
                 Annuleren bevestigen
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteOpen} onOpenChange={(open) => !open && setDeleteOpenId(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Order definitief verwijderen</DialogTitle>
+            <DialogDescription>
+              {deleteTarget ? (
+                <>
+                  Verwijder order <strong>{deleteTarget.orderNumber}</strong> definitief
+                  uit het systeem. Deze actie is onomkeerbaar.
+                </>
+              ) : (
+                "De order wordt permanent verwijderd. Dit kan niet ongedaan worden."
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          {deleteState?.message ? (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {deleteState.message}
+            </div>
+          ) : null}
+          <form action={deleteFormAction} className="space-y-3">
+            <input type="hidden" name="id" value={deleteOpenId ?? ""} />
+            <DialogFooter className="gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setDeleteOpenId(null)}
+              >
+                Annuleren
+              </Button>
+              <Button type="submit" variant="destructive" disabled={!deleteOpenId}>
+                <Trash2 className="mr-2 h-4 w-4" /> Definitief verwijderen
               </Button>
             </DialogFooter>
           </form>

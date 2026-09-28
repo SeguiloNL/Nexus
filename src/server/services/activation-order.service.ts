@@ -331,6 +331,29 @@ export async function retryFailed(id: string, ctx: Ctx): Promise<ActivationOrder
   });
 }
 
+export async function deleteOrder(id: string, ctx: Ctx): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const existing: any = await tx.activationOrder.findUniqueOrThrow({
+      where: { id },
+    });
+    if (existing.status !== "CANCELLED" && existing.status !== "DRAFT") {
+      throw new Error(
+        `Alleen CANCELLED of DRAFT orders kunnen verwijderd worden (huidige status: ${existing.status}).`
+      );
+    }
+    await logAudit(tx, {
+      entityType: "activation_order",
+      entityId: existing.id,
+      action: "DELETE",
+      userId: ctx.userId,
+      oldValues: existing as unknown as Record<string, unknown>,
+    });
+    await tx.activationOrder.delete({
+      where: { id },
+    });
+  });
+}
+
 async function markFailed(
   tx: any,
   id: string,

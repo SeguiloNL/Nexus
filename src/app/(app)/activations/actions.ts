@@ -15,6 +15,7 @@ import {
   markReady,
   cancelOrder,
   retryFailed,
+  deleteOrder,
 } from "@/server/services/activation-order.service";
 
 export type OrderActionState = {
@@ -181,6 +182,34 @@ export async function retryFailedAction(
   revalidatePath(`/activations/${orderId}`);
   revalidatePath("/activations");
   redirect(`/activations/${orderId}`);
+}
+
+export type DeleteOrderState = {
+  message?: string | null;
+};
+
+function resolveDeleteArgs(...args: any[]): string {
+  if (typeof args[0] === "string") return args[0];
+  if (args[0] instanceof FormData) return (args[0].get("id") as string) ?? "";
+  if (args[1] instanceof FormData) return (args[1].get("id") as string) ?? "";
+  return "";
+}
+
+export async function deleteOrderAction(
+  ...args: any[]
+): Promise<DeleteOrderState> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "delete", "activation_order");
+  const orderId = resolveDeleteArgs(...args);
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    await deleteOrder(orderId, ctx);
+  } catch (e: any) {
+    return { message: e?.message ?? "Verwijderen mislukt." };
+  }
+  revalidatePath(`/activations/${orderId}`);
+  revalidatePath("/activations");
+  redirect("/activations");
 }
 
 export async function completeActivationAction(orderId: string) {

@@ -20,6 +20,7 @@ import {
   Cpu,
   User,
   Calendar,
+  Trash2,
 } from "lucide-react";
 import {
   Card,
@@ -93,6 +94,7 @@ interface Props {
   cancelAction: (id: string, prev: any, f: FormData) => any;
   retryAction: (id: string) => any;
   completeAction: (id: string) => any;
+  deleteAction: (id: string, prev: any, f: FormData) => any;
   actionError?: string | null;
 }
 
@@ -103,6 +105,7 @@ export function ActivationOrderDetail({
   cancelAction,
   retryAction,
   completeAction,
+  deleteAction,
   actionError,
 }: Props) {
   const canEdit = canUserRole(role, "edit", "activation_order");
@@ -210,6 +213,13 @@ export function ActivationOrderDetail({
             order.status === "FAILED") ? (
             <CancelDialog
               action={async (p, f) => cancelAction(order.id, p, f)}
+            />
+          ) : null}
+          {canDelete &&
+          (order.status === "CANCELLED" || order.status === "DRAFT") ? (
+            <DeleteDialog
+              action={async (p, f) => deleteAction(order.id, p, f)}
+              orderNumber={order.orderNumber}
             />
           ) : null}
         </div>
@@ -594,6 +604,54 @@ function CancelDialog({
           <DialogFooter>
             <Button type="submit" variant="destructive">
               Annuleren bevestigen
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DeleteDialog({
+  action,
+  orderNumber,
+}: {
+  action: (prev: any, f: FormData) => any;
+  orderNumber: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [s, formAction] = useFormState(action, { message: null });
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="destructive" className="gap-2">
+          <Trash2 className="h-4 w-4" /> Verwijderen
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Order definitief verwijderen</DialogTitle>
+          <DialogDescription>
+            Verwijder order <strong>{orderNumber}</strong> definitief uit het
+            systeem. Deze actie is onomkeerbaar.
+          </DialogDescription>
+        </DialogHeader>
+        {s?.message ? (
+          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {s.message}
+          </div>
+        ) : null}
+        <form action={formAction} className="space-y-3">
+          <DialogFooter className="gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setOpen(false)}
+            >
+              Annuleren
+            </Button>
+            <Button type="submit" variant="destructive">
+              <Trash2 className="mr-2 h-4 w-4" /> Definitief verwijderen
             </Button>
           </DialogFooter>
         </form>

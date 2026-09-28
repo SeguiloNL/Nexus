@@ -9,6 +9,7 @@ import {
   cancelOrderAction,
   retryFailedAction,
   completeActivationAction,
+  deleteOrderAction,
 } from "../actions";
 
 export default async function ActivationDetailPage({
@@ -48,6 +49,7 @@ export default async function ActivationDetailPage({
       cancelAction={cancelOrderAction as any}
       retryAction={retryFailedAction as any}
       completeAction={completeActivationAction as any}
+      deleteAction={deleteOrderAction as any}
       actionError={actionError}
     />
   );
