@@ -25,12 +25,17 @@ export interface SimhuisSimStatus {
   groupId?: string | null;
   groupName?: string | null;
   productName?: string | null;
+  productType?: string | null;
   status?: 'active' | 'inactive' | 'suspended' | 'terminated' | 'provisioning' | string | null;
   ip?: string | null;
   network?: string | null;
   planName?: string | null;
   dataUsedBytes?: number | null;
   dataLimitBytes?: number | null;
+  lowestDataLimitBytes?: number | null;
+  smsUsedCount?: number | null;
+  smsLimitCount?: number | null;
+  lowestSmsLimitCount?: number | null;
   activatedAt?: string | null;
   raw?: unknown;
 }

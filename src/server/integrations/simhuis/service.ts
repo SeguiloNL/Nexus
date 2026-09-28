@@ -26,6 +26,22 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     return null;
   };
 
+  const pickNumber = (...paths: Array<unknown>): number | null => {
+    for (const p of paths) {
+      if (p === null || p === undefined) continue;
+      if (typeof p === 'number' && Number.isFinite(p)) return p;
+      if (typeof p === 'string') {
+        const n = Number(p.trim());
+        if (Number.isFinite(n)) return n;
+      }
+      if (typeof p === 'bigint') {
+        const n = Number(p);
+        if (Number.isFinite(n)) return n;
+      }
+    }
+    return null;
+  };
+
   const iccidVal = pickString(
     r.iccid, r.sim_iccid, r.simIccid, r.eid,
     nestedSim?.iccid, nestedSim?.sim_iccid, nestedSim?.simIccid, nestedSim?.eid,
@@ -65,6 +81,14 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     nestedSim?.productName, nestedSim?.product, nestedSim?.planName, nestedSim?.ratePlan,
   );
 
+  const productTypeVal = pickString(
+    r.productType, r.product_type, r.productTypeName, r.product_category, r.productCategory,
+    r.type, r.assetType, r.asset_type, r.category, r.simCategory, r.simType,
+    r.assetCategory, r.subscriptionType, r.subscription_type, r.kind,
+    nestedSim?.productType, nestedSim?.product_type, nestedSim?.type, nestedSim?.category,
+    nestedSim?.assetType, nestedSim?.subscriptionType, nestedSim?.kind,
+  );
+
   return {
     iccid: iccidVal,
     eid: eidVal,
@@ -75,19 +99,53 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     groupId: groupIdVal,
     groupName: groupNameVal,
     productName: productNameVal,
+    productType: productTypeVal,
     status,
     ip: pickString(r.ip, r.ip_address, nestedSim?.ip, nestedSim?.ip_address, r.lastIp, r.last_ip, nestedSim?.lastIp),
     network: pickString(r.network, r.carrier, r.provider, r.operator, r.country_iso, r.networkName, r.network_name, nestedSim?.network, nestedSim?.networkName),
     planName: pickString(r.plan_name, r.offer_name, r.tariff, r.rate_plan, r.plan, r.package_name, r.planName, nestedSim?.planName, nestedSim?.plan_name, nestedSim?.rate_plan),
-    dataUsedBytes: typeof r.data_used_bytes === 'number' ? r.data_used_bytes
-      : (typeof r.used_bytes === 'number' ? r.used_bytes
-        : (typeof r.total_usage === 'number' ? r.total_usage
-          : (typeof (r.usage ?? nestedSim?.usage)?.data_bytes === 'number' ? r.usage.data_bytes
-            : (typeof (r.usage ?? nestedSim?.usage)?.bytes === 'number' ? r.usage.bytes : null)))),
-    dataLimitBytes: typeof r.data_limit_bytes === 'number' ? r.data_limit_bytes
-      : (typeof r.limit_bytes === 'number' ? r.limit_bytes
-        : (typeof r.data_quota === 'number' ? r.data_quota
-          : (typeof (r.plan ?? nestedSim?.plan)?.data_limit_bytes === 'number' ? r.plan.data_limit_bytes : null))),
+    dataUsedBytes: pickNumber(
+      r.data_used_bytes, r.used_bytes, r.total_usage, r.dataUsage, r.data_usage,
+      (r.usage ?? nestedSim?.usage)?.data_bytes, (r.usage ?? nestedSim?.usage)?.bytes,
+      (r.usage ?? nestedSim?.usage)?.data,
+      r.usedData, r.used_data, r.consumed_bytes,
+    ),
+    dataLimitBytes: pickNumber(
+      r.data_limit_bytes, r.limit_bytes, r.data_quota, r.dataQuota, r.dataLimit,
+      (r.plan ?? nestedSim?.plan)?.data_limit_bytes,
+      (r.plan ?? nestedSim?.plan)?.data_quota,
+      (r.plan ?? nestedSim?.plan)?.dataLimit,
+      r.max_data_bytes, r.total_data_bytes, r.allowance_data,
+    ),
+    lowestDataLimitBytes: pickNumber(
+      r.lowest_data_limit_bytes, r.data_threshold_bytes, r.data_alert_bytes,
+      r.data_warning_limit, r.lowDataLimit, r.threshold_data_bytes, r.warning_data_bytes,
+      r.min_data_limit_bytes, r.dataLowLimit, r.data_low_limit,
+      (r.plan ?? nestedSim?.plan)?.lowest_data_limit_bytes,
+      (r.plan ?? nestedSim?.plan)?.data_threshold_bytes,
+      (r.plan ?? nestedSim?.plan)?.data_warning_limit,
+    ),
+    smsUsedCount: pickNumber(
+      r.sms_used, r.sms_count, r.smsUsed, r.sms_used_count, r.total_sms,
+      r.sms_usage, r.smsUsage, r.totalSms, r.smsSent, r.sms_sent,
+      (r.usage ?? nestedSim?.usage)?.sms_count, (r.usage ?? nestedSim?.usage)?.sms,
+      (r.usage ?? nestedSim?.usage)?.smsUsed,
+      r.consumed_sms,
+    ),
+    smsLimitCount: pickNumber(
+      r.sms_limit, r.sms_quota, r.smsLimit, r.max_sms, r.sms_max,
+      r.maximum_sms, r.smsBundle, r.sms_bundle, r.allowance_sms, r.smsAllowance,
+      (r.plan ?? nestedSim?.plan)?.sms_limit, (r.plan ?? nestedSim?.plan)?.sms_quota,
+      (r.plan ?? nestedSim?.plan)?.smsLimit, (r.plan ?? nestedSim?.plan)?.smsBundle,
+      r.total_sms_bundle,
+    ),
+    lowestSmsLimitCount: pickNumber(
+      r.lowest_sms_limit, r.sms_threshold, r.sms_alert, r.lowSmsLimit,
+      r.sms_warning, r.smsWarning, r.min_sms_limit, r.smsLowLimit, r.sms_low_limit,
+      (r.plan ?? nestedSim?.plan)?.lowest_sms_limit,
+      (r.plan ?? nestedSim?.plan)?.sms_threshold,
+      (r.plan ?? nestedSim?.plan)?.sms_warning,
+    ),
     activatedAt: pickString(r.activated_at, r.activation_date, r.created_at, r.provisioned_at, nestedSim?.activatedAt, nestedSim?.provisioned_at, r.startDate, r.start_date),
     raw,
   };

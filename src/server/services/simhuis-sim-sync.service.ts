@@ -12,6 +12,25 @@ function truncate(v: string | null | undefined, max: number): string | null {
   return s.length > max ? s.slice(0, max) : s;
 }
 
+function toBigIntOrNull(v: number | null | undefined): bigint | null {
+  if (v === null || v === undefined) return null;
+  if (!Number.isFinite(v)) return null;
+  try {
+    return BigInt(Math.round(v));
+  } catch {
+    return null;
+  }
+}
+
+function bigIntEq(a: bigint | null | undefined, b: bigint | null | undefined): boolean {
+  if (a === null && b === null) return true;
+  if (a === undefined && b === undefined) return true;
+  if (a === null && b === undefined) return true;
+  if (a === undefined && b === null) return true;
+  if (a === null || b === null || a === undefined || b === undefined) return false;
+  return a === b;
+}
+
 const VALID_SIM_STATUSES: ReadonlySet<string> = new Set<string>(
   Object.values(SimStatus).map((s) => String(s))
 );
@@ -76,6 +95,7 @@ function buildSimNotes(simhuis: SimhuisSimStatus): string | null {
   parts.push("Geïmporteerd vanuit Simhuis.");
   if (simhuis.planName) parts.push(`Plan: ${simhuis.planName}.`);
   if (simhuis.productName) parts.push(`Product: ${simhuis.productName}.`);
+  if (simhuis.productType) parts.push(`Producttype: ${simhuis.productType}.`);
   if (simhuis.subscriberId) parts.push(`Subscriber ID: ${simhuis.subscriberId}.`);
   if (simhuis.eid) parts.push(`eSIM ID (EID): ${simhuis.eid}.`);
   if (simhuis.simName && simhuis.simName !== "unnamed") parts.push(`SIM Name: ${simhuis.simName}.`);
@@ -170,7 +190,15 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
       simName: true,
       simGroup: true,
       product: true,
+      productType: true,
       simType: true,
+      dataUsedBytes: true,
+      dataLimitBytes: true,
+      lowestDataLimitBytes: true,
+      smsUsedCount: true,
+      smsLimitCount: true,
+      lowestSmsLimitCount: true,
+      lastUsageSyncAt: true,
       notes: true,
       deletedAt: true,
     },
@@ -206,6 +234,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
       const rawProduct = simhuis.productName ?? simhuis.planName;
       const rawNetwork = simhuis.network;
       const rawPlanName = simhuis.planName;
+      const rawProductType = simhuis.productType;
       const msisdnVal = normMsisdn(rawMsisdn);
       const imsiVal = normImsi(rawImsi);
       const eidVal = normEid(rawEid);
@@ -213,9 +242,30 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
       const simNameVal = truncate(rawSimName, 200);
       const groupVal = truncate(rawGroupName, 100);
       const productVal = truncate(rawProduct, 200);
+      const productTypeVal = truncate(rawProductType, 150);
       const networkVal = truncate(rawNetwork, 100);
       const planVal = truncate(rawPlanName, 500);
       const notesVal = buildSimNotes(simhuis);
+
+      const dataUsedBytesVal = toBigIntOrNull(simhuis.dataUsedBytes);
+      const dataLimitBytesVal = toBigIntOrNull(simhuis.dataLimitBytes);
+      const lowestDataLimitBytesVal = toBigIntOrNull(simhuis.lowestDataLimitBytes);
+      const smsUsedCountVal: number | null =
+        typeof simhuis.smsUsedCount === "number" && Number.isFinite(simhuis.smsUsedCount)
+          ? Math.round(simhuis.smsUsedCount)
+          : null;
+      const smsLimitCountVal: number | null =
+        typeof simhuis.smsLimitCount === "number" && Number.isFinite(simhuis.smsLimitCount)
+          ? Math.round(simhuis.smsLimitCount)
+          : null;
+      const lowestSmsLimitCountVal: number | null =
+        typeof simhuis.lowestSmsLimitCount === "number" && Number.isFinite(simhuis.lowestSmsLimitCount)
+          ? Math.round(simhuis.lowestSmsLimitCount)
+          : null;
+      const hasAnyUsage =
+        dataUsedBytesVal !== null || dataLimitBytesVal !== null || lowestDataLimitBytesVal !== null ||
+        smsUsedCountVal !== null || smsLimitCountVal !== null || lowestSmsLimitCountVal !== null;
+      const lastUsageSyncAtVal = hasAnyUsage ? new Date() : null;
 
       if (existing) {
         if (existing.deletedAt) {
@@ -235,8 +285,16 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           simName: existing.simName,
           simGroup: existing.simGroup,
           product: existing.product,
+          productType: existing.productType,
           provider: existing.provider,
           simType: existing.simType,
+          dataUsedBytes: existing.dataUsedBytes,
+          dataLimitBytes: existing.dataLimitBytes,
+          lowestDataLimitBytes: existing.lowestDataLimitBytes,
+          smsUsedCount: existing.smsUsedCount,
+          smsLimitCount: existing.smsLimitCount,
+          lowestSmsLimitCount: existing.lowestSmsLimitCount,
+          lastUsageSyncAt: existing.lastUsageSyncAt,
           notes: existing.notes,
         };
         const newData: Record<string, any> = { ...oldData };
@@ -249,8 +307,17 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
         if (simNameVal && simNameVal !== "unnamed" && existing.simName !== simNameVal) { newData.simName = simNameVal; changed = true; }
         if (groupVal && existing.simGroup !== groupVal) { newData.simGroup = groupVal; changed = true; }
         if (productVal && existing.product !== productVal) { newData.product = productVal; changed = true; }
+        if (productTypeVal && existing.productType !== productTypeVal) { newData.productType = productTypeVal; changed = true; }
         if (networkVal && existing.simType !== networkVal) { newData.simType = networkVal; changed = true; }
         if (notesVal && existing.notes !== notesVal) { newData.notes = notesVal; changed = true; }
+
+        if (!bigIntEq(existing.dataUsedBytes, dataUsedBytesVal)) { newData.dataUsedBytes = dataUsedBytesVal; changed = true; }
+        if (!bigIntEq(existing.dataLimitBytes, dataLimitBytesVal)) { newData.dataLimitBytes = dataLimitBytesVal; changed = true; }
+        if (!bigIntEq(existing.lowestDataLimitBytes, lowestDataLimitBytesVal)) { newData.lowestDataLimitBytes = lowestDataLimitBytesVal; changed = true; }
+        if (existing.smsUsedCount !== smsUsedCountVal) { newData.smsUsedCount = smsUsedCountVal; changed = true; }
+        if (existing.smsLimitCount !== smsLimitCountVal) { newData.smsLimitCount = smsLimitCountVal; changed = true; }
+        if (existing.lowestSmsLimitCount !== lowestSmsLimitCountVal) { newData.lowestSmsLimitCount = lowestSmsLimitCountVal; changed = true; }
+        if (lastUsageSyncAtVal) { newData.lastUsageSyncAt = lastUsageSyncAtVal; changed = true; }
         const providerTag = "Simhuis";
         if (!existing.provider?.toLowerCase().includes("simhuis")) {
           newData.provider = existing.provider ? truncate(`${existing.provider} + ${providerTag}`, 150) ?? providerTag : providerTag;
@@ -276,8 +343,16 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
               simName: newData.simName,
               simGroup: newData.simGroup,
               product: newData.product,
+              productType: newData.productType,
               simType: newData.simType,
               provider: newData.provider,
+              dataUsedBytes: newData.dataUsedBytes,
+              dataLimitBytes: newData.dataLimitBytes,
+              lowestDataLimitBytes: newData.lowestDataLimitBytes,
+              smsUsedCount: newData.smsUsedCount,
+              smsLimitCount: newData.smsLimitCount,
+              lowestSmsLimitCount: newData.lowestSmsLimitCount,
+              lastUsageSyncAt: newData.lastUsageSyncAt,
               notes: newData.notes,
             },
           })
@@ -308,9 +383,17 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
               simName: simNameVal && simNameVal !== "unnamed" ? simNameVal : undefined,
               simGroup: groupVal,
               product: productVal,
+              productType: productTypeVal,
               provider: providerTag,
               simType: networkVal,
               status: statusForNew,
+              dataUsedBytes: dataUsedBytesVal,
+              dataLimitBytes: dataLimitBytesVal,
+              lowestDataLimitBytes: lowestDataLimitBytesVal,
+              smsUsedCount: smsUsedCountVal,
+              smsLimitCount: smsLimitCountVal,
+              lowestSmsLimitCount: lowestSmsLimitCountVal,
+              lastUsageSyncAt: lastUsageSyncAtVal,
               notes: notesVal,
             },
           })

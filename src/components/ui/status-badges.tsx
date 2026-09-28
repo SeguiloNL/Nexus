@@ -80,7 +80,7 @@ export function TrackerStatusBadge({ status }: { status: string }) {
 // -------------------
 // SimStatus
 // -------------------
-const SIM_STATUS: StatusMap<string> = {
+export const SIM_STATUS: Record<string, { label: string; variant: BadgeVariant }> = {
   IN_STOCK: { label: "Op voorraad", variant: "info" },
   RESERVED: { label: "Gereserveerd", variant: "warning" },
   ACTIVE: { label: "Actief", variant: "success" },

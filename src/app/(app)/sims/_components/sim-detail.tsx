@@ -13,6 +13,12 @@ import {
   FileText,
   History,
   Trash2,
+  Package,
+  Database,
+  MessageSquare,
+  Users,
+  Activity,
+  AlertTriangle,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -25,7 +31,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { SimStatusBadge, AssignmentReasonLabel } from "@/components/ui/status-badges";
 import { SimForm } from "./sim-form";
-import { formatDate, formatIccid, formatMsisdn } from "@/lib/formatters";
+import {
+  formatDate,
+  formatDateTime,
+  formatIccid,
+  formatMsisdn,
+  formatBytes,
+  formatCount,
+} from "@/lib/formatters";
 import { canUserRole } from "@/lib/auth/session";
 import type { UserRole, AuditAction } from "@/types/enums";
 import type { SIM, SimStatus, AssignmentReason } from "@prisma/client";
@@ -214,13 +227,134 @@ export function SimDetail({
                 <CardDescription>Metadata</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
-                <div className="flex justify-between">
+                <div className="flex justify-between gap-2">
                   <span className="text-slate-500">Aangemaakt</span>
-                  <span>{formatDate(sim.createdAt)}</span>
+                  <span className="text-right">{formatDate(sim.createdAt)}</span>
                 </div>
-                <div className="flex justify-between">
+                <div className="flex justify-between gap-2">
                   <span className="text-slate-500">Bijgewerkt</span>
-                  <span>{formatDate(sim.updatedAt)}</span>
+                  <span className="text-right">{formatDate(sim.updatedAt)}</span>
+                </div>
+                {(sim.dataUsedBytes ?? sim.dataLimitBytes ?? sim.smsUsedCount ?? sim.smsLimitCount ?? sim.lastUsageSyncAt) ? (
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-500">Laatste verbruik-sync</span>
+                    <span className="text-right">
+                      {sim.lastUsageSyncAt ? formatDateTime(sim.lastUsageSyncAt) : "—"}
+                    </span>
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Package className="h-4 w-4 text-slate-500" /> Product
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <InfoRow
+                  icon={<Package className="h-4 w-4" />}
+                  label="Product naam"
+                  value={sim.product}
+                />
+                <InfoRow
+                  icon={<Activity className="h-4 w-4" />}
+                  label="Product type"
+                  value={sim.productType ?? null}
+                />
+                <InfoRow
+                  icon={<CreditCard className="h-4 w-4" />}
+                  label="SIM naam"
+                  value={sim.simName ?? null}
+                />
+                <InfoRow
+                  icon={<Users className="h-4 w-4" />}
+                  label="Groep"
+                  value={sim.simGroup ?? null}
+                />
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Database className="h-4 w-4 text-slate-500" /> Dataverbruik
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <UsageProgress
+                  used={sim.dataUsedBytes}
+                  limit={sim.dataLimitBytes}
+                  threshold={sim.lowestDataLimitBytes}
+                  formatUsed={formatBytes(sim.dataUsedBytes)}
+                  formatLimit={formatBytes(sim.dataLimitBytes)}
+                />
+                <div className="grid grid-cols-2 gap-3 pt-2 text-sm">
+                  <InfoRowInline
+                    label="Verbruikt"
+                    value={formatBytes(sim.dataUsedBytes)}
+                  />
+                  <InfoRowInline
+                    label="Limiet"
+                    value={formatBytes(sim.dataLimitBytes)}
+                  />
+                  <InfoRowInline
+                    label="Laagste drempel"
+                    value={formatBytes(sim.lowestDataLimitBytes)}
+                  />
+                  <InfoRowInline
+                    label="Resterend"
+                    value={
+                      typeof sim.dataUsedBytes === "bigint" &&
+                      typeof sim.dataLimitBytes === "bigint"
+                        ? formatBytes(sim.dataLimitBytes - sim.dataUsedBytes)
+                        : "—"
+                    }
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <MessageSquare className="h-4 w-4 text-slate-500" /> SMS
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <UsageProgress
+                  used={sim.smsUsedCount ? BigInt(sim.smsUsedCount) : null}
+                  limit={sim.smsLimitCount ? BigInt(sim.smsLimitCount) : null}
+                  threshold={sim.lowestSmsLimitCount ? BigInt(sim.lowestSmsLimitCount) : null}
+                  formatUsed={formatCount(sim.smsUsedCount)}
+                  formatLimit={formatCount(sim.smsLimitCount)}
+                  unit="berichten"
+                />
+                <div className="grid grid-cols-2 gap-3 pt-2 text-sm">
+                  <InfoRowInline
+                    label="Verzonden"
+                    value={formatCount(sim.smsUsedCount)}
+                  />
+                  <InfoRowInline
+                    label="Limiet"
+                    value={formatCount(sim.smsLimitCount)}
+                  />
+                  <InfoRowInline
+                    label="Laagste drempel"
+                    value={formatCount(sim.lowestSmsLimitCount)}
+                  />
+                  <InfoRowInline
+                    label="Resterend"
+                    value={
+                      typeof sim.smsUsedCount === "number" &&
+                      typeof sim.smsLimitCount === "number"
+                        ? formatCount(sim.smsLimitCount - sim.smsUsedCount)
+                        : "—"
+                    }
+                  />
                 </div>
               </CardContent>
             </Card>
@@ -425,7 +559,7 @@ function InfoRow({
 }: {
   icon: React.ReactNode;
   label: string;
-  value: string | null;
+  value: string | null | undefined;
   mono?: boolean;
 }) {
   return (
@@ -447,6 +581,158 @@ function InfoRow({
       </div>
     </div>
   );
+}
+
+function InfoRowInline({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | null | undefined;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+        {label}
+      </div>
+      <div className="font-medium text-slate-900">
+        {value ?? "—"}
+      </div>
+    </div>
+  );
+}
+
+function UsageProgress({
+  used,
+  limit,
+  threshold,
+  formatUsed,
+  formatLimit,
+  unit,
+}: {
+  used: bigint | null | undefined;
+  limit: bigint | null | undefined;
+  threshold: bigint | null | undefined;
+  formatUsed: string;
+  formatLimit: string;
+  unit?: string;
+}) {
+  const hasUsage = used !== null && used !== undefined;
+  const hasLimit = limit !== null && limit !== undefined && limit > 0n;
+  const hasThreshold =
+    threshold !== null && threshold !== undefined && threshold > 0n;
+
+  if (!hasUsage && !hasLimit) {
+    return (
+      <div className="rounded-md border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-400">
+        Geen verbruiksgegevens beschikbaar
+      </div>
+    );
+  }
+
+  let pct = 0;
+  let overschreden = false;
+  if (hasLimit && hasUsage) {
+    if (limit === 0n) {
+      pct = 0;
+    } else {
+      const num = Number(used) / Number(limit) * 100;
+      pct = Math.min(100, Math.max(0, num));
+      overschreden = used > limit;
+    }
+  }
+
+  let barColor = "bg-emerald-500";
+  let statusColor = "text-emerald-700";
+  let statusLabel = "";
+
+  if (!hasLimit) {
+    barColor = "bg-slate-300";
+    statusColor = "text-slate-600";
+    statusLabel = "Onbeperkt";
+  } else if (overschreden) {
+    barColor = "bg-red-500";
+    statusColor = "text-red-700";
+    statusLabel = "Limiet overschreden";
+  } else if (pct >= 90) {
+    barColor = "bg-red-500";
+    statusColor = "text-red-700";
+    statusLabel = "Bijna op";
+  } else if (
+    hasThreshold &&
+    hasUsage &&
+    used >= threshold
+  ) {
+    barColor = "bg-amber-500";
+    statusColor = "text-amber-700";
+    statusLabel = "Drempel bereikt";
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-end justify-between gap-3 text-sm">
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] uppercase tracking-wide text-slate-500">
+            Verbruik
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <span className="font-semibold text-slate-900">
+              {formatUsed}
+            </span>
+            {hasLimit ? (
+              <span className="text-xs text-slate-500">
+                van {formatLimit}
+                {unit ? ` ${unit}` : ""}
+              </span>
+            ) : unit ? (
+              <span className="text-xs text-slate-500">{unit}</span>
+            ) : null}
+          </div>
+        </div>
+        {statusLabel ? (
+          <div className={`flex items-center gap-1 text-xs font-medium ${statusColor}`}>
+            {overschreden || pct >= 90 ? (
+              <AlertTriangle className="h-3.5 w-3.5" />
+            ) : null}
+            {statusLabel}
+          </div>
+        ) : hasLimit ? (
+          <div className={`text-xs font-semibold ${statusColor}`}>
+            {pct.toFixed(0)}%
+          </div>
+        ) : null}
+      </div>
+
+      {hasLimit ? (
+        <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+          <div
+            className={`h-full rounded-full transition-all ${barColor}`}
+            style={{ width: `${Math.max(pct, overschreden ? 100 : 0)}%` }}
+          />
+        </div>
+      ) : (
+        <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+          <div className={`h-full w-full rounded-full ${barColor}`} />
+        </div>
+      )}
+
+      {hasThreshold ? (
+        <div className="text-[11px] text-slate-500">
+          ⚠ Waarschuwingsdrempel: {formatThreshold(threshold, unit)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function formatThreshold(
+  value: bigint,
+  unit?: string
+): string {
+  if (unit === "berichten") {
+    return formatCount(value);
+  }
+  return formatBytes(value);
 }
 
 function EmptyOrList<T>({

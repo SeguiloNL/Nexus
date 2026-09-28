@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import type { ColumnDef, Row } from "@tanstack/react-table";
-import { MoreHorizontal, Plus, Trash2, Edit, Upload, Download } from "lucide-react";
+import { MoreHorizontal, Plus, Trash2, Edit, Upload, Download, Filter } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { BulkActionForm } from "@/components/data-table/bulk-action-form";
 import { Button } from "@/components/ui/button";
-import { SimStatusBadge } from "@/components/ui/status-badges";
+import { SimStatusBadge, SIM_STATUS } from "@/components/ui/status-badges";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,8 +18,16 @@ import {
 import type { SIM, SimStatus } from "@prisma/client";
 import { formatIccid } from "@/lib/formatters";
 import { exportSimsCsvAction, bulkSoftDeleteSimsAction, type BulkActionState } from "../actions";
+import { useMemo, useState } from "react";
 
 type ListSim = SIM;
+
+const STATUS_OPTIONS: Array<{ value: SimStatus | "__ALL__"; label: string }> = [
+  { value: "__ALL__", label: "Alle statussen" },
+  ...(Object.entries(SIM_STATUS) as Array<[SimStatus, { label: string; variant: string }]>)
+    .sort((a, b) => a[1].label.localeCompare(b[1].label, "nl"))
+    .map(([value, cfg]) => ({ value, label: cfg.label })),
+];
 
 interface SimListProps {
   sims: ListSim[];
@@ -38,6 +46,13 @@ export function SimList({
   canImport,
   canExport,
 }: SimListProps) {
+  const [statusFilter, setStatusFilter] = useState<SimStatus | "__ALL__">("__ALL__");
+
+  const filteredSims = useMemo(() => {
+    if (statusFilter === "__ALL__") return sims;
+    return sims.filter((s) => s.status === statusFilter);
+  }, [sims, statusFilter]);
+
   const columns: ColumnDef<ListSim>[] = [
     {
       accessorKey: "iccid",
@@ -183,9 +198,45 @@ export function SimList({
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-3 rounded-md border border-slate-200 bg-slate-50/60 px-3 py-2">
+        <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+          <Filter className="h-4 w-4" /> Filter
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <span className="whitespace-nowrap">Status:</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as SimStatus | "__ALL__")}
+              className="h-9 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+            >
+              {STATUS_OPTIONS.map((opt) => (
+                <option key={String(opt.value)} value={String(opt.value)}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {statusFilter !== "__ALL__" ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              type="button"
+              onClick={() => setStatusFilter("__ALL__")}
+              className="h-8 text-xs text-slate-600 hover:text-slate-900"
+            >
+              Filter wissen
+            </Button>
+          ) : null}
+        </div>
+        <div className="ml-auto text-xs text-slate-500">
+          {filteredSims.length} van {sims.length} SIM-kaarten
+        </div>
+      </div>
+
       <DataTable
         columns={columns}
-        data={sims}
+        data={filteredSims}
         searchColumnAccessor="iccid"
         searchPlaceholder="Zoek SIM (ICCID, MSISDN, IMSI, provider…)"
         enableRowSelection={canDelete}

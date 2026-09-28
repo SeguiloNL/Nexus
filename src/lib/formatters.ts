@@ -159,3 +159,59 @@ export function capitalizeFirst(input: string): string {
   if (!input) return "";
   return input.charAt(0).toUpperCase() + input.slice(1).toLowerCase();
 }
+
+// ============================================================
+// Data en getal formattering
+// ============================================================
+
+const DATA_UNITS = ["B", "KB", "MB", "GB", "TB", "PB"] as const;
+
+export function formatBytes(
+  bytes: number | bigint | string | null | undefined,
+  maximumFractionDigits = 1
+): string {
+  if (bytes === null || bytes === undefined || bytes === "") return "-";
+  let num: number;
+  if (typeof bytes === "bigint") {
+    try {
+      num = Number(bytes);
+    } catch {
+      return "-";
+    }
+  } else if (typeof bytes === "string") {
+    num = Number(bytes.trim());
+  } else {
+    num = Number(bytes);
+  }
+  if (!Number.isFinite(num)) return "-";
+  if (num === 0) return `0 ${DATA_UNITS[0]}`;
+  const neg = num < 0;
+  const abs = Math.abs(num);
+  const max = DATA_UNITS.length - 1;
+  const pow = Math.min(
+    Math.floor(Math.log(abs) / Math.log(1024)),
+    max
+  );
+  const scaled = abs / Math.pow(1024, pow);
+  const formatted = new Intl.NumberFormat("nl-NL", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits,
+  }).format(scaled);
+  return `${neg ? "-" : ""}${formatted} ${DATA_UNITS[pow]}`;
+}
+
+export function formatCount(
+  count: number | bigint | string | null | undefined
+): string {
+  if (count === null || count === undefined || count === "") return "-";
+  let num: number;
+  if (typeof count === "bigint") {
+    try { num = Number(count); } catch { return "-"; }
+  } else if (typeof count === "string") {
+    num = Number(count.trim());
+  } else {
+    num = Number(count);
+  }
+  if (!Number.isFinite(num)) return "-";
+  return new Intl.NumberFormat("nl-NL").format(num);
+}
