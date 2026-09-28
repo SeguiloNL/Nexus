@@ -251,9 +251,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           });
         upsertPromises.push(p);
       } else {
-        const statusForNew: SimStatus = isSimAvailableForStock(simhuis.status)
-          ? ("IN_STOCK" as any)
-          : ("RESERVED" as any);
+        const { status: statusForNew } = mapSimhuisStatusToNexus(simhuis.status, null);
         const providerTag = "Simhuis";
         const p = prisma.sIM
           .create({
