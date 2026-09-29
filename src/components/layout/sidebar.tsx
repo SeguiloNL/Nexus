@@ -152,7 +152,21 @@ export function Sidebar({
   permissions,
 }: SidebarProps) {
   const pathname = usePathname();
-  const authzArg: PermissionBits | UserRole | null = permissions ?? userRole ?? null;
+
+  let authzArg: PermissionBits | UserRole | string | null = null;
+  if (permissions) {
+    let meaningful = false;
+    outer: for (const k of Object.keys(permissions) as Array<keyof PermissionBits>) {
+      const e = (permissions as any)[k];
+      if (e && (e.read || e.write)) {
+        meaningful = true;
+        break outer;
+      }
+    }
+    if (meaningful) authzArg = permissions;
+  }
+  if (!authzArg && userRole) authzArg = userRole;
+  if (!authzArg && _roleId) authzArg = _roleId;
 
   const visibleItems = NAV_ITEMS.filter((item) => {
     if (roleScope === "CUSTOMER") {

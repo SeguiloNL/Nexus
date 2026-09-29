@@ -4,8 +4,8 @@ import { findManyUsers } from "@/server/services/user.service";
 import { findManyRoles } from "@/server/services/role.service";
 import { findManyCustomers } from "@/server/services/customer.service";
 import { UserList } from "./_components/user-list";
-import { canUserRole } from "@/lib/auth/session";
-import { PermissionError } from "@/lib/rbac";
+import { canUserRole, canUserRoleAsync } from "@/lib/auth/session";
+import { PermissionError, requirePermission } from "@/lib/rbac";
 
 export default async function UsersPage({
   searchParams,
@@ -14,13 +14,35 @@ export default async function UsersPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "user")) {
-    throw new PermissionError("Alleen beheerders kunnen gebruikers beheren.");
+
+  const authzRole = session.user.role ?? session.user.roleId ?? session.user.permissions ?? "";
+  const canView =
+    canUserRole(authzRole, "view", "user") ||
+    (await canUserRoleAsync(session.user.roleId ?? session.user.role ?? "", "view", "user"));
+
+  if (!canView) {
+    try {
+      await requirePermission(
+        session.user.permissions ?? session.user.roleId ?? "",
+        "view",
+        "user"
+      );
+    } catch (_e) {
+      throw new PermissionError(
+        "Onvoldoende rechten: je hebt geen toestemming om gebruikers te bekijken."
+      );
+    }
   }
 
-  const canCreate = canUserRole(session.user.role, "create", "user");
-  const canEdit = canUserRole(session.user.role, "edit", "user");
-  const canDelete = canUserRole(session.user.role, "delete", "user");
+  const canCreate =
+    canUserRole(authzRole, "create", "user") ||
+    (await canUserRoleAsync(session.user.roleId ?? "", "create", "user"));
+  const canEdit =
+    canUserRole(authzRole, "edit", "user") ||
+    (await canUserRoleAsync(session.user.roleId ?? "", "edit", "user"));
+  const canDelete =
+    canUserRole(authzRole, "delete", "user") ||
+    (await canUserRoleAsync(session.user.roleId ?? "", "delete", "user"));
 
   const ctx = {
     userId: session.user.id,

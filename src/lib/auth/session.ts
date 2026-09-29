@@ -4,6 +4,8 @@ import {
   canWithBits,
   requirePermission,
   canWithRoleId,
+  loadPermissionsForRole,
+  emptyPermissionBits,
 } from "@/lib/rbac";
 import type {
   ResourceAction,
@@ -26,21 +28,46 @@ export interface SessionUser {
   permissions: PermissionBits;
 }
 
+function permissionsMeaningful(bits: PermissionBits | null | undefined): boolean {
+  if (!bits) return false;
+  for (const k of Object.keys(bits) as ResourceType[]) {
+    const e = bits[k];
+    if (e && (e.read || e.write)) return true;
+  }
+  return false;
+}
+
 export async function getCurrentUser(): Promise<SessionUser> {
   const session = await auth();
   if (!session?.user) throw new PermissionError("Je bent niet ingelogd.");
   const u = session.user as unknown as Partial<SessionUser>;
+
+  const basePerms = u.permissions ?? ({} as PermissionBits);
+  let permissions = basePerms;
+
+  const roleId = u.roleId ?? "";
+  if (!permissionsMeaningful(permissions) && roleId) {
+    try {
+      permissions = await loadPermissionsForRole(roleId, { force: true });
+    } catch (_e) {
+      permissions = basePerms || emptyPermissionBits();
+    }
+  }
+  if (!permissions || Object.keys(permissions).length === 0) {
+    permissions = emptyPermissionBits();
+  }
+
   return {
     id: u.id ?? "",
     role: (u.role ?? "VIEWER") as UserRole,
-    roleId: u.roleId ?? "",
+    roleId,
     roleScope: (u.roleScope ?? "INTERNAL") as RoleScope,
     roleName: u.roleName ?? "",
     email: u.email ?? "",
     name: u.name ?? "",
     customerId: u.customerId ?? null,
     customerIds: Array.isArray(u.customerIds) ? u.customerIds : [],
-    permissions: u.permissions ?? ({} as PermissionBits),
+    permissions,
   };
 }
 
@@ -115,13 +142,18 @@ export function canUserRole(
   resource: ResourceType
 ): boolean {
   if (!permissionsOrRole) return false;
+
   if (
     typeof permissionsOrRole === "object" &&
     permissionsOrRole !== null &&
     !Array.isArray(permissionsOrRole)
   ) {
-    return canWithBits(permissionsOrRole as PermissionBits, action, resource);
+    if (permissionsMeaningful(permissionsOrRole as PermissionBits)) {
+      return canWithBits(permissionsOrRole as PermissionBits, action, resource);
+    }
+    return false;
   }
+
   if (typeof permissionsOrRole === "string") {
     switch (permissionsOrRole as UserRole) {
       case "ADMIN":
@@ -139,6 +171,50 @@ export function canUserRole(
       case "VIEWER":
         return action === "view" && resource !== "audit_log";
       default:
+        if (!permissionsOrRole) return false;
+        if (typeof permissionsOrRole !== "string") return false;
+        const s = permissionsOrRole;
+        if (s.startsWith("rl_admin")) return true;
+        if (s.startsWith("rl_emp")) {
+          if (
+            resource === "user" ||
+            resource === "role" ||
+            resource === "audit_log" ||
+            resource === "setting"
+          ) {
+            return action === "view";
+          }
+          return true;
+        }
+        if (s.startsWith("rl_view")) {
+          return action === "view" && resource !== "audit_log";
+        }
+        if (s.startsWith("rl_custedit")) {
+          const wr = ["vehicle"];
+          if (wr.includes(resource)) return true;
+          const vr = [
+            "customer",
+            "tracker",
+            "sim",
+            "vehicle",
+            "subscription",
+            "invoice",
+            "dashboard",
+          ];
+          return vr.includes(resource) && action === "view";
+        }
+        if (s.startsWith("rl_custview")) {
+          const vr = [
+            "customer",
+            "tracker",
+            "sim",
+            "vehicle",
+            "subscription",
+            "invoice",
+            "dashboard",
+          ];
+          return vr.includes(resource) && action === "view";
+        }
         return false;
     }
   }
