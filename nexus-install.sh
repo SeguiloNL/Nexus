@@ -879,7 +879,7 @@ STM_DBUPDATE_SQL_EOF
   info "  Systeemrollen toepassen via prisma db execute --file"
   if [[ -n "${APP_CONTAINER_ID}" ]]; then
     info "  (A) exec in lopende stm-app..."
-    if ("${COMPOSE_CMD[@]}" exec -T stm-app sh -lc 'cd /app && npx prisma db execute --file '"'""$DBUPDATE_SQL_TMP""'" 2>&1') | tee -a "$LOG_FILE" >&2; then
+    if ("${COMPOSE_CMD[@]}" exec -T stm-app sh -lc "cd /app && npx prisma db execute --file '${DBUPDATE_SQL_TMP}' 2>&1") | tee -a "$LOG_FILE" >&2; then
       SEED_ROLES_RC=0
     fi
   fi
