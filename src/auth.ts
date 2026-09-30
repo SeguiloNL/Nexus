@@ -145,11 +145,20 @@ export const authConfig: NextAuthConfig = {
         return token;
       }
 
+      const tokenRoleName = (token as any).roleName as string | undefined;
+      const legacyRoleValues = ["ADMIN", "EMPLOYEE", "VIEWER"];
+      const hasValidRoleName =
+        typeof tokenRoleName === "string" &&
+        tokenRoleName.length > 0 &&
+        tokenRoleName !== "UNKNOWN" &&
+        legacyRoleValues.includes(tokenRoleName);
+
       const hasFullFields = Boolean(
         token &&
           typeof (token as any).roleId === "string" &&
           Array.isArray((token as any).customerIds) &&
-          (token as any).permissions
+          (token as any).permissions &&
+          hasValidRoleName
       );
       if (hasFullFields) return token;
 

@@ -73,7 +73,13 @@ export async function getCurrentUser(): Promise<SessionUser> {
     role: legacyRole,
     roleId,
     roleScope: legacyScope,
-    roleName: u.roleName ?? legacyRole,
+    roleName:
+      u.roleName &&
+      typeof u.roleName === "string" &&
+      u.roleName !== "UNKNOWN" &&
+      u.roleName.length > 0
+        ? u.roleName
+        : legacyRole,
     email: u.email ?? "",
     name: u.name ?? "",
     customerId: u.customerId ?? null,

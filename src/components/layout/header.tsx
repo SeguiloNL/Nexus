@@ -39,6 +39,24 @@ const ROLE_LABELS: Record<UserRole, string> = {
   VIEWER: "Alleen-lezen",
 };
 
+const LEGACY_ROLE_VALUES = ["ADMIN", "EMPLOYEE", "VIEWER"];
+
+function resolveRoleDisplay(
+  userRole: UserRole,
+  roleName: string | null | undefined
+): string {
+  if (
+    roleName &&
+    typeof roleName === "string" &&
+    roleName.trim().length > 0 &&
+    roleName !== "UNKNOWN" &&
+    !LEGACY_ROLE_VALUES.includes(roleName)
+  ) {
+    return roleName;
+  }
+  return ROLE_LABELS[userRole] ?? "Gebruiker";
+}
+
 const ROLE_VARIANT: Record<UserRole, "success" | "info" | "muted"> = {
   ADMIN: "success",
   EMPLOYEE: "info",
@@ -98,7 +116,7 @@ export function Header({
           className="hidden sm:inline-flex"
         >
           <Shield className="mr-1 h-3 w-3" />
-          {roleName ?? ROLE_LABELS[userRole]}
+          {resolveRoleDisplay(userRole, roleName)}
         </Badge>
 
         <DropdownMenu>
@@ -140,7 +158,7 @@ export function Header({
                 </p>
                 <p className="mt-1 text-[11px] leading-none">
                   <Badge variant={ROLE_VARIANT[userRole]}>
-                    {roleName ?? ROLE_LABELS[userRole]}
+                    {resolveRoleDisplay(userRole, roleName)}
                   </Badge>
                 </p>
                 {customerIds && customerIds.length > 0 ? (
