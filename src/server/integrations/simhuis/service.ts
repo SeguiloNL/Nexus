@@ -2,19 +2,16 @@ import { simhuisClient, SimhuisApiError, type SimhuisRequestOptions } from './cl
 import type { ActivateSimOptions, SimhuisApiResponse, SimhuisSimStatus } from './types';
 
 function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
-  const r = (raw ?? {}) as Record<string, any>;
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, any>;
   const nestedSim = r.simCard ?? r.sim ?? r.asset ?? r.device ?? r.subscription ?? r.subscriber ?? r.esimProfile ?? r.esim ?? {};
 
   const DEBUG = (process.env.DEBUG_SIMHUIS_EXTRACT ?? '0') === '1';
 
-  // ============================================================
-  // Robuuste key-alias lookup
-  // - Accepteert case-insensitive
-  // - Negeert spaties, underscores, streepjes, punten
-  // ============================================================
   const KEY_CACHE = new WeakMap<Record<string, any>, Map<string, string>>();
-  function normalizeKey(k: string): string {
-    return k
+  function normalizeKey(k: unknown): string {
+    if (k === null || k === undefined) return '';
+    const s = typeof k === 'string' ? k : String(k);
+    return s
       .toLowerCase()
       .replace(/[\s_./\-()]+/g, '');
   }
@@ -53,8 +50,8 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
       'lifecycle_status', 'lifecycleStatus'
     ) ?? (typeof r.status === 'object' && r.status ? (r.status.value ?? r.status.name ?? '') : '')
     ?? ''
-  ).toLowerCase();
-  let status: SimhuisSimStatus['status'] = statusRaw as any;
+  ).toLowerCase() ?? '';
+  let status: SimhuisSimStatus['status'] = (statusRaw || '') as any;
   if (['active', 'enabled', 'online', 'activated', 'in_service', 'provisioned'].includes(statusRaw)) status = 'active';
   else if (['inactive', 'disabled', 'offline', 'deactivated', 'retired', 'stock', 'in_stock', 'available', 'ready'].includes(statusRaw)) status = 'inactive';
   else if (['suspended', 'paused', 'barred', 'suspend', 'bar', 'hibernated', 'hibernate'].includes(statusRaw)) status = 'suspended';
@@ -122,7 +119,7 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     }
     const num = Number(match[1]);
     if (!Number.isFinite(num)) return null;
-    const unit = (match[2] || 'b').toLowerCase();
+    const unit = (match[2] && typeof match[2] === 'string' ? match[2] : 'b').toLowerCase();
     const mult = BYTE_MULTIPLIERS[unit] ?? 1;
     return num * mult;
   }
@@ -958,8 +955,10 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
             });
 
             if (result.tag === 'ok') {
-              const status = toSimStatus(result.body, iccid);
-              if (status) return status;
+              try {
+                const status = toSimStatus(result.body, iccid);
+                if (status?.iccid) return status;
+              } catch { /* bad response shape, continue discovery */ }
             }
 
             pushRanked(meta, result);
@@ -983,8 +982,10 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                   timeoutMs: 15_000,
                 });
                 if (altResult.tag === 'ok') {
-                  const status = toSimStatus(altResult.body, iccid);
-                  if (status) return status;
+                  try {
+                    const status = toSimStatus(altResult.body, iccid);
+                    if (status?.iccid) return status;
+                  } catch { /* bad response shape, continue */ }
                 }
                 pushRanked(altMeta, altResult);
                 if (altResult.tag === 'error') lastErrorResult = altResult;
@@ -1040,7 +1041,12 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                 listAttempts.push({ label: `${prefix}${pc.label}?${Object.keys(q)[0]} auth=${toAuthTag(auth)} (items=${items.length})`, items, iccidFound: found });
                 if (found) {
                   const match = items.find((s: any) => String(s.iccid ?? '').trim() === iccid);
-                  if (match) return toSimStatus(match, iccid);
+                  if (match) {
+                    try {
+                      const st = toSimStatus(match, iccid);
+                      if (st?.iccid) return st;
+                    } catch { /* bad item, continue */ }
+                  }
                 }
               } else {
                 listAttempts.push({ label: `${prefix}${pc.label} auth=${toAuthTag(auth)} HTTP ${result.statusCode}`, items: null, iccidFound: false });
@@ -1070,7 +1076,12 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
         });
         if (found) {
           const match = items.find((s: any) => String(s.iccid ?? '').trim() === iccid);
-          if (match) return toSimStatus(match, iccid);
+          if (match) {
+            try {
+              const st = toSimStatus(match, iccid);
+              if (st?.iccid) return st;
+            } catch { /* bad shape, continue */ }
+          }
         }
       } catch { /* negeer */ }
     }
@@ -1202,8 +1213,10 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
           if (result.tag === 'ok') {
             successFound = true;
             successRaw = result.body;
-            const status = toSimStatus(result.body, iccid);
-            if (status.status || status.imsi || status.msisdn || status.activatedAt) return status;
+            try {
+              const status = toSimStatus(result.body, iccid);
+              if (status.status || status.imsi || status.msisdn || status.activatedAt) return status;
+            } catch { /* bad shape, continue */ }
           } else {
             pushRanked(meta, result);
             if (result.tag === 'error') lastErrorResult = result;
@@ -1224,8 +1237,10 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
               if (altResult.tag === 'ok') {
                 successFound = true;
                 successRaw = altResult.body;
-                const status = toSimStatus(altResult.body, iccid);
-                if (status.status || status.imsi || status.msisdn || status.activatedAt) return status;
+                try {
+                  const status = toSimStatus(altResult.body, iccid);
+                  if (status.status || status.imsi || status.msisdn || status.activatedAt) return status;
+                } catch { /* bad shape, continue */ }
               } else {
                 pushRanked(altMeta, altResult);
                 if (altResult.tag === 'error') lastErrorResult = altResult;
@@ -1246,9 +1261,11 @@ export async function activateSim(options: ActivateSimOptions): Promise<SimhuisS
     : '  (geen pogingen geregistreerd)';
 
   if (successFound && successRaw !== null) {
-    const status = toSimStatus(successRaw, iccid);
-    if (!status.status) status.status = 'active';
-    return status;
+    try {
+      const status = toSimStatus(successRaw, iccid);
+      if (!status.status) status.status = 'active';
+      return status;
+    } catch { /* fall through to error */ }
   }
 
   if (lastErrorResult) {
@@ -1358,8 +1375,10 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
           if (result.tag === 'ok') {
             successFound = true;
             successRaw = result.body;
-            const status = toSimStatus(result.body, iccid);
-            if (status.status || status.imsi || status.msisdn || status.ip !== undefined) return status;
+            try {
+              const status = toSimStatus(result.body, iccid);
+              if (status.status || status.imsi || status.msisdn || status.ip !== undefined) return status;
+            } catch { /* bad shape, continue */ }
           } else {
             pushRanked(meta, result);
             if (result.tag === 'error') lastErrorResult = result;
@@ -1380,8 +1399,10 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
               if (altResult.tag === 'ok') {
                 successFound = true;
                 successRaw = altResult.body;
-                const status = toSimStatus(altResult.body, iccid);
-                if (status.status || status.imsi || status.msisdn || status.ip !== undefined) return status;
+                try {
+                  const status = toSimStatus(altResult.body, iccid);
+                  if (status.status || status.imsi || status.msisdn || status.ip !== undefined) return status;
+                } catch { /* bad shape, continue */ }
               } else {
                 pushRanked(altMeta, altResult);
                 if (altResult.tag === 'error') lastErrorResult = altResult;
@@ -1402,9 +1423,11 @@ export async function deactivateSim(iccid: string): Promise<SimhuisSimStatus> {
     : '  (geen pogingen geregistreerd)';
 
   if (successFound && successRaw !== null) {
-    const status = toSimStatus(successRaw, iccid);
-    if (!status.status) status.status = 'inactive';
-    return status;
+    try {
+      const status = toSimStatus(successRaw, iccid);
+      if (!status.status) status.status = 'inactive';
+      return status;
+    } catch { /* fall through to error */ }
   }
 
   if (lastErrorResult) {
@@ -2487,17 +2510,23 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
   try {
     const credsClient = await simhuisClient.getClient();
     if (credsClient) {
-      const creds = (credsClient as any).creds as { baseUrl: string; username: string; password: string };
+      const creds = (credsClient as any).creds as { baseUrl: string; username: string; password: string; resellerId?: string | null };
       let base = (creds.baseUrl || '').replace(/\/+$/, '');
       let bearerToken: string | null = null;
       try {
         const sc = await getSimhuisCreds();
         bearerToken = await acquireBearerToken(sc);
       } catch { bearerToken = null; }
-      const accountId = bearerToken ? getSimhuisAccountId() : null;
 
-      if (base && bearerToken && accountId) {
-        const wafHeaders: Record<string, string> = {
+      if (base) {
+        const authBasic = basicAuthHeader(creds.username, creds.password);
+        const accountId = getSimhuisAccountId() ?? null;
+
+        type EpAuth =
+          | { tag: 'basic' | 'xheaders' | 'bearer'; headers: Record<string, string>; extraBody?: Record<string, any>; extraQuery?: Record<string, any> }
+          | { tag: 'credsbody' | 'credsquery'; headers: Record<string, string>; extraBody?: Record<string, any>; extraQuery?: Record<string, any> };
+
+        const baseWafHeaders: Record<string, string> = {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
           'Accept': 'application/json, text/plain, */*',
           'Accept-Language': 'en-US,en;q=0.9,nl;q=0.8',
@@ -2514,10 +2543,48 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
           'Sec-Fetch-Site': 'same-origin',
           'X-Requested-With': 'XMLHttpRequest',
           'Connection': 'keep-alive',
-          'Authorization': `Bearer ${bearerToken}`,
-          'X-Account-Id': accountId,
-          'X-Tenant-Id': accountId,
         };
+
+        const auths: EpAuth[] = [];
+        auths.push({ tag: 'basic', headers: { ...baseWafHeaders, 'Authorization': authBasic } });
+        auths.push({
+          tag: 'xheaders',
+          headers: {
+            ...baseWafHeaders,
+            'X-API-Username': creds.username,
+            'X-API-Password': creds.password,
+            ...(creds.resellerId ? { 'X-Reseller-ID': String(creds.resellerId) } : {}),
+          },
+        });
+        auths.push({
+          tag: 'credsbody',
+          headers: { ...baseWafHeaders },
+          extraBody: {
+            username: creds.username,
+            password: creds.password,
+            ...(creds.resellerId ? { reseller_id: creds.resellerId } : {}),
+          },
+        });
+        auths.push({
+          tag: 'credsquery',
+          headers: { ...baseWafHeaders },
+          extraQuery: {
+            username: creds.username,
+            password: creds.password,
+            ...(creds.resellerId ? { reseller_id: creds.resellerId } : {}),
+          },
+        });
+        if (bearerToken && accountId) {
+          auths.push({
+            tag: 'bearer',
+            headers: {
+              ...baseWafHeaders,
+              'Authorization': `Bearer ${bearerToken}`,
+              'X-Account-Id': accountId,
+              'X-Tenant-Id': accountId,
+            },
+          });
+        }
 
         const endpoints: Array<{ path: string; method: 'GET' | 'POST'; kind: 'query' | 'json-body'; paramName: 'accountId' | 'tenantId' | 'id' }> = [
           { path: '/v3/esims',  method: 'GET', kind: 'query', paramName: 'accountId' },
@@ -2528,73 +2595,86 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
           { path: '/v3/assets', method: 'POST', kind: 'json-body', paramName: 'accountId' },
         ];
 
-        for (const ep of endpoints) {
-          try {
-            const discovered = new Map<string, number>();
-            let page = 1;
-            let safety = 0;
-            while (safety < 50) {
-              safety++;
-              const cacheKey = `${ep.method}::${ep.path}::${ep.kind}::${ep.paramName}::p${page}`;
-              if (discovered.has(cacheKey)) break;
-              discovered.set(cacheKey, 1);
-              let url = `${base}${ep.path.startsWith('/') ? ep.path : `/${ep.path}`}`;
-              let body: BodyInit | undefined;
-              const headers: Record<string, string> = { ...wafHeaders };
-              const pageAndLimit = { page, limit: 500 };
-              if (ep.method === 'GET') {
-                const sp = new URLSearchParams();
-                sp.append(ep.paramName, String(accountId));
-                sp.append('page', String(pageAndLimit.page));
-                sp.append('limit', String(pageAndLimit.limit));
-                if (options.status) sp.append('status', String(options.status));
-                const qs = sp.toString();
-                if (qs) url += `?${qs}`;
-              } else {
-                headers['Content-Type'] = 'application/json';
-                const payload: Record<string, any> = { ...pageAndLimit };
-                payload.accountId = String(accountId);
-                payload.tenantId = String(accountId);
-                payload.id = String(accountId);
-                if (options.status) payload.status = String(options.status);
-                body = JSON.stringify(payload);
-              }
-              const resp = await fetch(url, { method: ep.method, headers, body, signal: AbortSignal.timeout(20000) });
-              const ct = resp.headers.get('content-type') ?? '';
-              const text = await resp.text();
-              let parsed: unknown = null;
-              if (ct.includes('application/json')) try { parsed = JSON.parse(text); } catch { parsed = text; }
-              else try { parsed = JSON.parse(text); } catch { parsed = text; }
+        for (const auth of auths) {
+          for (const ep of endpoints) {
+            try {
+              const discovered = new Map<string, number>();
+              let page = 1;
+              let safety = 0;
+              while (safety < 50) {
+                safety++;
+                const cacheKey = `${auth.tag}::${ep.method}::${ep.path}::${ep.kind}::${ep.paramName}::p${page}`;
+                if (discovered.has(cacheKey)) break;
+                discovered.set(cacheKey, 1);
+                let url = `${base}${ep.path.startsWith('/') ? ep.path : `/${ep.path}`}`;
+                let body: BodyInit | undefined;
+                const headers: Record<string, string> = { ...auth.headers };
+                const pageAndLimit = { page, limit: 500 };
+                if (ep.method === 'GET') {
+                  const sp = new URLSearchParams();
+                  if (accountId && ep.paramName) sp.append(ep.paramName, String(accountId));
+                  sp.append('page', String(pageAndLimit.page));
+                  sp.append('limit', String(pageAndLimit.limit));
+                  if (options.status) sp.append('status', String(options.status));
+                  if (auth.extraQuery) {
+                    for (const [k, v] of Object.entries(auth.extraQuery)) {
+                      if (v !== undefined && v !== null && v !== '') sp.append(k, String(v));
+                    }
+                  }
+                  const qs = sp.toString();
+                  if (qs) url += `?${qs}`;
+                } else {
+                  headers['Content-Type'] = 'application/json';
+                  const payload: Record<string, any> = { ...pageAndLimit };
+                  if (accountId) {
+                    payload.accountId = String(accountId);
+                    payload.tenantId = String(accountId);
+                    payload.id = String(accountId);
+                  }
+                  if (options.status) payload.status = String(options.status);
+                  if (auth.extraBody) Object.assign(payload, auth.extraBody);
+                  body = JSON.stringify(payload);
+                }
+                const resp = await fetch(url, { method: ep.method, headers, body, signal: AbortSignal.timeout(20000) });
+                const ct = resp.headers.get('content-type') ?? '';
+                const text = await resp.text();
+                let parsed: unknown = null;
+                if (ct.includes('application/json')) try { parsed = JSON.parse(text); } catch { parsed = text; }
+                else try { parsed = JSON.parse(text); } catch { parsed = text; }
 
-              if (!resp.ok) break;
-              const arr = extractSimList(parsed);
-              if (!arr || arr.length === 0) break;
-              const batchItems: SimhuisSimStatus[] = [];
-              for (const raw of arr) {
-                const nested = (raw as any)?.simCard ?? (raw as any)?.sim ?? (raw as any)?.asset ?? (raw as any)?.device ?? (raw as any)?.subscription ?? (raw as any)?.subscriber ?? {};
-                const iccidStr = String(
-                  (raw as any).iccid ?? (raw as any).sim_iccid ?? (raw as any).simIccid ?? (raw as any).eid
-                    ?? nested?.iccid ?? nested?.sim_iccid ?? nested?.simIccid ?? nested?.eid ?? ''
-                ).trim();
-                const s = toSimStatus(raw, iccidStr);
-                if (s?.iccid) batchItems.push(s);
+                if (!resp.ok) break;
+                const arr = extractSimList(parsed);
+                if (!arr || arr.length === 0) break;
+                const batchItems: SimhuisSimStatus[] = [];
+                for (const raw of arr) {
+                  try {
+                    const nested = (raw as any)?.simCard ?? (raw as any)?.sim ?? (raw as any)?.asset ?? (raw as any)?.device ?? (raw as any)?.subscription ?? (raw as any)?.subscriber ?? {};
+                    const iccidStr = String(
+                      (raw as any).iccid ?? (raw as any).sim_iccid ?? (raw as any).simIccid ?? (raw as any).eid
+                        ?? nested?.iccid ?? nested?.sim_iccid ?? nested?.simIccid ?? nested?.eid ?? ''
+                    ).trim();
+                    const s = toSimStatus(raw, iccidStr);
+                    if (s?.iccid) batchItems.push(s);
+                  } catch {
+                    // bad item - skip
+                  }
+                }
+                const before = all.length;
+                dedupe(batchItems);
+                const added = all.length - before;
+                const total = extractTotal(parsed, batchItems.length);
+                const hasMore = typeof total === 'number'
+                  ? (page * pageAndLimit.limit) < total
+                  : batchItems.length >= pageAndLimit.limit;
+                if (!hasMore || batchItems.length === 0) break;
+                page++;
+                if (added === 0 && batchItems.length > 0) {
+                  break;
+                }
               }
-              const before = all.length;
-              dedupe(batchItems);
-              const added = all.length - before;
-              const total = extractTotal(parsed, batchItems.length);
-              const hasMore = typeof total === 'number'
-                ? (page * pageAndLimit.limit) < total
-                : batchItems.length >= pageAndLimit.limit;
-              if (!hasMore || batchItems.length === 0) break;
-              page++;
-              if (added === 0 && batchItems.length > 0) {
-                // Same page returned nothing new — duplicate endpoint / param combo → move on
-                break;
-              }
+            } catch {
+              // move on to next endpoint/auth combo
             }
-          } catch {
-            // move on to next endpoint
           }
         }
       }
