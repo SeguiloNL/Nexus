@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "./audit.service";
-import { requirePermission, PermissionError } from "@/lib/rbac";
+import { pickAuth, requirePermission, PermissionError } from "@/lib/rbac";
 import type { Prisma } from "@prisma/client";
 import type {
   TrackerAssignment,
@@ -43,7 +43,7 @@ export async function assignTracker(
   ctx: Ctx,
   opts: { vehicleId?: string; reason?: AssignmentReason } = {}
 ): Promise<TrackerAssignment> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "subscription");
+  await requirePermission(pickAuth(ctx), "edit", "subscription");
   return prisma.$transaction(async (tx) => {
     const sub = await tx.subscription.findUniqueOrThrow({
       where: { id: subscriptionId, deletedAt: null },
@@ -110,7 +110,7 @@ export async function unassignTracker(
   ctx: Ctx,
   opts: { newStatus?: TrackerStatusEnum; reason?: string } = {}
 ): Promise<TrackerAssignment> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "subscription");
+  await requirePermission(pickAuth(ctx), "edit", "subscription");
   return prisma.$transaction(async (tx) => {
     const active: any = await findActiveTrackerAssignment(tx, trackerId);
     if (!active) {
@@ -164,7 +164,7 @@ export async function replaceTracker(
   ctx: Ctx,
   reason?: AssignmentReason
 ): Promise<{ old: TrackerAssignment; replacement: TrackerAssignment }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "subscription");
+  await requirePermission(pickAuth(ctx), "edit", "subscription");
   return prisma.$transaction(async (tx) => {
     if (oldTrackerId === newTrackerId) {
       throw new Error("Nieuwe tracker is dezelfde als de oude.");
@@ -249,7 +249,7 @@ export async function assignSim(
   ctx: Ctx,
   opts: { reason?: AssignmentReason } = {}
 ): Promise<SimAssignment> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "subscription");
+  await requirePermission(pickAuth(ctx), "edit", "subscription");
   return prisma.$transaction(async (tx) => {
     const sub = await tx.subscription.findUniqueOrThrow({
       where: { id: subscriptionId, deletedAt: null },
@@ -312,7 +312,7 @@ export async function unassignSim(
   ctx: Ctx,
   opts: { newStatus?: SimStatusEnum; reason?: string } = {}
 ): Promise<SimAssignment> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "subscription");
+  await requirePermission(pickAuth(ctx), "edit", "subscription");
   return prisma.$transaction(async (tx) => {
     const active: any = await findActiveSimAssignment(tx, simId);
     if (!active) {
@@ -366,7 +366,7 @@ export async function replaceSim(
   ctx: Ctx,
   reason?: AssignmentReason
 ): Promise<{ old: SimAssignment; replacement: SimAssignment }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "subscription");
+  await requirePermission(pickAuth(ctx), "edit", "subscription");
   return prisma.$transaction(async (tx) => {
     if (oldSimId === newSimId) {
       throw new Error("Nieuwe SIM is dezelfde als de oude.");

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
-import { requirePermission } from "@/lib/rbac";
+import { pickAuth, requirePermission } from "@/lib/rbac";
 import type {
   CreateSimInput,
   PaginatedResult,
@@ -129,7 +129,7 @@ export async function createSim(
   input: CreateSimInput,
   ctx: Ctx
 ): Promise<PrismaSim> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "sim");
+  await requirePermission(pickAuth(ctx), "create", "sim");
 
   return prisma.$transaction(async (tx) => {
     const created = await tx.sIM.create({
@@ -164,7 +164,7 @@ export async function updateSim(
   input: UpdateSimInput,
   ctx: Ctx
 ): Promise<PrismaSim> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "sim");
+  await requirePermission(pickAuth(ctx), "edit", "sim");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.sIM.findUniqueOrThrow({
@@ -221,7 +221,7 @@ export async function softDeleteSim(
   id: string,
   ctx: Ctx
 ): Promise<PrismaSim> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "sim");
+  await requirePermission(pickAuth(ctx), "delete", "sim");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.sIM.findUniqueOrThrow({
@@ -265,7 +265,7 @@ export async function bulkSoftDeleteSims(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "sim");
+  await requirePermission(pickAuth(ctx), "delete", "sim");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
     const where: Prisma.SIMWhereInput = { id: { in: ids }, deletedAt: null };
@@ -369,7 +369,7 @@ export async function bulkImportSims(
   validRows: SimCsvImportPreviewResult["valid"],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "sim");
+  await requirePermission(pickAuth(ctx), "create", "sim");
 
   const ids: string[] = [];
   await prisma.$transaction(async (tx) => {

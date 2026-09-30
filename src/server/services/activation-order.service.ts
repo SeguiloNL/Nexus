@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
 import { generateOrderNumber, generateSubscriptionNumber } from "@/lib/identifiers";
-import { requirePermission } from "@/lib/rbac";
+import { pickAuth, requirePermission } from "@/lib/rbac";
 import type { Prisma, ActivationOrder } from "@prisma/client";
 import {
   assignSim,
@@ -196,7 +196,7 @@ export async function createDraftOrder(
   input: CreateActivationOrderInput,
   ctx: Ctx
 ): Promise<ActivationOrder> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "activation_order");
+  await requirePermission(pickAuth(ctx), "create", "activation_order");
 
   if (ctx.customerScope && ctx.customerScope.length > 0) {
     if (!ctx.customerScope.includes(input.customerId)) {
@@ -242,7 +242,7 @@ export async function updateOrder(
   input: Partial<UpdateActivationOrderInput>,
   ctx: Ctx
 ): Promise<ActivationOrder> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "activation_order");
+  await requirePermission(pickAuth(ctx), "edit", "activation_order");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.activationOrder.findUniqueOrThrow({
@@ -292,7 +292,7 @@ export async function updateOrder(
 }
 
 export async function markReady(id: string, ctx: Ctx): Promise<ActivationOrder> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "activation_order");
+  await requirePermission(pickAuth(ctx), "edit", "activation_order");
 
   return prisma.$transaction(async (tx) => {
     const existing: any = await tx.activationOrder.findUniqueOrThrow({
@@ -355,7 +355,7 @@ export async function cancelOrder(
   ctx: Ctx,
   reason?: string
 ): Promise<ActivationOrder> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "activation_order");
+  await requirePermission(pickAuth(ctx), "edit", "activation_order");
 
   return prisma.$transaction(async (tx) => {
     const existing: any = await tx.activationOrder.findUniqueOrThrow({
@@ -393,7 +393,7 @@ export async function cancelOrder(
 }
 
 export async function retryFailed(id: string, ctx: Ctx): Promise<ActivationOrder> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "activation_order");
+  await requirePermission(pickAuth(ctx), "edit", "activation_order");
 
   return prisma.$transaction(async (tx) => {
     const existing: any = await tx.activationOrder.findUniqueOrThrow({
@@ -430,7 +430,7 @@ export async function retryFailed(id: string, ctx: Ctx): Promise<ActivationOrder
 }
 
 export async function deleteOrder(id: string, ctx: Ctx): Promise<void> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "activation_order");
+  await requirePermission(pickAuth(ctx), "delete", "activation_order");
 
   await prisma.$transaction(async (tx) => {
     const existing: any = await tx.activationOrder.findUniqueOrThrow({
@@ -530,7 +530,7 @@ function buildDeviceModel(brand: string | null | undefined, model: string | null
  *  5. Na succes: Inserve sync queue.
  */
 export async function completeActivation(id: string, ctx: Ctx) {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "activation_order");
+  await requirePermission(pickAuth(ctx), "edit", "activation_order");
 
   const initial = await prisma.activationOrder.findUnique({
     where: { id },

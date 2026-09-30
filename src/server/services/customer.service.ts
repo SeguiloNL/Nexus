@@ -13,7 +13,7 @@ import type { CustomerStatus, UserRole, RoleScope } from "@/types/enums";
 import type { Prisma, Customer as PrismaCustomer } from "@prisma/client";
 import { CreateCustomerSchema } from "@/server/validators/customer";
 import type { PermissionBits } from "@/types/next-auth";
-import { requirePermission } from "@/lib/rbac";
+import { pickAuth, requirePermission } from "@/lib/rbac";
 
 type Ctx = {
   userId: string;
@@ -222,7 +222,7 @@ export async function createCustomer(
   input: CreateCustomerInput,
   ctx: Ctx
 ): Promise<PrismaCustomer> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "customer");
+  await requirePermission(pickAuth(ctx), "create", "customer");
 
   if (ctx.customerScope && ctx.customerScope.length > 0) {
     if (input.parentCustomerId && !ctx.customerScope.includes(input.parentCustomerId)) {
@@ -268,7 +268,7 @@ export async function updateCustomer(
   input: UpdateCustomerInput,
   ctx: Ctx
 ): Promise<PrismaCustomer> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "customer");
+  await requirePermission(pickAuth(ctx), "edit", "customer");
 
   if (ctx.customerScope && ctx.customerScope.length > 0) {
     if (!ctx.customerScope.includes(id)) {
@@ -313,7 +313,7 @@ export async function softDeleteCustomer(
   id: string,
   ctx: Ctx
 ): Promise<PrismaCustomer> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "customer");
+  await requirePermission(pickAuth(ctx), "delete", "customer");
 
   if (ctx.customerScope && ctx.customerScope.length > 0) {
     if (!ctx.customerScope.includes(id)) {
@@ -413,7 +413,7 @@ export async function bulkImportCustomers(
   validRows: CustomerCsvImportPreviewResult["valid"],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "customer");
+  await requirePermission(pickAuth(ctx), "create", "customer");
 
   if (ctx.customerScope && ctx.customerScope.length > 0) {
     for (const { data } of validRows) {

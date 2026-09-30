@@ -9,7 +9,7 @@ import type {
 import type { PermissionBits } from "@/types/next-auth.d";
 import { RoleScope, type UserRole } from "@/types/enums";
 import type { Prisma, User } from "@prisma/client";
-import { requirePermission } from "@/lib/rbac";
+import { requirePermission, pickAuth } from "@/lib/rbac";
 
 type Ctx = {
   userId: string;
@@ -39,7 +39,7 @@ export async function findManyUsers(
 ): Promise<PaginatedResult<User>> {
   if (ctx) {
     await requirePermission(
-      ctx.permissions ?? ctx.roleId ?? ctx.userRole,
+      pickAuth(ctx),
       "view",
       "user"
     );
@@ -101,7 +101,7 @@ export async function findManyUsers(
 export async function findUserById(id: string, ctx?: Ctx) {
   if (ctx) {
     await requirePermission(
-      ctx.permissions ?? ctx.roleId ?? ctx.userRole,
+      pickAuth(ctx),
       "view",
       "user"
     );
@@ -157,7 +157,7 @@ export async function createUser(
   ctx: Ctx
 ): Promise<User> {
   await requirePermission(
-    ctx.permissions ?? ctx.roleId ?? ctx.userRole,
+    pickAuth(ctx),
     "create",
     "user"
   );
@@ -236,7 +236,7 @@ export async function updateUser(
   ctx: Ctx
 ): Promise<User> {
   await requirePermission(
-    ctx.permissions ?? ctx.roleId ?? ctx.userRole,
+    pickAuth(ctx),
     "edit",
     "user"
   );
@@ -353,7 +353,7 @@ export async function updateUser(
 
 export async function deleteUser(id: string, ctx: Ctx): Promise<User> {
   await requirePermission(
-    ctx.permissions ?? ctx.roleId ?? ctx.userRole,
+    pickAuth(ctx),
     "delete",
     "user"
   );

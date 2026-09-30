@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { requirePermission } from "@/lib/rbac";
+import { pickAuth, requirePermission } from "@/lib/rbac";
 import type { UserRole, RoleScope } from "@/types/enums";
 import type { PermissionBits } from "@/types/next-auth";
 import type {
@@ -70,7 +70,7 @@ export async function findManyAuditLogs(
   >
 > {
   if (ctx) {
-    await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "view", "audit_log");
+    await requirePermission(pickAuth(ctx), "view", "audit_log");
   }
 
   const {

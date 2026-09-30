@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
-import { requirePermission } from "@/lib/rbac";
+import { pickAuth, requirePermission } from "@/lib/rbac";
 import type {
   CreateTrackerInput,
   PaginatedResult,
@@ -150,7 +150,7 @@ export async function createTracker(
   input: CreateTrackerInput,
   ctx: Ctx
 ): Promise<PrismaTracker> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "tracker");
+  await requirePermission(pickAuth(ctx), "create", "tracker");
 
   return prisma.$transaction(async (tx) => {
     const created = await tx.tracker.create({
@@ -185,7 +185,7 @@ export async function updateTracker(
   input: UpdateTrackerInput,
   ctx: Ctx
 ): Promise<PrismaTracker> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "tracker");
+  await requirePermission(pickAuth(ctx), "edit", "tracker");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.tracker.findUniqueOrThrow({
@@ -242,7 +242,7 @@ export async function softDeleteTracker(
   id: string,
   ctx: Ctx
 ): Promise<PrismaTracker> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "tracker");
+  await requirePermission(pickAuth(ctx), "delete", "tracker");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.tracker.findUniqueOrThrow({
@@ -286,7 +286,7 @@ export async function bulkSoftDeleteTrackers(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "tracker");
+  await requirePermission(pickAuth(ctx), "delete", "tracker");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
     const where: Prisma.TrackerWhereInput = { id: { in: ids }, deletedAt: null };
@@ -395,7 +395,7 @@ export async function bulkImportTrackers(
   validRows: CsvImportPreviewResult["valid"],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "tracker");
+  await requirePermission(pickAuth(ctx), "create", "tracker");
 
   const ids: string[] = [];
   await prisma.$transaction(async (tx) => {

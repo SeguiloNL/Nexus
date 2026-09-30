@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
 import { generateInvoiceNumber } from "@/lib/identifiers";
-import { requirePermission, PermissionError, hasMinRole } from "@/lib/rbac";
+import { pickAuth, requirePermission, PermissionError, hasMinRole } from "@/lib/rbac";
 import type { PaginatedResult } from "@/types/domain";
 import type { InvoiceStatus, RoleScope } from "@/types/enums";
 import { UserRole } from "@/types/enums";
@@ -88,7 +88,7 @@ export async function generateMonthly(
   month: number,
   ctx: Ctx
 ): Promise<MonthlyGenerationResult> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "invoice");
+  await requirePermission(pickAuth(ctx), "create", "invoice");
 
   const { start: periodStart, end: periodEnd } = getMonthBounds(year, month);
   const startStr = periodStart.toISOString().slice(0, 10);
@@ -226,7 +226,7 @@ export async function findManyInvoices(
   },
   ctx: Ctx
 ): Promise<PaginatedResult<PrismaInvoice>> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "view", "invoice");
+  await requirePermission(pickAuth(ctx), "view", "invoice");
   const {
     page = 1,
     perPage = 25,
@@ -302,7 +302,7 @@ export async function findInvoicesBySubscriptionId(
   subscriptionId: string,
   ctx: Ctx
 ): Promise<PrismaInvoice[]> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "view", "invoice");
+  await requirePermission(pickAuth(ctx), "view", "invoice");
   if (ctx.customerScope && ctx.customerScope.length > 0) {
     const sub = await prisma.subscription.findUnique({ where: { id: subscriptionId } });
     if (!sub || !ctx.customerScope.includes(sub.customerId)) {
@@ -317,7 +317,7 @@ export async function findInvoicesBySubscriptionId(
 }
 
 export async function findInvoiceById(id: string, ctx: Ctx) {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "view", "invoice");
+  await requirePermission(pickAuth(ctx), "view", "invoice");
   if (ctx.customerScope && ctx.customerScope.length > 0) {
     const inv = await prisma.invoice.findUnique({ where: { id }, select: { customerId: true } });
     if (!inv || !ctx.customerScope.includes(inv.customerId)) {
@@ -335,7 +335,7 @@ export async function markInvoicePaid(
   ctx: Ctx,
   paidAt?: Date
 ): Promise<PrismaInvoice> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "invoice");
+  await requirePermission(pickAuth(ctx), "edit", "invoice");
   return prisma.$transaction(async (tx) => {
     const existing = await tx.invoice.findUniqueOrThrow({ where: { id } });
     if (ctx.customerScope && ctx.customerScope.length > 0) {
@@ -371,7 +371,7 @@ export async function markInvoiceSent(
   ctx: Ctx,
   sentAt?: Date
 ): Promise<PrismaInvoice> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "invoice");
+  await requirePermission(pickAuth(ctx), "edit", "invoice");
   return prisma.$transaction(async (tx) => {
     const existing = await tx.invoice.findUniqueOrThrow({ where: { id } });
     if (ctx.customerScope && ctx.customerScope.length > 0) {
@@ -409,7 +409,7 @@ export async function updateInvoiceStatus(
   ctx: Ctx,
   note?: string
 ): Promise<PrismaInvoice> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "invoice");
+  await requirePermission(pickAuth(ctx), "edit", "invoice");
   return prisma.$transaction(async (tx) => {
     const existing = await tx.invoice.findUniqueOrThrow({ where: { id } });
     if (ctx.customerScope && ctx.customerScope.length > 0) {
@@ -444,7 +444,7 @@ export async function updateInvoiceStatus(
 }
 
 export async function softDeleteInvoice(id: string, ctx: Ctx): Promise<PrismaInvoice> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "invoice");
+  await requirePermission(pickAuth(ctx), "delete", "invoice");
   return prisma.$transaction(async (tx) => {
     const existing = await tx.invoice.findUniqueOrThrow({ where: { id } });
     if (ctx.customerScope && ctx.customerScope.length > 0) {
@@ -469,7 +469,7 @@ export async function softDeleteInvoice(id: string, ctx: Ctx): Promise<PrismaInv
 }
 
 export async function hardDeleteInvoice(id: string, ctx: Ctx): Promise<PrismaInvoice> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "invoice");
+  await requirePermission(pickAuth(ctx), "delete", "invoice");
   if (!hasMinRole(ctx.userRole, UserRole.ADMIN)) {
     throw new PermissionError(
       "Onvoldoende rechten: alleen ADMIN mag facturen definitief verwijderen uit het systeem."
@@ -498,7 +498,7 @@ export async function bulkCancelInvoices(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "invoice");
+  await requirePermission(pickAuth(ctx), "delete", "invoice");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
     const now = new Date();
@@ -543,7 +543,7 @@ export async function bulkMarkInvoicesSent(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "invoice");
+  await requirePermission(pickAuth(ctx), "edit", "invoice");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
     const rows = await tx.invoice.findMany({
@@ -587,7 +587,7 @@ export async function bulkMarkInvoicesPaid(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "invoice");
+  await requirePermission(pickAuth(ctx), "edit", "invoice");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
     const rows = await tx.invoice.findMany({
@@ -631,7 +631,7 @@ export async function bulkHardDeleteInvoices(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "invoice");
+  await requirePermission(pickAuth(ctx), "delete", "invoice");
   if (!hasMinRole(ctx.userRole, UserRole.ADMIN)) {
     throw new PermissionError(
       "Onvoldoende rechten: alleen ADMIN mag facturen definitief verwijderen uit het systeem."

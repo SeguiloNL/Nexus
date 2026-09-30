@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
-import { requirePermission } from "@/lib/rbac";
+import { pickAuth, requirePermission } from "@/lib/rbac";
 import type {
   CreateVehicleInput,
   PaginatedResult,
@@ -130,7 +130,7 @@ export async function createVehicle(
   input: CreateVehicleInput,
   ctx: Ctx
 ): Promise<PrismaVehicle> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "vehicle");
+  await requirePermission(pickAuth(ctx), "create", "vehicle");
 
   if (ctx.customerScope && ctx.customerScope.length > 0) {
     if (!ctx.customerScope.includes(input.customerId)) {
@@ -166,7 +166,7 @@ export async function updateVehicle(
   input: UpdateVehicleInput,
   ctx: Ctx
 ): Promise<PrismaVehicle> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "vehicle");
+  await requirePermission(pickAuth(ctx), "edit", "vehicle");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.vehicle.findUniqueOrThrow({
@@ -209,7 +209,7 @@ export async function softDeleteVehicle(
   id: string,
   ctx: Ctx
 ): Promise<PrismaVehicle> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "vehicle");
+  await requirePermission(pickAuth(ctx), "delete", "vehicle");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.vehicle.findUniqueOrThrow({
@@ -241,7 +241,7 @@ export async function bulkSoftDeleteVehicles(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "vehicle");
+  await requirePermission(pickAuth(ctx), "delete", "vehicle");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
     const where: Prisma.VehicleWhereInput = { id: { in: ids }, deletedAt: null };

@@ -64,6 +64,52 @@ export function actionToBit(action: ResourceAction): PermissionActionBit {
   return "write";
 }
 
+export function permissionsMeaningful(bits: PermissionBits | null | undefined): boolean {
+  if (!bits) return false;
+  for (const k of Object.keys(bits) as ResourceType[]) {
+    const e = bits[k];
+    if (e && (e.read || e.write)) return true;
+  }
+  return false;
+}
+
+type MinimalAuthzCtx = {
+  permissions?: PermissionBits | null;
+  roleId?: string | null;
+  userRole?: UserRole;
+  roleScope?: RoleScope | null;
+};
+
+export function pickAuth(
+  ctx: MinimalAuthzCtx
+): PermissionBits | string {
+  if (permissionsMeaningful(ctx.permissions)) {
+    return ctx.permissions as PermissionBits;
+  }
+
+  const scope = (ctx.roleScope ?? RoleScope.INTERNAL) as RoleScope;
+
+  if (typeof ctx.roleId === "string" && ctx.roleId) {
+    if (
+      ctx.roleId === UserRole.ADMIN ||
+      ctx.roleId === UserRole.EMPLOYEE ||
+      ctx.roleId === UserRole.VIEWER
+    ) {
+      return buildLegacyPermissionsForRole(ctx.roleId as UserRole, scope);
+    }
+  }
+
+  if (ctx.userRole) {
+    return buildLegacyPermissionsForRole(ctx.userRole, scope);
+  }
+
+  if (typeof ctx.roleId === "string" && ctx.roleId) {
+    return ctx.roleId;
+  }
+
+  return emptyPermissionBits();
+}
+
 type RoleIdCanArgs = [roleId: string, action: ResourceAction, resource: ResourceType];
 type BitsCanArgs = [
   bits: PermissionBits | null | undefined,

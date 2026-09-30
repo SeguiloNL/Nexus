@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
 import { generateSubscriptionNumber } from "@/lib/identifiers";
-import { requirePermission } from "@/lib/rbac";
+import { pickAuth, requirePermission } from "@/lib/rbac";
 import type {
   PaginatedResult,
   CreateSubscriptionInput,
@@ -184,7 +184,7 @@ export async function createSubscription(
   input: CreateSubscriptionInput,
   ctx: Ctx
 ): Promise<PrismaSub> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "create", "subscription");
+  await requirePermission(pickAuth(ctx), "create", "subscription");
 
   if (ctx.customerScope && ctx.customerScope.length > 0) {
     if (!ctx.customerScope.includes(input.customerId)) {
@@ -225,7 +225,7 @@ async function transitionStatus(
   auditAction: any,
   reason?: string
 ): Promise<PrismaSub> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "subscription");
+  await requirePermission(pickAuth(ctx), "edit", "subscription");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.subscription.findUniqueOrThrow({
@@ -311,7 +311,7 @@ export async function updateSubscription(
   input: Partial<Pick<CreateSubscriptionInput, "notes" | "billingCycle" | "monthlyPrice" | "endDate">>,
   ctx: Ctx
 ): Promise<PrismaSub> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "edit", "subscription");
+  await requirePermission(pickAuth(ctx), "edit", "subscription");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.subscription.findUniqueOrThrow({
@@ -348,7 +348,7 @@ export async function updateSubscription(
 }
 
 export async function softDeleteSubscription(id: string, ctx: Ctx) {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "subscription");
+  await requirePermission(pickAuth(ctx), "delete", "subscription");
 
   return prisma.$transaction(async (tx) => {
     const existing = await tx.subscription.findUniqueOrThrow({
@@ -380,7 +380,7 @@ export async function bulkSoftDeleteSubscriptions(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "subscription");
+  await requirePermission(pickAuth(ctx), "delete", "subscription");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
     const where: Prisma.SubscriptionWhereInput = { id: { in: ids }, deletedAt: null };
@@ -415,7 +415,7 @@ export async function bulkCancelSubscriptions(
   ids: string[],
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
-  await requirePermission(ctx.permissions ?? ctx.roleId ?? ctx.userRole, "delete", "subscription");
+  await requirePermission(pickAuth(ctx), "delete", "subscription");
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
     const where: Prisma.SubscriptionWhereInput = {
