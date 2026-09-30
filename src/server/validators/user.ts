@@ -11,8 +11,8 @@ export const CreateUserSchema = z.object({
   name: z.string().trim().min(1, "Naam is verplicht"),
   password: z.string().min(8, "Wachtwoord moet minimaal 8 tekens bevatten"),
   role: z.nativeEnum(UserRole, { message: "Ongeldige rol" }).optional(),
-  roleId: z.string().cuid("Ongeldige rol ID").optional(),
-  customerId: z.string().cuid("Ongeldig klant ID").optional().nullable(),
+  roleId: z.string().min(1, "Rol-ID is verplicht").optional(),
+  customerId: z.string().min(1, "Klant-ID is verplicht").optional().nullable(),
 }).refine((data) => (data.roleId ? true : data.role !== undefined), {
   message: "Een rol (roleId of role) is verplicht",
   path: ["roleId"],
@@ -32,8 +32,8 @@ export const UpdateUserSchema = z.object({
     .optional()
     .or(z.literal("").transform(() => undefined)),
   role: z.nativeEnum(UserRole, { message: "Ongeldige rol" }).optional(),
-  roleId: z.string().cuid("Ongeldige rol ID").optional(),
-  customerId: z.string().cuid("Ongeldig klant ID").optional().nullable(),
+  roleId: z.string().min(1, "Rol-ID is verplicht").optional(),
+  customerId: z.string().min(1, "Klant-ID is verplicht").optional().nullable(),
 });
 
 export const LoginSchema = z.object({
