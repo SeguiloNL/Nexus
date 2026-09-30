@@ -7,7 +7,7 @@ import type {
   UpdateUserInput,
 } from "@/types/domain";
 import type { PermissionBits } from "@/types/next-auth.d";
-import { RoleScope, type UserRole } from "@/types/enums";
+import { RoleScope, UserRole } from "@/types/enums";
 import type { Prisma, User } from "@prisma/client";
 import { requirePermission, pickAuth } from "@/lib/rbac";
 
@@ -86,6 +86,24 @@ export async function findManyUsers(
       orderBy: { [sortKey]: order } as Prisma.UserOrderByWithRelationInput,
       take: perPage,
       skip,
+      include: {
+        roleObj: {
+          select: {
+            id: true,
+            name: true,
+            scope: true,
+            isSystem: true,
+            description: true,
+          },
+        },
+        customer: {
+          select: {
+            id: true,
+            customerNumber: true,
+            companyName: true,
+          },
+        },
+      },
     }),
   ]);
 
@@ -106,7 +124,27 @@ export async function findUserById(id: string, ctx?: Ctx) {
       "user"
     );
   }
-  const user = await prisma.user.findUnique({ where: { id } });
+  const user = await prisma.user.findUnique({
+    where: { id },
+    include: {
+      roleObj: {
+        select: {
+          id: true,
+          name: true,
+          scope: true,
+          isSystem: true,
+          description: true,
+        },
+      },
+      customer: {
+        select: {
+          id: true,
+          customerNumber: true,
+          companyName: true,
+        },
+      },
+    },
+  });
   if (!user) return null;
   if (ctx?.customerScope && ctx.customerScope.length > 0) {
     if (!user.customerId || !ctx.customerScope.includes(user.customerId)) {
@@ -120,34 +158,74 @@ export async function findUserByEmail(email: string) {
   return prisma.user.findUnique({ where: { email } });
 }
 
+function legacyRoleForScope(scope: RoleScope): UserRole {
+  switch (scope) {
+    case RoleScope.CUSTOMER:
+      return UserRole.VIEWER;
+    case RoleScope.INTERNAL:
+    case RoleScope.RESELLER:
+    case RoleScope.PARTNER:
+    default:
+      return UserRole.EMPLOYEE;
+  }
+}
+
+function legacyRoleForSystemRole(name: string): UserRole | null {
+  for (const [enumKey, label] of Object.entries(DEFAULT_ROLE_NAMES)) {
+    if (label === name || name === `${label}`) {
+      return enumKey as UserRole;
+    }
+  }
+  if (name === "Beheerder") return UserRole.ADMIN;
+  if (name === "Medewerker") return UserRole.EMPLOYEE;
+  if (name === "Alleen-lezen" || name === "Alleen lezen") return UserRole.VIEWER;
+  return null;
+}
+
 async function resolveRoleIdForLegacy(
   tx: Prisma.TransactionClient,
   legacyRole?: UserRole,
   explicitRoleId?: string
-): Promise<{ roleId: string; scope: RoleScope }> {
+): Promise<{ roleId: string; scope: RoleScope; legacyRole: UserRole }> {
   if (explicitRoleId) {
     const role = await tx.role.findUnique({
       where: { id: explicitRoleId },
-      select: { id: true, scope: true },
+      select: { id: true, scope: true, isSystem: true, name: true },
     });
     if (!role) throw new Error("De geselecteerde rol bestaat niet.");
-    return { roleId: role.id, scope: role.scope as RoleScope };
+    const matched = role.isSystem ? legacyRoleForSystemRole(role.name) : null;
+    return {
+      roleId: role.id,
+      scope: role.scope as RoleScope,
+      legacyRole: matched ?? legacyRoleForScope(role.scope as RoleScope),
+    };
   }
   if (legacyRole) {
     const roleName = DEFAULT_ROLE_NAMES[legacyRole] ?? legacyRole;
     const role = await tx.role.findFirst({
       where: { name: roleName, isSystem: true },
-      select: { id: true, scope: true },
+      select: { id: true, scope: true, isSystem: true, name: true },
     });
     if (!role) {
       const fallback = await tx.role.findFirst({
-        select: { id: true, scope: true },
+        select: { id: true, scope: true, isSystem: true, name: true },
         orderBy: { createdAt: "asc" },
       });
       if (!fallback) throw new Error("Geen standaard rol gevonden.");
-      return { roleId: fallback.id, scope: fallback.scope as RoleScope };
+      const matched = fallback.isSystem
+        ? legacyRoleForSystemRole(fallback.name)
+        : null;
+      return {
+        roleId: fallback.id,
+        scope: fallback.scope as RoleScope,
+        legacyRole: matched ?? legacyRoleForScope(fallback.scope as RoleScope),
+      };
     }
-    return { roleId: role.id, scope: role.scope as RoleScope };
+    return {
+      roleId: role.id,
+      scope: role.scope as RoleScope,
+      legacyRole: legacyRole,
+    };
   }
   throw new Error("Een rol is verplicht.");
 }
@@ -168,7 +246,7 @@ export async function createUser(
       throw new Error("Er bestaat al een gebruiker met dit e-mailadres.");
     }
 
-    const { roleId, scope } = await resolveRoleIdForLegacy(
+    const { roleId, scope, legacyRole } = await resolveRoleIdForLegacy(
       tx,
       input.role,
       input.roleId
@@ -200,11 +278,12 @@ export async function createUser(
     }
 
     const passwordHash = await hashPassword(input.password);
+    const finalRole = input.role ?? legacyRole;
     const created = await tx.user.create({
       data: {
         email: input.email,
         name: input.name,
-        role: input.role ?? "VIEWER",
+        role: finalRole,
         roleId,
         customerId: finalCustomerId,
         passwordHash,
@@ -265,7 +344,7 @@ export async function updateUser(
     if (changingRole) {
       const resolved = await resolveRoleIdForLegacy(tx, input.role, input.roleId);
       (data as any).roleId = resolved.roleId;
-      if (input.role !== undefined) data.role = input.role;
+      data.role = input.role ?? resolved.legacyRole;
 
       if (resolved.scope === RoleScope.CUSTOMER) {
         const nextCustomerId =
