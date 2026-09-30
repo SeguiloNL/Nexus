@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useRef } from "react";
 import { useFormState } from "react-dom";
 import {
   ArrowLeft,
@@ -113,6 +114,21 @@ export function SimDetail({
     syncUsageAction.bind(null, simId),
     { ok: false } satisfies SimUsageSyncState
   );
+
+  const usageSubmittedRef = useRef(false);
+  useEffect(() => {
+    if (!usageSyncPending) {
+      usageSubmittedRef.current = false;
+    }
+  }, [usageSyncPending]);
+
+  function onUsageSyncSubmit(_e: React.FormEvent<HTMLFormElement>) {
+    if (usageSubmittedRef.current || usageSyncPending) {
+      _e.preventDefault();
+      return;
+    }
+    usageSubmittedRef.current = true;
+  }
 
   const ACTION_LABEL: Record<string, string> = {
     CREATE: "Aangemaakt",
@@ -261,41 +277,94 @@ export function SimDetail({
           </div>
 
           {canEdit ? (
-            <div className="flex flex-col gap-2 rounded-md border border-slate-200 bg-slate-50/60 p-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="text-sm text-slate-600">
-                <span className="font-medium text-slate-700">Handmatig verbruik vernieuwen</span>
-                <span className="mx-2 text-slate-400">·</span>
-                <span>
-                  Haalt de meest recente data- en SMS-statistieken direct op via Simhuis.
-                </span>
+            <div
+              className={
+                "relative flex flex-col gap-2 rounded-md border p-4 sm:flex-row sm:items-center sm:justify-between sm:p-4 " +
+                (usageSyncPending
+                  ? "border-blue-300 bg-blue-50/80 ring-2 ring-blue-200/70 transition-colors duration-200"
+                  : "border-slate-200 bg-slate-50/60 transition-colors duration-200")
+              }
+              aria-live="polite"
+            >
+              <div className="flex-1 min-w-0 text-sm">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="font-medium text-slate-700">Handmatig verbruik vernieuwen</span>
+                  <span className="hidden text-slate-400 sm:inline">·</span>
+                  <span className="text-slate-600 sm:text-slate-500">
+                    Haalt de meest recente data- en SMS-statistieken direct op via Simhuis.
+                  </span>
+                </div>
+                {usageSyncPending ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-medium text-blue-700 sm:text-sm">
+                    <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
+                    <span>
+                      Bezig met ophalen van verbruiksgegevens... Dit kan enkele seconden duren.
+                    </span>
+                  </div>
+                ) : null}
               </div>
-              <form action={usageSyncFormAction as any} className="shrink-0">
+              <form
+                action={usageSyncFormAction as any}
+                onSubmit={onUsageSyncSubmit}
+                className="shrink-0 w-full sm:w-auto"
+              >
                 <Button
                   type="submit"
                   size="sm"
-                  variant="default"
+                  variant={usageSyncPending ? "outline" : "default"}
                   disabled={usageSyncPending}
-                  className="gap-1.5"
+                  aria-disabled={usageSyncPending}
+                  aria-busy={usageSyncPending}
+                  className={
+                    "w-full sm:w-auto justify-center gap-2 px-4 py-2 " +
+                    (usageSyncPending
+                      ? "cursor-not-allowed border-blue-300 bg-blue-100/70 text-blue-700 hover:bg-blue-100/70"
+                      : "")
+                  }
                 >
-                  <RefreshCw
-                    className={`h-4 w-4 ${usageSyncPending ? "animate-spin" : ""}`}
-                  />
-                  {usageSyncPending ? "Ophalen..." : "Verbruik vernieuwen"}
+                  {usageSyncPending ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 shrink-0 animate-spin" aria-hidden="true" />
+                      <span className="whitespace-nowrap">Bezig met vernieuwen...</span>
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      <span className="whitespace-nowrap">Verbruik vernieuwen</span>
+                    </>
+                  )}
                 </Button>
               </form>
             </div>
           ) : null}
 
           {usageSyncState?.message ? (
-            <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-              <span>✅</span>
-              <span>{usageSyncState.message}</span>
+            <div
+              role="status"
+              className="flex items-start gap-2.5 rounded-md border border-emerald-300 bg-emerald-50 px-3.5 py-2.5 text-sm text-emerald-800 shadow-sm"
+            >
+              <span aria-hidden="true" className="mt-0.5 shrink-0 text-emerald-600">✓</span>
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-emerald-900">Verbruik vernieuwd</p>
+                <p className="whitespace-pre-wrap break-words text-emerald-800/90">{usageSyncState.message}</p>
+              </div>
             </div>
           ) : null}
           {usageSyncState?.error ? (
-            <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-              <span>⚠️</span>
-              <span className="whitespace-pre-wrap">{usageSyncState.error}</span>
+            <div
+              role="alert"
+              className="flex items-start gap-2.5 rounded-md border border-red-300 bg-red-50 px-3.5 py-2.5 text-sm text-red-800 shadow-sm"
+            >
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-red-900">Verbruik vernieuwen mislukt</p>
+                <p className="whitespace-pre-wrap break-words text-red-800/90">{usageSyncState.error}</p>
+                {canEdit ? (
+                  <p className="mt-1 text-xs text-red-700/80">
+                    Controleer je internetverbinding of probeer het later opnieuw. Als het probleem blijft, neem dan contact op met de beheerder.
+                  </p>
+                ) : null}
+              </div>
             </div>
           ) : null}
 

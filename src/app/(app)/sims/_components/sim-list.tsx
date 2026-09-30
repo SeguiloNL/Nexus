@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useFormState } from "react-dom";
 import type { ColumnDef, Row } from "@tanstack/react-table";
-import { MoreHorizontal, Plus, Trash2, Edit, Upload, Download, Filter, RefreshCw } from "lucide-react";
+import { MoreHorizontal, Plus, Trash2, Edit, Upload, Download, Filter, RefreshCw, AlertTriangle } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { BulkActionForm } from "@/components/data-table/bulk-action-form";
 import { Button } from "@/components/ui/button";
@@ -24,7 +24,7 @@ import {
   syncUsageSimsAction,
   type BulkActionState,
 } from "../actions";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useEffect, useState } from "react";
 
 type ListSim = SIM;
 
@@ -56,6 +56,18 @@ export function SimList({
   const [syncState, syncFormAction, syncPending] = useFormState(syncUsageSimsAction, {
     ok: false,
   } as BulkActionState);
+
+  const syncSubmittedRef = useRef(false);
+  useEffect(() => {
+    if (!syncPending) syncSubmittedRef.current = false;
+  }, [syncPending]);
+  function onSyncSubmit(e: React.FormEvent<HTMLFormElement>) {
+    if (syncSubmittedRef.current || syncPending) {
+      e.preventDefault();
+      return;
+    }
+    syncSubmittedRef.current = true;
+  }
 
   const filteredSims = useMemo(() => {
     if (statusFilter === "__ALL__") return sims;
@@ -182,33 +194,54 @@ export function SimList({
             Beheer SIM-kaarten, providers en toewijzingen.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {canExport ? (
             <form action={exportSimsCsvAction as any}>
-              <Button variant="outline" type="submit">
+              <Button variant="outline" type="submit" disabled={syncPending}>
                 <Download className="mr-2 h-4 w-4" /> Exporteer CSV
               </Button>
             </form>
           ) : null}
           {canEdit ? (
-            <form action={syncFormAction as any} className="inline-flex">
-              <Button variant="outline" type="submit" disabled={syncPending}>
+            <form
+              action={syncFormAction as any}
+              className="inline-flex"
+              onSubmit={onSyncSubmit}
+            >
+              <Button
+                variant={syncPending ? "default" : "outline"}
+                type="submit"
+                disabled={syncPending}
+                aria-disabled={syncPending}
+                aria-busy={syncPending}
+                className={
+                  "gap-2 " +
+                  (syncPending
+                    ? "cursor-not-allowed border-blue-500 bg-blue-600 text-white hover:bg-blue-600"
+                    : "")
+                }
+              >
                 <RefreshCw
-                  className={`mr-2 h-4 w-4 ${syncPending ? "animate-spin" : ""}`}
+                  className={`h-4 w-4 ${syncPending ? "animate-spin" : ""}`}
+                  aria-hidden="true"
                 />
-                {syncPending ? "Synchroniseren..." : "Verbruik sync"}
+                {syncPending ? (
+                  <span className="whitespace-nowrap">Bezig met synchroniseren...</span>
+                ) : (
+                  <span className="whitespace-nowrap">Verbruik sync</span>
+                )}
               </Button>
             </form>
           ) : null}
           {canImport ? (
-            <Button variant="outline" asChild>
+            <Button variant="outline" asChild disabled={syncPending}>
               <Link href="/sims/import">
                 <Upload className="mr-2 h-4 w-4" /> CSV importeren
               </Link>
             </Button>
           ) : null}
           {canCreate ? (
-            <Button asChild>
+            <Button asChild disabled={syncPending}>
               <Link href="/sims/new">
                 <Plus className="h-4 w-4" /> Nieuwe SIM
               </Link>
@@ -217,16 +250,49 @@ export function SimList({
         </div>
       </div>
 
-      {syncState?.message ? (
-        <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-          <span>✅</span>
-          <span>{syncState.message}</span>
+      {syncPending ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-start gap-2.5 rounded-md border border-blue-300 bg-blue-50 px-3.5 py-2.5 text-sm shadow-sm"
+        >
+          <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-blue-600" aria-hidden="true" />
+          <div className="flex-1 min-w-0">
+            <p className="font-medium text-blue-900">Verbruikssynchronisatie bezig...</p>
+            <p className="text-blue-800/90">
+              De meest recente verbruiksgegevens worden voor alle actieve SIM-kaarten opgehaald bij Simhuis. Dit kan enkele seconden tot een minuut duren, afhankelijk van het aantal SIMs.
+            </p>
+          </div>
         </div>
       ) : null}
-      {syncState?.error ? (
-        <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-          <span>⚠️</span>
-          <span className="whitespace-pre-wrap">{syncState.error}</span>
+
+      {!syncPending && syncState?.message ? (
+        <div
+          role="status"
+          className="flex items-start gap-2.5 rounded-md border border-emerald-300 bg-emerald-50 px-3.5 py-2.5 text-sm text-emerald-800 shadow-sm"
+        >
+          <span aria-hidden="true" className="mt-0.5 shrink-0 text-emerald-600 text-base leading-none">✓</span>
+          <div className="flex-1 min-w-0">
+            <p className="font-medium text-emerald-900">Synchronisatie voltooid</p>
+            <p className="whitespace-pre-wrap break-words text-emerald-800/90">{syncState.message}</p>
+          </div>
+        </div>
+      ) : null}
+      {!syncPending && syncState?.error ? (
+        <div
+          role="alert"
+          className="flex items-start gap-2.5 rounded-md border border-red-300 bg-red-50 px-3.5 py-2.5 text-sm text-red-800 shadow-sm"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
+          <div className="flex-1 min-w-0">
+            <p className="font-medium text-red-900">Synchronisatie mislukt</p>
+            <p className="whitespace-pre-wrap break-words text-red-800/90">{syncState.error}</p>
+            {canEdit ? (
+              <p className="mt-1 text-xs text-red-700/80">
+                Controleer de netwerkverbinding of probeer het later opnieuw. Neem contact op met de beheerder als het probleem blijft bestaan.
+              </p>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
