@@ -3344,6 +3344,7 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                 );
               } catch { /* ignore */ }
               if (wresp.ok && warr.length > 0) {
+                let debugIdx = 0;
                 for (const raw of warr) {
                   try {
                     const nested = (raw as any)?.simCard ?? (raw as any)?.sim ?? (raw as any)?.asset ?? (raw as any)?.device ?? (raw as any)?.subscription ?? (raw as any)?.subscriber ?? (raw as any)?.enabledProfile ?? {};
@@ -3366,21 +3367,45 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                     ).trim();
                     const iccidStr = rawIccid || rawEid || '';
                     const s = toSimStatus(raw, iccidStr);
+                    const beforeIccid = s ? (s as any).iccid : undefined;
+                    const beforeEid = s ? (s as any).eid : undefined;
+                    const beforeMsisdn = s ? (s as any).msisdn : undefined;
+                    // =========================================================
+                    // 🔧💥 EXPLICIET OVERSCHRIJVEN NA toSimStatus():
+                    //   -> placeholders/sanity filter mogen GEEN ECHTE DATA weggooien!
+                    // =========================================================
+                    if (s) {
+                      if (rawIccid) (s as any).iccid = rawIccid;
+                      else if (iccidStr) (s as any).iccid = iccidStr;
+                      if (rawEid && !(s as any).eid) (s as any).eid = rawEid;
+                      if (Array.isArray((raw as any)?.msisdn) && (raw as any).msisdn.length > 0) {
+                        const first = String((raw as any).msisdn[0] ?? '').trim();
+                        if (first) (s as any).msisdn = first;
+                      } else if (Array.isArray((raw as any)?.enabledProfile?.msisdn) && (raw as any).enabledProfile.msisdn.length > 0) {
+                        (s as any).msisdn = String((raw as any).enabledProfile.msisdn[0]).trim();
+                      } else if ((raw as any)?.enabledProfile?.msisdn) {
+                        (s as any).msisdn = String((raw as any).enabledProfile.msisdn).trim();
+                      } else {
+                        const direct = String((raw as any).msisdn ?? nested?.msisdn ?? '').trim();
+                        if (direct && !Array.isArray((raw as any).msisdn)) (s as any).msisdn = direct;
+                      }
+                      if (!(s as any).msisdn && Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
+                        const profiles: any[] = (raw as any).profiles;
+                        const best = profiles.find(p => p && p.msisdn) ?? profiles[0];
+                        if (best?.msisdn) (s as any).msisdn = String(best.msisdn).trim();
+                      }
+                    }
+                    if (debugIdx < 3) {
+                      try {
+                        console.info(
+                          `[simhuis-listAllSims]   🐛 ${win.tag} item#${debugIdx}: rawIccid=${JSON.stringify(rawIccid)} rawEid=${JSON.stringify(rawEid)} msisdnRaw=${JSON.stringify((raw as any).msisdn)} → BEFORE iccid=${JSON.stringify(beforeIccid)} eid=${JSON.stringify(beforeEid)} msisdn=${JSON.stringify(beforeMsisdn)} → AFTER iccid=${JSON.stringify(s ? (s as any).iccid : undefined)} msisdn=${JSON.stringify(s ? (s as any).msisdn : undefined)} push=${s && (s as any).iccid ? '✅' : '❌'}`
+                        );
+                      } catch { /* ignore */ }
+                    }
+                    debugIdx++;
                     if (s && !s.iccid && s.eid && !iccidFromEidFallback.has(s.eid)) {
                       iccidFromEidFallback.add(s.eid);
                       (s as any).iccid = s.eid;
-                    }
-                    if (s && !s.msisdn && Array.isArray((raw as any)?.msisdn) && (raw as any).msisdn.length > 0) {
-                      const first = String((raw as any).msisdn[0] ?? '').trim();
-                      if (first) (s as any).msisdn = first;
-                    }
-                    if (s && !s.msisdn && Array.isArray((raw as any)?.enabledProfile?.msisdn) && (raw as any).enabledProfile.msisdn.length > 0) {
-                      const first = String((raw as any).enabledProfile.msisdn[0] ?? '').trim();
-                      if (first) (s as any).msisdn = first;
-                    }
-                    if (s && !s.msisdn) {
-                      const directMsisdn = String((raw as any).msisdn ?? nested?.msisdn ?? '').trim();
-                      if (directMsisdn) (s as any).msisdn = directMsisdn;
                     }
                     if (s?.iccid) batchItems_win.push(s);
                   } catch { /* bad item skip */ }
@@ -3640,18 +3665,34 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                     ).trim();
                     const iccidStr = rawIccid || rawEid || '';
                     const s = toSimStatus(raw, iccidStr);
+                    // =========================================================
+                    // 🔧💥 EXPLICIET OVERSCHRIJVEN NA toSimStatus():
+                    //   -> placeholders/sanity filter mogen GEEN ECHTE DATA weggooien!
+                    // =========================================================
+                    if (s) {
+                      if (rawIccid) (s as any).iccid = rawIccid;
+                      else if (iccidStr) (s as any).iccid = iccidStr;
+                      if (rawEid && !(s as any).eid) (s as any).eid = rawEid;
+                      if (Array.isArray((raw as any)?.msisdn) && (raw as any).msisdn.length > 0) {
+                        const first = String((raw as any).msisdn[0] ?? '').trim();
+                        if (first) (s as any).msisdn = first;
+                      } else if (Array.isArray((raw as any)?.enabledProfile?.msisdn) && (raw as any).enabledProfile.msisdn.length > 0) {
+                        (s as any).msisdn = String((raw as any).enabledProfile.msisdn[0]).trim();
+                      } else if ((raw as any)?.enabledProfile?.msisdn) {
+                        (s as any).msisdn = String((raw as any).enabledProfile.msisdn).trim();
+                      } else {
+                        const direct = String((raw as any).msisdn ?? nested?.msisdn ?? '').trim();
+                        if (direct && !Array.isArray((raw as any).msisdn)) (s as any).msisdn = direct;
+                      }
+                      if (!(s as any).msisdn && Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
+                        const profiles: any[] = (raw as any).profiles;
+                        const best = profiles.find(p => p && p.msisdn) ?? profiles[0];
+                        if (best?.msisdn) (s as any).msisdn = String(best.msisdn).trim();
+                      }
+                    }
                     if (s && !s.iccid && s.eid && !iccidFromEidFallback.has(s.eid)) {
                       iccidFromEidFallback.add(s.eid);
                       (s as any).iccid = s.eid;
-                    }
-                    // NIEUW: ook msisdn[] uit AssetSimcard mappen als s.msisdn leeg is
-                    if (s && !s.msisdn && Array.isArray((raw as any)?.msisdn) && (raw as any).msisdn.length > 0) {
-                      const first = String((raw as any).msisdn[0] ?? '').trim();
-                      if (first) (s as any).msisdn = first;
-                    }
-                    if (s && !s.msisdn && Array.isArray((raw as any)?.enabledProfile?.msisdn) && (raw as any).enabledProfile.msisdn.length > 0) {
-                      const first = String((raw as any).enabledProfile.msisdn[0] ?? '').trim();
-                      if (first) (s as any).msisdn = first;
                     }
                     if (s?.iccid) batchItems.push(s);
                   } catch {
