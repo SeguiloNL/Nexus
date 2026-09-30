@@ -16,6 +16,13 @@ type UsageFields = {
   lastUsageSyncAt: Date | null;
 };
 
+type ProductSimFields = {
+  product: string | null;
+  productType: string | null;
+  simName: string | null;
+  simGroup: string | null;
+};
+
 type ApplyUsageResult = {
   changed: boolean;
   changedFields: Array<keyof UsageFields>;
@@ -130,6 +137,64 @@ function bigIntEq(a: bigint | null | undefined, b: bigint | null | undefined): b
   if (a === undefined && b === null) return true;
   if (a === null || b === null || a === undefined || b === undefined) return false;
   return a === b;
+}
+
+function strEq(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (a === null && b === null) return true;
+  if (a === undefined && b === undefined) return true;
+  if (a === null && b === undefined) return true;
+  if (a === undefined && b === null) return true;
+  if (a === null || b === null || a === undefined || b === undefined) return false;
+  return String(a) === String(b);
+}
+
+function buildProductSimFieldsFromSimhuis(simhuis: SimhuisSimStatus): ProductSimFields {
+  return {
+    product: truncate(
+      simhuis.productName ?? simhuis.planName ?? simhuis.productCode ?? simhuis.offerName ?? null,
+      200
+    ),
+    productType: truncate(
+      simhuis.productType ?? simhuis.productCategory ?? simhuis.subscriptionType ?? simhuis.assetType ?? simhuis.simCategory ?? simhuis.category ?? null,
+      150
+    ),
+    simName: truncate(simhuis.simName ?? simhuis.displayName ?? simhuis.assetName ?? simhuis.label ?? null, 200),
+    simGroup: truncate(simhuis.groupName ?? simhuis.groupId ?? simhuis.poolName ?? simhuis.batchName ?? simhuis.group ?? null, 100),
+  };
+}
+
+type ApplyProductResult = {
+  changed: boolean;
+  changedFields: Array<keyof ProductSimFields>;
+  oldData: ProductSimFields;
+  newData: ProductSimFields;
+};
+
+function applyProductSimFieldsFromSimhuis(
+  existing: ProductSimFields,
+  simhuis: SimhuisSimStatus
+): ApplyProductResult {
+  const oldData: ProductSimFields = {
+    product: existing.product,
+    productType: existing.productType,
+    simName: existing.simName,
+    simGroup: existing.simGroup,
+  };
+  const parsed = buildProductSimFieldsFromSimhuis(simhuis);
+  const newData: ProductSimFields = { ...oldData };
+  // Pas een Simhuis waarde ALLEEN toe als hij non-empty is (dus niet overschrijven met null)
+  if (parsed.product && !strEq(oldData.product, parsed.product)) newData.product = parsed.product;
+  if (parsed.productType && !strEq(oldData.productType, parsed.productType)) newData.productType = parsed.productType;
+  if (parsed.simName && !strEq(oldData.simName, parsed.simName)) newData.simName = parsed.simName;
+  if (parsed.simGroup && !strEq(oldData.simGroup, parsed.simGroup)) newData.simGroup = parsed.simGroup;
+
+  const changedFields: Array<keyof ProductSimFields> = [];
+  let changed = false;
+  if (!strEq(oldData.product, newData.product)) { changedFields.push("product"); changed = true; }
+  if (!strEq(oldData.productType, newData.productType)) { changedFields.push("productType"); changed = true; }
+  if (!strEq(oldData.simName, newData.simName)) { changedFields.push("simName"); changed = true; }
+  if (!strEq(oldData.simGroup, newData.simGroup)) { changedFields.push("simGroup"); changed = true; }
+  return { changed, changedFields, oldData, newData };
 }
 
 const VALID_SIM_STATUSES: ReadonlySet<string> = new Set<string>(
@@ -881,12 +946,24 @@ export type PerSimUsageSyncResult = {
   simId: string;
   iccid: string;
   updated: 0 | 1;
-  changedFields: Array<keyof UsageFields>;
+  changedFields: string[];
   hasAnyUsageData: boolean;
   source: "per-sim-discovery" | "list-fallback";
   fetchedAt: Date;
   durationMs: number;
   errorMessage?: string;
+  simhuisFields?: {
+    dataUsedBytes: number | null;
+    dataLimitBytes: number | null;
+    lowestDataLimitBytes: number | null;
+    smsUsedCount: number | null;
+    smsLimitCount: number | null;
+    lowestSmsLimitCount: number | null;
+    productName: string | null;
+    productType: string | null;
+    simName: string | null;
+    groupName: string | null;
+  };
 };
 
 export async function syncUsageForSingleSim(
@@ -911,6 +988,10 @@ export async function syncUsageForSingleSim(
       smsLimitCount: true,
       lowestSmsLimitCount: true,
       lastUsageSyncAt: true,
+      product: true,
+      productType: true,
+      simName: true,
+      simGroup: true,
     },
   });
   if (!sim) {
@@ -975,19 +1056,34 @@ export async function syncUsageForSingleSim(
     lowestSmsLimitCount: sim.lowestSmsLimitCount,
     lastUsageSyncAt: sim.lastUsageSyncAt,
   };
-  const apply = applyUsageFieldsFromSimhuis(existingUsage, simhuisStatus);
+  const existingProduct: ProductSimFields = {
+    product: sim.product ?? null,
+    productType: sim.productType ?? null,
+    simName: sim.simName ?? null,
+    simGroup: sim.simGroup ?? null,
+  };
+  const applyUsage = applyUsageFieldsFromSimhuis(existingUsage, simhuisStatus);
+  const applyProduct = applyProductSimFieldsFromSimhuis(existingProduct, simhuisStatus);
 
-  if (apply.changed || apply.hasAnyUsageData) {
+  const allChangedFields: string[] = [...applyUsage.changedFields, ...applyProduct.changedFields];
+  const shouldUpdateDb = applyUsage.changed || applyUsage.hasAnyUsageData || applyProduct.changed;
+  const updatedNow = shouldUpdateDb ? 1 : 0;
+
+  if (shouldUpdateDb) {
     await prisma.sIM.update({
       where: { id: sim.id },
       data: {
-        dataUsedBytes: apply.newData.dataUsedBytes,
-        dataLimitBytes: apply.newData.dataLimitBytes,
-        lowestDataLimitBytes: apply.newData.lowestDataLimitBytes,
-        smsUsedCount: apply.newData.smsUsedCount,
-        smsLimitCount: apply.newData.smsLimitCount,
-        lowestSmsLimitCount: apply.newData.lowestSmsLimitCount,
-        lastUsageSyncAt: apply.newData.lastUsageSyncAt,
+        dataUsedBytes: applyUsage.newData.dataUsedBytes,
+        dataLimitBytes: applyUsage.newData.dataLimitBytes,
+        lowestDataLimitBytes: applyUsage.newData.lowestDataLimitBytes,
+        smsUsedCount: applyUsage.newData.smsUsedCount,
+        smsLimitCount: applyUsage.newData.smsLimitCount,
+        lowestSmsLimitCount: applyUsage.newData.lowestSmsLimitCount,
+        lastUsageSyncAt: applyUsage.newData.lastUsageSyncAt,
+        product: applyProduct.newData.product,
+        productType: applyProduct.newData.productType,
+        simName: applyProduct.newData.simName,
+        simGroup: applyProduct.newData.simGroup,
       },
     });
     try {
@@ -996,8 +1092,8 @@ export async function syncUsageForSingleSim(
         entityId: sim.id,
         action: "UPDATE",
         userId: ctx.userId ?? "SYSTEM",
-        oldValues: { ...apply.oldData, source: "simhuis_single_usage_sync" },
-        newValues: { ...apply.newData, source, changedFields: apply.changedFields, errorMessage },
+        oldValues: { ...applyUsage.oldData, ...applyProduct.oldData, source: "simhuis_single_usage_sync" },
+        newValues: { ...applyUsage.newData, ...applyProduct.newData, source, changedFields: allChangedFields, errorMessage },
         metadata: { scope: "simhuis_single_usage_sync", durationMs: Date.now() - startedAt },
         timestamp: new Date(),
       });
@@ -1006,15 +1102,29 @@ export async function syncUsageForSingleSim(
     }
   }
 
+  const simhuisFields: PerSimUsageSyncResult["simhuisFields"] = {
+    dataUsedBytes: simhuisStatus.dataUsedBytes ?? null,
+    dataLimitBytes: simhuisStatus.dataLimitBytes ?? null,
+    lowestDataLimitBytes: simhuisStatus.lowestDataLimitBytes ?? null,
+    smsUsedCount: simhuisStatus.smsUsedCount ?? null,
+    smsLimitCount: simhuisStatus.smsLimitCount ?? null,
+    lowestSmsLimitCount: simhuisStatus.lowestSmsLimitCount ?? null,
+    productName: simhuisStatus.productName ?? simhuisStatus.planName ?? null,
+    productType: simhuisStatus.productType ?? null,
+    simName: simhuisStatus.simName ?? null,
+    groupName: simhuisStatus.groupName ?? simhuisStatus.groupId ?? null,
+  };
+
   return {
     simId,
     iccid: normalizedIccid,
-    updated: apply.changed || apply.hasAnyUsageData ? 1 : 0,
-    changedFields: apply.changedFields,
-    hasAnyUsageData: apply.hasAnyUsageData,
+    updated: updatedNow,
+    changedFields: allChangedFields,
+    hasAnyUsageData: applyUsage.hasAnyUsageData,
     source,
     fetchedAt: new Date(),
     durationMs: Date.now() - startedAt,
     errorMessage,
+    simhuisFields,
   };
 }

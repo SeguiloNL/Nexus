@@ -387,10 +387,37 @@ export async function syncUsageForSingleSimAction(
       result.changedFields.length === 0
         ? "geen wijzigingen"
         : result.changedFields.join(", ");
+    const sF = result.simhuisFields;
+    function fmtBytes(v: number | null): string {
+      if (v === null || v === undefined) return "—";
+      try {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return "—";
+        if (n >= 1_073_741_824) return `${(n / 1_073_741_824).toFixed(2)} GB`;
+        if (n >= 1_048_576) return `${(n / 1_048_576).toFixed(2)} MB`;
+        if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+        return `${n} B`;
+      } catch {
+        return "—";
+      }
+    }
+    function fmtCount(v: number | null): string {
+      if (v === null || v === undefined) return "—";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "—";
+      return `${Math.round(n)}`;
+    }
+    const sfLabel = sF
+      ? "\n\nSimhuis API-velden:\n" +
+        `  dataUsedBytes: ${fmtBytes(sF.dataUsedBytes)}  dataLimitBytes: ${fmtBytes(sF.dataLimitBytes)}  lowestDataLimitBytes: ${fmtBytes(sF.lowestDataLimitBytes)}\n` +
+        `  smsUsedCount: ${fmtCount(sF.smsUsedCount)}  smsLimitCount: ${fmtCount(sF.smsLimitCount)}  lowestSmsLimitCount: ${fmtCount(sF.lowestSmsLimitCount)}\n` +
+        `  productName: ${sF.productName ?? "—"}  productType: ${sF.productType ?? "—"}  simName: ${sF.simName ?? "—"}  group: ${sF.groupName ?? "—"}`
+      : "";
     const msg =
       `Verbruik vernieuwd (${result.source}). ` +
       `Velden: ${fieldsLabel}. ` +
-      `Duur: ${result.durationMs} ms.`;
+      `Duur: ${result.durationMs} ms.` +
+      sfLabel;
     return {
       ok: true,
       message: msg,

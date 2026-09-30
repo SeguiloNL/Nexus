@@ -6,6 +6,31 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   const nestedSim = r.simCard ?? r.sim ?? r.asset ?? r.device ?? r.subscription ?? r.subscriber ?? r.esimProfile ?? r.esim ?? {};
 
   const DEBUG = (process.env.DEBUG_SIMHUIS_EXTRACT ?? '0') === '1';
+  function collectAllKeys(obj: any, depth = 0, maxDepth = 4, seen = new WeakSet()): Array<{ path: string; value: any }> {
+    const res: Array<{ path: string; value: any }> = [];
+    if (depth > maxDepth) return res;
+    if (!obj || typeof obj !== 'object') return res;
+    if (seen.has(obj)) return res;
+    seen.add(obj);
+    for (const k of Object.keys(obj)) {
+      const v = (obj as any)[k];
+      res.push({ path: k, value: v });
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        const sub = collectAllKeys(v, depth + 1, maxDepth, seen);
+        for (const s of sub) res.push({ path: `${k}.${s.path}`, value: s.value });
+      } else if (Array.isArray(v)) {
+        for (let i = 0; i < Math.min(v.length, 15); i++) {
+          const item = v[i];
+          res.push({ path: `${k}[${i}]`, value: item });
+          if (item && typeof item === 'object') {
+            const sub = collectAllKeys(item, depth + 1, maxDepth, seen);
+            for (const s of sub) res.push({ path: `${k}[${i}].${s.path}`, value: s.value });
+          }
+        }
+      }
+    }
+    return res;
+  }
 
   const KEY_CACHE = new WeakMap<Record<string, any>, Map<string, string>>();
   function normalizeKey(k: unknown): string {
@@ -384,10 +409,29 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
 
   if (DEBUG) {
     // eslint-disable-next-line no-console
+    const allKeys = collectAllKeys(r, 0, 4);
+    const suspect = (k: { path: string; value: any }): boolean => {
+      const p = k.path.toLowerCase();
+      return (
+        p.includes('data') || p.includes('usage') || p.includes('sms') || p.includes('mb') ||
+        p.includes('gb') || p.includes('bytes') || p.includes('used') || p.includes('count') ||
+        p.includes('limit') || p.includes('quota') || p.includes('remaining') ||
+        p.includes('allowance') || p.includes('bundle') || p.includes('consumption') ||
+        p.includes('verbruik') || p.includes('package') || p.includes('tariff') ||
+        p.includes('product') || p.includes('plan') || p.includes('value')
+      );
+    };
+    const susList = allKeys.filter(suspect).slice(0, 100).map((k) => `${k.path}=${
+      typeof k.value === 'object' ? JSON.stringify(k.value).slice(0, 200) : String(k.value).slice(0, 200)
+    }`);
+    // eslint-disable-next-line no-console
     console.log(
-      '[DEBUG][toSimStatus] iccid=%s\n  keys(r)=%O\n  productName=%s productType=%s simName=%s group=%s\n  dataUsed=%s (raw=%s) dataLimit=%s (raw=%s) lowestData=%s\n  smsUsed=%s smsLimit=%s lowestSms=%s',
+      '[DEBUG][toSimStatus] iccid=%s\n  keys(r)=%O\n  alle geneste paden (verdachte data/plan keys, %d van %d totaal):\n    - %s\n  resultaten:\n    productName=%s productType=%s simName=%s group=%s\n    dataUsedBytes=%s (raw=%s) dataLimitBytes=%s (raw=%s) lowestDataLimitBytes=%s\n    smsUsedCount=%s smsLimitCount=%s lowestSmsLimitCount=%s',
       iccidVal || iccid,
       Object.keys(r),
+      susList.length,
+      allKeys.length,
+      susList.join('\n    - '),
       productNameVal, productTypeVal, simNameVal, groupNameVal,
       dataUsedBytesVal, findKey('Data Used', 'dataUsed', 'data_used_bytes'),
       dataLimitBytesVal, findKey('Data Limit', 'dataLimit', 'data_limit_bytes'),
