@@ -35,7 +35,7 @@ export default async function SubscriptionDetailPage({
     throw new PermissionError("Je mag geen abonnementen bekijken.");
   }
 
-  const raw = await findSubscriptionById(params.id);
+  const raw = await findSubscriptionById(params.id, session.user.customerIds);
   if (!raw) notFound();
 
   const subscription: any = {
@@ -43,9 +43,16 @@ export default async function SubscriptionDetailPage({
     monthlyPrice: Number(raw.monthlyPrice),
   };
 
+  const customerIds = session.user.customerIds ?? [];
+  const hasScope = customerIds.length > 0;
+  const customerScopeCustomer: any = hasScope ? { id: { in: customerIds } } : undefined;
+  const customerScopeAssignment: any = hasScope
+    ? { assignments: { some: { subscription: { customerId: { in: customerIds } } } } }
+    : undefined;
+
   const [customers, products, trackersStock, simsStock, invoices] = await Promise.all([
     prisma.customer.findMany({
-      where: { deletedAt: null },
+      where: { deletedAt: null, ...customerScopeCustomer },
       select: { id: true, companyName: true, customerNumber: true },
       orderBy: { companyName: "asc" },
     }),
@@ -55,12 +62,12 @@ export default async function SubscriptionDetailPage({
       orderBy: { name: "asc" },
     }),
     prisma.tracker.findMany({
-      where: { deletedAt: null, status: { in: ["IN_STOCK", "RESERVED"] as any } },
+      where: { deletedAt: null, status: { in: ["IN_STOCK", "RESERVED"] as any }, ...customerScopeAssignment },
       select: { id: true, serialNumber: true, imei: true, brand: true, model: true },
       orderBy: { serialNumber: "asc" },
     }),
     prisma.sIM.findMany({
-      where: { deletedAt: null, status: { in: ["IN_STOCK", "RESERVED"] as any } },
+      where: { deletedAt: null, status: { in: ["IN_STOCK", "RESERVED"] as any }, ...customerScopeAssignment },
       select: { id: true, iccid: true, imsi: true, msisdn: true, provider: true },
       orderBy: { iccid: "asc" },
     }),
@@ -68,6 +75,7 @@ export default async function SubscriptionDetailPage({
       ? findInvoicesBySubscriptionId(params.id, {
           userId: session.user.id,
           userRole: session.user.role,
+          customerScope: session.user.customerIds,
         })
       : Promise.resolve([]),
   ]);

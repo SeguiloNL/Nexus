@@ -15,6 +15,7 @@ export default async function ActivationsPage() {
   const result = await findManyActivationOrders({
     page: 1,
     perPage: 500,
+    customerScope: session.user.customerIds,
   });
 
   return (

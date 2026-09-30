@@ -25,8 +25,8 @@ export default async function CustomerDetailPage({
   }
 
   const [customer, parentOptions, auditResult] = await Promise.all([
-    findCustomerById(params.id),
-    listParentCustomers(),
+    findCustomerById(params.id, session.user.customerIds),
+    listParentCustomers(session.user.customerIds),
     findManyAuditLogs({
       entityType: "customer",
       perPage: 50,

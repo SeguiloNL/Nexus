@@ -16,6 +16,7 @@ export default async function SubscriptionsPage() {
   const result = await findManySubscriptions({
     page: 1,
     perPage: 500,
+    customerScope: session.user.customerIds,
   });
 
   return (

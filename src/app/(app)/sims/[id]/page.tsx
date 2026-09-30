@@ -23,7 +23,7 @@ export default async function SimDetailPage({
   }
 
   const [sim, auditResult] = await Promise.all([
-    findSimById(params.id),
+    findSimById(params.id, session.user.customerIds),
     findManyAuditLogs({
       entityType: "sim",
       perPage: 50,

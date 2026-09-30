@@ -22,7 +22,14 @@ export default async function InvoicesPage(props: {
   await requirePermission(session.user.role, "view", "invoice");
 
   const sp = await props.searchParams;
-  const ctx = { userId: session.user.id, userRole: session.user.role };
+  const ctx = {
+    userId: session.user.id,
+    userRole: session.user.role,
+    roleId: session.user.roleId,
+    roleScope: session.user.roleScope,
+    customerScope: session.user.customerIds,
+    permissions: session.user.permissions,
+  };
   const page = sp.page ? Number(sp.page) || 1 : 1;
   const perPage = sp.perPage ? Number(sp.perPage) || 25 : 25;
   const status = sp.status as InvoiceStatus | undefined;

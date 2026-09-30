@@ -28,10 +28,18 @@ export default async function ActivationWizardPage({
     }
   }
 
+  const customerIds = session.user.customerIds ?? [];
+  const hasScope = customerIds.length > 0;
+  const customerScopeCustomer: any = hasScope ? { id: { in: customerIds } } : undefined;
+  const customerScopeAssignment: any = hasScope
+    ? { assignments: { some: { subscription: { customerId: { in: customerIds } } } } }
+    : undefined;
+  const customerScopeVehicle: any = hasScope ? { customerId: { in: customerIds } } : undefined;
+
   const [customers, products, trackersStock, simsStock, vehicles] =
     await Promise.all([
       prisma.customer.findMany({
-        where: { deletedAt: null },
+        where: { deletedAt: null, ...customerScopeCustomer },
         select: {
           id: true,
           customerNumber: true,
@@ -55,6 +63,7 @@ export default async function ActivationWizardPage({
         where: {
           deletedAt: null,
           status: { in: ["IN_STOCK", "RESERVED"] as any },
+          ...customerScopeAssignment,
         },
         select: {
           id: true,
@@ -70,6 +79,7 @@ export default async function ActivationWizardPage({
         where: {
           deletedAt: null,
           status: { in: ["IN_STOCK", "RESERVED"] as any },
+          ...customerScopeAssignment,
         },
         select: {
           id: true,
@@ -82,7 +92,7 @@ export default async function ActivationWizardPage({
         orderBy: { iccid: "asc" },
       }),
       prisma.vehicle.findMany({
-        where: { deletedAt: null },
+        where: { deletedAt: null, ...customerScopeVehicle },
         select: {
           id: true,
           customerId: true,
@@ -97,7 +107,7 @@ export default async function ActivationWizardPage({
 
   let initial: any = null;
   if (searchParams?.orderId) {
-    const order = await findActivationOrderById(searchParams.orderId);
+    const order = await findActivationOrderById(searchParams.orderId, session.user.customerIds);
     if (order) {
       initial = {
         id: order.id,

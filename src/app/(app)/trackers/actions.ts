@@ -64,7 +64,14 @@ export async function createTrackerAction(
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const tracker = await createTracker(validated.data, ctx);
 
   revalidatePath("/trackers");
@@ -100,7 +107,14 @@ export async function updateTrackerAction(
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await updateTracker(trackerId, validated.data, ctx);
 
   revalidatePath("/trackers");
@@ -112,7 +126,14 @@ export async function deleteTrackerAction(trackerId: string) {
   const user = await getCurrentUser();
   await requirePermission(user.role, "delete", "tracker");
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await softDeleteTracker(trackerId, ctx);
 
   revalidatePath("/trackers");
@@ -153,7 +174,14 @@ export async function commitTrackerCsvAction(
     return { ...prev, message: "Geen geldige rijen om te importeren." };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const result = await bulkImportTrackers(prev.preview.valid, ctx);
 
   revalidatePath("/trackers");
@@ -164,8 +192,15 @@ export async function exportTrackersCsvAction(): Promise<Response> {
   const user = await getCurrentUser();
   await requirePermission(user.role, "export", "tracker");
 
+  const hasScope = user.customerIds && user.customerIds.length > 0;
+  const where: any = { deletedAt: null };
+  if (hasScope) {
+    where.assignments = {
+      some: { subscription: { customerId: { in: user.customerIds } }, endAt: null },
+    };
+  }
   const rows = await prisma.tracker.findMany({
-    where: { deletedAt: null },
+    where,
     orderBy: { serialNumber: "asc" },
   });
 
@@ -301,7 +336,14 @@ export async function bulkSoftDeleteTrackersAction(
   await requirePermission(user.role, "delete", "tracker");
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen trackers geselecteerd." };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     const result = await bulkSoftDeleteTrackers(ids, ctx);
     revalidatePath("/trackers");

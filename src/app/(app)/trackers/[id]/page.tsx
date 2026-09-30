@@ -19,7 +19,7 @@ export default async function TrackerDetailPage({
   }
 
   const [tracker, auditResult] = await Promise.all([
-    findTrackerById(params.id),
+    findTrackerById(params.id, session.user.customerIds),
     findManyAuditLogs({
       entityType: "tracker",
       perPage: 50,

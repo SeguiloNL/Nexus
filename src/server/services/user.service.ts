@@ -183,6 +183,74 @@ function legacyRoleForSystemRole(name: string): UserRole | null {
   return null;
 }
 
+function requiredCustomerTypeForScope(scope: RoleScope): CustomerType | null {
+  switch (scope) {
+    case RoleScope.RESELLER:
+      return CustomerType.RESELLER;
+    case RoleScope.PARTNER:
+      return CustomerType.PARTNER;
+    case RoleScope.CUSTOMER:
+      return CustomerType.DIRECT;
+    case RoleScope.INTERNAL:
+    default:
+      return null;
+  }
+}
+
+async function validateCustomerRoleBinding(
+  tx: Prisma.TransactionClient,
+  scope: RoleScope,
+  customerId: string | null
+): Promise<void> {
+  const requiredType = requiredCustomerTypeForScope(scope);
+
+  if (scope === RoleScope.INTERNAL) {
+    if (customerId) {
+      throw new Error(
+        "Interne rollen mogen geen klant toegewezen krijgen."
+      );
+    }
+    return;
+  }
+
+  if (!customerId) {
+    if (scope === RoleScope.RESELLER) {
+      throw new Error(
+        "Een Reseller-gebruiker moet gekoppeld zijn aan een Klant van type RESELLER."
+      );
+    }
+    if (scope === RoleScope.PARTNER) {
+      throw new Error(
+        "Een Partner-gebruiker moet gekoppeld zijn aan een Klant van type PARTNER."
+      );
+    }
+    throw new Error(
+      "Een klant-gebruiker moet gekoppeld zijn aan een Klant van type DIRECT."
+    );
+  }
+
+  const customer = await tx.customer.findUnique({
+    where: { id: customerId },
+    select: { type: true },
+  });
+  if (!customer) {
+    throw new Error(
+      `Gekoppelde klant (${customerId}) bestaat niet.`
+    );
+  }
+
+  if (requiredType && customer.type !== requiredType) {
+    const scopeLabel = scope === RoleScope.RESELLER
+      ? "Reseller"
+      : scope === RoleScope.PARTNER
+        ? "Partner"
+        : "Klant";
+    throw new Error(
+      `${scopeLabel}-gebruiker kan alleen worden gekoppeld aan een Klant van type ${requiredType} (huidig type: ${customer.type}).`
+    );
+  }
+}
+
 async function resolveRoleIdForLegacy(
   tx: Prisma.TransactionClient,
   legacyRole?: UserRole,
@@ -255,17 +323,7 @@ export async function createUser(
 
     let finalCustomerId: string | null = input.customerId ?? null;
 
-    if (scope === RoleScope.CUSTOMER) {
-      if (!finalCustomerId) {
-        throw new Error(
-          "Een klant is verplicht voor rollen met klant-scope."
-        );
-      }
-    } else if (finalCustomerId) {
-      throw new Error(
-        "Interne rollen mogen geen klant toegewezen krijgen."
-      );
-    }
+    await validateCustomerRoleBinding(tx, scope, finalCustomerId);
 
     if (ctx.customerScope && ctx.customerScope.length > 0) {
       if (scope !== RoleScope.CUSTOMER) {
@@ -342,54 +400,49 @@ export async function updateUser(
     if (input.name != null) data.name = input.name;
 
     const changingRole = input.roleId !== undefined || input.role !== undefined;
+    let effectiveScope: RoleScope | null = null;
+
     if (changingRole) {
       const resolved = await resolveRoleIdForLegacy(tx, input.role, input.roleId);
       (data as any).roleId = resolved.roleId;
       data.role = input.role ?? resolved.legacyRole;
+      effectiveScope = resolved.scope;
 
-      if (resolved.scope === RoleScope.CUSTOMER) {
-        const nextCustomerId =
-          input.customerId !== undefined ? input.customerId : existing.customerId;
-        if (!nextCustomerId) {
+      if (ctx.customerScope && ctx.customerScope.length > 0) {
+        if (resolved.scope !== RoleScope.CUSTOMER) {
           throw new Error(
-            "Een klant is verplicht voor rollen met klant-scope."
+            "Je kunt alleen gebruikers met een klant-rol wijzigen naar een klant-rol."
           );
         }
-        if (ctx.customerScope && ctx.customerScope.length > 0) {
-          if (!ctx.customerScope.includes(nextCustomerId)) {
-            throw new Error("Ongeldige klant voor deze gebruiker.");
-          }
-        }
-      } else if (
-        ctx.customerScope &&
-        ctx.customerScope.length > 0
-      ) {
-        throw new Error(
-          "Je kunt alleen gebruikers met een klant-rol wijzigen naar een klant-rol."
-        );
       }
     }
 
     if (input.customerId !== undefined) {
-      const currentRoleScope = await (async () => {
+      (data as any).customerId = input.customerId;
+    }
+
+    if (!effectiveScope) {
+      const roleIdForScope = (data as any).roleId ?? existing.roleId;
+      if (roleIdForScope) {
         const r = await tx.role.findUnique({
-          where: { id: ((existing.roleId ?? (data as any).roleId) ?? "") as string },
+          where: { id: roleIdForScope as string },
           select: { scope: true },
         });
-        return r?.scope ?? RoleScope.INTERNAL;
-      })();
-      if (currentRoleScope === RoleScope.CUSTOMER && !input.customerId) {
-        throw new Error("Klant is verplicht voor een klant-rol.");
+        effectiveScope = (r?.scope as RoleScope) ?? RoleScope.INTERNAL;
+      } else {
+        effectiveScope = RoleScope.INTERNAL;
       }
-      if (currentRoleScope !== RoleScope.CUSTOMER && input.customerId) {
-        throw new Error("Interne rollen mogen geen klant toegewezen krijgen.");
+    }
+
+    const effectiveCustomerId =
+      input.customerId !== undefined ? input.customerId : existing.customerId;
+
+    await validateCustomerRoleBinding(tx, effectiveScope, effectiveCustomerId);
+
+    if (ctx.customerScope && ctx.customerScope.length > 0 && effectiveCustomerId) {
+      if (!ctx.customerScope.includes(effectiveCustomerId)) {
+        throw new Error("Ongeldige klant voor deze gebruiker.");
       }
-      if (ctx.customerScope && ctx.customerScope.length > 0 && input.customerId) {
-        if (!ctx.customerScope.includes(input.customerId)) {
-          throw new Error("Ongeldige klant voor deze gebruiker.");
-        }
-      }
-      (data as any).customerId = input.customerId;
     }
 
     if (input.password != null && input.password !== "") {

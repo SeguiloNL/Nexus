@@ -65,7 +65,14 @@ export async function createSimAction(
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const sim = await createSim(validated.data, ctx);
 
   revalidatePath("/sims");
@@ -101,7 +108,14 @@ export async function updateSimAction(
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await updateSim(simId, validated.data, ctx);
 
   revalidatePath("/sims");
@@ -113,7 +127,14 @@ export async function deleteSimAction(simId: string) {
   const user = await getCurrentUser();
   await requirePermission(user.role, "delete", "sim");
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await softDeleteSim(simId, ctx);
 
   revalidatePath("/sims");
@@ -154,7 +175,14 @@ export async function commitSimCsvAction(
     return { ...prev, message: "Geen geldige rijen om te importeren." };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const result = await bulkImportSims(prev.preview.valid, ctx);
 
   revalidatePath("/sims");
@@ -165,8 +193,15 @@ export async function exportSimsCsvAction(): Promise<Response> {
   const user = await getCurrentUser();
   await requirePermission(user.role, "export", "sim");
 
+  const hasScope = user.customerIds && user.customerIds.length > 0;
+  const where: any = { deletedAt: null };
+  if (hasScope) {
+    where.assignments = {
+      some: { subscription: { customerId: { in: user.customerIds } } },
+    };
+  }
   const rows = await prisma.sIM.findMany({
-    where: { deletedAt: null },
+    where,
     orderBy: { iccid: "asc" },
   });
 
@@ -310,7 +345,14 @@ export async function bulkSoftDeleteSimsAction(
   await requirePermission(user.role, "delete", "sim");
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen SIM-kaarten geselecteerd." };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     const result = await bulkSoftDeleteSims(ids, ctx);
     revalidatePath("/sims");
@@ -331,7 +373,14 @@ export async function syncUsageSimsAction(
 ): Promise<BulkActionState> {
   const user = await getCurrentUser();
   await requirePermission(user.role, "edit", "sim");
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     const result = await syncActiveSimsUsageFromSimhuis(ctx);
     revalidatePath("/sims");
@@ -371,7 +420,14 @@ export async function syncUsageForSingleSimAction(
 ): Promise<SimUsageSyncState> {
   const user = await getCurrentUser();
   await requirePermission(user.role, "edit", "sim");
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     const result = await syncUsageForSingleSim(simId, ctx);
     revalidatePath("/sims");

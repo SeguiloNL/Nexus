@@ -13,9 +13,13 @@ export default async function NewSubscriptionPage() {
     throw new PermissionError("Je mag geen abonnementen aanmaken.");
   }
 
+  const customerIds = session.user.customerIds ?? [];
+  const hasScope = customerIds.length > 0;
+  const customerScopeCustomer: any = hasScope ? { id: { in: customerIds } } : undefined;
+
   const [customers, products] = await Promise.all([
     prisma.customer.findMany({
-      where: { deletedAt: null },
+      where: { deletedAt: null, ...customerScopeCustomer },
       select: { id: true, companyName: true, customerNumber: true },
       orderBy: { companyName: "asc" },
     }),

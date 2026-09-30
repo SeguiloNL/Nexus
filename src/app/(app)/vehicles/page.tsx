@@ -16,6 +16,7 @@ export default async function VehiclesPage() {
     page: 1,
     perPage: 500,
     viewerRole: session.user.role as any,
+    customerScope: session.user.customerIds,
   });
 
   const canCreate = canUserRole(session.user.role, "create", "vehicle");

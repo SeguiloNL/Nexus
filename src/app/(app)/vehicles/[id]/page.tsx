@@ -17,11 +17,16 @@ export default async function VehicleDetailPage({
     throw new PermissionError("Je mag geen voertuigen bekijken.");
   }
 
-  const vehicle = await findVehicleById(params.id);
+  const vehicle = await findVehicleById(params.id, session.user.customerIds);
   if (!vehicle) notFound();
 
+  const customerIds = session.user.customerIds ?? [];
+  const hasScope = customerIds.length > 0;
+  const customerWhere: any = { deletedAt: null };
+  if (hasScope) customerWhere.id = { in: customerIds };
+
   const customers = await prisma.customer.findMany({
-    where: { deletedAt: null },
+    where: customerWhere,
     select: { id: true, companyName: true, customerNumber: true },
     orderBy: { companyName: "asc" },
   });

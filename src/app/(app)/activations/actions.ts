@@ -49,7 +49,14 @@ export async function createOrderAction(_prev: OrderActionState, formData: FormD
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const order = await createDraftOrder(validated.data, ctx);
   revalidatePath("/activations");
   redirect(`/activations/${order.id}`);
@@ -76,7 +83,14 @@ export async function updateOrderAction(orderId: string, _prev: OrderActionState
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await updateOrder(orderId, validated.data, ctx);
   revalidatePath(`/activations/${orderId}`);
   revalidatePath("/activations");
@@ -86,7 +100,14 @@ export async function updateOrderAction(orderId: string, _prev: OrderActionState
 export async function markReadyAction(orderId: string) {
   const user = await getCurrentUser();
   await requirePermission(user.role, "edit", "activation_order");
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     await markReady(orderId, ctx);
   } catch (e: any) {
@@ -145,7 +166,14 @@ export async function cancelOrderAction(
   const { orderId, formData } = resolveCancelArgs(...args);
   const reason = (formData.get("reason") as string) || undefined;
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     await cancelOrder(orderId, ctx, reason);
   } catch (e: any) {
@@ -173,7 +201,14 @@ export async function retryFailedAction(
   const user = await getCurrentUser();
   await requirePermission(user.role, "edit", "activation_order");
   const orderId = resolveRetryArgs(...args);
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     await retryFailed(orderId, ctx);
   } catch (e: any) {
@@ -201,7 +236,14 @@ export async function deleteOrderAction(
   const user = await getCurrentUser();
   await requirePermission(user.role, "delete", "activation_order");
   const orderId = resolveDeleteArgs(...args);
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     await deleteOrder(orderId, ctx);
   } catch (e: any) {
@@ -215,7 +257,14 @@ export async function deleteOrderAction(
 export async function completeActivationAction(orderId: string) {
   const user = await getCurrentUser();
   await requirePermission(user.role, "edit", "activation_order");
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const result = await completeActivation(orderId, ctx);
   revalidatePath(`/activations/${orderId}`);
   revalidatePath("/activations");

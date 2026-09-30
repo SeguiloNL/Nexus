@@ -13,6 +13,7 @@ export default async function TrackersPage() {
       page: 1,
       perPage: 500,
       viewerRole: session.user.role,
+      customerScope: session.user.customerIds,
     }),
   ]);
 

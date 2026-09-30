@@ -48,7 +48,14 @@ export async function createVehicleAction(
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const vehicle = await createVehicle(validated.data, ctx);
 
   revalidatePath("/vehicles");
@@ -86,7 +93,14 @@ export async function updateVehicleAction(
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const vehicle = await updateVehicle(vehicleId, validated.data, ctx);
 
   revalidatePath("/vehicles");
@@ -107,7 +121,14 @@ export async function deleteVehicleAction(
     return;
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const vehicle = await softDeleteVehicle(vehicleId, ctx);
 
   revalidatePath("/vehicles");
@@ -146,7 +167,14 @@ export async function bulkSoftDeleteVehiclesAction(
   await requirePermission(user.role, "delete", "vehicle");
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen voertuigen geselecteerd." };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     const result = await bulkSoftDeleteVehicles(ids, ctx);
     revalidatePath("/vehicles");
