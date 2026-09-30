@@ -378,9 +378,16 @@ class SimhuisClientSingleton {
           if (r.passed) return true;
         } catch (e: any) {
           if (e instanceof SimhuisApiError) {
-            lastStatus = e.statusCode;
+          lastStatus = e.statusCode;
             triedEndpoints.push(label);
-            if (e.statusCode === 401 || e.statusCode === 403) throw e;
+            // 401/403 betekenen "DEZE auth-methode werkt NIET — blijf proberen met andere varianten!
+            if (e.statusCode === 401 || e.statusCode === 403) {
+              console.info(
+                `[simhuis-testConnection] ${label} gaf HTTP ${e.statusCode} — ` +
+                `doorgaan naar volgende auth/endpoint variant...`
+              );
+              return false;
+            }
           } else {
             throw e;
           }

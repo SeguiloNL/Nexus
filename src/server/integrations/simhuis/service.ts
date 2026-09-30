@@ -2472,16 +2472,25 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
           trace.errorClass = 'HTTPError';
           attempts.push(trace);
           if (resp.status !== 404 && resp.status !== 405 && resp.status < 500) {
-            // App-level response! (401 InvalidCredentials, 400, etc.)
-            // ✅ NIEUW: ALBIJ 401 NIET meer breaken! 401 betekent "pad BESTAAT, alleen auth verkeerd".
-            // → BLIJF probeeren met ANDERE auth-methodes (Basic, custom) voor hetzelfde pad.
-            // ✅ Alleen breaken op 2xx (boven) of 403 (abort).
+            // App-level response! (401 InvalidCredentials, 403 NotAuthorized, 400, etc.)
+            // 401/403 betekenen "pad BESTAAT, ALLEEN DEZE AUTH-METHODE WERKT NIET".
+            // → BLIJVEN proberen met ANDERE auth-methodes (Basic, X-Headers, body-creds, Bearer) voor hetzelfde pad.
             baseHits.push({ base: baseClean, method: tc.method, path: tc.path, auth: tc.auth, statusCode: resp.status, body: parsed });
-            if (resp.status === 403) throw new SimhuisApiError(403, parsed ?? {}, fullUrl, trace.error);
+            console.info(
+              `[simhuis-listSims] FASE-1 auth/pad combinatie gaf HTTP ${resp.status}: ` +
+              `${tc.method} ${baseClean}${tc.path} (auth=${tc.auth.tag}). Doorgaan naar volgende auth-methode...`
+            );
             // ✅ Blijf de ANDERE testCases (zelfde pad, andere auth) uitvoeren!
             continue;
           }
-          if (resp.status === 403) throw new SimhuisApiError(403, parsed ?? {}, fullUrl, trace.error);
+          if (resp.status === 403) {
+            baseHits.push({ base: baseClean, method: tc.method, path: tc.path, auth: tc.auth, statusCode: resp.status, body: parsed });
+            console.info(
+              `[simhuis-listSims] FASE-1 auth/pad combinatie gaf HTTP 403: ` +
+              `${tc.method} ${baseClean}${tc.path} (auth=${tc.auth.tag}). Doorgaan naar volgende auth-methode...`
+            );
+            continue;
+          }
         }
       } catch (err: any) {
         trace.statusCode = err instanceof SimhuisApiError ? err.statusCode : (err?.name === 'TimeoutError' ? 0 : undefined);
@@ -2827,11 +2836,22 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         trace.error = `HTTP ${resp.status}${allowExtra}${snippet ? `: ${snippet}` : ''}`;
         trace.errorClass = 'HTTPError';
         attempts.push(trace);
-        if (resp.status === 403) throw new SimhuisApiError(403, parsed ?? {}, args.fullUrl, trace.error);
+        if (resp.status === 403) {
+          console.info(
+            `[simhuis-listSims] doDirectFetch: ${args.method} ${args.meta.path} (auth=${args.auth.tag}) ` +
+            `gaf HTTP 403. Overslaan en doorgaan naar volgende auth/pad-combinatie...`
+          );
+          return null;
+        }
         const parsedObj = parsed as Record<string, any> | null;
         const code = parsedObj && typeof parsedObj === 'object' ? String(parsedObj.code ?? parsedObj.error_code ?? '') : '';
         if (resp.status === 401 && (code === 'InvalidToken' || code === 'InvalidAuth' || code === 'Unauthorized')) {
-          throw new SimhuisApiError(401, parsed ?? {}, args.fullUrl, trace.error);
+          // 401 = "pad bestaat, ALLEEN DEZE auth werkt niet". Blijf proberen met andere methodes.
+          console.info(
+            `[simhuis-listSims] doDirectFetch: ${args.method} ${args.meta.path} (auth=${args.auth.tag}) ` +
+            `gaf HTTP 401 (${code || 'geen code'}). Overslaan en doorgaan naar volgende auth/pad-combinatie...`
+          );
+          return null;
         }
         return null;
       }
@@ -2966,12 +2986,22 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
         if (resp.status !== 405 && resp.status !== 404 && resp.status < 500) {
           if (isListLikePath(probe.path) && isListLikeAuth(probe.auth)) interesting.push({ probe, statusCode: resp.status, respBody: parsed });
         }
-        if (resp.status === 403) throw new SimhuisApiError(403, parsed ?? {}, fullUrl, trace.error);
+        if (resp.status === 403) {
+          console.info(
+            `[simhuis-listSims] FASE-0 probe ${probe.label} (${probe.method} ${probe.path} auth=${probe.auth.tag}) ` +
+            `gaf HTTP 403. Doorgaan naar volgende probe/auth-combinatie...`
+          );
+          continue;
+        }
         if (resp.status === 401) {
           const parsedObj = parsed as Record<string, any> | null;
           const code = parsedObj && typeof parsedObj === 'object' ? String(parsedObj.code ?? '') : '';
           if (code === 'InvalidToken' || code === 'InvalidAuth') {
-            throw new SimhuisApiError(401, parsed ?? {}, fullUrl, trace.error);
+            console.info(
+              `[simhuis-listSims] FASE-0 probe ${probe.label} (${probe.method} ${probe.path} auth=${probe.auth.tag}) ` +
+              `gaf HTTP 401 (${code || 'geen code'}). Doorgaan naar volgende probe/auth-combinatie...`
+            );
+            continue;
           }
         }
       }
