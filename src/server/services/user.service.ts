@@ -10,6 +10,7 @@ import type { PermissionBits } from "@/types/next-auth.d";
 import { RoleScope, UserRole } from "@/types/enums";
 import type { Prisma, User } from "@prisma/client";
 import { requirePermission, pickAuth } from "@/lib/rbac";
+import { CustomerType } from "@/types/enums";
 
 type Ctx = {
   userId: string;

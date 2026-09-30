@@ -52,51 +52,128 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     KEY_CACHE.set(obj, idx);
     return idx;
   }
+
+  // ============================================================
+  // Typed context helpers: vertellen of een object "data", "sms",
+  // "voice" enz. gerelateerd is. Gebruikt voor counters/bundles
+  // arrays waar items een "type" / "category" / "name" veld hebben.
+  // ============================================================
+  const DATA_TYPE_KEYWORDS = ['data', 'internet', 'mb', 'gb', 'byte', 'verbruik', 'gebruik'];
+  const SMS_TYPE_KEYWORDS = ['sms', 'text', 'message', 'bericht', 'tekst'];
+  function isDataContext(obj: Record<string, any> | null | undefined): boolean {
+    if (!obj || typeof obj !== 'object') return false;
+    const pool: string[] = [];
+    for (const k of ['type', 'category', 'name', 'label', 'kind', 'unit', 'serviceType', 'service']) {
+      if (typeof (obj as any)[k] === 'string') pool.push(String((obj as any)[k]));
+    }
+    const s = pool.join(' ').toLowerCase();
+    if (!s) return false;
+    // Positieve match op data trefwoorden
+    if (DATA_TYPE_KEYWORDS.some((kw) => s.includes(kw))) return true;
+    // Eenheid "GB", "MB", "bytes" = data
+    if (/\d*(gb|mb|kb|byte)/i.test(s)) return true;
+    return false;
+  }
+  function isSmsContext(obj: Record<string, any> | null | undefined): boolean {
+    if (!obj || typeof obj !== 'object') return false;
+    const pool: string[] = [];
+    for (const k of ['type', 'category', 'name', 'label', 'kind', 'unit', 'serviceType', 'service']) {
+      if (typeof (obj as any)[k] === 'string') pool.push(String((obj as any)[k]));
+    }
+    const s = pool.join(' ').toLowerCase();
+    if (!s) return false;
+    return SMS_TYPE_KEYWORDS.some((kw) => s.includes(kw));
+  }
+
+  // ============================================================
+  // Recursief verzamelen van alle geneste objecten (incl. arrays)
+  // Als search roots voor findKey. Max diepte 6 om oneindige loops
+  // te voorkomen.
+  // ============================================================
+  function collectAllObjects(
+    start: any,
+    maxDepth = 6,
+    seen = new WeakSet(),
+    depth = 0,
+  ): Array<Record<string, any>> {
+    const out: Array<Record<string, any>> = [];
+    if (!start || typeof start !== 'object' || depth > maxDepth) return out;
+    if (Array.isArray(start)) {
+      for (const el of start) {
+        if (el && typeof el === 'object') {
+          for (const sub of collectAllObjects(el, maxDepth, seen, depth + 1)) out.push(sub);
+        }
+      }
+      return out;
+    }
+    if (seen.has(start)) return out;
+    seen.add(start);
+    out.push(start);
+    for (const v of Object.values(start)) {
+      if (v && typeof v === 'object') {
+        for (const sub of collectAllObjects(v, maxDepth, seen, depth + 1)) out.push(sub);
+      }
+    }
+    return out;
+  }
+
+  // ============================================================
+  // Key-value pair arrays: [{ name/key/label/field: "Data Used", value: X }]
+  // Worden veel gebruikt in portals. Return de waarde van het eerste
+  // matching pair.
+  // ============================================================
+  function searchKvArrays(
+    allObjects: Array<Record<string, any>>,
+    normAliases: string[],
+  ): any {
+    for (const obj of allObjects) {
+      if (!obj || typeof obj !== 'object') continue;
+      // Pak eerst de naam-keys: kijk of dit object een KV pair is
+      const nameKeyNormCandidates = ['name', 'key', 'label', 'field', 'property', 'param', 'parameter', 'attribute', 'column'];
+      let nameKey: string | null = null;
+      let valueKey: string | null = null;
+      const objIdx = buildKeyIndex(obj);
+      for (const nk of nameKeyNormCandidates) {
+        const rk = objIdx.get(normalizeKey(nk));
+        if (rk) { nameKey = rk; break; }
+      }
+      if (!nameKey) continue;
+      const valueKeyNorms = ['value', 'val', 'content', 'data', 'amount', 'count', 'total', 'used', 'remaining'];
+      for (const vk of valueKeyNorms) {
+        const rk = objIdx.get(normalizeKey(vk));
+        if (rk) { valueKey = rk; break; }
+      }
+      if (!valueKey) continue;
+      const nmVal = (obj as any)[nameKey];
+      if (typeof nmVal !== 'string') continue;
+      const normName = normalizeKey(nmVal);
+      if (!normName) continue;
+      if (normAliases.includes(normName)) {
+        const v = (obj as any)[valueKey];
+        if (v !== undefined && v !== null && v !== '') return v;
+      }
+    }
+    return undefined;
+  }
+
+  // ============================================================
   // findKey: zoek 1 value in r, dan in nestedSim, d.m.v. alias-normalizatie.
-  // Retourneert [gevondenValue, sourceRecordKey] of [undefined, null].
+  // NIEUW: ook recursief diep zoeken, KV-arrays, en typed context.
+  // Retourneert gevondenValue of undefined.
+  // ============================================================
   function findKey(...aliases: string[]): any {
     const normAliases = aliases.map(normalizeKey).filter(Boolean);
-    const searchRoots: Record<string, any>[] = [r, nestedSim];
-    // Dieper geneste containers die Simhuis/AirOn360 vaak gebruikt
-    const extraPaths = [
-      'plan', 'usage', 'currentUsage', 'monthlyUsage', 'statistics', 'counter', 'counters',
-      'quota', 'quotas', 'balance', 'balances', 'allowance', 'allowances',
-      'data', 'bundle', 'bundles', 'summary', 'totals', 'periodicUsage', 'sessionUsage',
-      'current', 'total', 'remaining', 'consumption', 'limits', 'package', 'tariff',
-    ];
-    for (const p of extraPaths) {
-      if ((r as any)[p] && typeof (r as any)[p] === 'object') searchRoots.push((r as any)[p]);
-      if (nestedSim && (nestedSim as any)[p] && typeof (nestedSim as any)[p] === 'object') {
-        searchRoots.push((nestedSim as any)[p]);
-      }
-    }
-    // 1 niveau dieper: usage.data, plan.data, etc.
-    for (const root of [...searchRoots]) {
-      if (!root || typeof root !== 'object') continue;
-      for (const sub of ['data', 'sms', 'voice', 'value', 'usage', 'total', 'current', 'allowance', 'quota']) {
-        if (root[sub] && typeof root[sub] === 'object' && !Array.isArray(root[sub])) {
-          searchRoots.push(root[sub]);
-        }
-      }
-      // Arrays met counter/bundle objecten (per-data-type): { type: 'data', used: X }
-      if (Array.isArray((root as any).items)) {
-        for (const it of (root as any).items) {
-          if (it && typeof it === 'object' && !Array.isArray(it)) searchRoots.push(it);
-        }
-      }
-      if (Array.isArray((root as any).usageDetails)) {
-        for (const it of (root as any).usageDetails) {
-          if (it && typeof it === 'object' && !Array.isArray(it)) searchRoots.push(it);
-        }
-      }
-      if (Array.isArray((root as any).counters)) {
-        for (const it of (root as any).counters) {
-          if (it && typeof it === 'object' && !Array.isArray(it)) searchRoots.push(it);
-        }
-      }
-    }
-    for (const obj of searchRoots) {
-      if (!obj || typeof obj !== 'object') continue;
+    if (normAliases.length === 0) return undefined;
+
+    // Eerst: alle geneste objecten verzamelen (recursief)
+    const allObjects: Array<Record<string, any>> = [];
+    // Roots: r, nestedSim, en alle sub-paden
+    allObjects.push(...collectAllObjects(r, 7));
+    if (nestedSim && nestedSim !== r) allObjects.push(...collectAllObjects(nestedSim, 7));
+
+    // (1) Standaard flat key-zoek in alle objecten
+    for (const obj of allObjects) {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) continue;
       const idx = buildKeyIndex(obj);
       for (const na of normAliases) {
         const realKey = idx.get(na);
@@ -105,6 +182,85 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
         }
       }
     }
+
+    // (2) Kijk of de eerste alias zelf in een KV-array match zit
+    const kv = searchKvArrays(allObjects, normAliases);
+    if (kv !== undefined) return kv;
+
+    return undefined;
+  }
+
+  // ============================================================
+  // findUsageInContext: Zoekt een waarde binnen een CONTEXT
+  // (data of sms). Eerst zoekt het binnen counter/bundle objecten
+  // die duidelijk data/SMS gerelateerd zijn, daarna binnen
+  // expliciete data/sms sub-objecten, en als laatste fallback
+  // via de normale findKey (ongecentreerd).
+  //
+  // Gebruikt generieke sleutels binnen de context:
+  //   used, total, limit, remaining, count, value, amount, quota,
+  //   allowance, threshold, alert, warning, min, max
+  // ============================================================
+  function findUsageInContext(
+    contextKind: 'data' | 'sms',
+    valueKind: 'used' | 'limit' | 'lowestLimit' | 'threshold' | 'alert',
+  ): any {
+    const allObjects: Array<Record<string, any>> = [];
+    allObjects.push(...collectAllObjects(r, 7));
+    if (nestedSim && nestedSim !== r) allObjects.push(...collectAllObjects(nestedSim, 7));
+
+    const genKeysByKind: Record<string, string[]> = {
+      used: ['used', 'usage', 'consumed', 'spent', 'count', 'value', 'amount', 'total', 'current'],
+      limit: ['limit', 'max', 'maximum', 'quota', 'allowance', 'allocated', 'included', 'cap', 'plan', 'package', 'total'],
+      lowestLimit: ['lowestlimit', 'threshold', 'alert', 'warning', 'min', 'notify', 'softlimit', 'alertlimit', 'lowlimit', 'lowerlimit'],
+      threshold: ['threshold', 'alert', 'warning', 'limit', 'notify', 'trigger'],
+      alert: ['alert', 'warning', 'threshold', 'notify', 'trigger', 'limit'],
+    };
+    const genKeys = (genKeysByKind[valueKind] ?? []).map(normalizeKey);
+
+    // STAP 1: Counter/bundle items met type discriminator
+    for (const obj of allObjects) {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) continue;
+      const isContext = contextKind === 'data' ? isDataContext(obj) : isSmsContext(obj);
+      if (!isContext) continue;
+      // Nu: binnen dit context-object, zoek de genKeys
+      const idx = buildKeyIndex(obj);
+      for (const gk of genKeys) {
+        const realKey = idx.get(gk);
+        if (realKey && obj[realKey] !== undefined && obj[realKey] !== null && obj[realKey] !== '') {
+          return obj[realKey];
+        }
+      }
+      // Fallback: ook de waarde zelf in het KV-patroon
+      for (const vk of ['value', 'val', 'content', 'data', 'amount', 'count', 'usage_count', 'used_bytes', 'usedcount', 'usagecount']) {
+        const rk = idx.get(normalizeKey(vk));
+        if (rk && obj[rk] !== undefined && obj[rk] !== null && obj[rk] !== '') {
+          return obj[rk];
+        }
+      }
+    }
+
+    // STAP 2: Sub-objecten met expliciete naam (data / sms)
+    const contextNames = contextKind === 'data'
+      ? ['data', 'internet', 'datalimit', 'datausage']
+      : ['sms', 'text', 'message', 'smsusage', 'smslimit', 'smsbundle'];
+    for (const obj of allObjects) {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) continue;
+      for (const [k, v] of Object.entries(obj)) {
+        if (contextNames.includes(normalizeKey(k))) {
+          if (v && typeof v === 'object' && !Array.isArray(v)) {
+            const vidx = buildKeyIndex(v as Record<string, any>);
+            for (const gk of genKeys) {
+              const realKey = vidx.get(gk);
+              if (realKey && (v as any)[realKey] !== undefined && (v as any)[realKey] !== null && (v as any)[realKey] !== '') {
+                return (v as any)[realKey];
+              }
+            }
+          }
+        }
+      }
+    }
+
     return undefined;
   }
 
@@ -131,8 +287,21 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   const INVALID_PLACEHOLDER_VALUES: ReadonlySet<string> = new Set<string>([
     // Key-namen / field-namen
     'eid', 'iccid', 'imsi', 'msisdn', 'subscriberid',
+    'product name', 'productname', 'product type', 'producttype',
+    'sim name', 'simname', 'sim card name', 'simcardname',
+    'group', 'group name', 'groupname', 'pool name', 'poolname',
+    'plan name', 'planname', 'tariff name', 'tariffname',
+    'data used', 'dataused', 'data limit', 'datalimit',
+    'lowest data limit', 'lowestdatalimit', 'data alert', 'dataalert',
+    'sms used', 'smsused', 'sms limit', 'smslimit',
+    'lowest sms limit', 'lowestsmslimit', 'sms alert', 'smsalert',
+    'account', 'account name', 'accountname',
+    'customer', 'customer name', 'customername',
+    'profile type', 'profiletype',
+    'status', 'state',
     // Generieke placeholders
     'n/a', 'na', 'unknown', 'none', 'empty', 'placeholder',
+    'undefined', 'null',
     // Varianten met liggend streepje (apart door - al apart)
     '--', '---',
   ]);
@@ -215,9 +384,39 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   // ============================================================
   // pickNumber: eerst findKey, dan expliciete paden. Accepteert
   // strings "100", numbers, bigints.
+  // NIEUW: accepteert optionele contextKind/valueKind voor
+  // context-gewijze extractie.
   // ============================================================
-  const pickNumber = (...paths: Array<unknown>): number | null => {
-    for (const p of paths) {
+  const pickNumber = (opts: { contextKind?: 'data' | 'sms'; valueKind?: 'used' | 'limit' | 'lowestLimit' | 'threshold' | 'alert'; aliases: Array<unknown> }): number | null => {
+    // STAP 0 (optioneel): context-gewijze extractie
+    if (opts.contextKind && opts.valueKind) {
+      const cv = findUsageInContext(opts.contextKind, opts.valueKind);
+      if (cv !== undefined && cv !== null) {
+        if (typeof cv === 'number' && Number.isFinite(cv)) return cv;
+        if (typeof cv === 'string') {
+          const cleaned = cv.trim().replace(/,(\d)/g, '.$1');
+          const n = Number(cleaned.replace(/[^\d.\-]/g, ''));
+          if (Number.isFinite(n)) return n;
+          if (cleaned && !/[a-zA-Z]/.test(cleaned)) {
+            const raw = Number(cleaned);
+            if (Number.isFinite(raw)) return raw;
+          }
+        }
+        if (typeof cv === 'bigint') {
+          const n = Number(cv);
+          if (Number.isFinite(n)) return n;
+        }
+        // Probeer ook als bytes (met units) te parsen, dan aantal bytes als number
+        const pb = parseBytes(cv);
+        if (pb !== null && Number.isFinite(pb)) {
+          // Als het SMS is en de waarde is groot (>10000), is het waarschijnlijk bytes.
+          // We returnen dan alleen als het getal "redelijk" is voor SMS (geen bytes),
+          // anders gewoon door.
+          if (opts.contextKind !== 'sms') return pb;
+        }
+      }
+    }
+    for (const p of opts.aliases) {
       if (typeof p === 'string') {
         const v = findKey(p);
         if (v !== undefined && v !== null) {
@@ -227,7 +426,6 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
             const n = Number(cleaned.replace(/[^\d.\-]/g, ''));
             if (Number.isFinite(n)) return n;
             if (cleaned && !/[a-zA-Z]/.test(cleaned)) {
-              // geen units, pure nummerieke poging
               const raw = Number(cleaned);
               if (Number.isFinite(raw)) return raw;
             }
@@ -239,7 +437,7 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
         }
       }
     }
-    for (const p of paths) {
+    for (const p of opts.aliases) {
       if (p === null || p === undefined) continue;
       if (typeof p === 'number' && Number.isFinite(p)) return p;
       if (typeof p === 'string') {
@@ -259,26 +457,38 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   // pickBytes: zoek eerst via findKey op data-aliassen, parset
   // daarna met parseBytes (units zoals MB/GB), fallback op
   // pickNumber voor plain bytes.
+  // NIEUW: accepteert optionele contextKind om eerst findUsageInContext
+  // te gebruiken voor context-gewijze extractie.
   // ============================================================
-  const pickBytes = (...aliases: string[]): number | null => {
-    // Eerst via findKey (unit-string OK, of number OK)
-    for (const a of aliases) {
+  const pickBytes = (opts: { contextKind?: 'data' | 'sms'; valueKind?: 'used' | 'limit' | 'lowestLimit' | 'threshold' | 'alert'; aliases: Array<unknown> }): number | null => {
+    // STAP 0 (optioneel): context-gewijze extractie (vindt generieke keys binnen data/sms context)
+    if (opts.contextKind && opts.valueKind) {
+      const cv = findUsageInContext(opts.contextKind, opts.valueKind);
+      if (cv !== undefined && cv !== null) {
+        const pb = parseBytes(cv);
+        if (pb !== null) return pb;
+        const nb = pickNumber({ aliases: [cv] });
+        if (nb !== null) return nb;
+      }
+    }
+    // Daarna via findKey (unit-string OK, of number OK)
+    for (const a of opts.aliases) {
+      if (typeof a !== 'string') continue;
       const v = findKey(a);
       if (v !== undefined && v !== null) {
         const pb = parseBytes(v);
         if (pb !== null) return pb;
-        const nb = pickNumber(v);
+        const nb = pickNumber({ aliases: [v] });
         if (nb !== null) return nb;
       }
     }
     // Daarna via expliciete waardes als die in de args zitten
-    for (const a of aliases) {
-      if (typeof a !== 'string') {
-        const pb = parseBytes(a);
-        if (pb !== null) return pb;
-        const nb = pickNumber(a);
-        if (nb !== null) return nb;
-      }
+    for (const a of opts.aliases) {
+      if (typeof a === 'string') continue;
+      const pb = parseBytes(a);
+      if (pb !== null) return pb;
+      const nb = pickNumber({ aliases: [a] });
+      if (nb !== null) return nb;
     }
     return null;
   };
@@ -325,111 +535,184 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     r.productName, r.product, nestedSim?.productName, nestedSim?.planName,
   );
 
-  const productTypeVal = pickString(
-    'Product Type', 'productType', 'product_type', 'productTypeName',
-    'product_category', 'productCategory', 'type', 'assetType', 'asset_type',
-    'category', 'simCategory', 'simType', 'assetCategory',
-    'subscriptionType', 'subscription_type', 'kind',
-    r.productType, nestedSim?.productType, nestedSim?.type,
-  );
+  const productTypeVal = (() => {
+    const first = pickString(
+      'Product Type', 'productType', 'product_type', 'productTypeName',
+      'product_category', 'productCategory', 'type', 'assetType', 'asset_type',
+      'category', 'simCategory', 'simType', 'assetCategory',
+      'subscriptionType', 'subscription_type', 'kind',
+      'tariffType', 'rateType', 'planType',
+      'billingModel', 'billing_model', 'chargeModel', 'charge_model',
+      r.productType, nestedSim?.productType, nestedSim?.type,
+    );
+    // Filter generieke profiel-types (geen echte product/plan type)
+    const BAD_PRODUCT_TYPE_PATTERNS = [
+      /esim.?profile/i, /profile.?m2m/i, /sim.?profile/i,
+      /bootstrap/i, /default.?profile/i, /generic/i,
+    ];
+    if (first && !BAD_PRODUCT_TYPE_PATTERNS.some((re) => re.test(first))) return first;
+    // Tweede kans: expliciete per-type keys met hogere specificiteit
+    const candidates = [
+      findKey('planType'), findKey('plan_type'),
+      findKey('billingModel'), findKey('billing_model'),
+      findKey('ratePlanType'), findKey('rate_plan_type'),
+      findKey('tariffModel'), findKey('tariff_model'),
+      findKey('paymentModel'), findKey('payment_model'),
+      findKey('billingType'), findKey('billing_type'),
+      findKey('productCategory'),
+    ];
+    for (const c of candidates) {
+      if (typeof c === 'string' && isValidStringValue(c)) {
+        if (!BAD_PRODUCT_TYPE_PATTERNS.some((re) => re.test(c))) return c;
+      }
+    }
+    // Derde kans: alle non-empty type-achtige strings in het hele object
+    const all = collectAllObjects(r, 5);
+    if (nestedSim && nestedSim !== r) all.push(...collectAllObjects(nestedSim, 5));
+    const typeKeysNorm = ['producttype', 'plantype', 'billingtype', 'billingmodel', 'chargetype', 'tariffcategory', 'productcategory'];
+    for (const obj of all) {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) continue;
+      const idx = buildKeyIndex(obj);
+      for (const tkn of typeKeysNorm) {
+        const rk = idx.get(tkn);
+        if (rk) {
+          const v = (obj as any)[rk];
+          if (typeof v === 'string' && isValidStringValue(v) && !BAD_PRODUCT_TYPE_PATTERNS.some((re) => re.test(v))) {
+            return v;
+          }
+        }
+      }
+    }
+    // Fallback: accepteer first als die ten minste non-empty is (ook al is het profiel-type)
+    if (first) return first;
+    // Als een van de candidates wel een string is (maar profile-type), accepteer die dan
+    for (const c of candidates) {
+      if (typeof c === 'string' && isValidStringValue(c)) return c;
+    }
+    return null;
+  })();
 
-  // Data / Usage velden — gebruiken pickBytes (units OK)
-  const dataUsedBytesVal = pickBytes(
-    'Data Used', 'Data_Used', 'dataUsed', 'data_used_bytes',
-    'used_bytes', 'total_usage', 'dataUsage', 'data_usage',
-    'usage data_bytes', 'data_bytes', 'bytes',
-    'usedData', 'used_data', 'consumed_bytes', 'consumedData',
-    'dataUsedMB', 'data_used_mb', 'dataUsedGb', 'data_used_gb',
-    'used_mb', 'used_gb', 'usedMb', 'usedGb',
-    'usedKb', 'used_kb', 'dataUsedKb', 'data_used_kb',
-    'data_mb_used', 'data_gb_used', 'data_kb_used',
-    'monthly_data_used', 'monthlyDataUsed', 'current_data_used', 'currentDataUsed',
-    'consumption_data', 'dataConsumed', 'data_consumed',
-    'usageMB', 'usage_mb', 'usageGB', 'usage_gb', 'usageKB', 'usage_kb',
-    'totalConsumed', 'total_consumed', 'totalDataUsed', 'total_data_used',
-    'dataUsageValue', 'data_usage_value', 'actualUsage', 'actual_usage',
-    'periodUsage', 'period_usage', 'periodDataUsage', 'period_data_usage',
-    'dataUsageMB', 'data_usage_mb', 'dataUsageGB', 'data_usage_gb',
-    'used_data_mb', 'used_data_gb', 'used_data_kb', 'used_data_tb',
-    'dataTotal', 'data_total', 'dataSpent', 'data_spent',
-    r.dataUsed, r.data_used_bytes, r.dataUsage, r.data_usage, r.total_usage,
-    r.dataUsedMB, r.dataUsedGb, r.usedMB, r.usedGB, r.usedMb, r.usedGb,
-  );
-  const dataLimitBytesVal = pickBytes(
-    'Data Limit', 'Data_Limit', 'dataLimit', 'data_limit_bytes',
-    'limit_bytes', 'data_quota', 'dataQuota',
-    'plan data_limit_bytes', 'data_quota_plan',
-    'max_data_bytes', 'total_data_bytes', 'allowance_data',
-    'dataLimitMB', 'data_limit_mb', 'dataLimitGB', 'data_limit_gb', 'dataLimitKB', 'data_limit_kb',
-    'maxMB', 'max_mb', 'maxGB', 'max_gb', 'maxKb', 'max_kb',
-    'data_max_mb', 'data_max_gb', 'data_max_bytes',
-    'quota_data_mb', 'quota_data_gb', 'quota_data',
-    'planDataLimit', 'plan_data_limit', 'tariffDataLimit', 'tariff_data_limit',
-    'packageDataLimit', 'package_data_limit', 'bundleDataLimit', 'bundle_data_limit',
-    'dataAllowance', 'data_allowance', 'allocatedData', 'allocated_data',
-    'totalAllowance', 'total_allowance', 'totalData', 'total_data',
-    'includedData', 'included_data', 'cap_data', 'dataCap', 'data_cap',
-    'dataPoolLimit', 'data_pool_limit', 'poolDataLimit', 'pool_data_limit',
-    'thresholdLimit', 'threshold_limit',
-    r.dataLimit, r.data_limit_bytes, r.dataQuota, r.data_quota,
-    r.dataLimitMB, r.dataLimitGB, r.maxMB, r.maxGB,
-  );
-  const lowestDataLimitBytesVal = pickBytes(
-    'Lowest Data Limit', 'lowest_data_limit_bytes',
-    'data_threshold_bytes', 'data alert bytes', 'dataAlertBytes',
-    'data_warning_limit', 'lowDataLimit', 'threshold_data_bytes',
-    'warning_data_bytes', 'min_data_limit_bytes', 'dataLowLimit',
-    'data_low_limit',
-    'dataAlertMB', 'data_alert_mb', 'dataAlertGB', 'data_alert_gb',
-    'dataWarningMB', 'data_warning_mb', 'dataWarningGB', 'data_warning_gb',
-    'lowDataMB', 'low_data_mb', 'lowDataGB', 'low_data_gb',
-    'dataThresholdMB', 'data_threshold_mb', 'dataThresholdGB', 'data_threshold_gb',
-    'notifyDataLimit', 'notify_data_limit', 'alertLimit', 'alert_limit',
-    'softLimitMB', 'soft_limit_mb', 'softLimitGB', 'soft_limit_gb', 'softDataLimit',
-    'minDataMB', 'min_data_mb', 'minDataGB', 'min_data_gb',
-    r.lowestDataLimit, r.lowest_data_limit_bytes, r.dataLowLimit, r.dataAlertBytes,
-    r.dataAlertMB, r.dataAlertGB, r.dataWarningMB, r.dataWarningGB,
-  );
-  // SMS velden — gebruiken pickNumber (geen units, alleen integers)
-  const smsUsedCountVal = pickNumber(
-    'sms used', 'SMS Used', 'smsUsed', 'sms_used',
-    'sms_used_count', 'sms_count', 'total_sms',
-    'sms_usage', 'smsUsage', 'totalSms', 'smsSent', 'sms_sent',
-    'usage sms_count', 'usage sms', 'consumed_sms',
-    'smsUsedTotal', 'sms_used_total', 'current_sms_used', 'currentSmsUsed',
-    'smsConsumed', 'sms_consumed', 'sentSms', 'sent_sms', 'smsOut', 'sms_out',
-    'outboundSms', 'outbound_sms', 'moSms', 'mo_sms', 'mtSms', 'mt_sms',
-    'smsUsedMonth', 'sms_used_month', 'smsUsedPeriod', 'sms_used_period',
-    'textsUsed', 'texts_used', 'textUsed', 'text_used', 'sms_usage_count',
-    'messagesUsed', 'messages_used', 'messageCount', 'message_count',
-    r.smsUsed, r.sms_used, r.sms_count, r.totalSms, r.smsSent,
-  );
-  const smsLimitCountVal = pickNumber(
-    'SMS Limit', 'sms_limit', 'sms_quota', 'smsLimit', 'max_sms',
-    'sms_max', 'maximum_sms', 'smsBundle', 'sms_bundle',
-    'allowance_sms', 'smsAllowance', 'plan sms_limit',
-    'total_sms_bundle',
-    'smsPlanLimit', 'sms_plan_limit', 'smsTariffLimit', 'sms_tariff_limit',
-    'smsCap', 'sms_cap', 'smsAllocation', 'sms_allocation',
-    'smsMaxCount', 'sms_max_count', 'includedSms', 'included_sms',
-    'smsTotal', 'sms_total', 'smsAllowanceCount', 'sms_allowance_count',
-    'quota_sms', 'sms_quota_count', 'maxMessages', 'max_messages',
-    'textLimit', 'text_limit', 'textsLimit', 'texts_limit',
-    'bundledSms', 'bundled_sms', 'packageSms', 'package_sms',
-    r.smsLimit, r.sms_limit, r.max_sms, r.smsBundle, r.smsAllowance,
-  );
-  const lowestSmsLimitCountVal = pickNumber(
-    'Lowest SMS limit', 'Lowest SMS Limit', 'lowest_sms_limit',
-    'sms_threshold', 'sms_alert', 'lowSmsLimit',
-    'sms_warning', 'smsWarning', 'min_sms_limit', 'smsLowLimit',
-    'sms_low_limit', 'plan lowest_sms_limit',
-    'smsAlertCount', 'sms_alert_count', 'smsAlert',
-    'smsNotify', 'sms_notify', 'smsNotifyAt', 'sms_notify_at',
-    'smsThresholdCount', 'sms_threshold_count', 'smsSoftLimit', 'sms_soft_limit',
-    'smsMinLimit', 'sms_min_limit', 'smsWarningCount', 'sms_warning_count',
-    'lowSms', 'low_sms', 'alertSmsLimit', 'alert_sms_limit',
-    r.lowestSmsLimit, r.lowest_sms_limit, r.lowSmsLimit,
-  );
+  // Data / Usage velden — gebruiken pickBytes met context-extractie eerst
+  const dataUsedBytesVal = pickBytes({
+    contextKind: 'data',
+    valueKind: 'used',
+    aliases: [
+      'Data Used', 'Data_Used', 'dataUsed', 'data_used_bytes',
+      'used_bytes', 'total_usage', 'dataUsage', 'data_usage',
+      'usage data_bytes', 'data_bytes', 'bytes',
+      'usedData', 'used_data', 'consumed_bytes', 'consumedData',
+      'dataUsedMB', 'data_used_mb', 'dataUsedGb', 'data_used_gb',
+      'used_mb', 'used_gb', 'usedMb', 'usedGb',
+      'usedKb', 'used_kb', 'dataUsedKb', 'data_used_kb',
+      'data_mb_used', 'data_gb_used', 'data_kb_used',
+      'monthly_data_used', 'monthlyDataUsed', 'current_data_used', 'currentDataUsed',
+      'consumption_data', 'dataConsumed', 'data_consumed',
+      'usageMB', 'usage_mb', 'usageGB', 'usage_gb', 'usageKB', 'usage_kb',
+      'totalConsumed', 'total_consumed', 'totalDataUsed', 'total_data_used',
+      'dataUsageValue', 'data_usage_value', 'actualUsage', 'actual_usage',
+      'periodUsage', 'period_usage', 'periodDataUsage', 'period_data_usage',
+      'dataUsageMB', 'data_usage_mb', 'dataUsageGB', 'data_usage_gb',
+      'used_data_mb', 'used_data_gb', 'used_data_kb', 'used_data_tb',
+      'dataTotal', 'data_total', 'dataSpent', 'data_spent',
+      r.dataUsed, r.data_used_bytes, r.dataUsage, r.data_usage, r.total_usage,
+      r.dataUsedMB, r.dataUsedGb, r.usedMB, r.usedGB, r.usedMb, r.usedGb,
+    ],
+  });
+  const dataLimitBytesVal = pickBytes({
+    contextKind: 'data',
+    valueKind: 'limit',
+    aliases: [
+      'Data Limit', 'Data_Limit', 'dataLimit', 'data_limit_bytes',
+      'limit_bytes', 'data_quota', 'dataQuota',
+      'plan data_limit_bytes', 'data_quota_plan',
+      'max_data_bytes', 'total_data_bytes', 'allowance_data',
+      'dataLimitMB', 'data_limit_mb', 'dataLimitGB', 'data_limit_gb', 'dataLimitKB', 'data_limit_kb',
+      'maxMB', 'max_mb', 'maxGB', 'max_gb', 'maxKb', 'max_kb',
+      'data_max_mb', 'data_max_gb', 'data_max_bytes',
+      'quota_data_mb', 'quota_data_gb', 'quota_data',
+      'planDataLimit', 'plan_data_limit', 'tariffDataLimit', 'tariff_data_limit',
+      'packageDataLimit', 'package_data_limit', 'bundleDataLimit', 'bundle_data_limit',
+      'dataAllowance', 'data_allowance', 'allocatedData', 'allocated_data',
+      'totalAllowance', 'total_allowance', 'totalData', 'total_data',
+      'includedData', 'included_data', 'cap_data', 'dataCap', 'data_cap',
+      'dataPoolLimit', 'data_pool_limit', 'poolDataLimit', 'pool_data_limit',
+      'thresholdLimit', 'threshold_limit',
+      r.dataLimit, r.data_limit_bytes, r.dataQuota, r.data_quota,
+      r.dataLimitMB, r.dataLimitGB, r.maxMB, r.maxGB,
+    ],
+  });
+  const lowestDataLimitBytesVal = pickBytes({
+    contextKind: 'data',
+    valueKind: 'lowestLimit',
+    aliases: [
+      'Lowest Data Limit', 'lowest_data_limit_bytes',
+      'data_threshold_bytes', 'data alert bytes', 'dataAlertBytes',
+      'data_warning_limit', 'lowDataLimit', 'threshold_data_bytes',
+      'warning_data_bytes', 'min_data_limit_bytes', 'dataLowLimit',
+      'data_low_limit',
+      'dataAlertMB', 'data_alert_mb', 'dataAlertGB', 'data_alert_gb',
+      'dataWarningMB', 'data_warning_mb', 'dataWarningGB', 'data_warning_gb',
+      'lowDataMB', 'low_data_mb', 'lowDataGB', 'low_data_gb',
+      'dataThresholdMB', 'data_threshold_mb', 'dataThresholdGB', 'data_threshold_gb',
+      'notifyDataLimit', 'notify_data_limit', 'alertLimit', 'alert_limit',
+      'softLimitMB', 'soft_limit_mb', 'softLimitGB', 'soft_limit_gb', 'softDataLimit',
+      'minDataMB', 'min_data_mb', 'minDataGB', 'min_data_gb',
+      r.lowestDataLimit, r.lowest_data_limit_bytes, r.dataLowLimit, r.dataAlertBytes,
+      r.dataAlertMB, r.dataAlertGB, r.dataWarningMB, r.dataWarningGB,
+    ],
+  });
+  // SMS velden — gebruiken pickNumber met context-extractie eerst
+  const smsUsedCountVal = pickNumber({
+    contextKind: 'sms',
+    valueKind: 'used',
+    aliases: [
+      'sms used', 'SMS Used', 'smsUsed', 'sms_used',
+      'sms_used_count', 'sms_count', 'total_sms',
+      'sms_usage', 'smsUsage', 'totalSms', 'smsSent', 'sms_sent',
+      'usage sms_count', 'usage sms', 'consumed_sms',
+      'smsUsedTotal', 'sms_used_total', 'current_sms_used', 'currentSmsUsed',
+      'smsConsumed', 'sms_consumed', 'sentSms', 'sent_sms', 'smsOut', 'sms_out',
+      'outboundSms', 'outbound_sms', 'moSms', 'mo_sms', 'mtSms', 'mt_sms',
+      'smsUsedMonth', 'sms_used_month', 'smsUsedPeriod', 'sms_used_period',
+      'textsUsed', 'texts_used', 'textUsed', 'text_used', 'sms_usage_count',
+      'messagesUsed', 'messages_used', 'messageCount', 'message_count',
+      r.smsUsed, r.sms_used, r.sms_count, r.totalSms, r.smsSent,
+    ],
+  });
+  const smsLimitCountVal = pickNumber({
+    contextKind: 'sms',
+    valueKind: 'limit',
+    aliases: [
+      'SMS Limit', 'sms_limit', 'sms_quota', 'smsLimit', 'max_sms',
+      'sms_max', 'maximum_sms', 'smsBundle', 'sms_bundle',
+      'allowance_sms', 'smsAllowance', 'plan sms_limit',
+      'total_sms_bundle',
+      'smsPlanLimit', 'sms_plan_limit', 'smsTariffLimit', 'sms_tariff_limit',
+      'smsCap', 'sms_cap', 'smsAllocation', 'sms_allocation',
+      'smsMaxCount', 'sms_max_count', 'includedSms', 'included_sms',
+      'smsTotal', 'sms_total', 'smsAllowanceCount', 'sms_allowance_count',
+      'quota_sms', 'sms_quota_count', 'maxMessages', 'max_messages',
+      'textLimit', 'text_limit', 'textsLimit', 'texts_limit',
+      'bundledSms', 'bundled_sms', 'packageSms', 'package_sms',
+      r.smsLimit, r.sms_limit, r.max_sms, r.smsBundle, r.smsAllowance,
+    ],
+  });
+  const lowestSmsLimitCountVal = pickNumber({
+    contextKind: 'sms',
+    valueKind: 'lowestLimit',
+    aliases: [
+      'Lowest SMS limit', 'Lowest SMS Limit', 'lowest_sms_limit',
+      'sms_threshold', 'sms_alert', 'lowSmsLimit',
+      'sms_warning', 'smsWarning', 'min_sms_limit', 'smsLowLimit',
+      'sms_low_limit', 'plan lowest_sms_limit',
+      'smsAlertCount', 'sms_alert_count', 'smsAlert',
+      'smsNotify', 'sms_notify', 'smsNotifyAt', 'sms_notify_at',
+      'smsThresholdCount', 'sms_threshold_count', 'smsSoftLimit', 'sms_soft_limit',
+      'smsMinLimit', 'sms_min_limit', 'smsWarningCount', 'sms_warning_count',
+      'lowSms', 'low_sms', 'alertSmsLimit', 'alert_sms_limit',
+      r.lowestSmsLimit, r.lowest_sms_limit, r.lowSmsLimit,
+    ],
+  });
 
   if (DEBUG) {
     // eslint-disable-next-line no-console
