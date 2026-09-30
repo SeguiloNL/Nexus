@@ -303,68 +303,6 @@ export function SimDetail({
             </Card>
           </div>
 
-          {canEdit ? (
-            <div
-              className={
-                "relative flex flex-col gap-2 rounded-md border p-4 sm:flex-row sm:items-center sm:justify-between sm:p-4 " +
-                (usageSyncPending
-                  ? "border-blue-300 bg-blue-50/80 ring-2 ring-blue-200/70 transition-colors duration-200"
-                  : "border-slate-200 bg-slate-50/60 transition-colors duration-200")
-              }
-              aria-live="polite"
-            >
-              <div className="flex-1 min-w-0 text-sm">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span className="font-medium text-slate-700">Handmatig verbruik vernieuwen</span>
-                  <span className="hidden text-slate-400 sm:inline">·</span>
-                  <span className="text-slate-600 sm:text-slate-500">
-                    Haalt de meest recente data- en SMS-statistieken direct op via Simhuis.
-                  </span>
-                </div>
-                {usageSyncPending ? (
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-medium text-blue-700 sm:text-sm">
-                    <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
-                    <span>
-                      Bezig met ophalen van verbruiksgegevens... Dit kan enkele seconden duren.
-                    </span>
-                  </div>
-                ) : null}
-              </div>
-              <form
-                action={usageSyncFormAction as any}
-                onSubmit={onUsageSyncSubmit}
-                className="shrink-0 w-full sm:w-auto"
-              >
-                <Button
-                  type="submit"
-                  size="sm"
-                  variant={usageSyncPending ? "outline" : "default"}
-                  disabled={usageSyncPending}
-                  aria-disabled={usageSyncPending}
-                  aria-busy={usageSyncPending}
-                  className={
-                    "w-full sm:w-auto justify-center gap-2 px-4 py-2 " +
-                    (usageSyncPending
-                      ? "cursor-not-allowed border-blue-300 bg-blue-100/70 text-blue-700 hover:bg-blue-100/70"
-                      : "")
-                  }
-                >
-                  {usageSyncPending ? (
-                    <>
-                      <RefreshCw className="h-4 w-4 shrink-0 animate-spin" aria-hidden="true" />
-                      <span className="whitespace-nowrap">Bezig met vernieuwen...</span>
-                    </>
-                  ) : (
-                    <>
-                      <RefreshCw className="h-4 w-4 shrink-0" aria-hidden="true" />
-                      <span className="whitespace-nowrap">Verbruik vernieuwen</span>
-                    </>
-                  )}
-                </Button>
-              </form>
-            </div>
-          ) : null}
-
           {usageSyncState?.message ? (
             <div
               role="status"
@@ -428,9 +366,34 @@ export function SimDetail({
 
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Database className="h-4 w-4 text-slate-500" /> Dataverbruik
-                </CardTitle>
+                <div className="flex items-center justify-between gap-2">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Database className="h-4 w-4 text-slate-500" /> Dataverbruik
+                  </CardTitle>
+                  {canEdit ? (
+                    <form
+                      action={usageSyncFormAction as any}
+                      onSubmit={onUsageSyncSubmit}
+                    >
+                      <Button
+                        type="submit"
+                        size="icon"
+                        variant="ghost"
+                        disabled={usageSyncPending}
+                        aria-disabled={usageSyncPending}
+                        aria-busy={usageSyncPending}
+                        aria-label="Dataverbruik vernieuwen"
+                        title="Dataverbruik vernieuwen"
+                        className="h-8 w-8 shrink-0"
+                      >
+                        <RefreshCw
+                          className={"h-4 w-4 " + (usageSyncPending ? "animate-spin" : "")}
+                          aria-hidden="true"
+                        />
+                      </Button>
+                    </form>
+                  ) : null}
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <UsageProgress
@@ -470,9 +433,34 @@ export function SimDetail({
 
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <MessageSquare className="h-4 w-4 text-slate-500" /> SMS
-                </CardTitle>
+                <div className="flex items-center justify-between gap-2">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <MessageSquare className="h-4 w-4 text-slate-500" /> SMS
+                  </CardTitle>
+                  {canEdit ? (
+                    <form
+                      action={usageSyncFormAction as any}
+                      onSubmit={onUsageSyncSubmit}
+                    >
+                      <Button
+                        type="submit"
+                        size="icon"
+                        variant="ghost"
+                        disabled={usageSyncPending}
+                        aria-disabled={usageSyncPending}
+                        aria-busy={usageSyncPending}
+                        aria-label="SMS verbruik vernieuwen"
+                        title="SMS verbruik vernieuwen"
+                        className="h-8 w-8 shrink-0"
+                      >
+                        <RefreshCw
+                          className={"h-4 w-4 " + (usageSyncPending ? "animate-spin" : "")}
+                          aria-hidden="true"
+                        />
+                      </Button>
+                    </form>
+                  ) : null}
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <UsageProgress

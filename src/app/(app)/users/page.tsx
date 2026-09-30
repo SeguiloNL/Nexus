@@ -4,8 +4,8 @@ import { findManyUsers } from "@/server/services/user.service";
 import { findManyRoles } from "@/server/services/role.service";
 import { findManyCustomers } from "@/server/services/customer.service";
 import { UserList } from "./_components/user-list";
-import { canUserRole, canUserRoleAsync } from "@/lib/auth/session";
-import { PermissionError, requirePermission } from "@/lib/rbac";
+import { UserRole, RoleScope } from "@/types/enums";
+import { hasMinRole } from "@/lib/rbac";
 
 export default async function UsersPage({
   searchParams,
@@ -15,34 +15,20 @@ export default async function UsersPage({
   const session = await auth();
   if (!session?.user) redirect("/login");
 
-  const authzRole = session.user.role ?? session.user.roleId ?? session.user.permissions ?? "";
-  const canView =
-    canUserRole(authzRole, "view", "user") ||
-    (await canUserRoleAsync(session.user.roleId ?? session.user.role ?? "", "view", "user"));
+  const userRole = (session.user.role ?? UserRole.VIEWER) as UserRole;
 
-  if (!canView) {
-    try {
-      await requirePermission(
-        session.user.permissions ?? session.user.roleId ?? "",
-        "view",
-        "user"
-      );
-    } catch (_e) {
-      throw new PermissionError(
-        "Onvoldoende rechten: je hebt geen toestemming om gebruikers te bekijken."
-      );
-    }
+  if (!hasMinRole(userRole, UserRole.VIEWER)) {
+    redirect("/");
   }
 
-  const canCreate =
-    canUserRole(authzRole, "create", "user") ||
-    (await canUserRoleAsync(session.user.roleId ?? "", "create", "user"));
-  const canEdit =
-    canUserRole(authzRole, "edit", "user") ||
-    (await canUserRoleAsync(session.user.roleId ?? "", "edit", "user"));
-  const canDelete =
-    canUserRole(authzRole, "delete", "user") ||
-    (await canUserRoleAsync(session.user.roleId ?? "", "delete", "user"));
+  const canView = hasMinRole(userRole, UserRole.VIEWER);
+  const canCreate = hasMinRole(userRole, UserRole.ADMIN);
+  const canEdit = hasMinRole(userRole, UserRole.ADMIN);
+  const canDelete = hasMinRole(userRole, UserRole.ADMIN);
+
+  if (!canView) {
+    redirect("/");
+  }
 
   const ctx = {
     userId: session.user.id,
@@ -52,9 +38,16 @@ export default async function UsersPage({
     permissions: session.user.permissions,
     customerScope: session.user.customerIds,
   };
-  const [usersResult, roles, customers] = await Promise.all([
+
+  let roles: any[] = [];
+  try {
+    roles = (await findManyRoles()) as any[];
+  } catch (_e) {
+    roles = [];
+  }
+
+  const [usersResult, customers] = await Promise.all([
     findManyUsers({ page: 1, perPage: 500 }, ctx),
-    findManyRoles(),
     findManyCustomers({
       page: 1,
       perPage: 1000,
@@ -66,13 +59,13 @@ export default async function UsersPage({
   return (
     <UserList
       users={usersResult.data as any}
-      roles={roles as any}
+      roles={roles}
       customers={customers.data as any}
       canCreate={canCreate}
       canEdit={canEdit}
       canDelete={canDelete}
       currentUserId={session.user.id}
-      viewerRoleScope={session.user.roleScope ?? null}
+      viewerRoleScope={(session.user.roleScope ?? RoleScope.INTERNAL) as any}
       errorMessage={searchParams?.error ?? null}
     />
   );

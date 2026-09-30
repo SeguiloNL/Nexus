@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 export default async function SimsImportPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  requirePermission(session.user.role, "import", "sim");
+  await requirePermission(session.user.role, "import", "sim");
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto">

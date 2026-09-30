@@ -19,7 +19,7 @@ export default async function InvoicesPage(props: {
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  requirePermission(session.user.role, "view", "invoice");
+  await requirePermission(session.user.role, "view", "invoice");
 
   const sp = await props.searchParams;
   const ctx = { userId: session.user.id, userRole: session.user.role };

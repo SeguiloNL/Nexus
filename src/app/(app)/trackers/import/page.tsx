@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 export default async function TrackersImportPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  requirePermission(session.user.role, "import", "tracker");
+  await requirePermission(session.user.role, "import", "tracker");
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto">

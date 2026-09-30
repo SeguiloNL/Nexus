@@ -26,7 +26,7 @@ export async function createProductAction(
   formData: FormData
 ): Promise<ProductActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "create", "product");
+  await requirePermission(user.role, "create", "product");
 
   const isActive = formData.get("isActive");
   const data = {
@@ -66,7 +66,7 @@ export async function updateProductAction(
   formData: FormData
 ): Promise<ProductActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "product");
+  await requirePermission(user.role, "edit", "product");
 
   const isActive = formData.get("isActive");
   const data: any = {
@@ -128,7 +128,7 @@ export async function bulkActivateProductsAction(
   formData: FormData
 ): Promise<BulkActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "product");
+  await requirePermission(user.role, "edit", "product");
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen producten geselecteerd." };
   const ctx = { userId: user.id, userRole: user.role };
@@ -151,7 +151,7 @@ export async function bulkDeactivateProductsAction(
   formData: FormData
 ): Promise<BulkActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "product");
+  await requirePermission(user.role, "edit", "product");
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen producten geselecteerd." };
   const ctx = { userId: user.id, userRole: user.role };

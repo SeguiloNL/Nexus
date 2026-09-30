@@ -31,7 +31,7 @@ export async function createCustomerAction(
   formData: FormData
 ): Promise<CustomerActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "create", "customer");
+  await requirePermission(user.role, "create", "customer");
 
   const data = {
     customerNumber: formData.get("customerNumber") || undefined,
@@ -78,7 +78,7 @@ export async function updateCustomerAction(
   formData: FormData
 ): Promise<CustomerActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "customer");
+  await requirePermission(user.role, "edit", "customer");
 
   const data: {
     companyName?: string;
@@ -136,7 +136,7 @@ export async function updateCustomerAction(
 
 export async function deleteCustomerAction(customerId: string) {
   const user = await getCurrentUser();
-  requirePermission(user.role, "delete", "customer");
+  await requirePermission(user.role, "delete", "customer");
 
   const ctx = { userId: user.id, userRole: user.role };
   await softDeleteCustomer(customerId, ctx);
@@ -148,7 +148,7 @@ export async function deleteCustomerAction(customerId: string) {
 
 export async function exportCustomersCsvAction(): Promise<Response> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "export", "customer");
+  await requirePermission(user.role, "export", "customer");
 
   const rows = await prisma.customer.findMany({
     where: { deletedAt: null },
@@ -210,7 +210,7 @@ export async function previewCustomerCsvAction(
   formData: FormData
 ): Promise<CustomerCsvImportActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "import", "customer");
+  await requirePermission(user.role, "import", "customer");
 
   const file = formData.get("file") as File | null;
   if (!file || !file.name.toLowerCase().endsWith(".csv")) {
@@ -232,7 +232,7 @@ export async function commitCustomerCsvAction(
   _formData: FormData
 ): Promise<CustomerCsvImportActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "import", "customer");
+  await requirePermission(user.role, "import", "customer");
 
   if (!prev.preview?.valid.length) {
     return { ...prev, message: "Geen geldige rijen om te importeren." };

@@ -85,7 +85,7 @@ export async function saveInserveSettingsAction(
   formData: FormData
 ): Promise<InserveSettingsActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "setting");
+  await requirePermission(user.role, "edit", "setting");
 
   const rawSubdomain = formData.get("subdomain");
   const rawApiKey = formData.get("apiKey");
@@ -137,7 +137,7 @@ export async function saveSimhuisSettingsAction(
   formData: FormData
 ): Promise<SimhuisSettingsActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "setting");
+  await requirePermission(user.role, "edit", "setting");
 
   const data: SimhuisSettingsInput = {
     baseUrl: formStr(formData.get("baseUrl")),
@@ -196,7 +196,7 @@ export async function saveNavixySettingsAction(
   formData: FormData
 ): Promise<NavixySettingsActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "setting");
+  await requirePermission(user.role, "edit", "setting");
 
   const data: NavixySettingsInput = {
     baseUrl: formStr(formData.get("baseUrl")),
@@ -330,7 +330,7 @@ export interface SimSyncActionResult {
 export async function syncSimhuisSimsAction(): Promise<SimSyncActionResult> {
   try {
     const user = await getCurrentUser();
-    requirePermission(user.role, "edit", "sim");
+    await requirePermission(user.role, "edit", "sim");
     const r = await syncAvailableSimsFromSimhuis({ userId: user.id, userRole: user.role });
     const ok = r.totalInSimhuis === 0
       ? false

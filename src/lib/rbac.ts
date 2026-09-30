@@ -1,16 +1,60 @@
 import type {
   ResourceAction,
   ResourceType,
+} from "@/types/enums";
+import {
   UserRole,
   RoleScope,
+  ALL_RESOURCE_TYPES,
+  CUSTOMER_SCOPE_RESOURCES,
 } from "@/types/enums";
-import { ALL_RESOURCE_TYPES } from "@/types/enums";
 import type { PermissionBits } from "@/types/next-auth";
 
 export function emptyPermissionBits(): PermissionBits {
   const obj = {} as PermissionBits;
   for (const r of ALL_RESOURCE_TYPES) obj[r] = { read: false, write: false };
   return obj;
+}
+
+export function buildLegacyPermissionsForRole(
+  role: UserRole | null | undefined,
+  scope?: RoleScope | null | undefined
+): PermissionBits {
+  const bits = emptyPermissionBits();
+  const safeRole = role ?? UserRole.VIEWER;
+  const safeScope = scope ?? RoleScope.INTERNAL;
+
+  const allowedResources =
+    safeScope === RoleScope.CUSTOMER
+      ? CUSTOMER_SCOPE_RESOURCES
+      : ALL_RESOURCE_TYPES;
+
+  for (const r of allowedResources) {
+    switch (safeRole) {
+      case UserRole.ADMIN:
+        bits[r] = { read: true, write: true };
+        break;
+      case UserRole.EMPLOYEE:
+        if (
+          r === "user" ||
+          r === "role" ||
+          r === "audit_log" ||
+          r === "setting"
+        ) {
+          bits[r] = { read: true, write: false };
+        } else {
+          bits[r] = { read: true, write: true };
+        }
+        break;
+      case UserRole.VIEWER:
+      default:
+        if (r !== "audit_log") {
+          bits[r] = { read: true, write: false };
+        }
+        break;
+    }
+  }
+  return bits;
 }
 
 export type PermissionActionBit = "read" | "write";
@@ -58,6 +102,16 @@ export async function loadPermissionsForRole(
   roleId: string,
   opts: { force?: boolean } = {}
 ): Promise<PermissionBits> {
+  if (!roleId) return emptyPermissionBits();
+
+  if (
+    roleId === UserRole.ADMIN ||
+    roleId === UserRole.EMPLOYEE ||
+    roleId === UserRole.VIEWER
+  ) {
+    return buildLegacyPermissionsForRole(roleId as UserRole, RoleScope.INTERNAL);
+  }
+
   const cache = getCache();
   const now = Date.now();
   if (!opts.force) {
@@ -66,7 +120,12 @@ export async function loadPermissionsForRole(
       return cached.bits;
     }
   }
-  const bits = await loadPermissionsFromService(roleId);
+  let bits: PermissionBits;
+  try {
+    bits = await loadPermissionsFromService(roleId);
+  } catch (_e) {
+    return emptyPermissionBits();
+  }
   cache.set(roleId, { bits, expiresAt: now + CACHE_TTL_MS });
   try {
     const { registerRoleCacheInvalidator } = await import(

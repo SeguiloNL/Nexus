@@ -27,7 +27,7 @@ export async function createVehicleAction(
   formData: FormData
 ): Promise<VehicleActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "create", "vehicle");
+  await requirePermission(user.role, "create", "vehicle");
 
   const data = {
     customerId: formData.get("customerId") || undefined,
@@ -61,7 +61,7 @@ export async function updateVehicleAction(
   formData: FormData
 ): Promise<VehicleActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "vehicle");
+  await requirePermission(user.role, "edit", "vehicle");
 
   const vehicleId = String(formData.get("vehicleId"));
   if (!vehicleId) {
@@ -100,7 +100,7 @@ export async function deleteVehicleAction(
   formData: FormData
 ) {
   const user = await getCurrentUser();
-  requirePermission(user.role, "delete", "vehicle");
+  await requirePermission(user.role, "delete", "vehicle");
 
   const vehicleId = String(formData.get("vehicleId"));
   if (!vehicleId) {
@@ -143,7 +143,7 @@ export async function bulkSoftDeleteVehiclesAction(
   formData: FormData
 ): Promise<BulkActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "delete", "vehicle");
+  await requirePermission(user.role, "delete", "vehicle");
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen voertuigen geselecteerd." };
   const ctx = { userId: user.id, userRole: user.role };

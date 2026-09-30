@@ -5,15 +5,12 @@ import { verifyPassword } from "@/lib/auth/password";
 import { LoginSchema } from "@/server/validators/user";
 import { UserRole as UserRoleEnum, RoleScope } from "@/types/enums";
 import type { PermissionBits } from "@/types/next-auth";
-import { emptyPermissionBits } from "@/lib/rbac";
+import {
+  emptyPermissionBits,
+  buildLegacyPermissionsForRole,
+} from "@/lib/rbac";
 
 type LegacyRoleName = "ADMIN" | "EMPLOYEE" | "VIEWER";
-
-const LEGACY_TO_DEFAULT_ROLE: Record<LegacyRoleName, { name: string; scope: RoleScope }> = {
-  ADMIN: { name: "ADMIN", scope: RoleScope.INTERNAL },
-  EMPLOYEE: { name: "EMPLOYEE", scope: RoleScope.INTERNAL },
-  VIEWER: { name: "VIEWER", scope: RoleScope.INTERNAL },
-};
 
 async function resolveRoleForUser(
   user: { id: string; roleId: string | null; role: LegacyRoleName }
@@ -23,13 +20,20 @@ async function resolveRoleForUser(
   roleName: string;
   permissions: PermissionBits;
 }> {
-  let roleId = user.roleId;
+  const legacyRole: UserRoleEnum =
+    (user.role as UserRoleEnum) ?? UserRoleEnum.VIEWER;
+  const scope = RoleScope.INTERNAL;
+  const permissions = buildLegacyPermissionsForRole(legacyRole, scope);
+
+  let roleId = user.roleId ?? "";
+  let roleName = legacyRole as string;
 
   if (!roleId) {
-    const legacy = LEGACY_TO_DEFAULT_ROLE[user.role];
-    if (legacy) {
+    try {
       const fallback = await prisma.role.findUnique({
-        where: { name_scope: { name: legacy.name, scope: legacy.scope } },
+        where: {
+          name_scope: { name: legacyRole as string, scope: scope as any },
+        },
         select: { id: true },
       });
       if (fallback) {
@@ -40,32 +44,18 @@ async function resolveRoleForUser(
             data: { roleId: fallback.id },
           });
         } catch (_e) {
-          /* noop – mag falen, gebruiken alleen voor sessie-duur */
+          /* noop – alleen voor sessie-duur */
         }
       }
+    } catch (_e) {
+      /* role tabel mogelijk niet beschikbaar – gebruik legacy fallback */
     }
   }
 
-  if (!roleId) {
-    return {
-      roleId: "",
-      roleScope: RoleScope.INTERNAL,
-      roleName: "UNKNOWN",
-      permissions: emptyPermissionBits(),
-    };
-  }
-
-  const { getPermissionsByRoleId } = await import("@/server/services/role.service");
-  const role = await prisma.role.findUnique({
-    where: { id: roleId },
-    select: { name: true, scope: true },
-  });
-  const permissions = await getPermissionsByRoleId(roleId);
-
   return {
     roleId,
-    roleScope: (role?.scope as RoleScope) ?? RoleScope.INTERNAL,
-    roleName: role?.name ?? "Rol",
+    roleScope: scope,
+    roleName,
     permissions,
   };
 }

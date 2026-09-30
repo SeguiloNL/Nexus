@@ -41,7 +41,7 @@ export async function createSimAction(
   formData: FormData
 ): Promise<SimActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "create", "sim");
+  await requirePermission(user.role, "create", "sim");
 
   const data = {
     iccid: formData.get("iccid") || undefined,
@@ -78,7 +78,7 @@ export async function updateSimAction(
   formData: FormData
 ): Promise<SimActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "sim");
+  await requirePermission(user.role, "edit", "sim");
 
   const data: any = {
     msisdn: formData.get("msisdn") || null,
@@ -111,7 +111,7 @@ export async function updateSimAction(
 
 export async function deleteSimAction(simId: string) {
   const user = await getCurrentUser();
-  requirePermission(user.role, "delete", "sim");
+  await requirePermission(user.role, "delete", "sim");
 
   const ctx = { userId: user.id, userRole: user.role };
   await softDeleteSim(simId, ctx);
@@ -126,7 +126,7 @@ export async function previewSimCsvAction(
   formData: FormData
 ): Promise<SimCsvImportActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "import", "sim");
+  await requirePermission(user.role, "import", "sim");
 
   const file = formData.get("file") as File | null;
   if (!file || !file.name.toLowerCase().endsWith(".csv")) {
@@ -148,7 +148,7 @@ export async function commitSimCsvAction(
   _formData: FormData
 ): Promise<SimCsvImportActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "import", "sim");
+  await requirePermission(user.role, "import", "sim");
 
   if (!prev.preview?.valid.length) {
     return { ...prev, message: "Geen geldige rijen om te importeren." };
@@ -163,7 +163,7 @@ export async function commitSimCsvAction(
 
 export async function exportSimsCsvAction(): Promise<Response> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "export", "sim");
+  await requirePermission(user.role, "export", "sim");
 
   const rows = await prisma.sIM.findMany({
     where: { deletedAt: null },
@@ -307,7 +307,7 @@ export async function bulkSoftDeleteSimsAction(
   formData: FormData
 ): Promise<BulkActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "delete", "sim");
+  await requirePermission(user.role, "delete", "sim");
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen SIM-kaarten geselecteerd." };
   const ctx = { userId: user.id, userRole: user.role };
@@ -330,7 +330,7 @@ export async function syncUsageSimsAction(
   _formData: FormData
 ): Promise<BulkActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "sim");
+  await requirePermission(user.role, "edit", "sim");
   const ctx = { userId: user.id, userRole: user.role };
   try {
     const result = await syncActiveSimsUsageFromSimhuis(ctx);
@@ -370,7 +370,7 @@ export async function syncUsageForSingleSimAction(
   _formData: FormData
 ): Promise<SimUsageSyncState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "sim");
+  await requirePermission(user.role, "edit", "sim");
   const ctx = { userId: user.id, userRole: user.role };
   try {
     const result = await syncUsageForSingleSim(simId, ctx);

@@ -6,13 +6,13 @@ import {
   canWithRoleId,
   loadPermissionsForRole,
   emptyPermissionBits,
+  buildLegacyPermissionsForRole,
 } from "@/lib/rbac";
 import type {
   ResourceAction,
   ResourceType,
-  UserRole,
-  RoleScope,
 } from "@/types/enums";
+import { UserRole, RoleScope } from "@/types/enums";
 import type { PermissionBits } from "@/types/next-auth";
 
 export interface SessionUser {
@@ -46,6 +46,9 @@ export async function getCurrentUser(): Promise<SessionUser> {
   let permissions = basePerms;
 
   const roleId = u.roleId ?? "";
+  const legacyRole = (u.role ?? "VIEWER") as UserRole;
+  const legacyScope = (u.roleScope ?? RoleScope.INTERNAL) as RoleScope;
+
   if (!permissionsMeaningful(permissions) && roleId) {
     try {
       permissions = await loadPermissionsForRole(roleId, { force: true });
@@ -53,16 +56,24 @@ export async function getCurrentUser(): Promise<SessionUser> {
       permissions = basePerms || emptyPermissionBits();
     }
   }
+
+  if (!permissionsMeaningful(permissions)) {
+    permissions =
+      buildLegacyPermissionsForRole(legacyRole, legacyScope) ||
+      basePerms ||
+      emptyPermissionBits();
+  }
+
   if (!permissions || Object.keys(permissions).length === 0) {
     permissions = emptyPermissionBits();
   }
 
   return {
     id: u.id ?? "",
-    role: (u.role ?? "VIEWER") as UserRole,
+    role: legacyRole,
     roleId,
-    roleScope: (u.roleScope ?? "INTERNAL") as RoleScope,
-    roleName: u.roleName ?? "",
+    roleScope: legacyScope,
+    roleName: u.roleName ?? legacyRole,
     email: u.email ?? "",
     name: u.name ?? "",
     customerId: u.customerId ?? null,

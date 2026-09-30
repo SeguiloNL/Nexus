@@ -39,7 +39,7 @@ export async function createTrackerAction(
   formData: FormData
 ): Promise<TrackerActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "create", "tracker");
+  await requirePermission(user.role, "create", "tracker");
 
   const data = {
     serialNumber: formData.get("serialNumber") || undefined,
@@ -77,7 +77,7 @@ export async function updateTrackerAction(
   formData: FormData
 ): Promise<TrackerActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "edit", "tracker");
+  await requirePermission(user.role, "edit", "tracker");
 
   const data: any = {
     brand: (formData.get("brand") as string) || undefined,
@@ -110,7 +110,7 @@ export async function updateTrackerAction(
 
 export async function deleteTrackerAction(trackerId: string) {
   const user = await getCurrentUser();
-  requirePermission(user.role, "delete", "tracker");
+  await requirePermission(user.role, "delete", "tracker");
 
   const ctx = { userId: user.id, userRole: user.role };
   await softDeleteTracker(trackerId, ctx);
@@ -125,7 +125,7 @@ export async function previewTrackerCsvAction(
   formData: FormData
 ): Promise<CsvImportActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "import", "tracker");
+  await requirePermission(user.role, "import", "tracker");
 
   const file = formData.get("file") as File | null;
   if (!file || !file.name.toLowerCase().endsWith(".csv")) {
@@ -147,7 +147,7 @@ export async function commitTrackerCsvAction(
   _formData: FormData
 ): Promise<CsvImportActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "import", "tracker");
+  await requirePermission(user.role, "import", "tracker");
 
   if (!prev.preview?.valid.length) {
     return { ...prev, message: "Geen geldige rijen om te importeren." };
@@ -162,7 +162,7 @@ export async function commitTrackerCsvAction(
 
 export async function exportTrackersCsvAction(): Promise<Response> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "export", "tracker");
+  await requirePermission(user.role, "export", "tracker");
 
   const rows = await prisma.tracker.findMany({
     where: { deletedAt: null },
@@ -298,7 +298,7 @@ export async function bulkSoftDeleteTrackersAction(
   formData: FormData
 ): Promise<BulkActionState> {
   const user = await getCurrentUser();
-  requirePermission(user.role, "delete", "tracker");
+  await requirePermission(user.role, "delete", "tracker");
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen trackers geselecteerd." };
   const ctx = { userId: user.id, userRole: user.role };
