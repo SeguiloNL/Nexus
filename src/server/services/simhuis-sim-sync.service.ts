@@ -4,7 +4,7 @@ import { listAllSims, getSimStatus, simhuisClient } from "@/server/integrations/
 import type { SimhuisSimStatus } from "@/server/integrations/simhuis/types";
 import { SimStatus, type UserRole } from "@/types/enums";
 
-type Ctx = { userId?: string; userRole?: UserRole };
+type Ctx = { userId?: string; userRole?: UserRole; customerScope?: string[] };
 
 type UsageFields = {
   dataUsedBytes: bigint | null;
@@ -229,18 +229,105 @@ function validateAndNormalizeSimStatus(
 }
 
 const INVALID_IDENTIFIER_PLACEHOLDERS: ReadonlySet<string> = new Set<string>([
-  "eid", "iccid", "imsi", "msisdn", "subscriberid", "subscriber",
-  "na", "n/a", "unknown", "none", "empty", "placeholder", "0", "000000000000000",
-  "--", "---",
+  // === Core identifiers: ALLE alias-vormen (case-insensitive) ===
+  "iccid",
+  "eid", "esimid", "esim_id", "esim", "esimprofileid", "esim_profile_id",
+  "profileid", "profile_id", "e_s_sim_id", "esimd", "esim id", "eid id",
+  "imsi",
+  "msisdn", "phonenumber", "phone_number", "phone", "primarymsisdn",
+  "primary_msisdn", "virtualmsisdn", "virtual_msisdn", "msisdnvirtual",
+  "virtual_phone_number", "virtualphonenumber", "tel", "telephone", "mobile",
+  "mobilenumber", "mobile_number", "cellnumber", "cell_number",
+  "subscriberid", "subscriber_id", "subscriber", "subscriptionid",
+  "subscription_id", "sub", "subid", "sub_id",
+  "assetid", "asset_id", "asset", "deviceid", "device_id", "device",
+  "id", "simid", "sim_id", "simcardid", "simcard_id", "simcard",
+  // === Overige veldnamen die per ongeluk als waarde kunnen voorkomen ===
+  "name", "label", "title", "displayname", "display_name",
+  "simname", "sim_name", "sim card name", "simcardname", "sim_card_name",
+  "assetname", "asset_name", "customername", "customer_name",
+  "accountname", "account_name", "tenantname", "tenant_name",
+  "group", "groupid", "group_id", "groupname", "group_name", "grouplabel",
+  "pool", "poolid", "pool_id", "poolname", "pool_name",
+  "batch", "batchid", "batch_id", "batchname", "batch_name",
+  "product", "productname", "product_name", "productcode", "product_code",
+  "productid", "producttype", "product_type", "productcategory",
+  "product_category", "category", "type", "kind",
+  "plantype", "plan_type", "plan", "planname", "plan_name",
+  "tariff", "tariffname", "tariff_name", "rateplan", "rate_plan",
+  "offer", "offername", "offer_name",
+  "package", "packagename", "package_name",
+  "bundle", "bundlename", "bundle_name",
+  "status", "state", "lifecycle", "lifecycle_status",
+  "lifecyclestatus", "simstatus", "sim_status", "simstate", "sim_state",
+  "network", "carrier", "provider", "operator", "networkname", "network_name",
+  "country", "countryiso", "country_iso",
+  "ip", "ipaddress", "ip_address", "lastip", "last_ip",
+  // === Usage velden (mogen als identifier nooit verschijnen) ===
+  "dataused", "data_used", "datausage", "data_usage",
+  "datalimit", "data_limit", "dataquota", "data_quota",
+  "lowestdatalimit", "lowest_data_limit", "lowdatalimit", "low_data_limit",
+  "datathreshold", "data_threshold", "dataalert", "data_alert",
+  "smsused", "sms_used", "smsusage", "sms_usage", "smscount", "sms_count",
+  "smslimit", "sms_limit", "smsquota", "sms_quota",
+  "lowestsmslimit", "lowest_sms_limit", "lowsmslimit", "low_sms_limit",
+  "smsthreshold", "sms_threshold", "smsalert", "sms_alert",
+  // === Datum / tijd velden ===
+  "activatedat", "activated_at", "activationdate", "activation_date",
+  "createdat", "created_at", "provisionedat", "provisioned_at",
+  "startdate", "start_date",
+  // === Profiel / account-achtige ===
+  "account", "accountid", "account_id", "customer", "customerid",
+  "customer_id", "tenant", "tenantid", "tenant_id",
+  "organization", "organizationid", "organization_id", "org", "orgid", "org_id",
+  "reseller", "resellerid", "reseller_id",
+  "profile", "profiletype", "profile_type",
+  "simtype", "sim_type", "simcategory", "sim_category",
+  "assettype", "asset_type", "subscriptiontype", "subscription_type",
+  "servicetype", "service_type",
+  // === Generieke placeholders ===
+  "na", "n/a", "unknown", "none", "empty", "placeholder",
+  "null", "undefined", "0", "000000000000000",
+  "--", "---", "-",
+  // === Value-achtige keys die als placeholder verschijnen ===
+  "value", "val", "amount", "count", "total", "remaining",
+  "usage", "quota", "allowance", "limit", "used",
 ]);
 
 function isNotPlaceholder(s: string): boolean {
-  const norm = s.toLowerCase().trim();
-  if (!norm) return false;
-  if (INVALID_IDENTIFIER_PLACEHOLDERS.has(norm)) return false;
-  if (norm === "null" || norm === "undefined") return false;
+  const rawLower = s.toLowerCase().trim();
+  if (!rawLower) return false;
+  if (INVALID_IDENTIFIER_PLACEHOLDERS.has(rawLower)) return false;
+  if (rawLower === "null" || rawLower === "undefined") return false;
+  // Extra normalizatie: alle separators eruit halen en opnieuw checken
+  const stripped = rawLower.replace(/[\s_./\-()]+/g, "");
+  if (!stripped) return false;
+  if (INVALID_IDENTIFIER_PLACEHOLDERS.has(stripped)) return false;
   return true;
 }
+
+// ============================================================
+// Aggressieve logging counters voor health-check van sync-batch
+// (tijdens hersynchronisatie na leegmaken DB willen we direct
+//  zien of extractie goed gaat).
+// ============================================================
+type ExtractHealthCounters = {
+  totalRaw: number;
+  withIccidPlaceholder: number;
+  withEidPlaceholder: number;
+  withMsisdnPlaceholder: number;
+  withValidIccid: number;
+  withValidEid: number;
+  withValidMsisdn: number;
+  iccidPlaceholderSamples: string[];
+  eidPlaceholderSamples: string[];
+  msisdnPlaceholderSamples: string[];
+  skippedReasonNoIccid: number;
+  skippedReasonDeleted: number;
+  skippedReasonLocked: number;
+  skippedReasonNoChanges: number;
+  skippedReasonPlaceholderIccid: number;
+};
 
 function normIccid(v: string | null | undefined): string | null {
   if (v === null || v === undefined) return null;
@@ -360,6 +447,28 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
   let skipped = 0;
   let errorCount = 0;
 
+  // ============================================================
+  // HEALTH COUNTERS: uitgebreide logging zodat we tijdens
+  // hersynchronisatie DIRECT zien of extractie/dedup klopt.
+  // ============================================================
+  const h: ExtractHealthCounters = {
+    totalRaw: 0,
+    withIccidPlaceholder: 0,
+    withEidPlaceholder: 0,
+    withMsisdnPlaceholder: 0,
+    withValidIccid: 0,
+    withValidEid: 0,
+    withValidMsisdn: 0,
+    iccidPlaceholderSamples: [],
+    eidPlaceholderSamples: [],
+    msisdnPlaceholderSamples: [],
+    skippedReasonNoIccid: 0,
+    skippedReasonDeleted: 0,
+    skippedReasonLocked: 0,
+    skippedReasonNoChanges: 0,
+    skippedReasonPlaceholderIccid: 0,
+  };
+
   let allSimsFromSimhuis: SimhuisSimStatus[] = [];
   try {
     allSimsFromSimhuis = await listAllSims();
@@ -368,7 +477,89 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
   }
 
   const totalInSimhuis = allSimsFromSimhuis.length;
+  h.totalRaw = totalInSimhuis;
+
+  // === STAP 1: Pre-scan alle Simhuis-records op placeholder-waardes ===
+  // (VOOR dat we in de big loop gaan, zodat we logging hebben als
+  // extractie aan de kant van Simhuis mis lijkt te gaan).
+  for (const s of allSimsFromSimhuis) {
+    const rawIccid = typeof s.iccid === "string" ? s.iccid : "";
+    const rawEid = typeof s.eid === "string" ? s.eid : "";
+    const rawMsisdn = typeof s.msisdn === "string" ? s.msisdn : "";
+
+    if (rawIccid) {
+      if (isNotPlaceholder(rawIccid)) {
+        h.withValidIccid++;
+      } else {
+        h.withIccidPlaceholder++;
+        if (h.iccidPlaceholderSamples.length < 5) {
+          h.iccidPlaceholderSamples.push(JSON.stringify(rawIccid));
+        }
+      }
+    }
+    if (rawEid) {
+      if (isNotPlaceholder(rawEid)) {
+        h.withValidEid++;
+      } else {
+        h.withEidPlaceholder++;
+        if (h.eidPlaceholderSamples.length < 5) {
+          h.eidPlaceholderSamples.push(JSON.stringify(rawEid));
+        }
+      }
+    }
+    if (rawMsisdn) {
+      if (isNotPlaceholder(rawMsisdn)) {
+        h.withValidMsisdn++;
+      } else {
+        h.withMsisdnPlaceholder++;
+        if (h.msisdnPlaceholderSamples.length < 5) {
+          h.msisdnPlaceholderSamples.push(JSON.stringify(rawMsisdn));
+        }
+      }
+    }
+  }
+
+  // Eligible = sims MET een (ruwe) iccid truthy. Daarna doen we
+  // binnen de lus nog een normIccid + placeholder-check!
   const eligible = allSimsFromSimhuis.filter((s) => s.iccid);
+
+  // Log de pre-scan health: direct zichtbaar in server logs
+  // (handig voor hersynchronisatie na leegmaken DB).
+  const pct = (n: number, tot: number): string =>
+    tot === 0 ? "0%" : `${((n / tot) * 100).toFixed(1)}%`;
+  console.info(
+    `[simhuis-sync] 🔍 HEALTH PRE-SCAN Simhuis batch | ` +
+    `totaal=${totalInSimhuis} | ` +
+    `eligible(iccid truthy)=${eligible.length} | ` +
+    `✅ valid-iccid=${h.withValidIccid} (${pct(h.withValidIccid, totalInSimhuis)}) ` +
+    `⚠️ iccid-placeholder=${h.withIccidPlaceholder} (${pct(h.withIccidPlaceholder, totalInSimhuis)}) ` +
+    `✅ valid-eid=${h.withValidEid} ⚠️ eid-placeholder=${h.withEidPlaceholder} ` +
+    `✅ valid-msisdn=${h.withValidMsisdn} ⚠️ msisdn-placeholder=${h.withMsisdnPlaceholder}`
+  );
+  if (h.iccidPlaceholderSamples.length > 0) {
+    console.warn(
+      `[simhuis-sync] ⚠️ ICCID PLACEHOLDER SAMPLES (Simhuis geeft veldnaam als waarde!): ${h.iccidPlaceholderSamples.join(", ")}`
+    );
+  }
+  if (h.eidPlaceholderSamples.length > 0) {
+    console.warn(
+      `[simhuis-sync] ⚠️ EID PLACEHOLDER SAMPLES: ${h.eidPlaceholderSamples.join(", ")}`
+    );
+  }
+  if (h.msisdnPlaceholderSamples.length > 0) {
+    console.warn(
+      `[simhuis-sync] ⚠️ MSISDN PLACEHOLDER SAMPLES: ${h.msisdnPlaceholderSamples.join(", ")}`
+    );
+  }
+  // Kritische health check: als >25% van de sims placeholder-iccid heeft →
+  // grote kans dat extractie mis gaat → log harde waarschuwing.
+  if (h.withIccidPlaceholder > 0 && h.withIccidPlaceholder / totalInSimhuis > 0.25) {
+    console.error(
+      `[simhuis-sync] 🚨 KRITIEK: ${pct(h.withIccidPlaceholder, totalInSimhuis)} van alle SIMs heeft ` +
+      `een PLACEHOLDER-ICCID! Simhuis retourneert waarschijnlijk de key/veldnaam in plaats van echte waarde. ` +
+      `Dit is de bekende oorzaak van "0 aangemaakt ondanks 327 sims".`
+    );
+  }
 
   const byIccid = new Map(eligible.map((s) => [s.iccid, s]));
   const existingSims = await prisma.sIM.findMany({
@@ -471,6 +662,13 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
     const iccid = normIccid(rawIccid);
     if (!iccid) {
       skipped++;
+      // Als de rawIccid (voor normalisatie) nog steeds truthy was →
+      // placeholder of anderszins ongeldig.
+      if (rawIccid && !isNotPlaceholder(String(rawIccid))) {
+        h.skippedReasonPlaceholderIccid++;
+      } else {
+        h.skippedReasonNoIccid++;
+      }
       continue;
     }
     try {
@@ -535,10 +733,12 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
       if (existing) {
         if (existing.deletedAt) {
           skipped++;
+          h.skippedReasonDeleted++;
           continue;
         }
         if (skipIfLocked && existing.status !== SimStatus.IN_STOCK && status === SimStatus.IN_STOCK) {
           skipped++;
+          h.skippedReasonLocked++;
           continue;
         }
         const oldData = {
@@ -590,6 +790,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
         }
         if (!changed) {
           skipped++;
+          h.skippedReasonNoChanges++;
           continue;
         }
         const validatedStatusForUpdate = validateAndNormalizeSimStatus(
@@ -680,6 +881,53 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
 
   await Promise.all(upsertPromises);
 
+  // ============================================================
+  // FINAL SUMMARY LOGGING (zichtbaar in server logs én audit log).
+  // Dit is cruciaal bij hersynchronisatie na leegmaken DB:
+  // we willen direct zien dat 327 → 327 created in plaats van 0.
+  // ============================================================
+  const durationSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+  const skipBreakdownArr = [
+    `placeholder-iccid=${h.skippedReasonPlaceholderIccid}`,
+    `geen-iccid=${h.skippedReasonNoIccid}`,
+    `deleted=${h.skippedReasonDeleted}`,
+    `locked(skipIfLocked)=${h.skippedReasonLocked}`,
+    `no-changes=${h.skippedReasonNoChanges}`,
+  ];
+  const skipBreakdownStr = skipBreakdownArr.join(", ");
+
+  console.info(
+    `[simhuis-sync] ✅ SYNC AFGEROND | ` +
+    `⏱️ ${durationSec}s | ` +
+    `Simhuis:${totalInSimhuis} eligible:${eligible.length} | ` +
+    `✅ AANGEMAAKT:${created} 🔄 BIJGEWERKT:${updated} ⏭️ OVERGESLAGEN:${skipped} ❌ FOUTEN:${errorCount} | ` +
+    `Skip-redenen: {${skipBreakdownStr}} | ` +
+    `EID/MSISDN conflicten:${skippedIdentifiers.length}`
+  );
+
+  // Zet de samenvatting OOK in de errorMessages array, zodat deze
+  // in de UI zichtbaar is onder het "foutmeldingen"-gebied.
+  errors.unshift(
+    `[SAMENVATTING] Sync ${durationSec}s: ${totalInSimhuis} van Simhuis → ` +
+    `${created} aangemaakt, ${updated} bijgewerkt, ${skipped} overgeslagen (${skipBreakdownStr}), ` +
+    `${errorCount} fouten, ${skippedIdentifiers.length} EID/MSISDN conflicten.`
+  );
+  // Als er veel placeholder-iccid's waren: zet die melding ERG HOOG in de UI output!
+  if (h.skippedReasonPlaceholderIccid > 0) {
+    errors.unshift(
+      `[WAARSCHUWING] ${h.skippedReasonPlaceholderIccid} simkaarten OVERGESLAGEN omdat Simhuis ` +
+      `de VELDNAAM (zoals "iccid", "eid", "esimId") als WAARDE teruggaf in plaats van echte identifiers. ` +
+      `Samples: ${h.iccidPlaceholderSamples.join(", ") || "(geen)"}`
+    );
+  }
+  if (h.withIccidPlaceholder > 0) {
+    errors.unshift(
+      `[HEALTH] Simhuis extractie: ${h.withIccidPlaceholder} placeholder-iccid, ` +
+      `${h.withEidPlaceholder} placeholder-eid, ${h.withMsisdnPlaceholder} placeholder-msisdn ` +
+      `(van in totaal ${totalInSimhuis}).`
+    );
+  }
+
   // Voeg een informatieve melding toe voor elke overgeslagen unique identifier
   // (geen harde fout, maar wel zichtbaar voor gebruiker)
   if (skippedIdentifiers.length > 0) {
@@ -709,6 +957,25 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
         errors: errorCount,
         skippedIdentifiersCount: skippedIdentifiers.length,
         skippedIdentifiersSample: skippedIdentifiers.slice(0, 100),
+        // Health counters (extractie kwaliteit, skip breakdown)
+        health: {
+          extractValidIccidCount: h.withValidIccid,
+          extractPlaceholderIccidCount: h.withIccidPlaceholder,
+          extractPlaceholderIccidSamples: h.iccidPlaceholderSamples,
+          extractValidEidCount: h.withValidEid,
+          extractPlaceholderEidCount: h.withEidPlaceholder,
+          extractPlaceholderEidSamples: h.eidPlaceholderSamples,
+          extractValidMsisdnCount: h.withValidMsisdn,
+          extractPlaceholderMsisdnCount: h.withMsisdnPlaceholder,
+          extractPlaceholderMsisdnSamples: h.msisdnPlaceholderSamples,
+          skippedBreakdown: {
+            placeholderIccid: h.skippedReasonPlaceholderIccid,
+            noIccid: h.skippedReasonNoIccid,
+            deleted: h.skippedReasonDeleted,
+            lockedSkipIfLocked: h.skippedReasonLocked,
+            noChanges: h.skippedReasonNoChanges,
+          },
+        },
         startedAt: new Date(startedAt).toISOString(),
         finishedAt: finishedAt.toISOString(),
         durationMs,
@@ -799,9 +1066,25 @@ export async function syncActiveSimsUsageFromSimhuis(
   //    (We nemen ook SUSPENDED/RESERVED op met bestaande usage-data zodat
   //    die niet ineens lege waarden krijgen; alleen CANCELLED / RETIRED /
   //    IN_STOCK zonder data slaan we over.)
+  //    Plus: als customerScope gegeven is, filter op assignments binnen de scope.
+  const hasScope = ctx.customerScope && ctx.customerScope.length > 0;
+  let customerScopeAssignment: any = undefined;
+  if (hasScope) {
+    customerScopeAssignment = {
+      assignments: {
+        some: {
+          subscription: {
+            customerId: { "in": ctx.customerScope! },
+          },
+        },
+      },
+    };
+  }
+
   const targetSims = await prisma.sIM.findMany({
     where: {
       deletedAt: null,
+      ...customerScopeAssignment,
       OR: [
         { status: SimStatus.ACTIVE },
         { status: SimStatus.SUSPENDED },
@@ -1083,8 +1366,22 @@ export async function syncUsageForSingleSim(
     throw new Error("Simhuis niet geconfigureerd.");
   }
 
-  const sim = await prisma.sIM.findUnique({
-    where: { id: simId, deletedAt: null },
+  const hasScope = ctx.customerScope && ctx.customerScope.length > 0;
+  let customerScopeAssignment: any = undefined;
+  if (hasScope) {
+    customerScopeAssignment = {
+      assignments: {
+        some: {
+          subscription: {
+            customerId: { "in": ctx.customerScope! },
+          },
+        },
+      },
+    };
+  }
+
+  const sim = await prisma.sIM.findFirst({
+    where: { id: simId, deletedAt: null, ...customerScopeAssignment },
     select: {
       id: true,
       iccid: true,
@@ -1102,7 +1399,7 @@ export async function syncUsageForSingleSim(
     },
   });
   if (!sim) {
-    throw new Error(`SIM met id ${simId} niet gevonden.`);
+    throw new Error(`SIM met id ${simId} niet gevonden of valt niet binnen je toegang.`);
   }
   if (!sim.iccid) {
     throw new Error(`SIM heeft geen ICCID — kan Simhuis niet opvragen.`);

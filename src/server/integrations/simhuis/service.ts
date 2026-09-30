@@ -160,10 +160,31 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   // findKey: zoek 1 value in r, dan in nestedSim, d.m.v. alias-normalizatie.
   // NIEUW: ook recursief diep zoeken, KV-arrays, en typed context.
   // Retourneert gevondenValue of undefined.
+  //
+  // EXTRA SANITY CHECK: Als de key (normalized) == value (normalized),
+  //   dan is het een placeholder → overslaan en verder zoeken. Simhuis
+  //   retourneert soms { iccid: "iccid" } i.p.v. echte waardes.
   // ============================================================
   function findKey(...aliases: string[]): any {
     const normAliases = aliases.map(normalizeKey).filter(Boolean);
     if (normAliases.length === 0) return undefined;
+
+    const isPlaceholderValue = (rawValue: unknown, rawKey?: string): boolean => {
+      if (rawValue === null || rawValue === undefined) return false;
+      const s = typeof rawValue === 'string' ? rawValue : String(rawValue);
+      if (!s) return false;
+      const vn = normalizeKey(s);
+      if (!vn) return false;
+      if (ALL_KEY_ALIASES_NORMALIZED.has(vn)) return true;
+      for (const na of normAliases) {
+        if (na && na === vn) return true;
+      }
+      if (rawKey) {
+        const rkn = normalizeKey(rawKey);
+        if (rkn && rkn === vn) return true;
+      }
+      return false;
+    };
 
     // Eerst: alle geneste objecten verzamelen (recursief)
     const allObjects: Array<Record<string, any>> = [];
@@ -178,14 +199,17 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
       for (const na of normAliases) {
         const realKey = idx.get(na);
         if (realKey && obj[realKey] !== undefined && obj[realKey] !== null && obj[realKey] !== '') {
-          return obj[realKey];
+          if (!isPlaceholderValue(obj[realKey], realKey)) {
+            return obj[realKey];
+          }
         }
       }
     }
 
     // (2) Kijk of de eerste alias zelf in een KV-array match zit
-    const kv = searchKvArrays(allObjects, normAliases);
-    if (kv !== undefined) return kv;
+    // (en de waarde geen placeholder is)
+    const kvRaw = searchKvArrays(allObjects, normAliases);
+    if (kvRaw !== undefined && !isPlaceholderValue(kvRaw)) return kvRaw;
 
     return undefined;
   }
@@ -283,34 +307,162 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   // beschouwd. Dit zijn typisch de key-namen zelf die Simhuis
   // teruggeeft in plaats van echte waardes (bv. "eid" i.p.v. een
   // echte eSIM-ID, of "iccid" i.p.v. een 19-20-cijferige ICCID).
+  //
+  // UITGEBREID: bevat nu ALLE alias-namen (ook zonder separators)
+  // zodat varianten als "esimId", "esim_id", "esimid" allemaal
+  // worden herkend. Simhuis retourneert namelijk vaak de key-
+  // naam zelf als value in KV-arrays of per ongeluk.
   // ============================================================
   const INVALID_PLACEHOLDER_VALUES: ReadonlySet<string> = new Set<string>([
-    // Key-namen / field-namen
-    'eid', 'iccid', 'imsi', 'msisdn', 'subscriberid',
-    'product name', 'productname', 'product type', 'producttype',
-    'sim name', 'simname', 'sim card name', 'simcardname',
-    'group', 'group name', 'groupname', 'pool name', 'poolname',
-    'plan name', 'planname', 'tariff name', 'tariffname',
-    'data used', 'dataused', 'data limit', 'datalimit',
-    'lowest data limit', 'lowestdatalimit', 'data alert', 'dataalert',
-    'sms used', 'smsused', 'sms limit', 'smslimit',
-    'lowest sms limit', 'lowestsmslimit', 'sms alert', 'smsalert',
-    'account', 'account name', 'accountname',
-    'customer', 'customer name', 'customername',
-    'profile type', 'profiletype',
-    'status', 'state',
-    // Generieke placeholders
+    // === Core identifiers (inclusief alle alias-vormen zonder separators) ===
+    'iccid',
+    'eid', 'esimid', 'esim_id', 'esim', 'esimprofileid', 'esim_profile_id', 'profileid', 'profile_id',
+    'imsi',
+    'msisdn', 'phonenumber', 'phone_number', 'phone', 'primarymsisdn', 'primary_msisdn',
+    'virtualmsisdn', 'virtual_msisdn', 'msisdnvirtual',
+    'subscriberid', 'subscriber_id', 'subscriber', 'subscriptionid', 'subscription_id',
+    'assetid', 'asset_id', 'asset', 'deviceid', 'device_id',
+    'id',
+    'simid', 'sim_id', 'simcardid', 'simcard_id', 'simcard',
+    // === Name / label / group-achtige velden ===
+    'simname', 'sim_name', 'sim card name', 'simcardname', 'sim_card_name',
+    'name', 'label', 'title', 'displayname', 'display_name', 'assetname', 'asset_name',
+    'group', 'groupid', 'group_id', 'groupname', 'group_name', 'grouplabel', 'group_label',
+    'pool', 'poolid', 'pool_id', 'poolname', 'pool_name',
+    'batch', 'batchid', 'batch_id', 'batchname', 'batch_name',
+    // === Product / plan / tariff ===
+    'product', 'productname', 'product_name', 'productcode', 'product_code', 'productid',
+    'producttype', 'product_type', 'producttypename', 'product_type_name',
+    'productcategory', 'product_category', 'category',
+    'plantype', 'plan_type', 'plan', 'planname', 'plan_name', 'planid', 'plan_id',
+    'tariff', 'tariffname', 'tariff_name', 'tariffid', 'tariff_id',
+    'rateplan', 'rate_plan', 'rateplantype', 'rate_plan_type',
+    'offer', 'offerid', 'offer_id', 'offername', 'offer_name',
+    'package', 'packagename', 'package_name', 'packageid', 'package_id',
+    'bundle', 'bundlename', 'bundle_name',
+    'billingmodel', 'billing_model', 'chargetype', 'charge_type', 'chargemodel', 'charge_model',
+    'paymentmodel', 'payment_model', 'billingtype', 'billing_type',
+    // === Data / usage velden ===
+    'dataused', 'data_used', 'datausage', 'data_usage',
+    'datausedmb', 'data_used_mb', 'datausedgb', 'data_used_gb', 'datausedkb', 'data_used_kb',
+    'usedmb', 'used_mb', 'usedgb', 'used_gb', 'usedkb', 'used_kb',
+    'datambused', 'data_mb_used', 'datagbused', 'data_gb_used', 'datakbused', 'data_kb_used',
+    'monthlydataused', 'monthly_data_used', 'currentdataused', 'current_data_used',
+    'dataconsumed', 'data_consumed', 'consumeddata', 'consumed_data',
+    'usagemb', 'usage_mb', 'usagegb', 'usage_gb', 'usagekb', 'usage_kb',
+    'totalconsumed', 'total_consumed', 'totaldataused', 'total_data_used',
+    'datalimit', 'data_limit', 'dataquota', 'data_quota',
+    'datalimitmb', 'data_limit_mb', 'datalimitgb', 'data_limit_gb', 'datalimitkb', 'data_limit_kb',
+    'maxmb', 'max_mb', 'maxgb', 'max_gb', 'maxkb', 'max_kb',
+    'datamaxmb', 'data_max_mb', 'datamaxgb', 'data_max_gb', 'datamaxbytes', 'data_max_bytes',
+    'quotadatamb', 'quota_data_mb', 'quotadatagb', 'quota_data_gb', 'quotadata', 'quota_data',
+    'plandatalimit', 'plan_data_limit', 'tariffdatalimit', 'tariff_data_limit',
+    'bundledatalimit', 'bundle_data_limit', 'packagedatalimit', 'package_data_limit',
+    'dataallowance', 'data_allowance', 'allocateddata', 'allocated_data',
+    'totalallowance', 'total_allowance', 'totaldata', 'total_data',
+    'includeddata', 'included_data', 'datacap', 'data_cap', 'capdata', 'cap_data',
+    'datapoollimit', 'data_pool_limit', 'pooldatalimit', 'pool_data_limit',
+    'lowestdatalimit', 'lowest_data_limit', 'lowdatalimit', 'low_data_limit',
+    'datathreshold', 'data_threshold', 'dataalert', 'data_alert', 'datawarning', 'data_warning',
+    'mindatalimit', 'min_data_limit', 'notifylimit', 'notify_limit', 'softlimit', 'soft_limit',
+    'alertlimit', 'alert_limit', 'lowlimit', 'low_limit', 'lowerlimit', 'lower_limit',
+    'dataalertmb', 'data_alert_mb', 'dataalertgb', 'data_alert_gb',
+    'datawarningmb', 'data_warning_mb', 'datawarninggb', 'data_warning_gb',
+    'lowdatamb', 'low_data_mb', 'lowdatagb', 'low_data_gb',
+    'datathresholdmb', 'data_threshold_mb', 'datathresholdgb', 'data_threshold_gb',
+    'notifydatalimit', 'notify_data_limit', 'softlimitmb', 'soft_limit_mb',
+    'softlimitgb', 'soft_limit_gb', 'softdatalimit', 'soft_data_limit',
+    'mindatamb', 'min_data_mb', 'mindatagb', 'min_data_gb',
+    'thresholdlimit', 'threshold_limit',
+    // === SMS velden ===
+    'smsused', 'sms_used', 'smsusedcount', 'sms_used_count',
+    'smscount', 'sms_count', 'totalsms', 'total_sms',
+    'smsusage', 'sms_usage', 'smssent', 'sms_sent',
+    'smssenttotal', 'sms_sent_total', 'currentsmsused', 'current_sms_used',
+    'smsconsumed', 'sms_consumed', 'consumedsms', 'consumed_sms',
+    'sentsms', 'sent_sms', 'smsout', 'sms_out', 'outboundsms', 'outbound_sms',
+    'mosms', 'mo_sms', 'mtsms', 'mt_sms',
+    'smsusedmonth', 'sms_used_month', 'smsusedperiod', 'sms_used_period',
+    'textsused', 'texts_used', 'textused', 'text_used',
+    'messagesused', 'messages_used', 'messagecount', 'message_count',
+    'smslimit', 'sms_limit', 'smsquota', 'sms_quota', 'smsmax', 'sms_max', 'smsmaximum', 'sms_maximum',
+    'maxsms', 'max_sms', 'smsbundle', 'sms_bundle',
+    'allowancesms', 'allowance_sms', 'smsallowance', 'sms_allowance',
+    'plansmslimit', 'plan_sms_limit', 'smsplantype', 'sms_plan_type',
+    'smsplanner', 'sms_plan_limit', 'smstarifflimit', 'sms_tariff_limit',
+    'smscap', 'sms_cap', 'capsms', 'cap_sms', 'smsallocation', 'sms_allocation',
+    'smsmaxcount', 'sms_max_count', 'smsallocationcount', 'sms_allocation_count',
+    'included sms', 'includedsms', 'included_sms',
+    'smstotal', 'sms_total', 'quotasms', 'quota_sms',
+    'lowestsmslimit', 'lowest_sms_limit', 'lowsmslimit', 'low_sms_limit',
+    'smsthreshold', 'sms_threshold', 'smsalert', 'sms_alert', 'smswarning', 'sms_warning',
+    'minsmslimit', 'min_sms_limit', 'smslowlimit', 'sms_low_limit',
+    'smsalertcount', 'sms_alert_count', 'smsnotify', 'sms_notify',
+    'smsnotifyat', 'sms_notify_at', 'smsthresholdcount', 'sms_threshold_count',
+    'smssoftlimit', 'sms_soft_limit', 'smsminlimit', 'sms_min_limit',
+    'smswarningcount', 'sms_warning_count', 'lowsms', 'low_sms',
+    'alertsmslimit', 'alert_sms_limit',
+    // === Account / customer / profile ===
+    'account', 'accountid', 'account_id', 'accountname', 'account_name',
+    'customer', 'customerid', 'customer_id', 'customername', 'customer_name',
+    'tenant', 'tenantid', 'tenant_id', 'tenantname', 'tenant_name',
+    'organization', 'organizationid', 'organization_id', 'org', 'orgid', 'org_id',
+    'reseller', 'resellerid', 'reseller_id', 'resellername', 'reseller_name',
+    'profiletype', 'profile_type', 'profile',
+    'provisioningprofile', 'provisioning_profile',
+    'bootstrapprofile', 'bootstrap_profile', 'defaultprofile', 'default_profile',
+    'genericprofile', 'generic_profile',
+    // === Status / state / lifecycle ===
+    'status', 'state', 'lifecycle', 'lifecycle_status', 'lifecycle_status',
+    'lifecycle_status', 'lifecyclestatus', 'life_cycle_status',
+    'simstatus', 'sim_status', 'simstate', 'sim_state',
+    // === Network / provider / carrier ===
+    'network', 'carrier', 'provider', 'operator', 'networkname', 'network_name',
+    'countryiso', 'country_iso', 'country', 'ip', 'ipaddress', 'ip_address',
+    'lastip', 'last_ip',
+    // === Date / time fields ===
+    'activatedat', 'activated_at', 'activationdate', 'activation_date',
+    'createdat', 'created_at', 'provisionedat', 'provisioned_at',
+    'startdate', 'start_date',
+    // === Service / type / category / sim category ===
+    'type', 'kind', 'category', 'assettype', 'asset_type',
+    'simcategory', 'sim_category', 'simtype', 'sim_type',
+    'assetcategories', 'asset_categories',
+    'subscriptiontype', 'subscription_type', 'servicetype', 'service_type',
+    // === Generieke placeholders ===
     'n/a', 'na', 'unknown', 'none', 'empty', 'placeholder',
-    'undefined', 'null',
-    // Varianten met liggend streepje (apart door - al apart)
-    '--', '---',
+    'undefined', 'null', '0', '000000000000000',
+    '--', '---', '-',
+    // === Velden die "value", "amount", "count" zelf als placeholder teruggeven ===
+    'value', 'val', 'amount', 'count', 'total', 'remaining',
+    'usage', 'quota', 'allowance', 'limit', 'used',
   ]);
 
-  function isValidStringValue(s: string): boolean {
+  // === Genormaliseerde Lijst van ALLE key-aliassen (zie pickString/pickNumber/pickBytes) ===
+  // Wordt gebruikt om te detecteren: als value-normalized == key-normalized → placeholder!
+  const ALL_KEY_ALIASES_NORMALIZED: ReadonlySet<string> = new Set<string>(
+    Array.from(INVALID_PLACEHOLDER_VALUES).map((v) => normalizeKey(v))
+  );
+
+  function isValidStringValue(s: string, contextAliases?: string[]): boolean {
     if (!s) return false;
     if (s === '-' || s === 'null' || s === 'undefined') return false;
-    const normalized = s.toLowerCase().trim();
+    const trimmed = s.trim();
+    if (!trimmed) return false;
+    const normalized = trimmed.toLowerCase();
     if (INVALID_PLACEHOLDER_VALUES.has(normalized)) return false;
+    // Extra sanity-check: als de waarde (genormaliseerd met normalizeKey)
+    // exact overeenkomt met een bekende key-alias → dan is het een placeholder.
+    const norm = normalizeKey(trimmed);
+    if (norm && ALL_KEY_ALIASES_NORMALIZED.has(norm)) return false;
+    // Als context-aliasses meegegeven worden (de aliasnamen van het veld):
+    // ook checken of de genormaliseerde waarde == 1 van de aliassen.
+    if (contextAliases && contextAliases.length > 0) {
+      for (const a of contextAliases) {
+        const aNorm = normalizeKey(a);
+        if (aNorm && aNorm === norm) return false;
+      }
+    }
     return true;
   }
 
@@ -318,15 +470,26 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   // pickString: zoek eerst via findKey (alias-normalizatie),
   // daarna fallback op de expliciete paden als strings/numbers.
   // Filtert placeholder-waardes zoals "eid", "iccid", "null", etc.
+  //
+  // NIEUW: contextAliases (de namen van het veld, bijv. "eid", "esimId")
+  // worden meegestuurd zodat een sanity-check gedaan kan worden:
+  // als value-normalized == 1 van de contextAliases-normalized →
+  // dan is het een placeholder (Simhuis geeft key-naam als value terug).
   // ============================================================
   const pickString = (...paths: Array<unknown>): string | null => {
+    // Verzamel alle string-argumenten als context-aliassen (de veldnamen)
+    const contextAliases: string[] = paths
+      .filter((p): p is string => typeof p === 'string')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
     // Eerst: aliassen die findKey begrijpt
     for (const p of paths) {
       if (typeof p === 'string') {
         const v = findKey(p);
         if (v !== undefined && v !== null) {
           const s = String(v).trim();
-          if (isValidStringValue(s)) return s;
+          if (isValidStringValue(s, contextAliases)) return s;
         }
       }
     }
@@ -335,7 +498,7 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
       if (p === null || p === undefined) continue;
       if (typeof p === 'object') continue; // als object is al door findKey geprobeerd
       const s = String(p).trim();
-      if (isValidStringValue(s)) return s;
+      if (isValidStringValue(s, contextAliases)) return s;
     }
     return null;
   };
