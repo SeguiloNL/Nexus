@@ -4,6 +4,7 @@ import { BillingCycle, SubscriptionStatus } from "@/types/enums";
 export const CreateSubscriptionSchema = z.object({
   subscriptionNumber: z.string().trim().optional(),
   customerId: z.string().trim().min(1, "Klant is verplicht"),
+  billingCustomerId: z.string().trim().nullable().optional(),
   productId: z.string().trim().min(1, "Product is verplicht"),
   startDate: z.coerce.date({ required_error: "Startdatum is verplicht" }),
   endDate: z.coerce.date().nullable().optional(),

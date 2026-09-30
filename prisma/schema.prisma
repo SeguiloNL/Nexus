@@ -23,6 +23,14 @@ enum UserRole {
 enum RoleScope {
   INTERNAL
   CUSTOMER
+  RESELLER
+  PARTNER
+}
+
+enum CustomerType {
+  DIRECT
+  RESELLER
+  PARTNER
 }
 
 enum CustomerStatus {
@@ -195,9 +203,11 @@ model Customer {
   id                String     @id @default(cuid())
   customerNumber    String     @unique
   companyName       String
+  type              CustomerType @default(DIRECT)
   parentCustomerId  String?
   parentCustomer    Customer?  @relation("CustomerHierarchy", fields: [parentCustomerId], references: [id], onDelete: SetNull)
   subCustomers      Customer[] @relation("CustomerHierarchy")
+  billingSubscriptions Subscription[] @relation("BillingCustomer")
   address           String?
   postalCode        String?
   city              String?
@@ -223,6 +233,7 @@ model Customer {
 
   @@index([status])
   @@index([parentCustomerId])
+  @@index([type])
   @@index([kvkNr])
   @@map("customers")
 }
@@ -251,6 +262,8 @@ model Subscription {
   subscriptionNumber   String              @unique
   customerId           String
   customer             Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  billingCustomerId    String?
+  billingCustomer      Customer?           @relation("BillingCustomer", fields: [billingCustomerId], references: [id], onDelete: SetNull)
   productId            String
   product              Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
   startDate            DateTime            @db.Date
@@ -273,6 +286,7 @@ model Subscription {
   invoices           Invoice[]
 
   @@index([customerId])
+  @@index([billingCustomerId])
   @@index([productId])
   @@index([status])
   @@index([inserveSyncStatus])

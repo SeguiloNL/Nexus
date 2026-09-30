@@ -61,6 +61,7 @@ export async function createSubscriptionAction(
 
   const raw: any = {
     customerId: formData.get("customerId") || undefined,
+    billingCustomerId: formData.get("billingCustomerId") || null,
     productId: formData.get("productId") || undefined,
     startDate: formData.get("startDate"),
     endDate: formData.get("endDate") || null,
@@ -77,7 +78,15 @@ export async function createSubscriptionAction(
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const sub = await createSubscription(validated.data, ctx);
 
   revalidatePath("/subscriptions");
@@ -105,7 +114,15 @@ export async function updateSubscriptionStatusAction(
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const statusInput = {
     status: validated.data.status,
     ...(validated.data.reason != null ? { reason: validated.data.reason } : {}),
@@ -120,7 +137,15 @@ export async function suspendSubscriptionAction(subscriptionId: string, _prev: a
   const user = await getCurrentUser();
   await requirePermission(user.role, "edit", "subscription");
   const reason = (formData.get("reason") as string) || undefined;
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await suspendSubscription(subscriptionId, ctx, reason);
   revalidatePath(`/subscriptions/${subscriptionId}`);
   redirect(`/subscriptions/${subscriptionId}`);
@@ -129,7 +154,15 @@ export async function suspendSubscriptionAction(subscriptionId: string, _prev: a
 export async function resumeSubscriptionAction(subscriptionId: string) {
   const user = await getCurrentUser();
   await requirePermission(user.role, "edit", "subscription");
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await resumeSubscription(subscriptionId, ctx);
   revalidatePath(`/subscriptions/${subscriptionId}`);
   redirect(`/subscriptions/${subscriptionId}`);
@@ -139,7 +172,15 @@ export async function cancelSubscriptionAction(subscriptionId: string, _prev: an
   const user = await getCurrentUser();
   await requirePermission(user.role, "delete", "subscription");
   const reason = (formData.get("reason") as string) || undefined;
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await cancelSubscription(subscriptionId, ctx, reason);
   revalidatePath(`/subscriptions/${subscriptionId}`);
   redirect(`/subscriptions/${subscriptionId}`);
@@ -149,7 +190,15 @@ export async function terminateSubscriptionAction(subscriptionId: string, _prev:
   const user = await getCurrentUser();
   await requirePermission(user.role, "delete", "subscription");
   const reason = (formData.get("reason") as string) || undefined;
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await terminateSubscription(subscriptionId, ctx, reason);
   revalidatePath(`/subscriptions/${subscriptionId}`);
   redirect(`/subscriptions/${subscriptionId}`);
@@ -158,7 +207,15 @@ export async function terminateSubscriptionAction(subscriptionId: string, _prev:
 export async function deleteSubscriptionAction(subscriptionId: string) {
   const user = await getCurrentUser();
   await requirePermission(user.role, "delete", "subscription");
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await softDeleteSubscription(subscriptionId, ctx);
   revalidatePath("/subscriptions");
   redirect("/subscriptions");
@@ -167,7 +224,15 @@ export async function deleteSubscriptionAction(subscriptionId: string) {
 export async function unassignTrackerAction(subscriptionId: string, trackerId: string) {
   const user = await getCurrentUser();
   await requirePermission(user.role, "edit", "subscription");
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await unassignTracker(trackerId, ctx);
   revalidatePath(`/subscriptions/${subscriptionId}`);
   redirect(`/subscriptions/${subscriptionId}`);
@@ -176,7 +241,15 @@ export async function unassignTrackerAction(subscriptionId: string, trackerId: s
 export async function unassignSimAction(subscriptionId: string, simId: string) {
   const user = await getCurrentUser();
   await requirePermission(user.role, "edit", "subscription");
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await unassignSim(simId, ctx);
   revalidatePath(`/subscriptions/${subscriptionId}`);
   redirect(`/subscriptions/${subscriptionId}`);
@@ -193,7 +266,15 @@ export async function replaceTrackerAction(
   const newTrackerId = formData.get("newTrackerId") as string;
   const oldDisposition = (formData.get("oldTrackerStatus") as TrackerStatus) || "IN_STOCK" as const;
   const reason = (formData.get("reason") as any) || "REPLACEMENT";
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await replaceTracker(
     subscriptionId,
     oldTrackerId,
@@ -217,7 +298,15 @@ export async function replaceSimAction(
   const newSimId = formData.get("newSimId") as string;
   const oldDisposition = (formData.get("oldSimStatus") as SimStatus) || "IN_STOCK" as const;
   const reason = (formData.get("reason") as any) || "REPLACEMENT";
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await replaceSim(
     subscriptionId,
     oldSimId,
@@ -236,7 +325,15 @@ export async function syncSubscriptionToInserveAction(
   const user = await getCurrentUser();
   await requirePermission(user.role, "edit", "subscription");
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const result = await syncSubscriptionToInserve(subscriptionId, ctx);
 
   revalidatePath(`/subscriptions/${subscriptionId}`);
@@ -274,7 +371,15 @@ export async function syncSubscriptionFromListAction(
   const id = String(formData.get("id") || "");
   if (!id) return { ok: false, error: "Ontbrekend abonnement-id" };
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     const result = await syncSubscriptionToInserve(id, ctx);
     revalidatePath(`/subscriptions/${id}`);
@@ -336,7 +441,15 @@ export async function generateMonthlyInvoicesAction(
     return { ok: false, error: `Ongeldige maand: ${month}` };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const result = await generateMonthly(year, month, ctx);
 
   revalidatePath("/subscriptions");
@@ -372,7 +485,15 @@ export async function markInvoicePaidAction(_prev: any, formData: FormData) {
   await requirePermission(user.role, "edit", "invoice");
   const id = String(formData.get("id") || "");
   if (!id) return { error: "Ontbrekend id" };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const inv = await markInvoicePaid(id, ctx);
   revalidatePath(`/subscriptions/${inv.subscriptionId}`);
   revalidatePath("/subscriptions");
@@ -385,7 +506,15 @@ export async function sendInvoiceAction(_prev: any, formData: FormData) {
   await requirePermission(user.role, "edit", "invoice");
   const id = String(formData.get("id") || "");
   if (!id) return { error: "Ontbrekend id" };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const inv = await markInvoiceSent(id, ctx);
   revalidatePath(`/subscriptions/${inv.subscriptionId}`);
   revalidatePath("/subscriptions");
@@ -402,7 +531,15 @@ export async function updateInvoiceStatusAction(
   await requirePermission(user.role, "edit", "invoice");
   const status = formData.get("status") as InvoiceStatus;
   const note = (formData.get("note") as string) || undefined;
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const inv = await updateInvoiceStatus(invoiceId, status, ctx, note);
   revalidatePath(`/subscriptions/${inv.subscriptionId}`);
   revalidatePath("/subscriptions");
@@ -414,7 +551,15 @@ export async function deleteInvoiceAction(_prev: any, formData: FormData) {
   await requirePermission(user.role, "delete", "invoice");
   const id = String(formData.get("id") || "");
   if (!id) return { error: "Ontbrekend id" };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const inv = await softDeleteInvoice(id, ctx);
   revalidatePath(`/subscriptions/${inv.subscriptionId}`);
   revalidatePath("/subscriptions");
@@ -427,7 +572,15 @@ export async function sendInvoiceToInserveAction(_prev: InserveSyncState, formDa
   await requirePermission(user.role, "edit", "invoice");
   const id = String(formData.get("id") || "");
   if (!id) return { ok: false, error: "Ontbrekend factuur-id" };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
 
   try {
     const result = await syncInvoiceToInserve(id, ctx);
@@ -490,7 +643,15 @@ export async function hardDeleteInvoiceAction(_prev: any, formData: FormData) {
   const user = await getCurrentUser();
   const id = String(formData.get("id") || "");
   if (!id) return { error: "Ontbrekend id" };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const inv = await hardDeleteInvoice(id, ctx);
   revalidatePath(`/subscriptions/${inv.subscriptionId}`);
   revalidatePath("/subscriptions");
@@ -505,7 +666,15 @@ export async function bulkSoftDeleteSubscriptionsAction(
   const user = await getCurrentUser();
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen abonnementen geselecteerd." };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     const result = await bulkSoftDeleteSubscriptions(ids, ctx);
     revalidatePath("/subscriptions");
@@ -527,7 +696,15 @@ export async function bulkCancelSubscriptionsAction(
   const user = await getCurrentUser();
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen abonnementen geselecteerd." };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     const result = await bulkCancelSubscriptions(ids, ctx);
     revalidatePath("/subscriptions");
@@ -550,7 +727,15 @@ export async function bulkMarkInvoicesSentAction(
   const user = await getCurrentUser();
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen facturen geselecteerd." };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     const result = await bulkMarkInvoicesSent(ids, ctx);
     revalidatePath("/invoices");
@@ -573,7 +758,15 @@ export async function bulkMarkInvoicesPaidAction(
   const user = await getCurrentUser();
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen facturen geselecteerd." };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     const result = await bulkMarkInvoicesPaid(ids, ctx);
     revalidatePath("/invoices");
@@ -596,7 +789,15 @@ export async function bulkCancelInvoicesAction(
   const user = await getCurrentUser();
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen facturen geselecteerd." };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     const result = await bulkCancelInvoices(ids, ctx);
     revalidatePath("/invoices");
@@ -619,7 +820,15 @@ export async function bulkHardDeleteInvoicesAction(
   const user = await getCurrentUser();
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen facturen geselecteerd." };
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   try {
     const result = await bulkHardDeleteInvoices(ids, ctx);
     revalidatePath("/invoices");

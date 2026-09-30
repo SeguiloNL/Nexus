@@ -1,13 +1,19 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
 import { generateSubscriptionNumber } from "@/lib/identifiers";
-import { pickAuth, requirePermission } from "@/lib/rbac";
+import {
+  pickAuth,
+  requirePermission,
+  isResellerScope,
+  isInternalScope,
+  isPartnerOrResellerScope,
+} from "@/lib/rbac";
 import type {
   PaginatedResult,
   CreateSubscriptionInput,
   UpdateSubscriptionStatusInput,
 } from "@/types/domain";
-import type { UserRole, RoleScope } from "@/types/enums";
+import { UserRole, RoleScope, CustomerType } from "@/types/enums";
 import type { Prisma, Subscription as PrismaSub, $Enums } from "@prisma/client";
 import { syncSubscriptionToInserve } from "./inserve-sync.service";
 import type { PermissionBits } from "@/types/next-auth";
@@ -19,6 +25,7 @@ type Ctx = {
   userRole: UserRole;
   roleId?: string;
   roleScope?: RoleScope;
+  customerId?: string | null;
   customerScope?: string[];
   permissions?: PermissionBits;
 };
@@ -192,12 +199,67 @@ export async function createSubscription(
     }
   }
 
+  let billingCustomerId: string | null | undefined = input.billingCustomerId;
+
+  if (isResellerScope(ctx.roleScope)) {
+    if (!ctx.customerId) {
+      throw new Error("Reseller-scope: eigen customerId ontbreekt in sessie.");
+    }
+    const subCust = await prisma.customer.findUnique({
+      where: { id: input.customerId, deletedAt: null },
+      select: { parentCustomerId: true, type: true },
+    });
+    if (!subCust || subCust.parentCustomerId !== ctx.customerId) {
+      throw new Error(
+        "Reseller kan alleen abonnementen aanmaken voor zijn eigen sub-klanten."
+      );
+    }
+    billingCustomerId = ctx.customerId;
+  } else if (isPartnerOrResellerScope(ctx.roleScope)) {
+    // PARTNER scope (hierboven is RESELLER al afgehandeld; dit is alleen PARTNER)
+    if (!ctx.customerId) {
+      throw new Error("Partner-scope: eigen customerId ontbreekt in sessie.");
+    }
+    const subCust = await prisma.customer.findUnique({
+      where: { id: input.customerId, deletedAt: null },
+      select: { parentCustomerId: true, type: true },
+    });
+    if (!subCust || subCust.parentCustomerId !== ctx.customerId) {
+      throw new Error(
+        "Partner kan alleen abonnementen aanmaken voor zijn eigen sub-klanten."
+      );
+    }
+    billingCustomerId = input.customerId;
+  } else if (ctx.roleScope === RoleScope.CUSTOMER) {
+    billingCustomerId = input.customerId;
+  } else {
+    // INTERNAL scope: indien billingCustomerId niet opgegeven, afleiden
+    if (billingCustomerId === undefined) {
+      const cust = await prisma.customer.findUnique({
+        where: { id: input.customerId, deletedAt: null },
+        select: { type: true, parentCustomerId: true },
+      });
+      if (cust && cust.parentCustomerId && cust.type === CustomerType.DIRECT) {
+        const parent = await prisma.customer.findUnique({
+          where: { id: cust.parentCustomerId, deletedAt: null },
+          select: { type: true },
+        });
+        if (parent && parent.type === CustomerType.RESELLER) {
+          billingCustomerId = cust.parentCustomerId;
+        } else if (parent && parent.type === CustomerType.PARTNER) {
+          billingCustomerId = input.customerId;
+        }
+      }
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     const subscriptionNumber = await generateSubscriptionNumber(tx);
     const created = await tx.subscription.create({
       data: {
         subscriptionNumber,
         customerId: input.customerId,
+        billingCustomerId: billingCustomerId ?? null,
         productId: input.productId,
         startDate: input.startDate,
         endDate: input.endDate ?? null,
@@ -308,7 +370,7 @@ export async function updateSubscriptionStatus(
 
 export async function updateSubscription(
   id: string,
-  input: Partial<Pick<CreateSubscriptionInput, "notes" | "billingCycle" | "monthlyPrice" | "endDate">>,
+  input: Partial<Pick<CreateSubscriptionInput, "notes" | "billingCycle" | "monthlyPrice" | "endDate" | "billingCustomerId">>,
   ctx: Ctx
 ): Promise<PrismaSub> {
   await requirePermission(pickAuth(ctx), "edit", "subscription");
@@ -321,6 +383,18 @@ export async function updateSubscription(
     if (ctx.customerScope && ctx.customerScope.length > 0) {
       if (!ctx.customerScope.includes(existing.customerId)) {
         throw new Error("Subscription valt niet binnen je toegang");
+      }
+    }
+
+    if (input.billingCustomerId !== undefined && !isInternalScope(ctx.roleScope)) {
+      if (
+        isPartnerOrResellerScope(ctx.roleScope) &&
+        input.billingCustomerId !== ctx.customerId &&
+        input.billingCustomerId !== existing.customerId
+      ) {
+        throw new Error(
+          "Reseller/Partner mag billingCustomerId niet vrij wijzigen."
+        );
       }
     }
 

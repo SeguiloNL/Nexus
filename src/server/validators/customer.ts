@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CustomerStatus } from "@/types/enums";
+import { CustomerStatus, CustomerType } from "@/types/enums";
 import { validateEmail, validatePhone, validatePostalCode, validateKvkNr, validateBtwNr } from "@/lib/validation";
 
 export const CreateCustomerSchema = z.object({
@@ -70,6 +70,7 @@ export const CreateCustomerSchema = z.object({
     ),
   inserveCompanyId: z.coerce.number().int().positive().nullable().optional(),
   status: z.nativeEnum(CustomerStatus).optional(),
+  type: z.nativeEnum(CustomerType).optional(),
   notes: z.string().trim().nullable().optional(),
 });
 

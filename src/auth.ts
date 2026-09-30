@@ -3,7 +3,11 @@ import Credentials from "next-auth/providers/credentials";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword } from "@/lib/auth/password";
 import { LoginSchema } from "@/server/validators/user";
-import { UserRole as UserRoleEnum, RoleScope } from "@/types/enums";
+import {
+  UserRole as UserRoleEnum,
+  RoleScope,
+  CustomerType,
+} from "@/types/enums";
 import type { PermissionBits } from "@/types/next-auth";
 import {
   emptyPermissionBits,
@@ -13,7 +17,12 @@ import {
 type LegacyRoleName = "ADMIN" | "EMPLOYEE" | "VIEWER";
 
 async function resolveRoleForUser(
-  user: { id: string; roleId: string | null; role: LegacyRoleName }
+  user: {
+    id: string;
+    roleId: string | null;
+    role: LegacyRoleName;
+    customerId: string | null;
+  }
 ): Promise<{
   roleId: string;
   roleScope: RoleScope;
@@ -22,7 +31,36 @@ async function resolveRoleForUser(
 }> {
   const legacyRole: UserRoleEnum =
     (user.role as UserRoleEnum) ?? UserRoleEnum.VIEWER;
-  const scope = RoleScope.INTERNAL;
+
+  let scope = RoleScope.INTERNAL;
+
+  if (user.customerId) {
+    try {
+      const customer = await prisma.customer.findUnique({
+        where: { id: user.customerId },
+        select: { type: true },
+      });
+      if (customer) {
+        switch (customer.type) {
+          case CustomerType.RESELLER:
+            scope = RoleScope.RESELLER;
+            break;
+          case CustomerType.PARTNER:
+            scope = RoleScope.PARTNER;
+            break;
+          case CustomerType.DIRECT:
+          default:
+            scope = RoleScope.CUSTOMER;
+            break;
+        }
+      } else {
+        scope = RoleScope.CUSTOMER;
+      }
+    } catch (_e) {
+      scope = RoleScope.CUSTOMER;
+    }
+  }
+
   const permissions = buildLegacyPermissionsForRole(legacyRole, scope);
 
   let roleId = user.roleId ?? "";
@@ -110,6 +148,7 @@ export const authConfig: NextAuthConfig = {
           id: user.id,
           roleId: user.roleId,
           role: user.role as LegacyRoleName,
+          customerId: user.customerId,
         });
         const customerInfo = await resolveCustomerScope(user.customerId);
 
@@ -174,6 +213,7 @@ export const authConfig: NextAuthConfig = {
           id: dbUser.id,
           roleId: dbUser.roleId,
           role: dbUser.role as LegacyRoleName,
+          customerId: dbUser.customerId,
         });
         const customerInfo = await resolveCustomerScope(dbUser.customerId);
         token.id = dbUser.id;

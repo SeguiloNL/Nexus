@@ -10,6 +10,14 @@ export enum UserRole {
 export enum RoleScope {
   INTERNAL = "INTERNAL",
   CUSTOMER = "CUSTOMER",
+  RESELLER = "RESELLER",
+  PARTNER = "PARTNER",
+}
+
+export enum CustomerType {
+  DIRECT = "DIRECT",
+  RESELLER = "RESELLER",
+  PARTNER = "PARTNER",
 }
 
 export enum AccessLevel {
@@ -154,6 +162,28 @@ export const CUSTOMER_SCOPE_RESOURCES: ResourceType[] = [
   "sim",
   "vehicle",
   "subscription",
+  "invoice",
+  "dashboard",
+];
+
+export const RESELLER_SCOPE_RESOURCES: ResourceType[] = [
+  "customer",
+  "tracker",
+  "sim",
+  "vehicle",
+  "subscription",
+  "activation_order",
+  "invoice",
+  "dashboard",
+];
+
+export const PARTNER_SCOPE_RESOURCES: ResourceType[] = [
+  "customer",
+  "tracker",
+  "sim",
+  "vehicle",
+  "subscription",
+  "activation_order",
   "invoice",
   "dashboard",
 ];

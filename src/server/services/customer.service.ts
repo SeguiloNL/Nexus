@@ -9,17 +9,23 @@ import type {
   PaginatedResult,
   UpdateCustomerInput,
 } from "@/types/domain";
-import type { CustomerStatus, UserRole, RoleScope } from "@/types/enums";
+import { CustomerStatus, UserRole, RoleScope, CustomerType } from "@/types/enums";
 import type { Prisma, Customer as PrismaCustomer } from "@prisma/client";
 import { CreateCustomerSchema } from "@/server/validators/customer";
 import type { PermissionBits } from "@/types/next-auth";
-import { pickAuth, requirePermission } from "@/lib/rbac";
+import {
+  pickAuth,
+  requirePermission,
+  isResellerScope,
+  isPartnerOrResellerScope,
+} from "@/lib/rbac";
 
 type Ctx = {
   userId: string;
   userRole: UserRole;
   roleId?: string;
   roleScope?: RoleScope;
+  customerId?: string | null;
   customerScope?: string[];
   permissions?: PermissionBits;
 };
@@ -224,30 +230,84 @@ export async function createCustomer(
 ): Promise<PrismaCustomer> {
   await requirePermission(pickAuth(ctx), "create", "customer");
 
+  const safeInput: CreateCustomerInput = { ...input };
+
+  if (isPartnerOrResellerScope(ctx.roleScope)) {
+    if (!ctx.customerId || ctx.customerScope?.length === 0) {
+      throw new Error("Kan geen sub-klanten aanmaken: geen eigen customer-id in sessie.");
+    }
+    if (
+      safeInput.parentCustomerId != null &&
+      safeInput.parentCustomerId !== ctx.customerId
+    ) {
+      throw new Error(
+        "Parent customer mag alleen je eigen klantrecord zijn (sub-klant onder jezelf)."
+      );
+    }
+    safeInput.parentCustomerId = ctx.customerId;
+    safeInput.type = CustomerType.DIRECT;
+  } else if (ctx.roleScope === RoleScope.CUSTOMER) {
+    throw new Error(
+      "Onvoldoende rechten: directe eindklanten kunnen geen sub-klanten aanmaken."
+    );
+  }
+
   if (ctx.customerScope && ctx.customerScope.length > 0) {
-    if (input.parentCustomerId && !ctx.customerScope.includes(input.parentCustomerId)) {
+    if (safeInput.parentCustomerId && !ctx.customerScope.includes(safeInput.parentCustomerId)) {
       throw new Error("Parent customer valt niet binnen je toegang");
     }
   }
 
+  if (safeInput.parentCustomerId) {
+    const parent = await prisma.customer.findUnique({
+      where: { id: safeInput.parentCustomerId, deletedAt: null },
+      select: { type: true },
+    });
+    if (!parent) {
+      throw new Error(`Parent customer (${safeInput.parentCustomerId}) bestaat niet.`);
+    }
+    if (parent.type === CustomerType.DIRECT) {
+      throw new Error(
+        "Parent customer moet van type RESELLER of PARTNER zijn (DIRECT kan geen sub-klanten hebben)."
+      );
+    }
+  }
+
+  if (
+    safeInput.type === CustomerType.DIRECT &&
+    safeInput.parentCustomerId
+  ) {
+    // OK: sub-klant van Reseller/Partner
+  }
+  if (
+    (safeInput.type === CustomerType.RESELLER ||
+      safeInput.type === CustomerType.PARTNER) &&
+    safeInput.parentCustomerId
+  ) {
+    throw new Error(
+      "RESELLER en PARTNER klanten kunnen geen eigen parent hebben (geen geneste resellers/partners)."
+    );
+  }
+
   return prisma.$transaction(async (tx) => {
     const customerNumber =
-      input.customerNumber?.trim() || (await generateCustomerNumber(tx as any));
+      safeInput.customerNumber?.trim() || (await generateCustomerNumber(tx as any));
 
     const created = await tx.customer.create({
       data: {
         customerNumber,
-        companyName: input.companyName.trim(),
-        parentCustomerId: input.parentCustomerId ?? null,
-        address: input.address ?? null,
-        postalCode: input.postalCode ?? null,
-        city: input.city ?? null,
-        country: input.country ?? null,
-        contactPerson: input.contactPerson ?? null,
-        phone: input.phone ?? null,
-        email: input.email ?? null,
-        status: (input.status ?? "PROSPECT") as CustomerStatus,
-        notes: input.notes ?? null,
+        companyName: safeInput.companyName.trim(),
+        type: (safeInput.type ?? CustomerType.DIRECT) as any,
+        parentCustomerId: safeInput.parentCustomerId ?? null,
+        address: safeInput.address ?? null,
+        postalCode: safeInput.postalCode ?? null,
+        city: safeInput.city ?? null,
+        country: safeInput.country ?? null,
+        contactPerson: safeInput.contactPerson ?? null,
+        phone: safeInput.phone ?? null,
+        email: safeInput.email ?? null,
+        status: (safeInput.status ?? "PROSPECT") as CustomerStatus,
+        notes: safeInput.notes ?? null,
       },
     });
 
@@ -279,10 +339,84 @@ export async function updateCustomer(
     }
   }
 
+  if (isPartnerOrResellerScope(ctx.roleScope)) {
+    if (input.type && input.type !== CustomerType.DIRECT) {
+      throw new Error(
+        "Resellers en Partners kunnen alleen DIRECT type sub-klanten hebben."
+      );
+    }
+    if (ctx.customerId && id === ctx.customerId) {
+      if (input.parentCustomerId != null) {
+        throw new Error(
+          "Je kunt je eigen klantrecord niet onder een andere parent hangen."
+        );
+      }
+      if (input.type) {
+        throw new Error(
+          "Je kunt je eigen klanttype (RESELLER/PARTNER) niet zelf wijzigen."
+        );
+      }
+    } else {
+      if (
+        input.parentCustomerId != null &&
+        input.parentCustomerId !== ctx.customerId
+      ) {
+        throw new Error(
+          "Parent customer van sub-klant moet je eigen klantrecord zijn."
+        );
+      }
+      input.parentCustomerId = ctx.customerId;
+      input.type = CustomerType.DIRECT;
+    }
+  }
+
+  if (input.type === CustomerType.DIRECT && input.parentCustomerId) {
+    // OK
+  }
+  if (
+    (input.type === CustomerType.RESELLER || input.type === CustomerType.PARTNER) &&
+    input.parentCustomerId
+  ) {
+    throw new Error(
+      "RESELLER en PARTNER klanten kunnen geen eigen parent hebben (geen geneste resellers/partners)."
+    );
+  }
+
+  if (input.parentCustomerId) {
+    const parent = await prisma.customer.findUnique({
+      where: { id: input.parentCustomerId, deletedAt: null },
+      select: { type: true },
+    });
+    if (!parent) {
+      throw new Error(`Parent customer (${input.parentCustomerId}) bestaat niet.`);
+    }
+    if (parent.type === CustomerType.DIRECT) {
+      throw new Error(
+        "Parent customer moet van type RESELLER of PARTNER zijn."
+      );
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     const existing = await tx.customer.findUniqueOrThrow({
       where: { id, deletedAt: null },
     });
+
+    if (input.type != null && input.parentCustomerId === undefined) {
+      // Als type gewijzigd wordt naar DIRECT zonder expliciete parent check,
+      // dan moet bestaande parent ook geldig blijven.
+      if (existing.parentCustomerId && input.type === CustomerType.DIRECT) {
+        // OK: bestaande parent blijft geldig indien van toepassing
+      }
+      if (
+        (input.type === CustomerType.RESELLER || input.type === CustomerType.PARTNER) &&
+        existing.parentCustomerId
+      ) {
+        throw new Error(
+          "Kan type niet wijzigen naar RESELLER/PARTNER: klant heeft reeds een parent."
+        );
+      }
+    }
 
     const updated = await tx.customer.update({
       where: { id },
@@ -365,6 +499,7 @@ export async function listParentCustomers(customerScope?: string[]) {
 export interface CustomerCsvImportRow {
   customerNumber?: string;
   companyName: string;
+  type?: string;
   parentCustomerId?: string;
   address?: string;
   postalCode?: string;
@@ -415,10 +550,18 @@ export async function bulkImportCustomers(
 ): Promise<{ count: number; ids: string[] }> {
   await requirePermission(pickAuth(ctx), "create", "customer");
 
+  const forceParent =
+    isPartnerOrResellerScope(ctx.roleScope) ? ctx.customerId : null;
+
   if (ctx.customerScope && ctx.customerScope.length > 0) {
     for (const { data } of validRows) {
-      if (data.parentCustomerId && !ctx.customerScope.includes(data.parentCustomerId)) {
-        throw new Error("Een of meer parent customers vallen niet binnen je toegang");
+      if (
+        data.parentCustomerId &&
+        !ctx.customerScope.includes(data.parentCustomerId)
+      ) {
+        throw new Error(
+          "Een of meer parent customers vallen niet binnen je toegang"
+        );
       }
     }
   }
@@ -429,11 +572,23 @@ export async function bulkImportCustomers(
       const customerNumber =
         data.customerNumber ?? (await generateCustomerNumber(tx as any));
       const raw = data as any;
+
+      let finalType: CustomerType | undefined = raw.type as CustomerType;
+      let finalParent: string | null | undefined = data.parentCustomerId;
+
+      if (isPartnerOrResellerScope(ctx.roleScope)) {
+        finalParent = forceParent ?? undefined;
+        finalType = CustomerType.DIRECT;
+      } else if (finalType == null) {
+        finalType = CustomerType.DIRECT;
+      }
+
       const created = await tx.customer.create({
         data: {
           customerNumber,
           companyName: data.companyName.trim(),
-          parentCustomerId: data.parentCustomerId ?? null,
+          type: (finalType ?? CustomerType.DIRECT) as any,
+          parentCustomerId: finalParent ?? null,
           address: data.address ?? null,
           postalCode: data.postalCode ?? null,
           city: data.city ?? null,

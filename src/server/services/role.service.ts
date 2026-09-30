@@ -8,7 +8,12 @@ import type {
   RoleListItem,
 } from "@/types/domain";
 import { RoleScope, type ResourceType } from "@/types/enums";
-import { ALL_RESOURCE_TYPES, CUSTOMER_SCOPE_RESOURCES } from "@/types/enums";
+import {
+  ALL_RESOURCE_TYPES,
+  CUSTOMER_SCOPE_RESOURCES,
+  RESELLER_SCOPE_RESOURCES,
+  PARTNER_SCOPE_RESOURCES,
+} from "@/types/enums";
 
 export type RoleCacheInvalidator = () => void;
 
@@ -29,10 +34,21 @@ function invalidatePermissionCache() {
 type Ctx = { userId: string; userRole: any; userName?: string };
 
 const CUSTOMER_ALLOWED_RESOURCES = new Set<ResourceType>(CUSTOMER_SCOPE_RESOURCES);
+const RESELLER_ALLOWED_RESOURCES = new Set<ResourceType>(RESELLER_SCOPE_RESOURCES);
+const PARTNER_ALLOWED_RESOURCES = new Set<ResourceType>(PARTNER_SCOPE_RESOURCES);
 
 function allowedResourcesForScope(scope: RoleScope): Set<ResourceType> {
-  if (scope === RoleScope.CUSTOMER) return CUSTOMER_ALLOWED_RESOURCES;
-  return new Set(ALL_RESOURCE_TYPES);
+  switch (scope) {
+    case RoleScope.CUSTOMER:
+      return CUSTOMER_ALLOWED_RESOURCES;
+    case RoleScope.RESELLER:
+      return RESELLER_ALLOWED_RESOURCES;
+    case RoleScope.PARTNER:
+      return PARTNER_ALLOWED_RESOURCES;
+    case RoleScope.INTERNAL:
+    default:
+      return new Set(ALL_RESOURCE_TYPES);
+  }
 }
 
 function levelToBits(level: PermissionLevel): { read: boolean; write: boolean } {

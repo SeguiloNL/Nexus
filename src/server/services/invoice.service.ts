@@ -4,7 +4,7 @@ import { generateInvoiceNumber } from "@/lib/identifiers";
 import { pickAuth, requirePermission, PermissionError, hasMinRole } from "@/lib/rbac";
 import type { PaginatedResult } from "@/types/domain";
 import type { InvoiceStatus, RoleScope } from "@/types/enums";
-import { UserRole } from "@/types/enums";
+import { CustomerType, UserRole } from "@/types/enums";
 import type { PermissionBits } from "@/types/next-auth";
 import type {
   Prisma,
@@ -37,6 +37,82 @@ export interface MonthlyGenerationResult {
 
 const DEFAULT_VAT_RATE = 21;
 const DEFAULT_NET_TERMS_DAYS = 14;
+
+export type BillingCustomerResolution = {
+  billingCustomerId: string;
+  viaResellerId?: string | null;
+  viaResellerName?: string | null;
+  subCustomerId?: string | null;
+  subCustomerName?: string | null;
+};
+
+export async function resolveBillingCustomerForSubscription(
+  subscription: {
+    id: string;
+    customerId: string;
+    billingCustomerId: string | null;
+  },
+  prismaClient: {
+    customer: {
+      findUnique: (args: any) => Promise<any>;
+    };
+  } = prisma
+): Promise<BillingCustomerResolution> {
+  if (subscription.billingCustomerId) {
+    return {
+      billingCustomerId: subscription.billingCustomerId,
+      subCustomerId:
+        subscription.billingCustomerId !== subscription.customerId
+          ? subscription.customerId
+          : null,
+    };
+  }
+
+  const customer = await prismaClient.customer.findUnique({
+    where: { id: subscription.customerId, deletedAt: null },
+    select: {
+      id: true,
+      companyName: true,
+      type: true,
+      parentCustomerId: true,
+      parentCustomer: {
+        select: { id: true, companyName: true, type: true },
+      },
+    },
+  });
+
+  if (!customer) {
+    return { billingCustomerId: subscription.customerId };
+  }
+
+  if (customer.parentCustomerId && customer.type === CustomerType.DIRECT) {
+    const parent = customer.parentCustomer;
+    if (parent) {
+      if (parent.type === CustomerType.RESELLER) {
+        return {
+          billingCustomerId: parent.id,
+          viaResellerId: parent.id,
+          viaResellerName: parent.companyName,
+          subCustomerId: customer.id,
+          subCustomerName: customer.companyName,
+        };
+      }
+      if (parent.type === CustomerType.PARTNER) {
+        return {
+          billingCustomerId: customer.id,
+          viaResellerId: parent.id,
+          viaResellerName: parent.companyName,
+          subCustomerId: customer.id,
+          subCustomerName: customer.companyName,
+        };
+      }
+    }
+  }
+
+  return {
+    billingCustomerId: customer.id,
+  };
+}
 
 function includeRelations(): Prisma.InvoiceInclude {
   return {
@@ -143,6 +219,15 @@ export async function generateMonthly(
           continue;
         }
 
+        const billing = await resolveBillingCustomerForSubscription(
+          {
+            id: sub.id,
+            customerId: sub.customerId,
+            billingCustomerId: (sub as any).billingCustomerId ?? null,
+          },
+          tx as any
+        );
+
         const factor = billingFactor(sub.billingCycle);
         const subtotalNum = Number(sub.monthlyPrice) * factor;
         const vatRateNum = Number(sub.product?.btwPercentage ?? DEFAULT_VAT_RATE);
@@ -152,12 +237,21 @@ export async function generateMonthly(
         const issueDate = periodStart;
         const dueDate = addDays(issueDate, DEFAULT_NET_TERMS_DAYS);
 
+        let baseNote = `Automatisch gegenereerd op ${new Date().toISOString().slice(0, 10)} obv ${sub.billingCycle} abonnement.`;
+        if (billing.viaResellerId && billing.subCustomerId) {
+          if (billing.billingCustomerId === billing.viaResellerId) {
+            baseNote += `\n\n[Resellerfactuur] Namens sub-klant ${billing.subCustomerName ?? billing.subCustomerId} (via ${billing.viaResellerName ?? billing.viaResellerId}).`;
+          } else {
+            baseNote += `\n\n[Partner] Eindklantfactuur voor ${billing.subCustomerName ?? billing.subCustomerId}; georganiseerd via Partner ${billing.viaResellerName ?? billing.viaResellerId}.`;
+          }
+        }
+
         const invoiceNumber = await generateInvoiceNumber(tx);
         const created = await tx.invoice.create({
           data: {
             invoiceNumber,
             subscriptionId: sub.id,
-            customerId: sub.customerId,
+            customerId: billing.billingCustomerId,
             periodStart,
             periodEnd,
             issueDate,
@@ -167,7 +261,7 @@ export async function generateMonthly(
             vatAmount: vatAmountNum as any,
             total: totalNum as any,
             status: "DRAFT" as any,
-            note: `Automatisch gegenereerd op ${new Date().toISOString().slice(0, 10)} obv ${sub.billingCycle} abonnement.`,
+            note: baseNote,
           },
         });
 

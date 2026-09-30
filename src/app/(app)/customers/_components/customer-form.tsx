@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import type { CustomerActionState } from "../actions";
 import type { CustomerStatus } from "@prisma/client";
+import { CustomerType } from "@/types/enums";
 
 type ParentOption = { id: string; label: string };
 
@@ -45,6 +46,7 @@ type CustomerFormProps = {
     btwNr: string | null;
     inserveCompanyId: number | null;
     status: CustomerStatus;
+    type: CustomerType | string;
     notes: string | null;
   }>;
   parentOptions: ParentOption[];
@@ -142,6 +144,34 @@ export function CustomerForm({
                       <SelectItem value="INACTIVE">Inactief</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="type">Type klant</Label>
+                  <Select
+                    name="type"
+                    defaultValue={(initial?.type as string) ?? CustomerType.DIRECT}
+                  >
+                    <SelectTrigger id="type">
+                      <SelectValue placeholder="Kies een type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={CustomerType.DIRECT}>
+                        Directe eindklant
+                      </SelectItem>
+                      <SelectItem value={CustomerType.RESELLER}>
+                        Reseller (wij factureren de reseller)
+                      </SelectItem>
+                      <SelectItem value={CustomerType.PARTNER}>
+                        Partner (wij factureren de eindklant)
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-slate-500">
+                    Bepaalt hoe deze klant binnen het systeem behandeld wordt (facturatie, toegang).
+                  </p>
                 </div>
               </div>
 

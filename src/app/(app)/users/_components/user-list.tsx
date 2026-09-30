@@ -92,6 +92,8 @@ const ROLE_TONE: Record<string, string> = {
 const SCOPE_TONE: Record<RoleScope, string> = {
   INTERNAL: "bg-purple-50 text-purple-700 border-purple-200",
   CUSTOMER: "bg-blue-50 text-blue-700 border-blue-200",
+  RESELLER: "bg-amber-50 text-amber-700 border-amber-200",
+  PARTNER: "bg-teal-50 text-teal-700 border-teal-200",
 };
 
 function RoleBadge({

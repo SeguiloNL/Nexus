@@ -228,31 +228,47 @@ function validateAndNormalizeSimStatus(
   return SimStatus.IN_STOCK;
 }
 
+const INVALID_IDENTIFIER_PLACEHOLDERS: ReadonlySet<string> = new Set<string>([
+  "eid", "iccid", "imsi", "msisdn", "subscriberid", "subscriber",
+  "na", "n/a", "unknown", "none", "empty", "placeholder", "0", "000000000000000",
+  "--", "---",
+]);
+
+function isNotPlaceholder(s: string): boolean {
+  const norm = s.toLowerCase().trim();
+  if (!norm) return false;
+  if (INVALID_IDENTIFIER_PLACEHOLDERS.has(norm)) return false;
+  if (norm === "null" || norm === "undefined") return false;
+  return true;
+}
+
 function normIccid(v: string | null | undefined): string | null {
   if (v === null || v === undefined) return null;
   const s = String(v).replace(/\s+/g, "").trim();
-  if (!s) return null;
+  if (!s || !isNotPlaceholder(s)) return null;
   return s.length > 40 ? s.slice(0, 40) : s;
 }
 
 function normMsisdn(v: string | null | undefined): string | null {
   if (v === null || v === undefined) return null;
-  const s = String(v).replace(/\s+/g, "").replace(/[^\d+]/g, "").trim();
-  if (!s) return null;
+  const raw = String(v).replace(/\s+/g, "").trim();
+  if (!raw || !isNotPlaceholder(raw)) return null;
+  const s = raw.replace(/[^\d+]/g, "").trim();
+  if (!s || !isNotPlaceholder(s)) return null;
   return s.length > 30 ? s.slice(0, 30) : s;
 }
 
 function normImsi(v: string | null | undefined): string | null {
   if (v === null || v === undefined) return null;
   const s = String(v).replace(/\s+/g, "").trim();
-  if (!s) return null;
+  if (!s || !isNotPlaceholder(s)) return null;
   return s.length > 20 ? s.slice(0, 20) : s;
 }
 
 function normEid(v: string | null | undefined): string | null {
   if (v === null || v === undefined) return null;
   const s = String(v).replace(/\s+/g, "").trim();
-  if (!s) return null;
+  if (!s || !isNotPlaceholder(s)) return null;
   return s.length > 40 ? s.slice(0, 40) : s;
 }
 
@@ -278,6 +294,7 @@ export interface SimhuisSyncResult {
   skipped: number;
   errors: number;
   errorMessages: string[];
+  skippedUniqueIdentifiers: string[];
   lastSyncedAt: Date;
   durationMs: number;
 }
@@ -383,6 +400,68 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
   });
   const existingByIccid = new Map(existingSims.map((s) => [s.iccid, s]));
 
+  // ============================================================
+  // Unique-key conflict preventie (VOORAF)
+  // - eid en msisdn zijn UNIQUE in het schema.
+  // - We bouwen eerst een map op van alle bestaande non-null waardes
+  //   in de *hele* DB (ook niet-sync-targets), zodat we cross-sim
+  //   conflicten vooraf kunnen afvangen.
+  // - Daarna bijhouden we in deze batch welke waardes al "geclaimed"
+  //   zijn tegen race conditions tussen parallelle updates.
+  // ============================================================
+  const ALL_EXISTING = await prisma.sIM.findMany({
+    where: { deletedAt: null },
+    select: { id: true, eid: true, msisdn: true },
+  });
+  const eidOwnerSimId = new Map<string, string>(); // eid -> sim.id
+  const msisdnOwnerSimId = new Map<string, string>(); // msisdn -> sim.id
+  for (const s of ALL_EXISTING) {
+    if (s.eid) {
+      const k = s.eid.trim().toLowerCase();
+      if (k) eidOwnerSimId.set(k, s.id);
+    }
+    if (s.msisdn) {
+      const k = s.msisdn.trim().toLowerCase();
+      if (k) msisdnOwnerSimId.set(k, s.id);
+    }
+  }
+  const claimedEidsLowerThisBatch = new Set<string>();
+  const claimedMsisdnsLowerThisBatch = new Set<string>();
+  const skippedIdentifiers: string[] = [];
+
+  function resolveEidForSim(simId: string, proposedEid: string | null): string | null {
+    if (!proposedEid) return null;
+    const low = proposedEid.trim().toLowerCase();
+    if (!low) return null;
+    const existingOwner = eidOwnerSimId.get(low);
+    if (existingOwner && existingOwner !== simId) {
+      skippedIdentifiers.push(`EID "${proposedEid}" al in gebruik door SIM-id ${existingOwner} (claim voor ${simId} overgeslagen)`);
+      return null;
+    }
+    if (claimedEidsLowerThisBatch.has(low)) {
+      skippedIdentifiers.push(`EID "${proposedEid}" al geclaimd in deze batch (claim voor ${simId} overgeslagen)`);
+      return null;
+    }
+    claimedEidsLowerThisBatch.add(low);
+    return proposedEid;
+  }
+  function resolveMsisdnForSim(simId: string, proposedMsisdn: string | null): string | null {
+    if (!proposedMsisdn) return null;
+    const low = proposedMsisdn.trim().toLowerCase();
+    if (!low) return null;
+    const existingOwner = msisdnOwnerSimId.get(low);
+    if (existingOwner && existingOwner !== simId) {
+      skippedIdentifiers.push(`MSISDN "${proposedMsisdn}" al in gebruik door SIM-id ${existingOwner} (claim voor ${simId} overgeslagen)`);
+      return null;
+    }
+    if (claimedMsisdnsLowerThisBatch.has(low)) {
+      skippedIdentifiers.push(`MSISDN "${proposedMsisdn}" al geclaimd in deze batch (claim voor ${simId} overgeslagen)`);
+      return null;
+    }
+    claimedMsisdnsLowerThisBatch.add(low);
+    return proposedMsisdn;
+  }
+
   const upsertPromises: Promise<unknown>[] = [];
   let auditCreatedEntries: Array<{ iccid: string; msisdn?: string | null; imsi?: string | null }> = [];
   let auditUpdatedEntries: Array<{ iccid: string; old: any; new: any }> = [];
@@ -413,9 +492,17 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
       const rawNetwork = simhuis.network;
       const rawPlanName = simhuis.planName;
       const rawProductType = simhuis.productType;
-      const msisdnVal = normMsisdn(rawMsisdn);
+      const msisdnValRaw = normMsisdn(rawMsisdn);
       const imsiVal = normImsi(rawImsi);
-      const eidVal = normEid(rawEid);
+      const eidValRaw = normEid(rawEid);
+
+      // Unique-key conflict resolutie VOORAF (voorkomt Prisma unique constraint fouten)
+      // - Bij bestaande SIM: gebruik existing.id als eigen-sim-identiteit
+      // - Bij nieuwe SIM: gebruik ICCID als tijdelijke id (deze is per definitie uniek in de batch)
+      const conflictSimId = existing ? existing.id : `__new_iccid_${iccid}__`;
+      const msisdnVal = resolveMsisdnForSim(conflictSimId, msisdnValRaw);
+      const eidVal = resolveEidForSim(conflictSimId, eidValRaw);
+
       const subscriberIdVal = truncate(rawSubscriberId, 100);
       const simNameVal = truncate(rawSimName, 200);
       const groupVal = truncate(rawGroupName, 100);
@@ -593,6 +680,20 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
 
   await Promise.all(upsertPromises);
 
+  // Voeg een informatieve melding toe voor elke overgeslagen unique identifier
+  // (geen harde fout, maar wel zichtbaar voor gebruiker)
+  if (skippedIdentifiers.length > 0) {
+    const summary = `[INFO] ${skippedIdentifiers.length} unieke EID/MSISDN waarde(s) overgeslagen ivm. conflict/duplicaat.`;
+    errors.push(summary);
+    const detailLimit = Math.min(skippedIdentifiers.length, 20);
+    for (let i = 0; i < detailLimit; i++) {
+      errors.push(`  └─ ${skippedIdentifiers[i]}`);
+    }
+    if (skippedIdentifiers.length > detailLimit) {
+      errors.push(`  └─ ... en ${skippedIdentifiers.length - detailLimit} meer (zie audit log)`);
+    }
+  }
+
   try {
     await prisma.$transaction(async (tx) => {
       const userId = ctx.userId;
@@ -606,6 +707,8 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
         updated,
         skipped,
         errors: errorCount,
+        skippedIdentifiersCount: skippedIdentifiers.length,
+        skippedIdentifiersSample: skippedIdentifiers.slice(0, 100),
         startedAt: new Date(startedAt).toISOString(),
         finishedAt: finishedAt.toISOString(),
         durationMs,
@@ -634,14 +737,17 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           timestamp: finishedAt,
         });
       }
-      if (errorCount > 0) {
+      if (errorCount > 0 || skippedIdentifiers.length > 0) {
         await logAudit(tx, {
           entityType: "SIM",
           entityId: `sync_simhuis_batch_${Date.now()}_err`,
           action: "BATCH_ERROR",
           userId: userId ?? "SYSTEM",
-          oldValues: { errorCount },
-          newValues: { errorMessages: errors.slice(0, 50) },
+          oldValues: { errorCount, skippedIdentifiersCount: skippedIdentifiers.length },
+          newValues: {
+            errorMessages: errors.slice(0, 80),
+            skippedIdentifiers: skippedIdentifiers.slice(0, 100),
+          },
           metadata: meta,
           timestamp: finishedAt,
         });
@@ -659,6 +765,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
     skipped,
     errors: errorCount,
     errorMessages: errors,
+    skippedUniqueIdentifiers: skippedIdentifiers,
     lastSyncedAt: new Date(),
     durationMs: Date.now() - startedAt,
   };

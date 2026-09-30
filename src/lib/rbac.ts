@@ -7,6 +7,8 @@ import {
   RoleScope,
   ALL_RESOURCE_TYPES,
   CUSTOMER_SCOPE_RESOURCES,
+  RESELLER_SCOPE_RESOURCES,
+  PARTNER_SCOPE_RESOURCES,
 } from "@/types/enums";
 import type { PermissionBits } from "@/types/next-auth";
 
@@ -24,10 +26,19 @@ export function buildLegacyPermissionsForRole(
   const safeRole = role ?? UserRole.VIEWER;
   const safeScope = scope ?? RoleScope.INTERNAL;
 
-  const allowedResources =
-    safeScope === RoleScope.CUSTOMER
-      ? CUSTOMER_SCOPE_RESOURCES
-      : ALL_RESOURCE_TYPES;
+  const allowedResources = (() => {
+    switch (safeScope) {
+      case RoleScope.RESELLER:
+        return RESELLER_SCOPE_RESOURCES;
+      case RoleScope.PARTNER:
+        return PARTNER_SCOPE_RESOURCES;
+      case RoleScope.CUSTOMER:
+        return CUSTOMER_SCOPE_RESOURCES;
+      case RoleScope.INTERNAL:
+      default:
+        return ALL_RESOURCE_TYPES;
+    }
+  })();
 
   for (const r of allowedResources) {
     switch (safeRole) {
@@ -271,17 +282,34 @@ export function hasMinRole(
   minRole: UserRole
 ): boolean {
   if (!role) return false;
-  if (role === "CUSTOMER" || role === "INTERNAL") {
-    return role === "INTERNAL" && minRole === "VIEWER";
+  const scopeValues: string[] = ["INTERNAL", "CUSTOMER", "RESELLER", "PARTNER"];
+  if (scopeValues.includes(role as string)) {
+    if (role === RoleScope.INTERNAL) return minRole === UserRole.VIEWER;
+    // CUSTOMER / RESELLER / PARTNER: minimale viewer rechten alleen als VIEWER gevraagd
+    return minRole === UserRole.VIEWER;
   }
   const order: UserRole[] = ["VIEWER", "EMPLOYEE", "ADMIN"] as UserRole[];
   return order.indexOf(role as UserRole) >= order.indexOf(minRole);
 }
 
-export function isInternalScope(scope: RoleScope | null | undefined): boolean {
+export function isInternalScope(scope: RoleScope | string | null | undefined): boolean {
   return scope === "INTERNAL";
 }
 
-export function isCustomerScope(scope: RoleScope | null | undefined): boolean {
+export function isCustomerScope(scope: RoleScope | string | null | undefined): boolean {
   return scope === "CUSTOMER";
+}
+
+export function isResellerScope(scope: RoleScope | string | null | undefined): boolean {
+  return scope === "RESELLER";
+}
+
+export function isPartnerScope(scope: RoleScope | string | null | undefined): boolean {
+  return scope === "PARTNER";
+}
+
+export function isPartnerOrResellerScope(
+  scope: RoleScope | string | null | undefined
+): boolean {
+  return isResellerScope(scope) || isPartnerScope(scope);
 }

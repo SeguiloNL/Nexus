@@ -1,6 +1,7 @@
 import type {
   UserRole,
   RoleScope,
+  CustomerType,
   CustomerStatus,
   SubscriptionStatus,
   TrackerStatus,
@@ -141,6 +142,7 @@ export interface CustomerFilterParams extends ListQueryParams {
 export interface CreateCustomerInput {
   customerNumber?: string;
   companyName: string;
+  type?: CustomerType;
   parentCustomerId?: string | null;
   address?: string | null;
   postalCode?: string | null;
@@ -155,6 +157,7 @@ export interface CreateCustomerInput {
 
 export interface UpdateCustomerInput {
   companyName?: string;
+  type?: CustomerType;
   parentCustomerId?: string | null;
   address?: string | null;
   postalCode?: string | null;
@@ -298,6 +301,7 @@ export interface SubscriptionFilterParams extends ListQueryParams {
 export interface CreateSubscriptionInput {
   subscriptionNumber?: string;
   customerId: string;
+  billingCustomerId?: string | null;
   productId: string;
   startDate: Date | string;
   endDate?: Date | string | null;
@@ -309,6 +313,7 @@ export interface CreateSubscriptionInput {
 
 export interface UpdateSubscriptionInput {
   customerId?: string;
+  billingCustomerId?: string | null;
   productId?: string;
   startDate?: Date | string;
   endDate?: Date | string | null;

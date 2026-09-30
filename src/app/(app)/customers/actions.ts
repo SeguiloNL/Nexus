@@ -49,6 +49,7 @@ export async function createCustomerAction(
     inserveCompanyId: formData.get("inserveCompanyId") || null,
     status: (formData.get("status") as CreateCustomerInput["status"]) ??
       undefined,
+    type: (formData.get("type") as CreateCustomerInput["type"]) ?? undefined,
     notes: formData.get("notes") || null,
   };
 
@@ -65,7 +66,15 @@ export async function createCustomerAction(
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const customer = await createCustomer(validated.data, ctx);
 
   revalidatePath("/customers");
@@ -94,6 +103,7 @@ export async function updateCustomerAction(
     btwNr?: string | null;
     inserveCompanyId?: number | string | null;
     status?: CreateCustomerInput["status"];
+    type?: CreateCustomerInput["type"] | null;
     notes?: string | null;
   } = {
     companyName: (formData.get("companyName") as string) || undefined,
@@ -110,6 +120,7 @@ export async function updateCustomerAction(
     inserveCompanyId: (formData.get("inserveCompanyId") as string) ?? null,
     status: (formData.get("status") as CreateCustomerInput["status"]) ??
       undefined,
+    type: (formData.get("type") as CreateCustomerInput["type"]) ?? undefined,
     notes: (formData.get("notes") as string) ?? null,
   };
 
@@ -126,7 +137,15 @@ export async function updateCustomerAction(
     };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await updateCustomer(customerId, validated.data, ctx);
 
   revalidatePath("/customers");
@@ -138,7 +157,15 @@ export async function deleteCustomerAction(customerId: string) {
   const user = await getCurrentUser();
   await requirePermission(user.role, "delete", "customer");
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   await softDeleteCustomer(customerId, ctx);
 
   revalidatePath("/customers");
@@ -238,7 +265,15 @@ export async function commitCustomerCsvAction(
     return { ...prev, message: "Geen geldige rijen om te importeren." };
   }
 
-  const ctx = { userId: user.id, userRole: user.role };
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
   const result = await bulkImportCustomers(prev.preview.valid, ctx);
 
   revalidatePath("/customers");

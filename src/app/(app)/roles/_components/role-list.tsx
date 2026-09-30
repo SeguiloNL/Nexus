@@ -51,7 +51,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { RoleScope, ALL_RESOURCE_TYPES, CUSTOMER_SCOPE_RESOURCES } from "@/types/enums";
+import { RoleScope, ALL_RESOURCE_TYPES, CUSTOMER_SCOPE_RESOURCES, RESELLER_SCOPE_RESOURCES, PARTNER_SCOPE_RESOURCES } from "@/types/enums";
 import type { PermissionLevel, RoleListItem } from "@/types/domain";
 import type { ResourceType } from "@/types/enums";
 import type { RoleActionState } from "../actions";
@@ -86,6 +86,8 @@ const RESOURCE_LABELS: Record<ResourceType | string, { label: string; icon: any 
 const SCOPE_LABEL: Record<RoleScope, { label: string; tone: string; icon: any }> = {
   INTERNAL: { label: "Intern", tone: "bg-purple-50 text-purple-700 border-purple-200", icon: Users },
   CUSTOMER: { label: "Klant", tone: "bg-blue-50 text-blue-700 border-blue-200", icon: Building2 },
+  RESELLER: { label: "Reseller", tone: "bg-amber-50 text-amber-700 border-amber-200", icon: Building2 },
+  PARTNER: { label: "Partner", tone: "bg-teal-50 text-teal-700 border-teal-200", icon: Building2 },
 };
 
 export function RoleList({
@@ -263,8 +265,19 @@ function CreateDialog({ canCreate }: { canCreate: boolean }) {
     router.refresh();
   };
 
-  const availableResources =
-    scope === RoleScope.CUSTOMER ? CUSTOMER_SCOPE_RESOURCES : ALL_RESOURCE_TYPES;
+  const availableResources = (() => {
+    switch (scope) {
+      case RoleScope.RESELLER:
+        return RESELLER_SCOPE_RESOURCES as readonly string[];
+      case RoleScope.PARTNER:
+        return PARTNER_SCOPE_RESOURCES as readonly string[];
+      case RoleScope.CUSTOMER:
+        return CUSTOMER_SCOPE_RESOURCES as readonly string[];
+      case RoleScope.INTERNAL:
+      default:
+        return ALL_RESOURCE_TYPES as readonly string[];
+    }
+  })();
 
   return (
     <Dialog
@@ -319,6 +332,16 @@ function CreateDialog({ canCreate }: { canCreate: boolean }) {
                     <SelectItem value={RoleScope.CUSTOMER}>
                       <div className="flex items-center gap-2">
                         <Building2 className="h-3.5 w-3.5" /> Klant (toegang per klant)
+                      </div>
+                    </SelectItem>
+                    <SelectItem value={RoleScope.RESELLER}>
+                      <div className="flex items-center gap-2">
+                        <Building2 className="h-3.5 w-3.5" /> Reseller (wij factureren de reseller)
+                      </div>
+                    </SelectItem>
+                    <SelectItem value={RoleScope.PARTNER}>
+                      <div className="flex items-center gap-2">
+                        <Building2 className="h-3.5 w-3.5" /> Partner (wij factureren de eindklant)
                       </div>
                     </SelectItem>
                   </SelectContent>

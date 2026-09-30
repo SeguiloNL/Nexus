@@ -123,8 +123,32 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   else if (['provisioning', 'activating', 'pending', 'activating_subscription', 'pre_active'].includes(statusRaw)) status = 'provisioning';
 
   // ============================================================
+  // Placeholder-waardes die NOOIT als echte data moeten worden
+  // beschouwd. Dit zijn typisch de key-namen zelf die Simhuis
+  // teruggeeft in plaats van echte waardes (bv. "eid" i.p.v. een
+  // echte eSIM-ID, of "iccid" i.p.v. een 19-20-cijferige ICCID).
+  // ============================================================
+  const INVALID_PLACEHOLDER_VALUES: ReadonlySet<string> = new Set<string>([
+    // Key-namen / field-namen
+    'eid', 'iccid', 'imsi', 'msisdn', 'subscriberid',
+    // Generieke placeholders
+    'n/a', 'na', 'unknown', 'none', 'empty', 'placeholder',
+    // Varianten met liggend streepje (apart door - al apart)
+    '--', '---',
+  ]);
+
+  function isValidStringValue(s: string): boolean {
+    if (!s) return false;
+    if (s === '-' || s === 'null' || s === 'undefined') return false;
+    const normalized = s.toLowerCase().trim();
+    if (INVALID_PLACEHOLDER_VALUES.has(normalized)) return false;
+    return true;
+  }
+
+  // ============================================================
   // pickString: zoek eerst via findKey (alias-normalizatie),
   // daarna fallback op de expliciete paden als strings/numbers.
+  // Filtert placeholder-waardes zoals "eid", "iccid", "null", etc.
   // ============================================================
   const pickString = (...paths: Array<unknown>): string | null => {
     // Eerst: aliassen die findKey begrijpt
@@ -133,7 +157,7 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
         const v = findKey(p);
         if (v !== undefined && v !== null) {
           const s = String(v).trim();
-          if (s && s !== '-' && s !== 'null' && s !== 'undefined') return s;
+          if (isValidStringValue(s)) return s;
         }
       }
     }
@@ -142,7 +166,7 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
       if (p === null || p === undefined) continue;
       if (typeof p === 'object') continue; // als object is al door findKey geprobeerd
       const s = String(p).trim();
-      if (s && s !== '-' && s !== 'null' && s !== 'undefined') return s;
+      if (isValidStringValue(s)) return s;
     }
     return null;
   };
