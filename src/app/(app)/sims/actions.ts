@@ -20,7 +20,8 @@ import {
   bulkSoftDeleteSims,
   type SimCsvImportRow,
 } from "@/server/services/sim.service";
-import { syncActiveSimsUsageFromSimhuis } from "@/server/services/simhuis-sim-sync.service";
+import { syncActiveSimsUsageFromSimhuis, syncUsageForSingleSim } from "@/server/services/simhuis-sim-sync.service";
+import type { PerSimUsageSyncResult } from "@/server/services/simhuis-sim-sync.service";
 
 export type SimActionState = {
   errors?: Partial<Record<keyof CreateSimInput, string[]>>;
@@ -353,5 +354,50 @@ export async function syncUsageSimsAction(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return { ok: false, error: `Usage-sync mislukt: ${msg}` };
+  }
+}
+
+export type SimUsageSyncState = {
+  ok: boolean;
+  message?: string;
+  error?: string;
+  result?: PerSimUsageSyncResult;
+};
+
+export async function syncUsageForSingleSimAction(
+  simId: string,
+  _prev: SimUsageSyncState,
+  _formData: FormData
+): Promise<SimUsageSyncState> {
+  const user = await getCurrentUser();
+  requirePermission(user.role, "edit", "sim");
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await syncUsageForSingleSim(simId, ctx);
+    revalidatePath("/sims");
+    revalidatePath(`/sims/${simId}`);
+    if (result.errorMessage && !result.hasAnyUsageData) {
+      return {
+        ok: false,
+        error: `Simhuis kon geen verbruiksdata leveren: ${result.errorMessage}`,
+        result,
+      };
+    }
+    const fieldsLabel =
+      result.changedFields.length === 0
+        ? "geen wijzigingen"
+        : result.changedFields.join(", ");
+    const msg =
+      `Verbruik vernieuwd (${result.source}). ` +
+      `Velden: ${fieldsLabel}. ` +
+      `Duur: ${result.durationMs} ms.`;
+    return {
+      ok: true,
+      message: msg,
+      result,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: `Verbruik vernieuwen mislukt: ${msg}` };
   }
 }

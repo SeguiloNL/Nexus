@@ -19,6 +19,7 @@ import {
   Users,
   Activity,
   AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -42,6 +43,7 @@ import {
 import { canUserRole } from "@/lib/auth/session";
 import type { UserRole, AuditAction } from "@/types/enums";
 import type { SIM, SimStatus, AssignmentReason } from "@prisma/client";
+import type { SimUsageSyncState } from "../actions";
 
 type DetailSim = SIM & {
   assignments: Array<{
@@ -83,6 +85,11 @@ type SimDetailProps = {
   deleteAction: (simId: string) => Promise<void>;
   simId: string;
   auditLogs?: AuditLogForDetail;
+  syncUsageAction: (
+    simId: string,
+    prev: SimUsageSyncState,
+    formData: FormData
+  ) => Promise<SimUsageSyncState>;
 };
 
 export function SimDetail({
@@ -92,6 +99,7 @@ export function SimDetail({
   deleteAction,
   simId,
   auditLogs = [],
+  syncUsageAction,
 }: SimDetailProps) {
   const canEdit = canUserRole(role, "edit", "sim");
   const canDelete = canUserRole(role, "delete", "sim");
@@ -99,6 +107,11 @@ export function SimDetail({
   const [, deleteFormAction] = useFormState(
     async (_p: unknown) => deleteAction(simId),
     undefined
+  );
+
+  const [usageSyncState, usageSyncFormAction, usageSyncPending] = useFormState(
+    syncUsageAction.bind(null, simId),
+    { ok: false } satisfies SimUsageSyncState
   );
 
   const ACTION_LABEL: Record<string, string> = {
@@ -246,6 +259,45 @@ export function SimDetail({
               </CardContent>
             </Card>
           </div>
+
+          {canEdit ? (
+            <div className="flex flex-col gap-2 rounded-md border border-slate-200 bg-slate-50/60 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-sm text-slate-600">
+                <span className="font-medium text-slate-700">Handmatig verbruik vernieuwen</span>
+                <span className="mx-2 text-slate-400">·</span>
+                <span>
+                  Haalt de meest recente data- en SMS-statistieken direct op via Simhuis.
+                </span>
+              </div>
+              <form action={usageSyncFormAction as any} className="shrink-0">
+                <Button
+                  type="submit"
+                  size="sm"
+                  variant="default"
+                  disabled={usageSyncPending}
+                  className="gap-1.5"
+                >
+                  <RefreshCw
+                    className={`h-4 w-4 ${usageSyncPending ? "animate-spin" : ""}`}
+                  />
+                  {usageSyncPending ? "Ophalen..." : "Verbruik vernieuwen"}
+                </Button>
+              </form>
+            </div>
+          ) : null}
+
+          {usageSyncState?.message ? (
+            <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+              <span>✅</span>
+              <span>{usageSyncState.message}</span>
+            </div>
+          ) : null}
+          {usageSyncState?.error ? (
+            <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+              <span>⚠️</span>
+              <span className="whitespace-pre-wrap">{usageSyncState.error}</span>
+            </div>
+          ) : null}
 
           <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
             <Card>

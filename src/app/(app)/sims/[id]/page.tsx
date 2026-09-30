@@ -5,7 +5,11 @@ import { findManyAuditLogs } from "@/server/services/audit.service";
 import { SimDetail } from "../_components/sim-detail";
 import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
-import { deleteSimAction, updateSimAction } from "../actions";
+import {
+  deleteSimAction,
+  updateSimAction,
+  syncUsageForSingleSimAction,
+} from "../actions";
 
 export default async function SimDetailPage({
   params,
@@ -56,6 +60,7 @@ export default async function SimDetailPage({
       deleteAction={deleteSimAction}
       simId={params.id}
       auditLogs={auditResult as any}
+      syncUsageAction={syncUsageForSingleSimAction}
     />
   );
 }

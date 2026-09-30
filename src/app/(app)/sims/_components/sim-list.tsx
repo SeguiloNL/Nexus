@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { useFormState } from "react-dom";
 import type { ColumnDef, Row } from "@tanstack/react-table";
-import { MoreHorizontal, Plus, Trash2, Edit, Upload, Download, Filter } from "lucide-react";
+import { MoreHorizontal, Plus, Trash2, Edit, Upload, Download, Filter, RefreshCw } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { BulkActionForm } from "@/components/data-table/bulk-action-form";
 import { Button } from "@/components/ui/button";
@@ -17,7 +18,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { SIM, SimStatus } from "@prisma/client";
 import { formatIccid } from "@/lib/formatters";
-import { exportSimsCsvAction, bulkSoftDeleteSimsAction, type BulkActionState } from "../actions";
+import {
+  exportSimsCsvAction,
+  bulkSoftDeleteSimsAction,
+  syncUsageSimsAction,
+  type BulkActionState,
+} from "../actions";
 import { useMemo, useState } from "react";
 
 type ListSim = SIM;
@@ -47,6 +53,9 @@ export function SimList({
   canExport,
 }: SimListProps) {
   const [statusFilter, setStatusFilter] = useState<SimStatus | "__ALL__">("__ALL__");
+  const [syncState, syncFormAction, syncPending] = useFormState(syncUsageSimsAction, {
+    ok: false,
+  } as BulkActionState);
 
   const filteredSims = useMemo(() => {
     if (statusFilter === "__ALL__") return sims;
@@ -181,6 +190,16 @@ export function SimList({
               </Button>
             </form>
           ) : null}
+          {canEdit ? (
+            <form action={syncFormAction as any} className="inline-flex">
+              <Button variant="outline" type="submit" disabled={syncPending}>
+                <RefreshCw
+                  className={`mr-2 h-4 w-4 ${syncPending ? "animate-spin" : ""}`}
+                />
+                {syncPending ? "Synchroniseren..." : "Verbruik sync"}
+              </Button>
+            </form>
+          ) : null}
           {canImport ? (
             <Button variant="outline" asChild>
               <Link href="/sims/import">
@@ -197,6 +216,19 @@ export function SimList({
           ) : null}
         </div>
       </div>
+
+      {syncState?.message ? (
+        <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          <span>✅</span>
+          <span>{syncState.message}</span>
+        </div>
+      ) : null}
+      {syncState?.error ? (
+        <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+          <span>⚠️</span>
+          <span className="whitespace-pre-wrap">{syncState.error}</span>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-3 rounded-md border border-slate-200 bg-slate-50/60 px-3 py-2">
         <div className="flex items-center gap-2 text-sm font-medium text-slate-700">

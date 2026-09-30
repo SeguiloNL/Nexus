@@ -799,15 +799,17 @@ async function doPerSimFetch(args: {
 export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
   const creds = await getSimhuisCreds();
   const authBasic = basicAuthHeader(creds.username, creds.password);
+  const aidForGetSim = getSimhuisAccountId();
 
   const bearerToken = await acquireBearerToken(creds);
 
   const authVariants: PerSimAuth[] = [];
-  if (bearerToken) authVariants.push({ tag: 'bearer-token', token: bearerToken });
+  // ✅ AUTH-VOLGORDE GEFIXT: Basic + X-Headers EERST (Bearer gaf alleen 401 op SIM endpoints!)
   authVariants.push({ tag: 'basic-header', header: authBasic });
+  authVariants.push({ tag: 'x-custom-headers', username: creds.username, password: creds.password, resellerId: creds.resellerId });
   authVariants.push({ tag: 'creds-body', username: creds.username, password: creds.password, resellerId: creds.resellerId });
   authVariants.push({ tag: 'creds-query', username: creds.username, password: creds.password, resellerId: creds.resellerId });
-  authVariants.push({ tag: 'x-custom-headers', username: creds.username, password: creds.password, resellerId: creds.resellerId });
+  if (bearerToken) authVariants.push({ tag: 'bearer-token', token: bearerToken }); // ✅ Bearer LAATSTE
 
   const rankedAttempts: RankedAttempt[] = [];
   let lastErrorResult: PerSimAttemptResult | null = null;
@@ -815,7 +817,35 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
   const prefixes = getSimhuisPathPrefixes(creds.endpoints.sims).slice(0, 6);
 
   type Template = { method: 'GET' | 'POST' | 'PUT' | 'PATCH'; pathTpl: string; query?: Record<string, any>; body?: Record<string, any>; multiBody?: Array<Record<string, any>> };
-  const templates: Template[] = [
+  const templates: Template[] = [];
+
+  // === ✅ NIEUW PRIORITEIT 0: Multi-tenant SCOPED paden (account/tenant) + /v3/sims (Swagger standaard!) ===
+  if (aidForGetSim) {
+    templates.push(
+      { method: 'GET', pathTpl: `/accounts/${aidForGetSim}/assets/{iccid}` },
+      { method: 'GET', pathTpl: `/accounts/${aidForGetSim}/assets/{iccid}/diagnostic` },
+      { method: 'GET', pathTpl: `/tenants/${aidForGetSim}/assets/{iccid}` },
+      { method: 'GET', pathTpl: `/tenants/${aidForGetSim}/assets/{iccid}/diagnostic` },
+      { method: 'GET', pathTpl: `/organizations/${aidForGetSim}/assets/{iccid}` },
+      { method: 'GET', pathTpl: `/accounts/${aidForGetSim}/sims/{iccid}` },
+      { method: 'GET', pathTpl: `/tenants/${aidForGetSim}/sims/{iccid}` },
+      { method: 'GET', pathTpl: `/accounts/${aidForGetSim}/esims`, query: { iccid } },
+      { method: 'GET', pathTpl: `/tenants/${aidForGetSim}/esims`, query: { iccid } },
+      { method: 'GET', pathTpl: `/accounts/${aidForGetSim}/sims`, query: { iccid } },
+      { method: 'GET', pathTpl: `/tenants/${aidForGetSim}/sims`, query: { iccid } },
+    );
+  }
+  templates.push(
+    { method: 'GET', pathTpl: '/sims/{iccid}' },                            // ✅ Swagger standaard endpoint /sims/{iccid}
+    { method: 'GET', pathTpl: '/sims/{iccid}/diagnostic' },
+    { method: 'GET', pathTpl: '/sims/{iccid}/sessions' },
+    { method: 'GET', pathTpl: '/sims/diagnostic', query: { iccid } },
+    { method: 'GET', pathTpl: '/sims', query: { iccid } },
+    { method: 'GET', pathTpl: '/sims', query: { filter: { iccid } } },
+    { method: 'GET', pathTpl: '/sims', query: { search: iccid } },
+  );
+
+  templates.push(
     // === PRIORITEIT 1: AirOn360 /assets/{iccid} (echte endpoints uit Swagger!) ===
     { method: 'GET', pathTpl: '/assets/{iccid}' },                             // Assets get Info (exact!)
     { method: 'GET', pathTpl: '/assets/{iccid}/diagnostic' },                  // Get simcard information (exact!)
@@ -840,8 +870,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
     { method: 'GET', pathTpl: '/iot/device', query: { iccid } },
     { method: 'GET', pathTpl: '/ulb/device', query: { iccid } },
 
-    // === PRIORITEIT 5: Legacy /sims/... fallback ===
-    { method: 'GET', pathTpl: '/sims/{iccid}' },
+    // === PRIORITEIT 5: Legacy fallback ===
     { method: 'GET', pathTpl: '/sim/{iccid}' },
     { method: 'GET', pathTpl: '/simcards/{iccid}' },
     { method: 'GET', pathTpl: '/subscriptions/{iccid}' },
@@ -858,7 +887,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
     { method: 'POST', pathTpl: '/sim/status', multiBody: [{ iccid }] },
     { method: 'POST', pathTpl: '/sims/lookup', multiBody: [{ iccid }] },
     { method: 'POST', pathTpl: '/sims/get', multiBody: [{ iccid }] },
-  ];
+  );
 
   const METHOD_CYCLE: Array<'GET' | 'POST' | 'PUT' | 'PATCH'> = ['GET', 'POST', 'PUT', 'PATCH'];
   function allMethodsAfter(start: 'GET' | 'POST' | 'PUT' | 'PATCH'): Array<'GET' | 'POST' | 'PUT' | 'PATCH'> {
@@ -967,38 +996,57 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
     }
   }
 
-  // === Laatste redmiddel: listSims EN GET /v3/esims meerdere keren! ===
+  // === Laatste redmiddel: listSims EN GET /v3/sims + scoped-accounts paden! ===
   const listAttempts: Array<{ label: string; items: any[] | null; iccidFound: boolean }> = [];
   try {
-    // 1. Eerst GET /v3/esims met iccid-query (rechtstreeks per prefix!)
+    // ✅ NIEUW: Eerst SCOPED (accounts/tenant) → daarna /sims → daarna /esims
+    const listPathCandidates: Array<{ label: string; suffix: string }> = [];
+    if (aidForGetSim) {
+      listPathCandidates.push(
+        { label: `/accounts/${aidForGetSim}/sims`, suffix: `/accounts/${aidForGetSim}/sims` },
+        { label: `/accounts/${aidForGetSim}/assets`, suffix: `/accounts/${aidForGetSim}/assets` },
+        { label: `/tenants/${aidForGetSim}/sims`, suffix: `/tenants/${aidForGetSim}/sims` },
+        { label: `/tenants/${aidForGetSim}/assets`, suffix: `/tenants/${aidForGetSim}/assets` },
+        { label: `/accounts/${aidForGetSim}/esims`, suffix: `/accounts/${aidForGetSim}/esims` },
+      );
+    }
+    listPathCandidates.push(
+      { label: '/sims', suffix: '/sims' },
+      { label: '/assets', suffix: '/assets' },
+      { label: '/esims', suffix: '/esims' },
+    );
+    const listQueryCandidates: Array<Record<string, any>> = [
+      { iccid },
+      { filter: iccid },
+      { search: iccid },
+      { query: iccid },
+      { 'filter[iccid]': iccid },
+      { 'iccid[]': iccid },
+      { page: 1, limit: 500, iccid } as any,
+    ];
+
     for (const prefix of orderedPrefixes.slice(0, 3)) {
-      for (const auth of authVariants.slice(0, 3)) {
-        for (const q of [
-          { iccid },
-          { filter: iccid },
-          { search: iccid },
-          { query: iccid },
-          { 'filter[iccid]': iccid },
-          { 'iccid[]': iccid },
-          { page: 1, limit: 500, iccid } as any,
-        ]) {
-          try {
-            const fullUrl = makePerSimFullUrl(creds.baseUrl, `${prefix}/esims`, q);
-            const result = await doPerSimFetch({ fullUrl, method: 'GET', contentType: 'none', body: null, auth, timeoutMs: 20_000 });
-            if (result.tag === 'ok') {
-              const items: any[] = Array.isArray(result.body)
-                ? result.body
-                : ((result.body && typeof result.body === 'object' && Array.isArray((result.body as any).items)) ? (result.body as any).items : []);
-              const found = items.some((s: any) => String(s.iccid ?? '').trim() === iccid);
-              listAttempts.push({ label: `${prefix}/esims?${Object.keys(q)[0]} auth=${toAuthTag(auth)} (items=${items.length})`, items, iccidFound: found });
-              if (found) {
-                const match = items.find((s: any) => String(s.iccid ?? '').trim() === iccid);
-                if (match) return toSimStatus(match, iccid);
+      for (const auth of authVariants.slice(0, 4)) { // ✅ 4 auth varianten (geen bearer)
+        for (const pc of listPathCandidates) {
+          for (const q of listQueryCandidates) {
+            try {
+              const fullUrl = makePerSimFullUrl(creds.baseUrl, `${prefix}${pc.suffix}`, q);
+              const result = await doPerSimFetch({ fullUrl, method: 'GET', contentType: 'none', body: null, auth, timeoutMs: 20_000 });
+              if (result.tag === 'ok') {
+                const items: any[] = Array.isArray(result.body)
+                  ? result.body
+                  : ((result.body && typeof result.body === 'object' && Array.isArray((result.body as any).items)) ? (result.body as any).items : []);
+                const found = items.some((s: any) => String(s.iccid ?? '').trim() === iccid);
+                listAttempts.push({ label: `${prefix}${pc.label}?${Object.keys(q)[0]} auth=${toAuthTag(auth)} (items=${items.length})`, items, iccidFound: found });
+                if (found) {
+                  const match = items.find((s: any) => String(s.iccid ?? '').trim() === iccid);
+                  if (match) return toSimStatus(match, iccid);
+                }
+              } else {
+                listAttempts.push({ label: `${prefix}${pc.label} auth=${toAuthTag(auth)} HTTP ${result.statusCode}`, items: null, iccidFound: false });
               }
-            } else {
-              listAttempts.push({ label: `${prefix}/esims auth=${toAuthTag(auth)} HTTP ${result.statusCode}`, items: null, iccidFound: false });
-            }
-          } catch { /* negeer */ }
+            } catch { /* negeer */ }
+          }
         }
       }
     }

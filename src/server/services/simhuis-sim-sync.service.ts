@@ -1,10 +1,101 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "./audit.service";
-import { listAllSims, simhuisClient } from "@/server/integrations/simhuis/service";
+import { listAllSims, getSimStatus, simhuisClient } from "@/server/integrations/simhuis/service";
 import type { SimhuisSimStatus } from "@/server/integrations/simhuis/types";
 import { SimStatus, type UserRole } from "@/types/enums";
 
 type Ctx = { userId?: string; userRole?: UserRole };
+
+type UsageFields = {
+  dataUsedBytes: bigint | null;
+  dataLimitBytes: bigint | null;
+  lowestDataLimitBytes: bigint | null;
+  smsUsedCount: number | null;
+  smsLimitCount: number | null;
+  lowestSmsLimitCount: number | null;
+  lastUsageSyncAt: Date | null;
+};
+
+type ApplyUsageResult = {
+  changed: boolean;
+  changedFields: Array<keyof UsageFields>;
+  oldData: UsageFields;
+  newData: UsageFields;
+  hasAnyUsageData: boolean;
+};
+
+function buildUsageFieldsFromSimhuis(simhuis: SimhuisSimStatus): Omit<UsageFields, "lastUsageSyncAt"> {
+  const dataUsedBytesVal = toBigIntOrNull(simhuis.dataUsedBytes);
+  const dataLimitBytesVal = toBigIntOrNull(simhuis.dataLimitBytes);
+  const lowestDataLimitBytesVal = toBigIntOrNull(simhuis.lowestDataLimitBytes);
+  const smsUsedCountVal: number | null =
+    typeof simhuis.smsUsedCount === "number" && Number.isFinite(simhuis.smsUsedCount)
+      ? Math.round(simhuis.smsUsedCount)
+      : null;
+  const smsLimitCountVal: number | null =
+    typeof simhuis.smsLimitCount === "number" && Number.isFinite(simhuis.smsLimitCount)
+      ? Math.round(simhuis.smsLimitCount)
+      : null;
+  const lowestSmsLimitCountVal: number | null =
+    typeof simhuis.lowestSmsLimitCount === "number" && Number.isFinite(simhuis.lowestSmsLimitCount)
+      ? Math.round(simhuis.lowestSmsLimitCount)
+      : null;
+  return {
+    dataUsedBytes: dataUsedBytesVal,
+    dataLimitBytes: dataLimitBytesVal,
+    lowestDataLimitBytes: lowestDataLimitBytesVal,
+    smsUsedCount: smsUsedCountVal,
+    smsLimitCount: smsLimitCountVal,
+    lowestSmsLimitCount: lowestSmsLimitCountVal,
+  };
+}
+
+function applyUsageFieldsFromSimhuis(
+  existing: UsageFields,
+  simhuis: SimhuisSimStatus
+): ApplyUsageResult {
+  const oldData: UsageFields = {
+    dataUsedBytes: existing.dataUsedBytes,
+    dataLimitBytes: existing.dataLimitBytes,
+    lowestDataLimitBytes: existing.lowestDataLimitBytes,
+    smsUsedCount: existing.smsUsedCount,
+    smsLimitCount: existing.smsLimitCount,
+    lowestSmsLimitCount: existing.lowestSmsLimitCount,
+    lastUsageSyncAt: existing.lastUsageSyncAt,
+  };
+  const parsed = buildUsageFieldsFromSimhuis(simhuis);
+  const newData: UsageFields = {
+    ...oldData,
+    ...parsed,
+  };
+  const changedFields: Array<keyof UsageFields> = [];
+  let changed = false;
+
+  if (!bigIntEq(oldData.dataUsedBytes, newData.dataUsedBytes)) { changedFields.push("dataUsedBytes"); changed = true; }
+  if (!bigIntEq(oldData.dataLimitBytes, newData.dataLimitBytes)) { changedFields.push("dataLimitBytes"); changed = true; }
+  if (!bigIntEq(oldData.lowestDataLimitBytes, newData.lowestDataLimitBytes)) { changedFields.push("lowestDataLimitBytes"); changed = true; }
+  if (oldData.smsUsedCount !== newData.smsUsedCount) { changedFields.push("smsUsedCount"); changed = true; }
+  if (oldData.smsLimitCount !== newData.smsLimitCount) { changedFields.push("smsLimitCount"); changed = true; }
+  if (oldData.lowestSmsLimitCount !== newData.lowestSmsLimitCount) { changedFields.push("lowestSmsLimitCount"); changed = true; }
+
+  const hasAnyUsageData =
+    newData.dataUsedBytes !== null ||
+    newData.dataLimitBytes !== null ||
+    newData.lowestDataLimitBytes !== null ||
+    newData.smsUsedCount !== null ||
+    newData.smsLimitCount !== null ||
+    newData.lowestSmsLimitCount !== null;
+
+  if (hasAnyUsageData) {
+    newData.lastUsageSyncAt = new Date();
+    if (oldData.lastUsageSyncAt?.getTime() !== newData.lastUsageSyncAt.getTime()) {
+      changedFields.push("lastUsageSyncAt");
+      changed = true;
+    }
+  }
+
+  return { changed, changedFields, oldData, newData, hasAnyUsageData };
+}
 
 function truncate(v: string | null | undefined, max: number): string | null {
   if (v === null || v === undefined) return null;
@@ -767,5 +858,153 @@ export async function syncActiveSimsUsageFromSimhuis(
     errorMessages: errors,
     lastSyncedAt: new Date(),
     durationMs: Date.now() - startedAt,
+  };
+}
+
+// ============================================================
+// Per-SIM usage sync (handmatige knop op SIM-detailpagina)
+// - 1 SIM per keer
+// - Eerst per-SIM discovery via getSimStatus(iccid)
+// - Fallback: listAllSims() als dat mislukt
+// ============================================================
+export type PerSimUsageSyncResult = {
+  simId: string;
+  iccid: string;
+  updated: 0 | 1;
+  changedFields: Array<keyof UsageFields>;
+  hasAnyUsageData: boolean;
+  source: "per-sim-discovery" | "list-fallback";
+  fetchedAt: Date;
+  durationMs: number;
+  errorMessage?: string;
+};
+
+export async function syncUsageForSingleSim(
+  simId: string,
+  ctx: Ctx = {}
+): Promise<PerSimUsageSyncResult> {
+  const startedAt = Date.now();
+  const configured = await simhuisClient.isConfigured();
+  if (!configured) {
+    throw new Error("Simhuis niet geconfigureerd.");
+  }
+
+  const sim = await prisma.sIM.findUnique({
+    where: { id: simId, deletedAt: null },
+    select: {
+      id: true,
+      iccid: true,
+      dataUsedBytes: true,
+      dataLimitBytes: true,
+      lowestDataLimitBytes: true,
+      smsUsedCount: true,
+      smsLimitCount: true,
+      lowestSmsLimitCount: true,
+      lastUsageSyncAt: true,
+    },
+  });
+  if (!sim) {
+    throw new Error(`SIM met id ${simId} niet gevonden.`);
+  }
+  if (!sim.iccid) {
+    throw new Error(`SIM heeft geen ICCID — kan Simhuis niet opvragen.`);
+  }
+  const normalizedIccid = normIccid(sim.iccid);
+  if (!normalizedIccid) {
+    throw new Error(`SIM ICCID ongeldig: ${sim.iccid}`);
+  }
+
+  let simhuisStatus: SimhuisSimStatus | null = null;
+  let errorMessage: string | undefined;
+  let source: PerSimUsageSyncResult["source"] = "per-sim-discovery";
+
+  // POGING 1: Per-SIM endpoints (sneller, want alleen 1 SIM)
+  try {
+    simhuisStatus = await getSimStatus(normalizedIccid);
+  } catch (e: any) {
+    errorMessage = e?.message ?? String(e);
+  }
+
+  // POGING 2: Fallback listAllSims + filter op iccid
+  if (!simhuisStatus) {
+    source = "list-fallback";
+    try {
+      const all = await listAllSims();
+      const match = all.find(
+        (s) => normIccid(s.iccid) === normalizedIccid
+      );
+      if (match) simhuisStatus = match;
+      else errorMessage = errorMessage ? `${errorMessage} | Fallback listAllSims: ICCID niet gevonden in lijst.` : `ICCID niet gevonden in Simhuis lijst.`;
+    } catch (e: any) {
+      errorMessage = errorMessage
+        ? `${errorMessage} | Fallback listAllSims mislukt: ${e?.message ?? e}`
+        : `listAllSims mislukt: ${e?.message ?? e}`;
+    }
+  }
+
+  if (!simhuisStatus) {
+    return {
+      simId,
+      iccid: normalizedIccid,
+      updated: 0,
+      changedFields: [],
+      hasAnyUsageData: false,
+      source,
+      fetchedAt: new Date(),
+      durationMs: Date.now() - startedAt,
+      errorMessage,
+    };
+  }
+
+  const existingUsage: UsageFields = {
+    dataUsedBytes: sim.dataUsedBytes,
+    dataLimitBytes: sim.dataLimitBytes,
+    lowestDataLimitBytes: sim.lowestDataLimitBytes,
+    smsUsedCount: sim.smsUsedCount,
+    smsLimitCount: sim.smsLimitCount,
+    lowestSmsLimitCount: sim.lowestSmsLimitCount,
+    lastUsageSyncAt: sim.lastUsageSyncAt,
+  };
+  const apply = applyUsageFieldsFromSimhuis(existingUsage, simhuisStatus);
+
+  if (apply.changed || apply.hasAnyUsageData) {
+    await prisma.sIM.update({
+      where: { id: sim.id },
+      data: {
+        dataUsedBytes: apply.newData.dataUsedBytes,
+        dataLimitBytes: apply.newData.dataLimitBytes,
+        lowestDataLimitBytes: apply.newData.lowestDataLimitBytes,
+        smsUsedCount: apply.newData.smsUsedCount,
+        smsLimitCount: apply.newData.smsLimitCount,
+        lowestSmsLimitCount: apply.newData.lowestSmsLimitCount,
+        lastUsageSyncAt: apply.newData.lastUsageSyncAt,
+      },
+    });
+    try {
+      await logAudit(prisma, {
+        entityType: "SIM",
+        entityId: sim.id,
+        action: "UPDATE",
+        userId: ctx.userId ?? "SYSTEM",
+        oldValues: { ...apply.oldData, source: "simhuis_single_usage_sync" },
+        newValues: { ...apply.newData, source, changedFields: apply.changedFields, errorMessage },
+        metadata: { scope: "simhuis_single_usage_sync", durationMs: Date.now() - startedAt },
+        timestamp: new Date(),
+      });
+    } catch (auditErr) {
+      console.error("[simhuis-usage-sync] Per-sim audit log failed:", auditErr);
+    }
+  }
+
+  return {
+    simId,
+    iccid: normalizedIccid,
+    updated: apply.changed || apply.hasAnyUsageData ? 1 : 0,
+    changedFields: apply.changedFields,
+    hasAnyUsageData: apply.hasAnyUsageData,
+    source,
+    fetchedAt: new Date(),
+    durationMs: Date.now() - startedAt,
+    errorMessage,
   };
 }
