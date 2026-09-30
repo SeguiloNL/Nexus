@@ -3181,10 +3181,17 @@ export async function listSims(options: ListSimsOptions = {}): Promise<ListSimsR
 export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit'> = {}): Promise<SimhuisSimStatus[]> {
   const all: SimhuisSimStatus[] = [];
   const seen = new Set<string>();
+  const iccidFromEidFallback = new Set<string>();
   const dedupe = (items: SimhuisSimStatus[]) => {
     for (const s of items) {
-      if (!s?.iccid) continue;
-      const key = s.iccid;
+      if (!s) continue;
+      // Voor eSIMs zonder iccid (alleen eid): accepteer ENKEL hier eid als iccid key,
+      // want de bearer-token /v3/esims endpoint geeft vaak ALLEEN eid terug (geen iccid veld).
+      // We zorgen ervoor dat iccid daarna ook echt de waarde van eid krijgt via fallback.
+      let key: string | null = null;
+      if (s.iccid) key = s.iccid;
+      else if (s.eid) key = `EID:${s.eid}`;
+      if (!key) continue;
       if (seen.has(key)) continue;
       seen.add(key);
       all.push(s);
@@ -3206,11 +3213,51 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
     if (credsClient) {
       const creds = (credsClient as any).creds as { baseUrl: string; username: string; password: string; resellerId?: string | null };
       let base = (creds.baseUrl || '').replace(/\/+$/, '');
+      // Strip trailing /v3 suffix as well — Simhuis base is soms https://apicontrolcenter.com/v3, soms zonder /v3.
+      // We gebruiken expliciete /v3/xxx paden dus als base al /v3 bevat halen we hem eraf.
+      if (/\/v3\/?$/.test(base)) base = base.replace(/\/v3\/?$/, '');
       let bearerToken: string | null = null;
       try {
         const sc = await getSimhuisCreds();
         bearerToken = await acquireBearerToken(sc);
       } catch { bearerToken = null; }
+      // Fallback: probeer BEARER via client.ts singleton (want credentials kunnen AFWIJKEN!)
+      // Soms heeft de bearer-token in de SimhuisClientSingleton nog een waarde
+      // via de oude flow, terwijl acquireBearerToken() faalde.
+      if (!bearerToken) {
+        try {
+          const anyClient = credsClient as any;
+          const maybeBearerFromSingleton = (anyClient as any)?.bearerToken ?? (anyClient as any)['bearer token'];
+          if (typeof maybeBearerFromSingleton === 'string' && maybeBearerFromSingleton.length > 20) {
+            bearerToken = maybeBearerFromSingleton;
+          }
+        } catch { /* ignore */ }
+      }
+      // LAATSTE VALS: parse JSON van /v3/auth/token direct als EXTRA fallback (soms is
+      // acquireBearerToken() strict, maar de HTTP call zelf werkte WEL volgens de log:
+      // "POST-v3-auth-token → OK-200-no-shape-match: Body: {"token":"ey..."}")
+      if (!bearerToken) {
+        try {
+          const loginUrl = `${base}/v3/auth/token`;
+          const resp = await fetch(loginUrl, {
+            method: 'POST',
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'Origin': 'https://apicontrolcenter.com',
+              'Referer': 'https://apicontrolcenter.com/',
+            },
+            body: JSON.stringify({ username: creds.username, password: creds.password, grant_type: 'password' }),
+            signal: AbortSignal.timeout(15000),
+          });
+          if (resp.ok) {
+            const json: any = await resp.json().catch(() => null);
+            const t = json?.token ?? json?.access_token ?? json?.jwt;
+            if (typeof t === 'string' && t.length > 20) bearerToken = t;
+          }
+        } catch { /* ignore */ }
+      }
 
       if (base) {
         const authBasic = basicAuthHeader(creds.username, creds.password);
@@ -3273,6 +3320,13 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
               extraBody: { accountId: String(accountId), tenantId: String(accountId), id: String(accountId) },
             });
           }
+        } else {
+          // We blijven PROBEREN, ook zonder Bearer — Basic/Custom kon ook werken.
+          // Log wel even dat Bearer onbekend was zodat dit zichtbaar is.
+          try {
+            console.info('[simhuis-listAllSims] ⚠️ Geen Bearer-token kunnen verkrijgen. ' +
+              'Probeer nu Basic/X-Headers/creds-in-body paden voor /v3/esims & /v3/assets.');
+          } catch { /* ignore */ }
         }
         auths.push({ tag: 'basic', headers: { ...baseWafHeaders, 'Authorization': authBasic } });
         auths.push({
@@ -3286,7 +3340,7 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
         });
         auths.push({
           tag: 'credsbody',
-          headers: { ...baseWafHeaders },
+          headers: { ...baseWafHeaders, 'Content-Type': 'application/json' },
           extraBody: {
             username: creds.username,
             password: creds.password,
@@ -3365,18 +3419,48 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                 if (ct.includes('application/json')) try { parsed = JSON.parse(text); } catch { parsed = text; }
                 else try { parsed = JSON.parse(text); } catch { parsed = text; }
 
-                if (!resp.ok) break;
+                if (!resp.ok) {
+                  try {
+                    console.info(
+                      `[simhuis-listAllSims] Phase A: ${ep.method} ${ep.path} (auth=${auth.tag}, param=${ep.paramName}) ` +
+                      `gaf HTTP ${resp.status}. Doorgaan naar volgende combo...`
+                    );
+                  } catch { /* ignore */ }
+                  break;
+                }
                 const arr = extractSimList(parsed);
                 if (!arr || arr.length === 0) break;
+                try {
+                  console.info(
+                    `[simhuis-listAllSims] ✅ Phase A data! ${ep.method} ${ep.path} (auth=${auth.tag}, param=${ep.paramName}) ` +
+                    `pagina ${page} — ${arr.length} items ontvangen.`
+                  );
+                } catch { /* ignore */ }
                 const batchItems: SimhuisSimStatus[] = [];
                 for (const raw of arr) {
                   try {
                     const nested = (raw as any)?.simCard ?? (raw as any)?.sim ?? (raw as any)?.asset ?? (raw as any)?.device ?? (raw as any)?.subscription ?? (raw as any)?.subscriber ?? {};
-                    const iccidStr = String(
-                      (raw as any).iccid ?? (raw as any).sim_iccid ?? (raw as any).simIccid ?? (raw as any).eid
-                        ?? nested?.iccid ?? nested?.sim_iccid ?? nested?.simIccid ?? nested?.eid ?? ''
+                    const rawIccid = String(
+                      (raw as any).iccid ?? (raw as any).sim_iccid ?? (raw as any).simIccid
+                        ?? nested?.iccid ?? nested?.sim_iccid ?? nested?.simIccid ?? ''
                     ).trim();
+                    // ✅ BELANGRIJKE FALLBACK: Als er GEEN iccid veld is, maar WEL een eid →
+                    // gebruik de eid Tijdelijk als iccid IN de extractie hier, zodat de
+                    // dedupe tenminste werkt. (De echte iccid kan later worden aangevuld
+                    // via de SIM-database of andere endpoints.)
+                    const rawEid = String(
+                      (raw as any).eid ?? (raw as any).esimId ?? (raw as any).esim_id
+                        ?? nested?.eid ?? nested?.esimId ?? nested?.esim_id ?? ''
+                    ).trim();
+                    const iccidStr = rawIccid || rawEid || '';
                     const s = toSimStatus(raw, iccidStr);
+                    // ✅ OOK HIER: aanpassen — als s.iccid leeg is maar s.eid NIET,
+                    // kopieer dan eid naar iccid veld (als ultieme fallback,
+                    // zodat de downstream eligible-filter NIET alle eSIMs wegooit).
+                    if (s && !s.iccid && s.eid && !iccidFromEidFallback.has(s.eid)) {
+                      iccidFromEidFallback.add(s.eid);
+                      (s as any).iccid = s.eid;
+                    }
                     if (s?.iccid) batchItems.push(s);
                   } catch {
                     // bad item - skip
@@ -3395,19 +3479,39 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                   break;
                 }
               }
-            } catch {
+            } catch (e: any) {
+              try {
+                console.info(
+                  `[simhuis-listAllSims] Phase A: ${ep.method} ${ep.path} (auth=${auth.tag}) ` +
+                  `gooide exceptie: ${e?.message ?? e}. Doorgaan...`
+                );
+              } catch { /* ignore */ }
               // move on to next endpoint/auth combo
             }
           }
         }
       }
     }
-  } catch {
-    // ignore explicit endpoint failures; discovery fallback may have added items
+  } catch (e: any) {
+    try {
+      console.error('[simhuis-listAllSims] Phase A exceptie (negeren, doorgaan naar fallbacks):', e?.message ?? e);
+    } catch { /* ignore */ }
   }
 
-  // Fallback indien discovery nog niets gevonden had: nogsteeds oude pagination loop
-  if (all.length === 0) {
+  if (all.length > 0) {
+    // ✅ SUCCES! Phase A heeft data gevonden — verder NIET meer proberen!
+    // Geen discovery listSims() call meer nodig (die throwde toch al een error met TDZ bugs).
+    try {
+      console.info(
+        `[simhuis-listAllSims] ✅ Phase A complete — ${all.length} sims opgehaald via directe /v3/esims|/v3/assets endpoints. ` +
+        `Discovery overslaan.`
+      );
+    } catch { /* ignore */ }
+    return all;
+  }
+
+  // Fallback indien Phase A niets gevonden had: oude listSims discovery loop
+  try {
     let page = 1;
     const pageSize = 200;
     let safety = 0;
@@ -3421,6 +3525,13 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
       if (added === 0 && batch.items.length > 0) break;
       page++;
     }
+  } catch (e: any) {
+    try {
+      console.warn(
+        `[simhuis-listAllSims] Discovery listSims() mislukt, ${all.length === 0 ? 'MAAR Phase A had ook al niets!' : 'MAAR Phase A had al data.'} ` +
+        `Error: ${(e?.message ?? '').slice(0, 200)}`
+      );
+    } catch { /* ignore */ }
   }
 
   return all;

@@ -470,14 +470,32 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
   };
 
   let allSimsFromSimhuis: SimhuisSimStatus[] = [];
+  let simhuisFetchWarning: string | null = null;
   try {
     allSimsFromSimhuis = await listAllSims();
   } catch (e: any) {
-    throw new Error(`Ophalen SIMs van Simhuis mislukt: ${e?.message ?? e}`);
+    // WANNEER listAllSims() expliciet een Error gooit (wat NIEUWE code doet: enkel
+    // in het ECHTE geval dat ook listSims discovery 0 items gaf EN Phase A 0 items had),
+    // gooi gewoon door naar UI met duidelijke melding.
+    const msg = (e?.message ?? String(e)).slice(0, 4000);
+    throw new Error(`Ophalen SIMs van Simhuis mislukt: ${msg}`);
+  }
+
+  // Extra sanity: als listAllSims() GEEN fout gooide, MAAR ook 0 sims teruggaf,
+  // zet dan een expliciete warning (voor UI) maar BLIJKBAAR gaat de rest van de flow
+  // toch door (0 items), zodat health pre-scan zichtbaar blijft.
+  if (allSimsFromSimhuis.length === 0) {
+    simhuisFetchWarning =
+      `[WAARSCHUWING] listAllSims() leverde 0 sims op. Controleer of /v3/esims + /v3/assets ` +
+      `met Bearer-token bereikbaar zijn, en of Simhuis actuele data heeft.`;
+    try {
+      console.warn(`[simhuis-sync] ⚠️ ${simhuisFetchWarning}`);
+    } catch { /* ignore */ }
   }
 
   const totalInSimhuis = allSimsFromSimhuis.length;
   h.totalRaw = totalInSimhuis;
+  (h as any)._simhuisFetchWarning = simhuisFetchWarning;
 
   // === STAP 1: Pre-scan alle Simhuis-records op placeholder-waardes ===
   // (VOOR dat we in de big loop gaan, zodat we logging hebben als
