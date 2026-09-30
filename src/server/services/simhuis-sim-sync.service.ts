@@ -40,13 +40,23 @@ function buildUsageFieldsFromSimhuis(simhuis: SimhuisSimStatus): Omit<UsageField
     typeof simhuis.lowestSmsLimitCount === "number" && Number.isFinite(simhuis.lowestSmsLimitCount)
       ? Math.round(simhuis.lowestSmsLimitCount)
       : null;
+
+  const effDataLimitBytesVal: bigint | null =
+    dataLimitBytesVal !== null ? dataLimitBytesVal : lowestDataLimitBytesVal;
+  const effSmsLimitCountVal: number | null =
+    smsLimitCountVal !== null ? smsLimitCountVal : lowestSmsLimitCountVal;
+  const effLowestDataLimitBytesVal: bigint | null =
+    lowestDataLimitBytesVal !== null ? lowestDataLimitBytesVal : dataLimitBytesVal;
+  const effLowestSmsLimitCountVal: number | null =
+    lowestSmsLimitCountVal !== null ? lowestSmsLimitCountVal : smsLimitCountVal;
+
   return {
     dataUsedBytes: dataUsedBytesVal,
-    dataLimitBytes: dataLimitBytesVal,
-    lowestDataLimitBytes: lowestDataLimitBytesVal,
+    dataLimitBytes: effDataLimitBytesVal,
+    lowestDataLimitBytes: effLowestDataLimitBytesVal,
     smsUsedCount: smsUsedCountVal,
-    smsLimitCount: smsLimitCountVal,
-    lowestSmsLimitCount: lowestSmsLimitCountVal,
+    smsLimitCount: effSmsLimitCountVal,
+    lowestSmsLimitCount: effLowestSmsLimitCountVal,
   };
 }
 

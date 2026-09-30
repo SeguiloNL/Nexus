@@ -431,7 +431,9 @@ export function SimDetail({
                     value={
                       typeof sim.dataUsedBytes === "bigint" &&
                       typeof sim.dataLimitBytes === "bigint"
-                        ? formatBytes(sim.dataLimitBytes - sim.dataUsedBytes)
+                        ? formatBytes(sim.dataLimitBytes > sim.dataUsedBytes
+                            ? sim.dataLimitBytes - sim.dataUsedBytes
+                            : 0n)
                         : "—"
                     }
                   />
@@ -447,9 +449,9 @@ export function SimDetail({
               </CardHeader>
               <CardContent className="space-y-4">
                 <UsageProgress
-                  used={sim.smsUsedCount ? BigInt(sim.smsUsedCount) : null}
-                  limit={sim.smsLimitCount ? BigInt(sim.smsLimitCount) : null}
-                  threshold={sim.lowestSmsLimitCount ? BigInt(sim.lowestSmsLimitCount) : null}
+                  used={sim.smsUsedCount != null ? BigInt(sim.smsUsedCount) : null}
+                  limit={sim.smsLimitCount != null ? BigInt(sim.smsLimitCount) : null}
+                  threshold={sim.lowestSmsLimitCount != null ? BigInt(sim.lowestSmsLimitCount) : null}
                   formatUsed={formatCount(sim.smsUsedCount)}
                   formatLimit={formatCount(sim.smsLimitCount)}
                   unit="berichten"
@@ -470,9 +472,8 @@ export function SimDetail({
                   <InfoRowInline
                     label="Resterend"
                     value={
-                      typeof sim.smsUsedCount === "number" &&
-                      typeof sim.smsLimitCount === "number"
-                        ? formatCount(sim.smsLimitCount - sim.smsUsedCount)
+                      sim.smsUsedCount != null && sim.smsLimitCount != null
+                        ? formatCount(Math.max(0, sim.smsLimitCount - sim.smsUsedCount))
                         : "—"
                     }
                   />
@@ -743,7 +744,7 @@ function UsageProgress({
   const hasThreshold =
     threshold !== null && threshold !== undefined && threshold > 0n;
 
-  if (!hasUsage && !hasLimit) {
+  if (!hasUsage && !hasLimit && !hasThreshold) {
     return (
       <div className="rounded-md border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-400">
         Geen verbruiksgegevens beschikbaar
