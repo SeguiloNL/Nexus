@@ -24,7 +24,7 @@ import {
   syncUsageSimsAction,
   type BulkActionState,
 } from "../actions";
-import { useMemo, useRef, useEffect, useState } from "react";
+import { useMemo, useRef, useEffect, useState, useTransition } from "react";
 
 type ListSim = SIM;
 
@@ -53,20 +53,49 @@ export function SimList({
   canExport,
 }: SimListProps) {
   const [statusFilter, setStatusFilter] = useState<SimStatus | "__ALL__">("__ALL__");
-  const [syncState, syncFormAction, syncPending] = useFormState(syncUsageSimsAction, {
+  const [syncState, syncFormAction, syncPendingNative] = useFormState(syncUsageSimsAction, {
     ok: false,
   } as BulkActionState);
 
+  const [isSyncPendingClient, setIsSyncPendingClient] = useState(false);
+  const [isSyncTransitioning, startSyncTransition] = useTransition();
   const syncSubmittedRef = useRef(false);
+  const prevSyncStateRef = useRef(syncState);
+
+  const syncPending = isSyncPendingClient || isSyncTransitioning || syncPendingNative;
+
   useEffect(() => {
-    if (!syncPending) syncSubmittedRef.current = false;
-  }, [syncPending]);
+    const prev = prevSyncStateRef.current;
+    const curr = syncState;
+    const stateChanged =
+      prev !== curr &&
+      ((prev?.ok !== curr?.ok) ||
+        prev?.message !== curr?.message ||
+        prev?.error !== curr?.error);
+    if (stateChanged || (!syncPendingNative && isSyncPendingClient)) {
+      syncSubmittedRef.current = false;
+      setIsSyncPendingClient(false);
+    }
+    prevSyncStateRef.current = curr;
+  }, [syncState, syncPendingNative, isSyncPendingClient]);
+
   function onSyncSubmit(e: React.FormEvent<HTMLFormElement>) {
     if (syncSubmittedRef.current || syncPending) {
       e.preventDefault();
+      e.stopPropagation();
       return;
     }
     syncSubmittedRef.current = true;
+    setIsSyncPendingClient(true);
+    startSyncTransition(async () => {
+      try {
+        const fd = new FormData(e.currentTarget);
+        await syncFormAction(fd);
+      } finally {
+        setIsSyncPendingClient(false);
+      }
+    });
+    e.preventDefault();
   }
 
   const filteredSims = useMemo(() => {

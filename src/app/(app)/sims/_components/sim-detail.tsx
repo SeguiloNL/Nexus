@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useFormState } from "react-dom";
 import {
   ArrowLeft,
@@ -110,24 +110,51 @@ export function SimDetail({
     undefined
   );
 
-  const [usageSyncState, usageSyncFormAction, usageSyncPending] = useFormState(
+  const [usageSyncState, usageSyncFormAction, usageSyncPendingNative] = useFormState(
     syncUsageAction.bind(null, simId),
     { ok: false } satisfies SimUsageSyncState
   );
 
+  const [isUsageSyncPendingClient, setIsUsageSyncPendingClient] = useState(false);
+  const [isUsageSyncTransitioning, startUsageSyncTransition] = useTransition();
   const usageSubmittedRef = useRef(false);
-  useEffect(() => {
-    if (!usageSyncPending) {
-      usageSubmittedRef.current = false;
-    }
-  }, [usageSyncPending]);
+  const prevUsageSyncStateRef = useRef(usageSyncState);
 
-  function onUsageSyncSubmit(_e: React.FormEvent<HTMLFormElement>) {
+  const usageSyncPending =
+    isUsageSyncPendingClient || isUsageSyncTransitioning || usageSyncPendingNative;
+
+  useEffect(() => {
+    const prev = prevUsageSyncStateRef.current;
+    const curr = usageSyncState;
+    const stateChanged =
+      prev !== curr &&
+      ((prev?.ok !== curr?.ok) ||
+        (prev?.message !== curr?.message) ||
+        (prev?.error !== curr?.error));
+    if (stateChanged || (!usageSyncPendingNative && isUsageSyncPendingClient)) {
+      usageSubmittedRef.current = false;
+      setIsUsageSyncPendingClient(false);
+    }
+    prevUsageSyncStateRef.current = curr;
+  }, [usageSyncState, usageSyncPendingNative, isUsageSyncPendingClient]);
+
+  function onUsageSyncSubmit(e: React.FormEvent<HTMLFormElement>) {
     if (usageSubmittedRef.current || usageSyncPending) {
-      _e.preventDefault();
+      e.preventDefault();
+      e.stopPropagation();
       return;
     }
     usageSubmittedRef.current = true;
+    setIsUsageSyncPendingClient(true);
+    startUsageSyncTransition(async () => {
+      try {
+        const fd = new FormData(e.currentTarget);
+        await usageSyncFormAction(fd);
+      } finally {
+        setIsUsageSyncPendingClient(false);
+      }
+    });
+    e.preventDefault();
   }
 
   const ACTION_LABEL: Record<string, string> = {
