@@ -3266,13 +3266,11 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
           const envAid = (process.env.SIMHUIS_ACCOUNT_ID ?? process.env.SIMHUIS_RESELLER_ID ?? '').trim();
           if (envAid) accountId = envAid;
         }
-
-        type EpAuth = {
-          tag: 'bearer-simple' | 'bearer-with-aid' | 'basic' | 'xheaders' | 'credsbody' | 'credsquery';
-          headers: Record<string, string>;
-          extraBody?: Record<string, any>;
-          extraQuery?: Record<string, any>;
-        };
+        // ✅ NIEUW: ook creds.resellerId proberen (die komt uit AppSettings DB of SIMHUIS_RESELLER_ID)
+        if (!accountId && creds.resellerId) {
+          const s = String(creds.resellerId).trim();
+          if (s && s.length > 4) accountId = s;
+        }
 
         const baseWafHeaders: Record<string, string> = {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -3291,6 +3289,115 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
           'Sec-Fetch-Site': 'same-origin',
           'X-Requested-With': 'XMLHttpRequest',
           'Connection': 'keep-alive',
+        };
+
+        try {
+          const credShape = `baseUrl=${creds.baseUrl} user=${creds.username ? '✓' : '✗'} pass=${creds.password ? '✓' : '✗'} resellerId=${creds.resellerId ?? 'NULL'}`;
+          const bearOk = bearerToken ? `✓ len=${bearerToken.length}` : '✗';
+          console.info(
+            `[simhuis-listAllSims] 🔧 Phase A CONFIG: cleanedBase=${base}. CREDENTIALS: ${credShape}. ` +
+            `BEARER: ${bearOk}. ACCOUNT-ID: ${accountId ?? 'MISSING (Swagger required=true!)'}.`
+          );
+        } catch { /* ignore */ }
+
+        const batchItems_win: SimhuisSimStatus[] = [];
+        // ================================================================
+        // 🏆 WINNING COMBO (uit OUDE PRODUCTIE-LOGS — 100% BEVESTIGD!):
+        //   GET /v3/esims + Bearer token + GEEN accountId in query
+        //   -> GAF 200 OK MET ECHTE DATA! [{"eid":"89049032000001000000175580331350",...}]
+        // ================================================================
+        if (bearerToken) {
+          const WIN_URL_NO_AID: Array<{ tag: string; u: string; m: 'GET' | 'POST'; b?: BodyInit }> = [
+            { tag: 'WIN-esims-noAid',   u: `${base}/v3/esims?limit=1000&page=1`,   m: 'GET' },
+            { tag: 'WIN-assets-noAid',  u: `${base}/v3/assets?limit=1000&page=1`,  m: 'GET' },
+          ];
+          for (const win of WIN_URL_NO_AID) {
+            try {
+              const wh = { ...baseWafHeaders, 'Authorization': `Bearer ${bearerToken}` };
+              const wresp = await fetch(win.u, { method: win.m, headers: wh, body: win.b, signal: AbortSignal.timeout(20000) });
+              const wtext = await wresp.text();
+              let wparsed: unknown = null;
+              try { wparsed = JSON.parse(wtext); } catch { wparsed = wtext; }
+              const warr = extractSimList(wparsed);
+              const wpreview = warr.length > 0
+                ? ` preview[0] keys=${JSON.stringify(Object.keys(warr[0] ?? {}).slice(0,20))} values=${JSON.stringify(Object.values(warr[0] ?? {}).slice(0,6)).slice(0,250)}${warr.length > 1 ? `; preview[1] keys=${JSON.stringify(Object.keys(warr[1] ?? {}).slice(0,20))}` : ''}`
+                : ` rawText[0..200]=${JSON.stringify(wtext.slice(0,200))}`;
+              try {
+                console.info(
+                  `[simhuis-listAllSims] 🏆 WINNING COMBO ${win.tag}: HTTP ${wresp.status}. ` +
+                  `extractSimList len=${warr.length}. responseShape=${shapeOf(wparsed)}.${wpreview}`
+                );
+              } catch { /* ignore */ }
+              if (wresp.ok && warr.length > 0) {
+                for (const raw of warr) {
+                  try {
+                    const nested = (raw as any)?.simCard ?? (raw as any)?.sim ?? (raw as any)?.asset ?? (raw as any)?.device ?? (raw as any)?.subscription ?? (raw as any)?.subscriber ?? (raw as any)?.enabledProfile ?? {};
+                    let rawIccid = String(
+                      (raw as any).iccid ?? (raw as any).sim_iccid ?? (raw as any).simIccid
+                        ?? nested?.iccid ?? nested?.sim_iccid ?? nested?.simIccid ?? ''
+                    ).trim();
+                    if (!rawIccid && (raw as any)?.enabledProfile?.iccid) {
+                      rawIccid = String((raw as any).enabledProfile.iccid).trim();
+                    }
+                    if (!rawIccid && Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
+                      const profiles: any[] = (raw as any).profiles;
+                      const best = profiles.find(p => p && p.iccid && (p.enabled === true || p.status === 'active' || p.bootstrap === true))
+                        ?? profiles.find(p => p && p.iccid);
+                      if (best?.iccid) rawIccid = String(best.iccid).trim();
+                    }
+                    const rawEid = String(
+                      (raw as any).eid ?? (raw as any).esimId ?? (raw as any).esim_id
+                        ?? nested?.eid ?? nested?.esimId ?? nested?.esim_id ?? ''
+                    ).trim();
+                    const iccidStr = rawIccid || rawEid || '';
+                    const s = toSimStatus(raw, iccidStr);
+                    if (s && !s.iccid && s.eid && !iccidFromEidFallback.has(s.eid)) {
+                      iccidFromEidFallback.add(s.eid);
+                      (s as any).iccid = s.eid;
+                    }
+                    if (s && !s.msisdn && Array.isArray((raw as any)?.msisdn) && (raw as any).msisdn.length > 0) {
+                      const first = String((raw as any).msisdn[0] ?? '').trim();
+                      if (first) (s as any).msisdn = first;
+                    }
+                    if (s && !s.msisdn && Array.isArray((raw as any)?.enabledProfile?.msisdn) && (raw as any).enabledProfile.msisdn.length > 0) {
+                      const first = String((raw as any).enabledProfile.msisdn[0] ?? '').trim();
+                      if (first) (s as any).msisdn = first;
+                    }
+                    if (s?.iccid) batchItems_win.push(s);
+                  } catch { /* bad item skip */ }
+                }
+                const beforeWin = all.length;
+                dedupe(batchItems_win);
+                const addedWin = all.length - beforeWin;
+                try {
+                  console.info(
+                    `[simhuis-listAllSims] 🎯 WINNING COMBO ${win.tag} VERWERKT: warr.len=${warr.length} ` +
+                    `-> batchItems_win.len=${batchItems_win.length} -> added=${addedWin} -> TOTAL all.len=${all.length}`
+                  );
+                } catch { /* ignore */ }
+                if (all.length > 0) break;
+              }
+            } catch (ew: any) {
+              try { console.info(`[simhuis-listAllSims] 🏆 WINNING COMBO ${win.tag} exceptie: ${ew?.message ?? ew}.`); } catch { /* ignore */ }
+            }
+          }
+          // WINNING COMBO MET SUCCES — meteen returnen, geen auth×endpoint matrix meer nodig.
+          if (all.length > 0) {
+            try {
+              console.info(
+                `[simhuis-listAllSims] ✅ Phase A complete (via WINNING COMBO) — ${all.length} sims. ` +
+                `Skip auth × endpoint matrix.`
+              );
+            } catch { /* ignore */ }
+            return all;
+          }
+        }
+
+        type EpAuth = {
+          tag: 'bearer-simple' | 'bearer-with-aid' | 'basic' | 'xheaders' | 'credsbody' | 'credsquery';
+          headers: Record<string, string>;
+          extraBody?: Record<string, any>;
+          extraQuery?: Record<string, any>;
         };
 
         // ============== AUTH VOLGORDE (PRIORITEIT) o.b.v. SWAGGER ==============
@@ -3462,14 +3569,22 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                   } catch { /* ignore */ }
                 }
                 const arr = extractSimList(parsed);
-                if (!arr || arr.length === 0) break;
+                const previewStr = (() => {
+                  if (arr.length > 0) {
+                    const p0 = arr[0] ?? {};
+                    const keys = JSON.stringify(Object.keys(p0).slice(0,22));
+                    const vals = JSON.stringify(Object.values(p0).slice(0,8)).slice(0,300);
+                    return ` preview[0] keys=${keys} values=${vals}${arr.length > 1 ? `; [1] keys=${JSON.stringify(Object.keys(arr[1] ?? {}).slice(0,22))}` : ''}`;
+                  }
+                  return ` rawText[0..250]=${JSON.stringify(text.slice(0,250))}`;
+                })();
                 try {
                   console.info(
-                    `[simhuis-listAllSims] ✅ Phase A data! ${ep.method} ${ep.path} (auth=${auth.tag}) ` +
-                    `pagina ${page} — ${arr.length} items. accountId=${accountId ?? 'N/A'}, ` +
-                    `X-Total-More=${totalMoreHeader ?? 'N/A'}, X-Total-Count=${totalCountHeader ?? 'N/A'}.`
+                    `[simhuis-listAllSims] Phase A MATRIX: ${ep.method} ${ep.path} auth=${auth.tag} page=${page} HTTP ${resp.status}. ` +
+                    `extractSimList len=${arr.length}. shape=${shapeOf(parsed)}.${previewStr}`
                   );
                 } catch { /* ignore */ }
+                if (!arr || arr.length === 0) break;
                 const batchItems: SimhuisSimStatus[] = [];
                 for (const raw of arr) {
                   try {
