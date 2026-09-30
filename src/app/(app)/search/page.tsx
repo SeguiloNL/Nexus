@@ -21,7 +21,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 type Hit =
   | { kind: "customer"; id: string; customerNumber: string; companyName: string; status: any }
   | { kind: "tracker"; id: string; serialNumber: string; imei: string; status: any }
-  | { kind: "sim"; id: string; iccid: string; imsi: string; status: any }
+  | { kind: "sim"; id: string; iccid: string; msisdn: string | null; imsi: string | null; status: any }
   | { kind: "vehicle"; id: string; licensePlate: string | null; vin: string | null }
   | { kind: "product"; id: string; productCode: string; name: string }
   | { kind: "subscription"; id: string; subscriptionNumber: string; status: any }
@@ -303,12 +303,16 @@ function formatHit(h: Hit): { title: string; subtitle: string; badge: React.Reac
         subtitle: formatImei(h.imei),
         badge: <TrackerStatusBadge status={h.status} />,
       };
-    case "sim":
+    case "sim": {
+      const parts: string[] = [];
+      if (h.msisdn) parts.push(h.msisdn);
+      if (h.imsi) parts.push(`IMSI ${h.imsi}`);
       return {
         title: formatIccid(h.iccid),
-        subtitle: h.imsi,
+        subtitle: parts.join(" · "),
         badge: <SimStatusBadge status={h.status} />,
       };
+    }
     case "vehicle":
       return {
         title: h.licensePlate ? formatLicensePlate(h.licensePlate) : `VIN ${h.vin ?? "—"}`,

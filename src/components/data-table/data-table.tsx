@@ -39,6 +39,7 @@ export interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];
   searchColumnAccessor?: string;
+  searchColumnAccessors?: string[];
   searchPlaceholder?: string;
   pageSizeOptions?: number[];
   totalCount?: number;
@@ -61,6 +62,7 @@ export function DataTable<TData, TValue>({
   columns,
   data,
   searchColumnAccessor,
+  searchColumnAccessors,
   searchPlaceholder = "Zoeken…",
   pageSizeOptions = [10, 20, 50],
   totalCount,
@@ -151,12 +153,19 @@ export function DataTable<TData, TValue>({
     onGlobalFilterChange: setGlobalFilter,
     onPaginationChange: setPagination,
     globalFilterFn: (row, _columnId, filterValue) => {
+      const fv = String(filterValue).toLowerCase();
+      if (!searchColumnAccessor && !searchColumnAccessors) return true;
+      if (searchColumnAccessors && searchColumnAccessors.length > 0) {
+        return searchColumnAccessors.some((acc) => {
+          const v = row.getValue(acc);
+          if (v == null) return false;
+          return String(v).toLowerCase().includes(fv);
+        });
+      }
       if (!searchColumnAccessor) return true;
       const v = row.getValue(searchColumnAccessor);
       if (v == null) return false;
-      return String(v)
-        .toLowerCase()
-        .includes(String(filterValue).toLowerCase());
+      return String(v).toLowerCase().includes(fv);
     },
     state: {
       sorting,

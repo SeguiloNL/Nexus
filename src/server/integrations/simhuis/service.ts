@@ -31,12 +31,51 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   // Retourneert [gevondenValue, sourceRecordKey] of [undefined, null].
   function findKey(...aliases: string[]): any {
     const normAliases = aliases.map(normalizeKey).filter(Boolean);
-    for (const obj of [r, nestedSim, (r as any).plan ?? {}, (r as any).usage ?? {}, nestedSim.plan ?? {}, nestedSim.usage ?? {}]) {
+    const searchRoots: Record<string, any>[] = [r, nestedSim];
+    // Dieper geneste containers die Simhuis/AirOn360 vaak gebruikt
+    const extraPaths = [
+      'plan', 'usage', 'currentUsage', 'monthlyUsage', 'statistics', 'counter', 'counters',
+      'quota', 'quotas', 'balance', 'balances', 'allowance', 'allowances',
+      'data', 'bundle', 'bundles', 'summary', 'totals', 'periodicUsage', 'sessionUsage',
+      'current', 'total', 'remaining', 'consumption', 'limits', 'package', 'tariff',
+    ];
+    for (const p of extraPaths) {
+      if ((r as any)[p] && typeof (r as any)[p] === 'object') searchRoots.push((r as any)[p]);
+      if (nestedSim && (nestedSim as any)[p] && typeof (nestedSim as any)[p] === 'object') {
+        searchRoots.push((nestedSim as any)[p]);
+      }
+    }
+    // 1 niveau dieper: usage.data, plan.data, etc.
+    for (const root of [...searchRoots]) {
+      if (!root || typeof root !== 'object') continue;
+      for (const sub of ['data', 'sms', 'voice', 'value', 'usage', 'total', 'current', 'allowance', 'quota']) {
+        if (root[sub] && typeof root[sub] === 'object' && !Array.isArray(root[sub])) {
+          searchRoots.push(root[sub]);
+        }
+      }
+      // Arrays met counter/bundle objecten (per-data-type): { type: 'data', used: X }
+      if (Array.isArray((root as any).items)) {
+        for (const it of (root as any).items) {
+          if (it && typeof it === 'object' && !Array.isArray(it)) searchRoots.push(it);
+        }
+      }
+      if (Array.isArray((root as any).usageDetails)) {
+        for (const it of (root as any).usageDetails) {
+          if (it && typeof it === 'object' && !Array.isArray(it)) searchRoots.push(it);
+        }
+      }
+      if (Array.isArray((root as any).counters)) {
+        for (const it of (root as any).counters) {
+          if (it && typeof it === 'object' && !Array.isArray(it)) searchRoots.push(it);
+        }
+      }
+    }
+    for (const obj of searchRoots) {
       if (!obj || typeof obj !== 'object') continue;
       const idx = buildKeyIndex(obj);
       for (const na of normAliases) {
         const realKey = idx.get(na);
-        if (realKey && obj[realKey] !== undefined && obj[realKey] !== null) {
+        if (realKey && obj[realKey] !== undefined && obj[realKey] !== null && obj[realKey] !== '') {
           return obj[realKey];
         }
       }
@@ -250,15 +289,41 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     'Data Used', 'Data_Used', 'dataUsed', 'data_used_bytes',
     'used_bytes', 'total_usage', 'dataUsage', 'data_usage',
     'usage data_bytes', 'data_bytes', 'bytes',
-    'usedData', 'used_data', 'consumed_bytes',
-    r.dataUsed, r.data_used_bytes,
+    'usedData', 'used_data', 'consumed_bytes', 'consumedData',
+    'dataUsedMB', 'data_used_mb', 'dataUsedGb', 'data_used_gb',
+    'used_mb', 'used_gb', 'usedMb', 'usedGb',
+    'usedKb', 'used_kb', 'dataUsedKb', 'data_used_kb',
+    'data_mb_used', 'data_gb_used', 'data_kb_used',
+    'monthly_data_used', 'monthlyDataUsed', 'current_data_used', 'currentDataUsed',
+    'consumption_data', 'dataConsumed', 'data_consumed',
+    'usageMB', 'usage_mb', 'usageGB', 'usage_gb', 'usageKB', 'usage_kb',
+    'totalConsumed', 'total_consumed', 'totalDataUsed', 'total_data_used',
+    'dataUsageValue', 'data_usage_value', 'actualUsage', 'actual_usage',
+    'periodUsage', 'period_usage', 'periodDataUsage', 'period_data_usage',
+    'dataUsageMB', 'data_usage_mb', 'dataUsageGB', 'data_usage_gb',
+    'used_data_mb', 'used_data_gb', 'used_data_kb', 'used_data_tb',
+    'dataTotal', 'data_total', 'dataSpent', 'data_spent',
+    r.dataUsed, r.data_used_bytes, r.dataUsage, r.data_usage, r.total_usage,
+    r.dataUsedMB, r.dataUsedGb, r.usedMB, r.usedGB, r.usedMb, r.usedGb,
   );
   const dataLimitBytesVal = pickBytes(
     'Data Limit', 'Data_Limit', 'dataLimit', 'data_limit_bytes',
     'limit_bytes', 'data_quota', 'dataQuota',
     'plan data_limit_bytes', 'data_quota_plan',
     'max_data_bytes', 'total_data_bytes', 'allowance_data',
-    r.dataLimit, r.data_limit_bytes,
+    'dataLimitMB', 'data_limit_mb', 'dataLimitGB', 'data_limit_gb', 'dataLimitKB', 'data_limit_kb',
+    'maxMB', 'max_mb', 'maxGB', 'max_gb', 'maxKb', 'max_kb',
+    'data_max_mb', 'data_max_gb', 'data_max_bytes',
+    'quota_data_mb', 'quota_data_gb', 'quota_data',
+    'planDataLimit', 'plan_data_limit', 'tariffDataLimit', 'tariff_data_limit',
+    'packageDataLimit', 'package_data_limit', 'bundleDataLimit', 'bundle_data_limit',
+    'dataAllowance', 'data_allowance', 'allocatedData', 'allocated_data',
+    'totalAllowance', 'total_allowance', 'totalData', 'total_data',
+    'includedData', 'included_data', 'cap_data', 'dataCap', 'data_cap',
+    'dataPoolLimit', 'data_pool_limit', 'poolDataLimit', 'pool_data_limit',
+    'thresholdLimit', 'threshold_limit',
+    r.dataLimit, r.data_limit_bytes, r.dataQuota, r.data_quota,
+    r.dataLimitMB, r.dataLimitGB, r.maxMB, r.maxGB,
   );
   const lowestDataLimitBytesVal = pickBytes(
     'Lowest Data Limit', 'lowest_data_limit_bytes',
@@ -266,7 +331,15 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     'data_warning_limit', 'lowDataLimit', 'threshold_data_bytes',
     'warning_data_bytes', 'min_data_limit_bytes', 'dataLowLimit',
     'data_low_limit',
-    r.lowestDataLimit, r.lowest_data_limit_bytes, r.dataLowLimit,
+    'dataAlertMB', 'data_alert_mb', 'dataAlertGB', 'data_alert_gb',
+    'dataWarningMB', 'data_warning_mb', 'dataWarningGB', 'data_warning_gb',
+    'lowDataMB', 'low_data_mb', 'lowDataGB', 'low_data_gb',
+    'dataThresholdMB', 'data_threshold_mb', 'dataThresholdGB', 'data_threshold_gb',
+    'notifyDataLimit', 'notify_data_limit', 'alertLimit', 'alert_limit',
+    'softLimitMB', 'soft_limit_mb', 'softLimitGB', 'soft_limit_gb', 'softDataLimit',
+    'minDataMB', 'min_data_mb', 'minDataGB', 'min_data_gb',
+    r.lowestDataLimit, r.lowest_data_limit_bytes, r.dataLowLimit, r.dataAlertBytes,
+    r.dataAlertMB, r.dataAlertGB, r.dataWarningMB, r.dataWarningGB,
   );
   // SMS velden — gebruiken pickNumber (geen units, alleen integers)
   const smsUsedCountVal = pickNumber(
@@ -274,20 +347,38 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     'sms_used_count', 'sms_count', 'total_sms',
     'sms_usage', 'smsUsage', 'totalSms', 'smsSent', 'sms_sent',
     'usage sms_count', 'usage sms', 'consumed_sms',
-    r.smsUsed, r.sms_used, r.sms_count,
+    'smsUsedTotal', 'sms_used_total', 'current_sms_used', 'currentSmsUsed',
+    'smsConsumed', 'sms_consumed', 'sentSms', 'sent_sms', 'smsOut', 'sms_out',
+    'outboundSms', 'outbound_sms', 'moSms', 'mo_sms', 'mtSms', 'mt_sms',
+    'smsUsedMonth', 'sms_used_month', 'smsUsedPeriod', 'sms_used_period',
+    'textsUsed', 'texts_used', 'textUsed', 'text_used', 'sms_usage_count',
+    'messagesUsed', 'messages_used', 'messageCount', 'message_count',
+    r.smsUsed, r.sms_used, r.sms_count, r.totalSms, r.smsSent,
   );
   const smsLimitCountVal = pickNumber(
     'SMS Limit', 'sms_limit', 'sms_quota', 'smsLimit', 'max_sms',
     'sms_max', 'maximum_sms', 'smsBundle', 'sms_bundle',
     'allowance_sms', 'smsAllowance', 'plan sms_limit',
     'total_sms_bundle',
-    r.smsLimit, r.sms_limit, r.max_sms,
+    'smsPlanLimit', 'sms_plan_limit', 'smsTariffLimit', 'sms_tariff_limit',
+    'smsCap', 'sms_cap', 'smsAllocation', 'sms_allocation',
+    'smsMaxCount', 'sms_max_count', 'includedSms', 'included_sms',
+    'smsTotal', 'sms_total', 'smsAllowanceCount', 'sms_allowance_count',
+    'quota_sms', 'sms_quota_count', 'maxMessages', 'max_messages',
+    'textLimit', 'text_limit', 'textsLimit', 'texts_limit',
+    'bundledSms', 'bundled_sms', 'packageSms', 'package_sms',
+    r.smsLimit, r.sms_limit, r.max_sms, r.smsBundle, r.smsAllowance,
   );
   const lowestSmsLimitCountVal = pickNumber(
     'Lowest SMS limit', 'Lowest SMS Limit', 'lowest_sms_limit',
     'sms_threshold', 'sms_alert', 'lowSmsLimit',
     'sms_warning', 'smsWarning', 'min_sms_limit', 'smsLowLimit',
     'sms_low_limit', 'plan lowest_sms_limit',
+    'smsAlertCount', 'sms_alert_count', 'smsAlert',
+    'smsNotify', 'sms_notify', 'smsNotifyAt', 'sms_notify_at',
+    'smsThresholdCount', 'sms_threshold_count', 'smsSoftLimit', 'sms_soft_limit',
+    'smsMinLimit', 'sms_min_limit', 'smsWarningCount', 'sms_warning_count',
+    'lowSms', 'low_sms', 'alertSmsLimit', 'alert_sms_limit',
     r.lowestSmsLimit, r.lowest_sms_limit, r.lowSmsLimit,
   );
 
@@ -919,6 +1010,43 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
     return score(a) - score(b);
   });
 
+  // "Beste response" accumulator: we houden de status met de meeste velden bij,
+  // zodat een endpoint zonder data-velden niet een later (completer) endpoint blokkeert.
+  let bestStatus: SimhuisSimStatus | null = null;
+  let bestScore = -1;
+  function scoreSimStatus(s: SimhuisSimStatus): number {
+    if (!s || !s.iccid) return -1;
+    let score = 0;
+    if (s.status) score += 1;
+    if (s.imsi) score += 1;
+    if (s.msisdn) score += 2;
+    if (s.activatedAt) score += 1;
+    if (s.dataUsedBytes != null) score += 8;
+    if (s.dataLimitBytes != null) score += 5;
+    if (s.lowestDataLimitBytes != null) score += 3;
+    if (s.smsUsedCount != null) score += 8;
+    if (s.smsLimitCount != null) score += 5;
+    if (s.lowestSmsLimitCount != null) score += 3;
+    if (s.ip) score += 1;
+    if (s.network) score += 1;
+    if (s.productName) score += 1;
+    return score;
+  }
+  function hasAnyUsage(s: SimhuisSimStatus): boolean {
+    return s.dataUsedBytes != null || s.dataLimitBytes != null || s.lowestDataLimitBytes != null
+      || s.smsUsedCount != null || s.smsLimitCount != null || s.lowestSmsLimitCount != null;
+  }
+  function hasFullUsage(s: SimhuisSimStatus): boolean {
+    return (s.dataUsedBytes != null || s.smsUsedCount != null)
+      && (s.dataLimitBytes != null || s.smsLimitCount != null);
+  }
+  function consider(s: SimhuisSimStatus | null | undefined): SimhuisSimStatus | null {
+    if (!s || !s.iccid) return bestStatus;
+    const sc = scoreSimStatus(s);
+    if (sc > bestScore) { bestScore = sc; bestStatus = s; }
+    return bestStatus;
+  }
+
   for (const prefix of orderedPrefixes) {
     for (const tpl of templates) {
       const bodyVariants: Array<Record<string, any> | null> = [];
@@ -955,10 +1083,13 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
             });
 
             if (result.tag === 'ok') {
-              try {
-                const status = toSimStatus(result.body, iccid);
-                if (status?.iccid) return status;
-              } catch { /* bad response shape, continue discovery */ }
+              let extracted: SimhuisSimStatus | null = null;
+              try { extracted = toSimStatus(result.body, iccid); } catch { extracted = null; }
+              if (extracted?.iccid) {
+                consider(extracted);
+                // Vroegtijdig stoppen ALLEEN als deze response echt complete usage data heeft
+                if (hasFullUsage(extracted)) return extracted;
+              }
             }
 
             pushRanked(meta, result);
@@ -982,10 +1113,12 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                   timeoutMs: 15_000,
                 });
                 if (altResult.tag === 'ok') {
-                  try {
-                    const status = toSimStatus(altResult.body, iccid);
-                    if (status?.iccid) return status;
-                  } catch { /* bad response shape, continue */ }
+                  let extracted: SimhuisSimStatus | null = null;
+                  try { extracted = toSimStatus(altResult.body, iccid); } catch { extracted = null; }
+                  if (extracted?.iccid) {
+                    consider(extracted);
+                    if (hasFullUsage(extracted)) return extracted;
+                  }
                 }
                 pushRanked(altMeta, altResult);
                 if (altResult.tag === 'error') lastErrorResult = altResult;
@@ -1044,7 +1177,10 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                   if (match) {
                     try {
                       const st = toSimStatus(match, iccid);
-                      if (st?.iccid) return st;
+                      if (st?.iccid) {
+                        consider(st);
+                        if (hasFullUsage(st)) return st;
+                      }
                     } catch { /* bad item, continue */ }
                   }
                 }
@@ -1079,13 +1215,20 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
           if (match) {
             try {
               const st = toSimStatus(match, iccid);
-              if (st?.iccid) return st;
+              if (st?.iccid) {
+                consider(st);
+                if (hasFullUsage(st)) return st;
+              }
             } catch { /* bad shape, continue */ }
           }
         }
       } catch { /* negeer */ }
     }
   } catch { /* negeer */ }
+
+  // Op dit punt: als we een "best" hebben met in ieder geval wat usage,
+  // geef die voorkeur boven de raw eerste-OK fallback.
+  if (bestStatus && hasAnyUsage(bestStatus)) return bestStatus;
 
   const top = topRanked(5);
   const topStr = top.length
@@ -1097,6 +1240,13 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
   const listDebugStr = listAttempts.length
     ? '\n\nListSims / eSIMS query resultaten:\n' + listAttempts.map((la) => `  - ${la.label} → iccidFound=${la.iccidFound}`).join('\n')
     : '';
+
+  // Fallback: als wél bestStatus bestaat (met ICCID, status etc. maar zonder usage) — return die dan. Alleen als geen enkele OK was, throw.
+  const bestAny = bestStatus as (SimhuisSimStatus | null);
+  if (bestAny && bestAny.iccid) {
+    if (!bestAny.status) (bestAny as any).status = 'active';
+    return bestAny;
+  }
 
   if (lastErrorResult) {
     const raw = lastErrorResult.raw ?? (top[0] ? undefined : undefined);

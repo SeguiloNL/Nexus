@@ -335,7 +335,7 @@ export function SimList({
       <DataTable
         columns={columns}
         data={filteredSims}
-        searchColumnAccessor="iccid"
+        searchColumnAccessors={["iccid", "msisdn", "imsi", "provider"]}
         searchPlaceholder="Zoek SIM (ICCID, MSISDN, IMSI, provider…)"
         enableRowSelection={canDelete}
         getRowId={(row) => (row as any).id}

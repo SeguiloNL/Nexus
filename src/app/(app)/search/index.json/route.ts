@@ -60,7 +60,7 @@ export async function GET() {
       }),
       prisma.sIM.findMany({
         where: { deletedAt: null, ...customerScopeAssignment },
-        select: { id: true, iccid: true, imsi: true, status: true },
+        select: { id: true, iccid: true, msisdn: true, imsi: true, status: true },
       }),
       prisma.vehicle.findMany({
         where: { deletedAt: null, ...customerScopeVehicle },
@@ -106,6 +106,7 @@ export async function GET() {
       kind: "sim",
       id: s.id,
       iccid: s.iccid,
+      msisdn: s.msisdn,
       imsi: s.imsi,
       status: s.status,
     })),
