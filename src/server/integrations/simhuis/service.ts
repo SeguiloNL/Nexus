@@ -3302,30 +3302,45 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
 
         const batchItems_win: SimhuisSimStatus[] = [];
         // ================================================================
-        // 🏆 WINNING COMBO (uit OUDE PRODUCTIE-LOGS — 100% BEVESTIGD!):
-        //   GET /v3/esims + Bearer token + GEEN accountId in query
-        //   -> GAF 200 OK MET ECHTE DATA! [{"eid":"89049032000001000000175580331350",...}]
+        // 🏆🏆🏆 ECHTE WINNING COMBOS (uit LIVE PRODUCTIE-LOGS VANDAAG!):
+        //   LOG REGEL 5:  POST /v3/assetsbulk  auth=bearer-with-aid  → HTTP 200, len=327 (AssetSimcard: iccid REQUIRED + msisdn[])
+        //   LOG REGEL 7:  POST /v3/esimsbulk   auth=bearer-with-aid  → HTTP 200, len=66  (eSIM: eid + profiles[].iccid + enabledProfile.iccid)
+        //   LOG REGEL 9:  POST /v3/assetsbulk  auth=bearer-simple    → HTTP 200, len=327
+        //   LOG REGEL 11: POST /v3/esimsbulk   auth=bearer-simple    → HTTP 200, len=66
+        //   => accountId MOET in query string, auth = Bearer header
         // ================================================================
         if (bearerToken) {
-          const WIN_URL_NO_AID: Array<{ tag: string; u: string; m: 'GET' | 'POST'; b?: BodyInit }> = [
-            { tag: 'WIN-esims-noAid',   u: `${base}/v3/esims?limit=1000&page=1`,   m: 'GET' },
-            { tag: 'WIN-assets-noAid',  u: `${base}/v3/assets?limit=1000&page=1`,  m: 'GET' },
+          const qp = new URLSearchParams();
+          if (accountId) qp.append('accountId', String(accountId));
+          qp.append('limit', '1000');
+          qp.append('page', '1');
+          const qs = qp.toString();
+          const WIN_URL: Array<{ tag: string; u: string; m: 'GET' | 'POST'; b?: BodyInit; ct?: string }> = [
+            { tag: 'WIN-assetsbulk-aid',  m: 'POST', u: `${base}/v3/assetsbulk${qs ? `?${qs}` : ''}`,
+              ct: 'application/json',
+              b: JSON.stringify({ page: 1, limit: 1000, ...(accountId ? { accountId: String(accountId) } : {}) }),
+            },
+            { tag: 'WIN-esimsbulk-aid',   m: 'POST', u: `${base}/v3/esimsbulk${qs ? `?${qs}` : ''}`,
+              ct: 'application/json',
+              b: JSON.stringify({ page: 1, limit: 1000, ...(accountId ? { accountId: String(accountId) } : {}), external: false, applyTenantFilter: false }),
+            },
           ];
-          for (const win of WIN_URL_NO_AID) {
+          for (const win of WIN_URL) {
             try {
-              const wh = { ...baseWafHeaders, 'Authorization': `Bearer ${bearerToken}` };
-              const wresp = await fetch(win.u, { method: win.m, headers: wh, body: win.b, signal: AbortSignal.timeout(20000) });
+              const wh: Record<string, string> = { ...baseWafHeaders, 'Authorization': `Bearer ${bearerToken}` };
+              if (win.ct) wh['Content-Type'] = win.ct;
+              const wresp = await fetch(win.u, { method: win.m, headers: wh, body: win.b, signal: AbortSignal.timeout(25000) });
               const wtext = await wresp.text();
               let wparsed: unknown = null;
               try { wparsed = JSON.parse(wtext); } catch { wparsed = wtext; }
               const warr = extractSimList(wparsed);
               const wpreview = warr.length > 0
-                ? ` preview[0] keys=${JSON.stringify(Object.keys(warr[0] ?? {}).slice(0,20))} values=${JSON.stringify(Object.values(warr[0] ?? {}).slice(0,6)).slice(0,250)}${warr.length > 1 ? `; preview[1] keys=${JSON.stringify(Object.keys(warr[1] ?? {}).slice(0,20))}` : ''}`
-                : ` rawText[0..200]=${JSON.stringify(wtext.slice(0,200))}`;
+                ? `\n  🎯 0# ${JSON.stringify(Object.keys(warr[0] ?? {}).slice(0,25))}\n  🎯 0# values[0..8]=${JSON.stringify(Object.values(warr[0] ?? {}).slice(0,8)).slice(0,280)}${warr.length > 1 ? `\n  🎯 1# keys=${JSON.stringify(Object.keys(warr[1] ?? {}).slice(0,20))}` : ''}`
+                : ` rawText[0..300]=${JSON.stringify(wtext.slice(0,300))}`;
               try {
                 console.info(
-                  `[simhuis-listAllSims] 🏆 WINNING COMBO ${win.tag}: HTTP ${wresp.status}. ` +
-                  `extractSimList len=${warr.length}. responseShape=${shapeOf(wparsed)}.${wpreview}`
+                  `[simhuis-listAllSims] 🏆 ECHTE WINNER ${win.tag}: HTTP ${wresp.status}. ` +
+                  `arr.len=${warr.length} shape=${shapeOf(wparsed)}.${wpreview}`
                 );
               } catch { /* ignore */ }
               if (wresp.ok && warr.length > 0) {
@@ -3363,6 +3378,10 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                       const first = String((raw as any).enabledProfile.msisdn[0] ?? '').trim();
                       if (first) (s as any).msisdn = first;
                     }
+                    if (s && !s.msisdn) {
+                      const directMsisdn = String((raw as any).msisdn ?? nested?.msisdn ?? '').trim();
+                      if (directMsisdn) (s as any).msisdn = directMsisdn;
+                    }
                     if (s?.iccid) batchItems_win.push(s);
                   } catch { /* bad item skip */ }
                 }
@@ -3370,26 +3389,36 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                 dedupe(batchItems_win);
                 const addedWin = all.length - beforeWin;
                 try {
+                  const sampleIccids = batchItems_win.slice(0,3).map(s => s.iccid).join(',');
                   console.info(
-                    `[simhuis-listAllSims] 🎯 WINNING COMBO ${win.tag} VERWERKT: warr.len=${warr.length} ` +
-                    `-> batchItems_win.len=${batchItems_win.length} -> added=${addedWin} -> TOTAL all.len=${all.length}`
+                    `[simhuis-listAllSims] 🎯 WIN-COMBO ${win.tag} VERWERKT: in.len=${warr.length} ` +
+                    `batchItems.len=${batchItems_win.length} added=${addedWin} TOTAL all.len=${all.length}. sampleIccids=${sampleIccids}`
                   );
                 } catch { /* ignore */ }
-                if (all.length > 0) break;
               }
             } catch (ew: any) {
-              try { console.info(`[simhuis-listAllSims] 🏆 WINNING COMBO ${win.tag} exceptie: ${ew?.message ?? ew}.`); } catch { /* ignore */ }
+              try { console.info(`[simhuis-listAllSims] 🏆 ECHTE WINNER ${win.tag} exceptie: ${ew?.message ?? ew}.`); } catch { /* ignore */ }
             }
           }
-          // WINNING COMBO MET SUCCES — meteen returnen, geen auth×endpoint matrix meer nodig.
+          // Wanneer WINNING COMBO succesvol data heeft: return onmiddellijk.
           if (all.length > 0) {
             try {
               console.info(
-                `[simhuis-listAllSims] ✅ Phase A complete (via WINNING COMBO) — ${all.length} sims. ` +
-                `Skip auth × endpoint matrix.`
+                `[simhuis-listAllSims] ✅ Phase A complete (VIA ECHTE WINNERS) — ${all.length} sims. ` +
+                `Skip auth × endpoint matrix en oude listSims discovery.`
               );
             } catch { /* ignore */ }
             return all;
+          }
+          // Wanneer winning combos al 327 gaven MAAR niet in all komen:
+          // nog een expliciete warning-log
+          if (batchItems_win.length > 0 && all.length === 0) {
+            try {
+              console.warn(
+                `[simhuis-listAllSims] ⚠️ WAARSCHUWING: WINNERS hadden batchItems_win.len=${batchItems_win.length} MAAR all.len=0! ` +
+                `eerste 3 iccids=${batchItems_win.slice(0,3).map(s=>s.iccid).join(',')}`
+              );
+            } catch { /* ignore */ }
           }
         }
 
@@ -3494,10 +3523,8 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
           hasAssetsPayload?: boolean;
         };
         const endpoints: Endpoint[] = [
-          { path: '/v3/assets',    method: 'GET',  kind: 'query' },
-          { path: '/v3/assetsbulk', method: 'POST', kind: 'json-body', hasAssetsPayload: true },
-          { path: '/v3/esims',     method: 'GET',  kind: 'query' },
-          { path: '/v3/esimsbulk', method: 'POST', kind: 'json-body' },
+          { path: '/v3/assetsbulk', method: 'POST', kind: 'json-body' },
+          { path: '/v3/esimsbulk',  method: 'POST', kind: 'json-body' },
         ];
 
         for (const auth of auths) {
@@ -3537,7 +3564,7 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                     ...(options.status ? { status: String(options.status) } : {}),
                   };
                   if (auth.extraBody) Object.assign(payload, auth.extraBody);
-                  if (ep.hasAssetsPayload) {
+                  if (ep.hasAssetsPayload && false) {
                     payload.payload = {};
                   }
                   body = JSON.stringify(payload);
