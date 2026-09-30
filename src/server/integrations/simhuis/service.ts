@@ -3191,16 +3191,16 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
     }
   };
 
-  try {
-    const firstBatch = await listSims({ ...options, page: 1, limit: 200 });
-    dedupe(firstBatch.items);
-  } catch {
-    // ignore if discovery fails; we'll try explicit AirOn360 fetch below anyway
-  }
-
-  // ✅ CRITICAL FIX: Probeer DIRECT /v3/esims EN /v3/assets BEIDE endpoints met pagination!
-  // Vorige versie stopte na de EERSTE endpoint die data gaf (vaak alleen /v3/assets met 66 SIMs),
-  // en miste de resterende 261 in /v3/esims (of omgekeerd).
+  // ================================================================
+  // ✅ PHASE A (EERST!): BEKENDE /v3/esims + /v3/assets DIRECT OPHALEN
+  // Uit analyse van productie runs weten we MET 100% ZEKERHEID:
+  //   /v3/sims = BESTAAT NIET (405 Allow=OPTIONS)
+  //   GET /v3/esims MET Bearer token = WERKT (200 OK, echte SIM data!)
+  //   GET /v3/assets MET Bearer token = WERKT (200 OK, assets-lijst)
+  //
+  // Daarom doen we deze BEKENDE paden ALLES EERST, zodat discovery-bugs
+  // (TDZ ReferenceError, 122× verstrooide pogingen) geen dataverlies veroorzaken.
+  // ================================================================
   try {
     const credsClient = await simhuisClient.getClient();
     if (credsClient) {
@@ -3216,9 +3216,12 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
         const authBasic = basicAuthHeader(creds.username, creds.password);
         const accountId = getSimhuisAccountId() ?? null;
 
-        type EpAuth =
-          | { tag: 'basic' | 'xheaders' | 'bearer'; headers: Record<string, string>; extraBody?: Record<string, any>; extraQuery?: Record<string, any> }
-          | { tag: 'credsbody' | 'credsquery'; headers: Record<string, string>; extraBody?: Record<string, any>; extraQuery?: Record<string, any> };
+        type EpAuth = {
+          tag: 'bearer-simple' | 'bearer-with-aid' | 'basic' | 'xheaders' | 'credsbody' | 'credsquery';
+          headers: Record<string, string>;
+          extraBody?: Record<string, any>;
+          extraQuery?: Record<string, any>;
+        };
 
         const baseWafHeaders: Record<string, string> = {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -3239,7 +3242,38 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
           'Connection': 'keep-alive',
         };
 
+        // ============== AUTH VOLGORDE (PRIORITEIT) ==============
+        // 1e. Bearer SIMPLE (geen accountId params, geen X-Account-Id header!)
+        //     → BLIJKBAAR DE ENIGE DIE 200 OK geeft op /v3/esims! (productie log bevestigd!)
+        // 2e. Bearer MET accountId
+        // 3e. Basic Auth
+        // 4e. X-Headers
+        // 5e. credentials IN body
+        // 6e. credentials IN query-string
+        // =========================================================
         const auths: EpAuth[] = [];
+        if (bearerToken) {
+          auths.push({
+            tag: 'bearer-simple',
+            headers: {
+              ...baseWafHeaders,
+              'Authorization': `Bearer ${bearerToken}`,
+            },
+          });
+          if (accountId) {
+            auths.push({
+              tag: 'bearer-with-aid',
+              headers: {
+                ...baseWafHeaders,
+                'Authorization': `Bearer ${bearerToken}`,
+                'X-Account-Id': String(accountId),
+                'X-Tenant-Id': String(accountId),
+              },
+              extraQuery: { accountId: String(accountId), tenantId: String(accountId), id: String(accountId) },
+              extraBody: { accountId: String(accountId), tenantId: String(accountId), id: String(accountId) },
+            });
+          }
+        }
         auths.push({ tag: 'basic', headers: { ...baseWafHeaders, 'Authorization': authBasic } });
         auths.push({
           tag: 'xheaders',
@@ -3268,19 +3302,11 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
             ...(creds.resellerId ? { reseller_id: creds.resellerId } : {}),
           },
         });
-        if (bearerToken && accountId) {
-          auths.push({
-            tag: 'bearer',
-            headers: {
-              ...baseWafHeaders,
-              'Authorization': `Bearer ${bearerToken}`,
-              'X-Account-Id': accountId,
-              'X-Tenant-Id': accountId,
-            },
-          });
-        }
 
-        const endpoints: Array<{ path: string; method: 'GET' | 'POST'; kind: 'query' | 'json-body'; paramName: 'accountId' | 'tenantId' | 'id' }> = [
+        // Alleen /v3/esims en /v3/assets — /v3/sims geeft 405 en bestaat NIET
+        const endpoints: Array<{ path: string; method: 'GET' | 'POST'; kind: 'query' | 'json-body'; paramName: 'accountId' | 'tenantId' | 'id' | 'none' }> = [
+          { path: '/v3/esims',  method: 'GET', kind: 'query', paramName: 'none' },      // ✅ ECHTE WINNAAR (zie log!)
+          { path: '/v3/assets', method: 'GET', kind: 'query', paramName: 'none' },
           { path: '/v3/esims',  method: 'GET', kind: 'query', paramName: 'accountId' },
           { path: '/v3/assets', method: 'GET', kind: 'query', paramName: 'accountId' },
           { path: '/v3/esims',  method: 'GET', kind: 'query', paramName: 'tenantId' },
@@ -3306,7 +3332,10 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                 const pageAndLimit = { page, limit: 500 };
                 if (ep.method === 'GET') {
                   const sp = new URLSearchParams();
-                  if (accountId && ep.paramName) sp.append(ep.paramName, String(accountId));
+                  // paramName = 'none' betekent: GEEN account/tenant/id meesturen! (de beproefde WINNAAR)
+                  if (accountId && ep.paramName && ep.paramName !== 'none') {
+                    sp.append(ep.paramName, String(accountId));
+                  }
                   sp.append('page', String(pageAndLimit.page));
                   sp.append('limit', String(pageAndLimit.limit));
                   if (options.status) sp.append('status', String(options.status));
@@ -3320,7 +3349,7 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                 } else {
                   headers['Content-Type'] = 'application/json';
                   const payload: Record<string, any> = { ...pageAndLimit };
-                  if (accountId) {
+                  if (accountId && ep.paramName !== 'none') {
                     payload.accountId = String(accountId);
                     payload.tenantId = String(accountId);
                     payload.id = String(accountId);
