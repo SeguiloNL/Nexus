@@ -4,6 +4,28 @@ import { findManyRoles } from "@/server/services/role.service";
 import { RoleList } from "./_components/role-list";
 import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
+import type { ResourceAction, ResourceType } from "@/types/enums";
+
+function resolveCan(
+  user: {
+    role?: string | null;
+    permissions?: unknown;
+    roleId?: string | null;
+  },
+  action: ResourceAction,
+  resource: ResourceType
+): boolean {
+  if (
+    user.permissions &&
+    canUserRole(user.permissions as any, action, resource)
+  ) {
+    return true;
+  }
+  if (user.roleId && canUserRole(user.roleId, action, resource)) {
+    return true;
+  }
+  return canUserRole(user.role ?? null, action, resource);
+}
 
 export default async function RolesPage({
   searchParams,
@@ -12,13 +34,13 @@ export default async function RolesPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role ?? null, "view", "role")) {
+  if (!resolveCan(session.user as any, "view", "role")) {
     throw new PermissionError("Je bent niet bevoegd rollen te bekijken.");
   }
 
-  const canCreate = canUserRole(session.user.role ?? null, "create", "role");
-  const canEdit = canUserRole(session.user.role ?? null, "edit", "role");
-  const canDelete = canUserRole(session.user.role ?? null, "delete", "role");
+  const canCreate = resolveCan(session.user as any, "create", "role");
+  const canEdit = resolveCan(session.user as any, "edit", "role");
+  const canDelete = resolveCan(session.user as any, "delete", "role");
 
   const result = await findManyRoles();
 
