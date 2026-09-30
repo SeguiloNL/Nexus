@@ -3261,7 +3261,11 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
 
       if (base) {
         const authBasic = basicAuthHeader(creds.username, creds.password);
-        const accountId = getSimhuisAccountId() ?? null;
+        let accountId: string | null = getSimhuisAccountId();
+        if (!accountId) {
+          const envAid = (process.env.SIMHUIS_ACCOUNT_ID ?? process.env.SIMHUIS_RESELLER_ID ?? '').trim();
+          if (envAid) accountId = envAid;
+        }
 
         type EpAuth = {
           tag: 'bearer-simple' | 'bearer-with-aid' | 'basic' | 'xheaders' | 'credsbody' | 'credsquery';
@@ -3289,27 +3293,29 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
           'Connection': 'keep-alive',
         };
 
-        // ============== AUTH VOLGORDE (PRIORITEIT) ==============
-        // 1e. Bearer SIMPLE (geen accountId params, geen X-Account-Id header!)
-        //     → BLIJKBAAR DE ENIGE DIE 200 OK geeft op /v3/esims! (productie log bevestigd!)
-        // 2e. Bearer MET accountId
-        // 3e. Basic Auth
-        // 4e. X-Headers
-        // 5e. credentials IN body
-        // 6e. credentials IN query-string
+        // ============== AUTH VOLGORDE (PRIORITEIT) o.b.v. SWAGGER ==============
+        // SWAGGER WAARHEID: Authorization header met Bearer prefix is REQUIRED=true.
+        // 1e. Bearer MET accountId query param (SWAGGER: accountId REQUIRED=true!)
+        // 2e. Bearer MET extra X-Account-Id headers + query
+        // 3e. Bearer SIMPLE (voor het geval accountId niet nodig was)
+        // 4e. Basic Auth
+        // 5e. X-Headers
+        // 6e. credentials IN body
+        // 7e. credentials IN query-string
         // =========================================================
         const auths: EpAuth[] = [];
         if (bearerToken) {
           auths.push({
-            tag: 'bearer-simple',
+            tag: 'bearer-with-aid',
             headers: {
               ...baseWafHeaders,
               'Authorization': `Bearer ${bearerToken}`,
             },
+            extraQuery: accountId ? { accountId: String(accountId) } : undefined,
           });
           if (accountId) {
             auths.push({
-              tag: 'bearer-with-aid',
+              tag: 'bearer-simple',
               headers: {
                 ...baseWafHeaders,
                 'Authorization': `Bearer ${bearerToken}`,
@@ -3319,16 +3325,22 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
               extraQuery: { accountId: String(accountId), tenantId: String(accountId), id: String(accountId) },
               extraBody: { accountId: String(accountId), tenantId: String(accountId), id: String(accountId) },
             });
+          } else {
+            auths.push({
+              tag: 'bearer-simple',
+              headers: {
+                ...baseWafHeaders,
+                'Authorization': `Bearer ${bearerToken}`,
+              },
+            });
           }
         } else {
-          // We blijven PROBEREN, ook zonder Bearer — Basic/Custom kon ook werken.
-          // Log wel even dat Bearer onbekend was zodat dit zichtbaar is.
           try {
             console.info('[simhuis-listAllSims] ⚠️ Geen Bearer-token kunnen verkrijgen. ' +
               'Probeer nu Basic/X-Headers/creds-in-body paden voor /v3/esims & /v3/assets.');
           } catch { /* ignore */ }
         }
-        auths.push({ tag: 'basic', headers: { ...baseWafHeaders, 'Authorization': authBasic } });
+        auths.push({ tag: 'basic', headers: { ...baseWafHeaders, 'Authorization': authBasic }, extraQuery: accountId ? { accountId } : undefined });
         auths.push({
           tag: 'xheaders',
           headers: {
@@ -3337,6 +3349,7 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
             'X-API-Password': creds.password,
             ...(creds.resellerId ? { 'X-Reseller-ID': String(creds.resellerId) } : {}),
           },
+          extraQuery: accountId ? { accountId } : undefined,
         });
         auths.push({
           tag: 'credsbody',
@@ -3345,6 +3358,7 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
             username: creds.username,
             password: creds.password,
             ...(creds.resellerId ? { reseller_id: creds.resellerId } : {}),
+            ...(accountId ? { accountId: String(accountId) } : {}),
           },
         });
         auths.push({
@@ -3354,19 +3368,29 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
             username: creds.username,
             password: creds.password,
             ...(creds.resellerId ? { reseller_id: creds.resellerId } : {}),
+            ...(accountId ? { accountId: String(accountId) } : {}),
           },
         });
 
-        // Alleen /v3/esims en /v3/assets — /v3/sims geeft 405 en bestaat NIET
-        const endpoints: Array<{ path: string; method: 'GET' | 'POST'; kind: 'query' | 'json-body'; paramName: 'accountId' | 'tenantId' | 'id' | 'none' }> = [
-          { path: '/v3/esims',  method: 'GET', kind: 'query', paramName: 'none' },      // ✅ ECHTE WINNAAR (zie log!)
-          { path: '/v3/assets', method: 'GET', kind: 'query', paramName: 'none' },
-          { path: '/v3/esims',  method: 'GET', kind: 'query', paramName: 'accountId' },
-          { path: '/v3/assets', method: 'GET', kind: 'query', paramName: 'accountId' },
-          { path: '/v3/esims',  method: 'GET', kind: 'query', paramName: 'tenantId' },
-          { path: '/v3/assets', method: 'GET', kind: 'query', paramName: 'tenantId' },
-          { path: '/v3/esims',  method: 'POST', kind: 'json-body', paramName: 'accountId' },
-          { path: '/v3/assets', method: 'POST', kind: 'json-body', paramName: 'accountId' },
+        // ============== ENDPOINTS (SWAGGER WAARHEID) ==============
+        // - GET  /v3/esims       → eSIMs (alleen eid + enabledProfile.iccid)
+        // - GET  /v3/assets      → Assets (Heeft iccid REQUIRED + msisdn[])
+        // - POST /v3/esimsbulk   → eSIMs bulk (zelfde data, vaak meer resultaten)
+        // - POST /v3/assetsbulk  → Assets bulk (zelfde data, body optioneel {iccid,msisdn})
+        // - /v3/sims BESTAAT NIET (405) → NEGEREN
+        // accountId query param is VERPLICHT (Swagger: required=true)
+        // =========================================================
+        type Endpoint = {
+          path: string;
+          method: 'GET' | 'POST';
+          kind: 'query' | 'json-body';
+          hasAssetsPayload?: boolean;
+        };
+        const endpoints: Endpoint[] = [
+          { path: '/v3/assets',    method: 'GET',  kind: 'query' },
+          { path: '/v3/assetsbulk', method: 'POST', kind: 'json-body', hasAssetsPayload: true },
+          { path: '/v3/esims',     method: 'GET',  kind: 'query' },
+          { path: '/v3/esimsbulk', method: 'POST', kind: 'json-body' },
         ];
 
         for (const auth of auths) {
@@ -3377,21 +3401,18 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
               let safety = 0;
               while (safety < 50) {
                 safety++;
-                const cacheKey = `${auth.tag}::${ep.method}::${ep.path}::${ep.kind}::${ep.paramName}::p${page}`;
+                const cacheKey = `${auth.tag}::${ep.method}::${ep.path}::${ep.kind}::p${page}`;
                 if (discovered.has(cacheKey)) break;
                 discovered.set(cacheKey, 1);
                 let url = `${base}${ep.path.startsWith('/') ? ep.path : `/${ep.path}`}`;
                 let body: BodyInit | undefined;
                 const headers: Record<string, string> = { ...auth.headers };
-                const pageAndLimit = { page, limit: 500 };
+                const PER_PAGE = 1000;
                 if (ep.method === 'GET') {
                   const sp = new URLSearchParams();
-                  // paramName = 'none' betekent: GEEN account/tenant/id meesturen! (de beproefde WINNAAR)
-                  if (accountId && ep.paramName && ep.paramName !== 'none') {
-                    sp.append(ep.paramName, String(accountId));
-                  }
-                  sp.append('page', String(pageAndLimit.page));
-                  sp.append('limit', String(pageAndLimit.limit));
+                  if (accountId) sp.append('accountId', String(accountId));
+                  sp.append('page', String(page));
+                  sp.append('limit', String(PER_PAGE));
                   if (options.status) sp.append('status', String(options.status));
                   if (auth.extraQuery) {
                     for (const [k, v] of Object.entries(auth.extraQuery)) {
@@ -3402,17 +3423,21 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                   if (qs) url += `?${qs}`;
                 } else {
                   headers['Content-Type'] = 'application/json';
-                  const payload: Record<string, any> = { ...pageAndLimit };
-                  if (accountId && ep.paramName !== 'none') {
-                    payload.accountId = String(accountId);
-                    payload.tenantId = String(accountId);
-                    payload.id = String(accountId);
-                  }
-                  if (options.status) payload.status = String(options.status);
+                  const payload: Record<string, any> = {
+                    page,
+                    limit: PER_PAGE,
+                    ...(accountId ? { accountId: String(accountId) } : {}),
+                    ...(options.status ? { status: String(options.status) } : {}),
+                  };
                   if (auth.extraBody) Object.assign(payload, auth.extraBody);
+                  if (ep.hasAssetsPayload) {
+                    payload.payload = {};
+                  }
                   body = JSON.stringify(payload);
                 }
                 const resp = await fetch(url, { method: ep.method, headers, body, signal: AbortSignal.timeout(20000) });
+                const totalMoreHeader = resp.headers.get('X-Total-More');
+                const totalCountHeader = resp.headers.get('X-Total-Count');
                 const ct = resp.headers.get('content-type') ?? '';
                 const text = await resp.text();
                 let parsed: unknown = null;
@@ -3422,44 +3447,69 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                 if (!resp.ok) {
                   try {
                     console.info(
-                      `[simhuis-listAllSims] Phase A: ${ep.method} ${ep.path} (auth=${auth.tag}, param=${ep.paramName}) ` +
-                      `gaf HTTP ${resp.status}. Doorgaan naar volgende combo...`
+                      `[simhuis-listAllSims] Phase A: ${ep.method} ${ep.path} (auth=${auth.tag}) ` +
+                      `gaf HTTP ${resp.status}. accountId=${accountId ?? 'MISSING!'}. Doorgaan...`
                     );
                   } catch { /* ignore */ }
                   break;
+                }
+                if (!accountId) {
+                  try {
+                    console.warn(
+                      `[simhuis-listAllSims] ⚠️ Phase A: accountId ONBEKEND! Swagger zegt required=true. ` +
+                      `Probeer alsnog, maar dit is waarschijnlijk de reden van 0 resultaten.`
+                    );
+                  } catch { /* ignore */ }
                 }
                 const arr = extractSimList(parsed);
                 if (!arr || arr.length === 0) break;
                 try {
                   console.info(
-                    `[simhuis-listAllSims] ✅ Phase A data! ${ep.method} ${ep.path} (auth=${auth.tag}, param=${ep.paramName}) ` +
-                    `pagina ${page} — ${arr.length} items ontvangen.`
+                    `[simhuis-listAllSims] ✅ Phase A data! ${ep.method} ${ep.path} (auth=${auth.tag}) ` +
+                    `pagina ${page} — ${arr.length} items. accountId=${accountId ?? 'N/A'}, ` +
+                    `X-Total-More=${totalMoreHeader ?? 'N/A'}, X-Total-Count=${totalCountHeader ?? 'N/A'}.`
                   );
                 } catch { /* ignore */ }
                 const batchItems: SimhuisSimStatus[] = [];
                 for (const raw of arr) {
                   try {
-                    const nested = (raw as any)?.simCard ?? (raw as any)?.sim ?? (raw as any)?.asset ?? (raw as any)?.device ?? (raw as any)?.subscription ?? (raw as any)?.subscriber ?? {};
-                    const rawIccid = String(
+                    const nested = (raw as any)?.simCard ?? (raw as any)?.sim ?? (raw as any)?.asset ?? (raw as any)?.device ?? (raw as any)?.subscription ?? (raw as any)?.subscriber ?? (raw as any)?.enabledProfile ?? {};
+                    // SWAGGER eSIM: { eid, profiles: [{iccid, status, enabled, bootstrap}], enabledProfile: AssetSimcard{iccid,msisdn[],...} }
+                    // SWAGGER AssetSimcard: { iccid(REQUIRED!), msisdn[], status, ... }
+                    let rawIccid = String(
                       (raw as any).iccid ?? (raw as any).sim_iccid ?? (raw as any).simIccid
                         ?? nested?.iccid ?? nested?.sim_iccid ?? nested?.simIccid ?? ''
                     ).trim();
-                    // ✅ BELANGRIJKE FALLBACK: Als er GEEN iccid veld is, maar WEL een eid →
-                    // gebruik de eid Tijdelijk als iccid IN de extractie hier, zodat de
-                    // dedupe tenminste werkt. (De echte iccid kan later worden aangevuld
-                    // via de SIM-database of andere endpoints.)
+                    // ✅ NIEUW (SWAGGER): kijk in enabledProfile.iccid (bestaat altijd op AssetSimcard!)
+                    if (!rawIccid && (raw as any)?.enabledProfile?.iccid) {
+                      rawIccid = String((raw as any).enabledProfile.iccid).trim();
+                    }
+                    // ✅ NIEUW (SWAGGER): kijk in profiles[] array voor enabled=true / status=active
+                    if (!rawIccid && Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
+                      const profiles: any[] = (raw as any).profiles;
+                      // Eerst: enabled=true + bootstrap=true (of enabled=true)
+                      const best = profiles.find(p => p && p.iccid && (p.enabled === true || p.status === 'active' || p.bootstrap === true))
+                        ?? profiles.find(p => p && p.iccid);
+                      if (best?.iccid) rawIccid = String(best.iccid).trim();
+                    }
                     const rawEid = String(
                       (raw as any).eid ?? (raw as any).esimId ?? (raw as any).esim_id
                         ?? nested?.eid ?? nested?.esimId ?? nested?.esim_id ?? ''
                     ).trim();
                     const iccidStr = rawIccid || rawEid || '';
                     const s = toSimStatus(raw, iccidStr);
-                    // ✅ OOK HIER: aanpassen — als s.iccid leeg is maar s.eid NIET,
-                    // kopieer dan eid naar iccid veld (als ultieme fallback,
-                    // zodat de downstream eligible-filter NIET alle eSIMs wegooit).
                     if (s && !s.iccid && s.eid && !iccidFromEidFallback.has(s.eid)) {
                       iccidFromEidFallback.add(s.eid);
                       (s as any).iccid = s.eid;
+                    }
+                    // NIEUW: ook msisdn[] uit AssetSimcard mappen als s.msisdn leeg is
+                    if (s && !s.msisdn && Array.isArray((raw as any)?.msisdn) && (raw as any).msisdn.length > 0) {
+                      const first = String((raw as any).msisdn[0] ?? '').trim();
+                      if (first) (s as any).msisdn = first;
+                    }
+                    if (s && !s.msisdn && Array.isArray((raw as any)?.enabledProfile?.msisdn) && (raw as any).enabledProfile.msisdn.length > 0) {
+                      const first = String((raw as any).enabledProfile.msisdn[0] ?? '').trim();
+                      if (first) (s as any).msisdn = first;
                     }
                     if (s?.iccid) batchItems.push(s);
                   } catch {
@@ -3470,9 +3520,12 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                 dedupe(batchItems);
                 const added = all.length - before;
                 const total = extractTotal(parsed, batchItems.length);
-                const hasMore = typeof total === 'number'
-                  ? (page * pageAndLimit.limit) < total
-                  : batchItems.length >= pageAndLimit.limit;
+                const xTotalMore = totalMoreHeader === 'true' || totalMoreHeader === 'True' || totalMoreHeader === '1';
+                const xTotalCountNum = typeof totalCountHeader === 'string' && totalCountHeader ? Number(totalCountHeader) : NaN;
+                const hasMore = xTotalMore
+                  || (typeof total === 'number' ? (page * PER_PAGE) < total : false)
+                  || (!Number.isNaN(xTotalCountNum) ? (page * PER_PAGE) < xTotalCountNum : false)
+                  || batchItems.length >= PER_PAGE;
                 if (!hasMore || batchItems.length === 0) break;
                 page++;
                 if (added === 0 && batchItems.length > 0) {
@@ -3486,7 +3539,6 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                   `gooide exceptie: ${e?.message ?? e}. Doorgaan...`
                 );
               } catch { /* ignore */ }
-              // move on to next endpoint/auth combo
             }
           }
         }
