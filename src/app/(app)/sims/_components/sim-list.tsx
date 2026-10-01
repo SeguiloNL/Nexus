@@ -1,5 +1,3 @@
-"use client";
-
 import Link from "next/link";
 import { useFormState } from "react-dom";
 import type { ColumnDef, Row } from "@tanstack/react-table";
@@ -17,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { SIM, SimStatus } from "@prisma/client";
-import { formatIccid } from "@/lib/formatters";
+import { formatBytes, formatIccid } from "@/lib/formatters";
 import {
   exportSimsCsvAction,
   bulkSoftDeleteSimsAction,
@@ -42,6 +40,101 @@ interface SimListProps {
   canDelete: boolean;
   canImport: boolean;
   canExport: boolean;
+}
+
+// ============================================================
+// 🆕 MiniUsageCell — compacte verbruiksindicatie kolom SIM-lijst
+//    Gebruikt: dataUsedBytes / dataLimitBytes / lowestDataLimitBytes
+//    Kleine variant van UsageProgress in sim-detail.tsx
+// ============================================================
+function MiniUsageCell({ sim }: { sim: ListSim }) {
+  const used = sim.dataUsedBytes; // bigint | null
+  const limitRaw = sim.dataLimitBytes;
+  const threshold = sim.lowestDataLimitBytes;
+  const limit: bigint | null = limitRaw ?? threshold; // fallback: laagste drempel als limiet
+
+  const hasUsage = used !== null && used !== undefined;
+  const hasLimit = limit !== null && limit !== undefined && limit > 0n;
+
+  if (!hasUsage && !hasLimit) {
+    return (
+      <div className="flex min-h-[40px] items-center">
+        <span className="text-[11px] text-slate-400">—</span>
+      </div>
+    );
+  }
+
+  let pct = 0;
+  let overschreden = false;
+  if (hasLimit && hasUsage) {
+    if (limit === 0n) {
+      pct = 0;
+    } else {
+      const num = Number(used) / Number(limit) * 100;
+      pct = Math.min(100, Math.max(0, num));
+      overschreden = used > limit;
+    }
+  }
+
+  let barColor = "bg-emerald-500";
+  let pctColor = "text-emerald-700";
+
+  if (!hasLimit) {
+    barColor = "bg-slate-300";
+    pctColor = "text-slate-600";
+  } else if (overschreden) {
+    barColor = "bg-red-500";
+    pctColor = "text-red-700";
+  } else if (pct >= 90) {
+    barColor = "bg-red-500";
+    pctColor = "text-red-700";
+  } else if (threshold && hasUsage && used >= threshold) {
+    barColor = "bg-amber-500";
+    pctColor = "text-amber-700";
+  }
+
+  const fmtUsed = formatBytes(used ?? null, 1);
+  const fmtLimit = hasLimit ? formatBytes(limit, 1) : "Onbeperkt";
+
+  return (
+    <div className="flex w-full min-w-[180px] flex-col gap-1.5 py-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="min-w-0 flex-1 truncate text-[11px] leading-tight">
+          <span className="font-semibold text-slate-900">{fmtUsed}</span>
+          <span className="text-slate-500"> van {fmtLimit}</span>
+        </div>
+        {hasLimit ? (
+          <div className={`text-[11px] font-bold tabular-nums ${pctColor}`}>
+            {overschreden ? (
+              <span className="inline-flex items-center gap-0.5">
+                <AlertTriangle className="h-3 w-3" />
+                100%
+              </span>
+            ) : pct >= 90 ? (
+              <span className="inline-flex items-center gap-0.5">
+                <AlertTriangle className="h-3 w-3" />
+                {pct.toFixed(0)}%
+              </span>
+            ) : (
+              <span>{pct.toFixed(0)}%</span>
+            )}
+          </div>
+        ) : null}
+      </div>
+      {hasLimit ? (
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+          <div
+            className={`h-full rounded-full transition-all ${barColor}`}
+            style={{ width: `${Math.max(pct, overschreden ? 100 : 0)}%` }}
+          />
+        </div>
+      ) : (
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+          <div className={`h-full w-full rounded-full ${barColor}`} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function SimList({
@@ -194,6 +287,12 @@ export function SimList({
       cell: ({ row }) => (
         <SimStatusBadge status={row.getValue<SimStatus>("status")} />
       ),
+    },
+    {
+      id: "usage",
+      header: "Verbruik",
+      enableSorting: false,
+      cell: ({ row }) => <MiniUsageCell sim={row.original} />,
     },
     {
       id: "actions",

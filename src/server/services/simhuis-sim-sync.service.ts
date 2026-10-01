@@ -1168,7 +1168,94 @@ export async function syncActiveSimsUsageFromSimhuis(
   }
   const matched = matchedFromSimhuis.length;
 
-  // 4. Update parallel per match.
+  // 4. 💥 NIEUW: Voor elke SIM waar dataUsed/smsUsed NOG NULL is:
+  //    ROEP getSimStatus(iccid) AAN! Die bevat Winning Combo + Phase A.5 per-SIM usage endpoints!
+  //    Gebruik SEMAPHORE (concurrency limit = 3) om Simhuis API niet te overspoelen!
+  const needsPerSimCalls = matchedFromSimhuis.filter(({ simhuis }) => {
+    const du = typeof simhuis.dataUsedBytes === 'number';
+    const su = typeof simhuis.smsUsedCount === 'number';
+    return !du || !su; // 1 van de 2 mist → per-SIM usage endpoints proberen!
+  });
+  if (needsPerSimCalls.length > 0) {
+    const bulkHasUsageCount = Number(matched) - needsPerSimCalls.length;
+    console.info(
+      `[simhuis-usage-sync] 💡 listAllSims bulk heeft usage data voor ${bulkHasUsageCount}/${matched} SIMs. ` +
+      `${needsPerSimCalls.length} SIMs missen (deels) usage → per-SIM discovery met Phase A.5 endpoints! (concurrency=3)`
+    );
+    const PER_SIM_CONCURRENCY = 3;
+    const PER_SIM_TOTAL_TIMEOUT_MS = 120_000; // 2 min max voor gehele bulk
+    const startedAtPerSim = Date.now();
+    let cursor = 0;
+    let perSimOk = 0;
+    let perSimFailed = 0;
+    let perSimSkipped = 0;
+    const runNext = async () => {
+      while (cursor < needsPerSimCalls.length && (Date.now() - startedAtPerSim) < PER_SIM_TOTAL_TIMEOUT_MS) {
+        const idx = cursor++;
+        const { iccid, simhuis: baseSimhuis } = needsPerSimCalls[idx];
+        const short = iccid.slice(-6);
+        try {
+          // Roep getSimStatus aan! Die bevat:
+          //  ✅ Winning Combo STAP 0 (bulk + catch-22 fix + 401 retry!)
+          //  ✅ Phase A.5 4 usage endpoints Swagger-bevestigd!
+          //  ✅ Bundles extractie + enrich!
+          const detailed = await getSimStatus(iccid);
+          if (detailed) {
+            // Merge: alleen velden die in base SIM WEL NIET hadden!
+            // (dus: detailed.dataUsedBytes WEL → overnemen! Als base WEL al had → niet!)
+            const merged: SimhuisSimStatus = { ...baseSimhuis };
+            let hasMergeImprovement = false;
+            for (const f of ['dataUsedBytes','smsUsedCount','dataLimitBytes','lowestDataLimitBytes','smsLimitCount','lowestSmsLimitCount','productName','productType','simName','groupName','groupId','status','msisdn','eid'] as const) {
+              const detailVal = (detailed as any)[f];
+              const baseVal = (baseSimhuis as any)[f];
+              const improve =
+                detailVal !== null && detailVal !== undefined &&
+                (baseVal === null || baseVal === undefined ||
+                 (f === 'productName' && typeof detailVal === 'string' && /cardcentri|mii|imeifplmn/i.test(String(baseVal)) && !/cardcentri|mii|imeifplmn/i.test(detailVal)) ||
+                 (typeof baseVal === 'string' && baseVal.length === 0)
+                );
+              if (improve) { (merged as any)[f] = detailVal; hasMergeImprovement = true; }
+            }
+            if (hasMergeImprovement) {
+              // Overschrijf in matchedFromSimhuis & bySimhuis!
+              const globalIdx = matchedFromSimhuis.findIndex(x => x.iccid === iccid);
+              if (globalIdx !== -1) matchedFromSimhuis[globalIdx] = { iccid, simhuis: merged };
+              perSimOk++;
+              const newDU = (merged as any).dataUsedBytes;
+              const newProd = (merged as any).productName;
+              if ((idx + 1) % 25 === 0 || idx === needsPerSimCalls.length - 1) {
+                console.info(`[simhuis-usage-sync] 🔄 [${idx + 1}/${needsPerSimCalls.length}] Per-SIM ...${short}: dataUsed=${newDU !== null && newDU !== undefined ? (Number(newDU) / 1024 / 1024).toFixed(1) + ' MB' : 'NULL'}, product=${newProd ?? 'NULL'} (progress ok=${perSimOk} fail=${perSimFailed})`);
+              }
+            } else {
+              perSimSkipped++;
+            }
+          } else { perSimSkipped++; }
+        } catch (perr) {
+          perSimFailed++;
+          const msg = perr instanceof Error ? perr.message : String(perr);
+          errors.push(`[${iccid}] Per-SIM Phase A.5 mislukt: ${msg}`);
+          if ((idx + 1) % 10 === 0) {
+            console.warn(`[simhuis-usage-sync] ❌ [${idx + 1}/${needsPerSimCalls.length}] Per-SIM fail: ...${short}: ${msg} (ok=${perSimOk} fail=${perSimFailed})`);
+          }
+        }
+      }
+    };
+    // Spawn N workers
+    const workers = Array.from({ length: PER_SIM_CONCURRENCY }, () => runNext());
+    await Promise.all(workers);
+    const perSimTook = (Date.now() - startedAtPerSim);
+    const timedOut = (Date.now() - startedAtPerSim) >= PER_SIM_TOTAL_TIMEOUT_MS;
+    console.info(
+      `[simhuis-usage-sync] 🔄 Per-SIM Phase A.5 DAGBOEK: ${needsPerSimCalls.length} candidates. ` +
+      `succes-update=${perSimOk}, skip-geen-verbetering=${perSimSkipped}, error=${perSimFailed}, ` +
+      `time-out=${timedOut}, duur=${perSimTook}ms. ` +
+      `${timedOut ? '⚠️ Let op: time-out bereikt — verbruik is mogelijk voor een deel van SIMs nog niet geüpdatet!' : ''}`
+    );
+  } else {
+    console.info(`[simhuis-usage-sync] 💡 listAllSims bulk heeft COMPLETE usage data voor ALLE ${matched} SIMs! Per-SIM calls niet nodig.`);
+  }
+
+  // 5. Update parallel per match. (was #4, nu #5)
   const updatePromises: Promise<unknown>[] = [];
   const auditUsageUpdates: Array<{
     iccid: string;
