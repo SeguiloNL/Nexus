@@ -3395,9 +3395,11 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                     if (!directIccid && directEid) directIccid = directEid;
 
                     // =========================================================
-                    // STATUS + LIMIT + SMS LIMIT (ook RECHTSTREEKS, geen findKey!)
-                    // AssetSimcard: raw.status = "Active"/"Terminated"/... raw.profileState = "enabled"/...
-                    // eSIM.profileState: enabled/disabled; eSIM.enabledProfile.status/profiles[].status
+                    // STATUS + DATA LIMITS + DATA/SMS USAGE (DIRECT UIT RAW!)
+                    // Simhuis Portal WAARHEID:
+                    //   Data Limit: 2.00 GB / Lowest Data Limit: 2.00 GB
+                    //   → raw.limit en raw.lowestDataLimit worden in GIGABYTES gegeven!
+                    //   Data Used: 0.00 MB → MB?
                     // =========================================================
                     let directStatus: any = undefined;
                     const tryRawStr = (v: any) => {
@@ -3428,24 +3430,111 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                       else if (['provisioning', 'activating', 'pending', 'activating_subscription', 'pre_active'].includes(ds)) normalisedDirectStatus = 'provisioning';
                       else normalisedDirectStatus = ds as any;
                     }
-                    // Data limit: raw.limit (MB volgens Swagger: "limit" default 10 → megabytes?)
-                    const directDataLimitMbRaw = (raw as any).limit ?? nested?.limit ?? (raw as any).enabledProfile?.limit;
-                    let directDataLimitBytes: number | null = null;
-                    if (typeof directDataLimitMbRaw === 'number' && Number.isFinite(directDataLimitMbRaw) && directDataLimitMbRaw > 0) {
-                      directDataLimitBytes = Math.round(directDataLimitMbRaw * 1024 * 1024);
-                    } else if (typeof directDataLimitMbRaw === 'string' && directDataLimitMbRaw) {
-                      const n = Number(directDataLimitMbRaw.replace(/[^\d.]/g, ''));
-                      if (Number.isFinite(n) && n > 0) directDataLimitBytes = Math.round(n * 1024 * 1024);
+
+                    // =========================================================
+                    // 🛠️ Helper: parse plain getal (GB/MB/B/Count) — altijd SAFE!
+                    // =========================================================
+                    const safeNum = (v: any): number | null => {
+                      if (v === null || v === undefined) return null;
+                      if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+                      if (typeof v === 'bigint') {
+                        const n = Number(v);
+                        return Number.isFinite(n) ? n : null;
+                      }
+                      if (typeof v === 'string') {
+                        const s = v.trim();
+                        if (!s || s === '-' || s.toLowerCase() === 'null') return null;
+                        const n = Number(s.replace(/[^\d.\-]/g, ''));
+                        return Number.isFinite(n) ? n : null;
+                      }
+                      return null;
+                    };
+                    const GB = 1024 * 1024 * 1024;
+                    const MB = 1024 * 1024;
+                    const KB = 1024;
+
+                    // Data limits: Simhuis portal = GB (2.00 GB).
+                    // Probeer eerst GB, dan MB, dan Bytes. Kies de meest plausibele.
+                    const toBytesBestEffort = (rawVal: any, label: string): { bytes: number | null; debug: string } => {
+                      const n = safeNum(rawVal);
+                      if (n === null) return { bytes: null, debug: `${label}=NULL` };
+                      if (n <= 0) return { bytes: null, debug: `${label}=${n} (negatief)` };
+                      // Simhuis portal zegt: 2.00 GB (n=2!) dus als n<=100000 dan is het WEL GB!
+                      if (n > 0 && n <= 50000) {
+                        return { bytes: Math.round(n * GB), debug: `${label}=${n} → *GB (${Math.round(n*GB)} bytes)` };
+                      }
+                      // Als n tussen 50000 en 50mln: MB
+                      if (n > 50000 && n <= 50_000_000) {
+                        return { bytes: Math.round(n * MB), debug: `${label}=${n} → *MB` };
+                      }
+                      return { bytes: Math.round(n), debug: `${label}=${n} → bytes` };
+                    };
+
+                    const rawLimitRaw = (raw as any).limit ?? nested?.limit ?? (raw as any).enabledProfile?.limit;
+                    const rawLowestLimitRaw = (raw as any).lowestDataLimit ?? (raw as any).lowestLimit ?? nested?.lowestDataLimit ?? nested?.lowestLimit ?? (raw as any).enabledProfile?.lowestDataLimit;
+                    const { bytes: dlBytes, debug: dlDbg } = toBytesBestEffort(rawLimitRaw, 'limit');
+                    const { bytes: ldlBytes, debug: ldlDbg } = toBytesBestEffort(rawLowestLimitRaw, 'lowestDataLimit');
+
+                    // Data Used: probeer MB (0.00 MB in portal)
+                    const rawDataUsedRaw = (raw as any).dataUsed ?? (raw as any).dataUsage ?? (raw as any).data_used ?? (raw as any).data_usage
+                      ?? nested?.dataUsed ?? nested?.dataUsage ?? (raw as any).enabledProfile?.dataUsed;
+                    let duBytes: number | null = null;
+                    let duDbg = `dataUsedRaw=${typeof rawDataUsedRaw}=${JSON.stringify(rawDataUsedRaw)}`;
+                    // Kijk eerst in subscriptions[] / setups[]!
+                    const firstSub = Array.isArray((raw as any).subscriptions) && (raw as any).subscriptions.length > 0 ? (raw as any).subscriptions[0] : null;
+                    const firstSetup = Array.isArray((raw as any).setups) && (raw as any).setups.length > 0 ? (raw as any).setups[0] : null;
+                    if (firstSub) {
+                      for (const k of ['dataUsed','dataUsage','data_used','data_usage','usageData','usedData','consumed','dataConsumed','totalDataUsed','usage']) {
+                        const sv = safeNum((firstSub as any)[k]);
+                        if (sv !== null && sv >= 0) {
+                          if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+                          else if (sv > 50000) duBytes = Math.round(sv);
+                          else duBytes = 0;
+                          duDbg += ` → SUBS.${k}=${sv}`;
+                          break;
+                        }
+                      }
                     }
-                    // SMS limit: raw.smsLimit
-                    const directSmsLimitRaw = (raw as any).smsLimit ?? nested?.smsLimit ?? (raw as any).enabledProfile?.smsLimit;
-                    let directSmsLimitCount: number | null = null;
-                    if (typeof directSmsLimitRaw === 'number' && Number.isFinite(directSmsLimitRaw) && directSmsLimitRaw >= 0) {
-                      directSmsLimitCount = Math.round(directSmsLimitRaw);
-                    } else if (typeof directSmsLimitRaw === 'string' && directSmsLimitRaw) {
-                      const n = Number(directSmsLimitRaw.replace(/[^\d.]/g, ''));
-                      if (Number.isFinite(n) && n >= 0) directSmsLimitCount = Math.round(n);
+                    if (duBytes === null && firstSetup) {
+                      for (const k of ['dataUsed','dataUsage','data_used','data_usage','usageData','usedData','consumed','dataConsumed','totalDataUsed','usage']) {
+                        const sv = safeNum((firstSetup as any)[k]);
+                        if (sv !== null && sv >= 0) {
+                          if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+                          else if (sv > 50000) duBytes = Math.round(sv);
+                          else duBytes = 0;
+                          duDbg += ` → SETUP.${k}=${sv}`;
+                          break;
+                        }
+                      }
                     }
+                    if (duBytes === null) {
+                      const sv = safeNum(rawDataUsedRaw);
+                      if (sv !== null && sv >= 0) {
+                        if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+                        else if (sv > 50000) duBytes = Math.round(sv);
+                        else duBytes = 0;
+                        duDbg += ` → DIRECT=${sv}`;
+                      }
+                    }
+
+                    // SMS limits/used
+                    const smsLimitRaw = (raw as any).smsLimit ?? nested?.smsLimit ?? (raw as any).enabledProfile?.smsLimit;
+                    const smsLowestLimitRaw = (raw as any).lowestSmsLimit ?? nested?.lowestSmsLimit ?? (raw as any).enabledProfile?.lowestSmsLimit;
+                    const smsUsedRaw = (raw as any).smsUsed ?? (raw as any).smsCount ?? (raw as any).totalSms ?? (raw as any).smsSent
+                      ?? nested?.smsUsed ?? (firstSub as any)?.smsUsed ?? (firstSub as any)?.smsCount ?? (firstSetup as any)?.smsUsed;
+                    const smsLimitNum = safeNum(smsLimitRaw);
+                    const smsLowestLimitNum = safeNum(smsLowestLimitRaw);
+                    const smsUsedNum = safeNum(smsUsedRaw);
+
+                    const directDataLimitBytes = (dlBytes !== null && dlBytes > 0) ? dlBytes : null;
+                    const directLowestDataLimitBytes = (ldlBytes !== null && ldlBytes > 0) ? ldlBytes : null;
+                    const directSmsLimitCount = (smsLimitNum !== null && smsLimitNum >= 0) ? smsLimitNum : null;
+                    const directLowestSmsLimitCount = (smsLowestLimitNum !== null && smsLowestLimitNum >= 0) ? smsLowestLimitNum : null;
+                    const directDataUsedBytes = (duBytes !== null && duBytes >= 0) ? duBytes : null;
+                    const directSmsUsedCount = (smsUsedNum !== null && smsUsedNum >= 0) ? smsUsedNum : null;
+
+                    // Vervang NU: dataLimitBytes (2 PB bug was hier!) laagste prioriteit: als directe null is, probeer toSimStatus dan pas.
+                    // We zetten ALLE velden expliciet NA toSimStatus.
 
                     // Nu: toSimStatus voor overige (niet-kritieke) velden.
                     // Daarna OVERSCHRIJVEN we de kritieke velden met onze directe extractie (altijd wint!).
@@ -3454,22 +3543,47 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                       s = toSimStatus(raw, directIccid || directEid || '');
                     } catch { s = null; }
                     const base: Partial<SimhuisSimStatus> = s ? { ...(s as any) } : {};
-                    // 🔐💥 Kritieke velden: altijd de directe extractie wint!
+                    // 🔐💥 Kritieke velden: altijd de directe extractie wint! (OOK lowest* en used*!)
                     if (directIccid) (base as any).iccid = directIccid;
                     if (directEid)  (base as any).eid  = directEid;
                     if (directMsisdn) (base as any).msisdn = directMsisdn;
                     if (normalisedDirectStatus) (base as any).status = normalisedDirectStatus;
                     if (directDataLimitBytes !== null) (base as any).dataLimitBytes = directDataLimitBytes;
+                    if (directLowestDataLimitBytes !== null) (base as any).lowestDataLimitBytes = directLowestDataLimitBytes;
                     if (directSmsLimitCount !== null) (base as any).smsLimitCount = directSmsLimitCount;
+                    if (directLowestSmsLimitCount !== null) (base as any).lowestSmsLimitCount = directLowestSmsLimitCount;
+                    if (directDataUsedBytes !== null) (base as any).dataUsedBytes = directDataUsedBytes;
+                    if (directSmsUsedCount !== null) (base as any).smsUsedCount = directSmsUsedCount;
+
+                    // UI BUG FIX: als lowestDataLimitBytes null is, gebruik dataLimitBytes
+                    if (directLowestDataLimitBytes === null && directDataLimitBytes !== null) {
+                      (base as any).lowestDataLimitBytes = directDataLimitBytes;
+                    }
+                    if (directLowestSmsLimitCount === null && directSmsLimitCount !== null) {
+                      (base as any).lowestSmsLimitCount = directSmsLimitCount;
+                    }
+
                     const final = base as SimhuisSimStatus;
                     if (debugIdx < 3) {
                       try {
+                        const firstSubKeys = firstSub ? Object.keys(firstSub).slice(0, 12) : null;
+                        const firstSetupKeys = firstSetup ? Object.keys(firstSetup).slice(0, 12) : null;
                         console.info(
                           `[simhuis-listAllSims]   🐛 ${win.tag} item#${debugIdx}: ` +
-                          `directIccid=${JSON.stringify(directIccid)} directEid=${JSON.stringify(directEid)} directMsisdn=${JSON.stringify(directMsisdn)} ` +
-                          `directStatus=${JSON.stringify(directStatus)}→${JSON.stringify(normalisedDirectStatus)} dataLimitBytes=${JSON.stringify(directDataLimitBytes)} smsLimitCount=${JSON.stringify(directSmsLimitCount)} | ` +
-                          `toSim.iccid=${JSON.stringify(s ? (s as any).iccid : null)} toSim.status=${JSON.stringify(s ? (s as any).status : null)} | ` +
-                          `FINAL iccid=${JSON.stringify((final as any).iccid)} status=${JSON.stringify((final as any).status)} push=${(final as any).iccid ? '✅' : '❌'}`
+                          `directIccid=${JSON.stringify(directIccid)} directEid=${JSON.stringify(directEid)} directMsisdn=${JSON.stringify(directMsisdn)}\n` +
+                          `     status=${JSON.stringify(directStatus)}→${JSON.stringify(normalisedDirectStatus)}\n` +
+                          `     DL  raw=${JSON.stringify(rawLimitRaw)} → ${dlDbg} → DIRECT=${JSON.stringify(directDataLimitBytes)} bytes (${directDataLimitBytes!==null?`${(directDataLimitBytes/GB).toFixed(2)} GB`:'-'})\n` +
+                          `     LDL raw=${JSON.stringify(rawLowestLimitRaw)} → ${ldlDbg} → DIRECT=${JSON.stringify(directLowestDataLimitBytes)} bytes\n` +
+                          `     DU  ${duDbg} → DIRECT=${JSON.stringify(directDataUsedBytes)} bytes (${directDataUsedBytes!==null?`${(directDataUsedBytes/MB).toFixed(2)} MB`:'-'})\n` +
+                          `     SMS limit=${JSON.stringify(smsLimitRaw)}→${JSON.stringify(directSmsLimitCount)} lowestSMS=${JSON.stringify(smsLowestLimitRaw)}→${JSON.stringify(directLowestSmsLimitCount)} usedSMS=${JSON.stringify(smsUsedRaw)}→${JSON.stringify(directSmsUsedCount)}\n` +
+                          `     firstSub keys=${JSON.stringify(firstSubKeys)} firstSetup keys=${JSON.stringify(firstSetupKeys)}\n` +
+                          `     toSim: iccid=${JSON.stringify(s ? (s as any).iccid : null)} status=${JSON.stringify(s ? (s as any).status : null)} ` +
+                          `DL=${JSON.stringify(s ? (s as any).dataLimitBytes : null)} LDL=${JSON.stringify(s ? (s as any).lowestDataLimitBytes : null)} ` +
+                          `DU=${JSON.stringify(s ? (s as any).dataUsedBytes : null)} SMSu=${JSON.stringify(s ? (s as any).smsUsedCount : null)}\n` +
+                          `     FINAL: iccid=${JSON.stringify((final as any).iccid)} status=${JSON.stringify((final as any).status)} ` +
+                          `DL=${JSON.stringify((final as any).dataLimitBytes)}(${((final as any).dataLimitBytes ?? 0)/GB}GB) ` +
+                          `LDL=${JSON.stringify((final as any).lowestDataLimitBytes)} DU=${JSON.stringify((final as any).dataUsedBytes)} ` +
+                          `SMSlim=${JSON.stringify((final as any).smsLimitCount)} SMSused=${JSON.stringify((final as any).smsUsedCount)} push=${(final as any).iccid ? '✅' : '❌'}`
                         );
                       } catch { /* ignore */ }
                     }
@@ -3753,7 +3867,8 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                     if (!directIccid && directEid) directIccid = directEid;
 
                     // =========================================================
-                    // STATUS + LIMIT + SMS LIMIT (ook RECHTSTREEKS, geen findKey!)
+                    // STATUS + DATA LIMITS + DATA/SMS USAGE (DIRECT UIT RAW!)
+                    // Dezelfde ultra-robuuste logica als WINNING COMBO.
                     // =========================================================
                     let directStatus: any = undefined;
                     const tryRawStr = (v: any) => {
@@ -3783,24 +3898,77 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                       else if (['provisioning', 'activating', 'pending', 'activating_subscription', 'pre_active'].includes(ds)) normalisedDirectStatus = 'provisioning';
                       else normalisedDirectStatus = ds as any;
                     }
-                    // Data limit: raw.limit (in MB? → *1024*1024)
-                    const directDataLimitMbRaw = (raw as any).limit ?? nested?.limit ?? (raw as any).enabledProfile?.limit;
-                    let directDataLimitBytes: number | null = null;
-                    if (typeof directDataLimitMbRaw === 'number' && Number.isFinite(directDataLimitMbRaw) && directDataLimitMbRaw > 0) {
-                      directDataLimitBytes = Math.round(directDataLimitMbRaw * 1024 * 1024);
-                    } else if (typeof directDataLimitMbRaw === 'string' && directDataLimitMbRaw) {
-                      const n = Number(directDataLimitMbRaw.replace(/[^\d.]/g, ''));
-                      if (Number.isFinite(n) && n > 0) directDataLimitBytes = Math.round(n * 1024 * 1024);
+                    const safeNum = (v: any): number | null => {
+                      if (v === null || v === undefined) return null;
+                      if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+                      if (typeof v === 'bigint') { const n = Number(v); return Number.isFinite(n) ? n : null; }
+                      if (typeof v === 'string') {
+                        const s = v.trim();
+                        if (!s || s === '-' || s.toLowerCase() === 'null') return null;
+                        const n = Number(s.replace(/[^\d.\-]/g, ''));
+                        return Number.isFinite(n) ? n : null;
+                      }
+                      return null;
+                    };
+                    const GB = 1024 * 1024 * 1024;
+                    const MB = 1024 * 1024;
+                    const toBytesBestEffort = (rawVal: any, _label: string): number | null => {
+                      const n = safeNum(rawVal);
+                      if (n === null || n <= 0) return null;
+                      if (n > 0 && n <= 50000) return Math.round(n * GB);
+                      if (n > 50000 && n <= 50_000_000) return Math.round(n * MB);
+                      return Math.round(n);
+                    };
+                    const rawLimitRaw = (raw as any).limit ?? nested?.limit ?? (raw as any).enabledProfile?.limit;
+                    const rawLowestLimitRaw = (raw as any).lowestDataLimit ?? (raw as any).lowestLimit ?? nested?.lowestDataLimit ?? nested?.lowestLimit ?? (raw as any).enabledProfile?.lowestDataLimit;
+                    const dlBytes = toBytesBestEffort(rawLimitRaw, 'limit');
+                    const ldlBytes = toBytesBestEffort(rawLowestLimitRaw, 'lowestDataLimit');
+                    const firstSub = Array.isArray((raw as any).subscriptions) && (raw as any).subscriptions.length > 0 ? (raw as any).subscriptions[0] : null;
+                    const firstSetup = Array.isArray((raw as any).setups) && (raw as any).setups.length > 0 ? (raw as any).setups[0] : null;
+                    let duBytes: number | null = null;
+                    if (firstSub) {
+                      for (const k of ['dataUsed','dataUsage','data_used','data_usage','usageData','usedData','consumed','dataConsumed','totalDataUsed','usage']) {
+                        const sv = safeNum((firstSub as any)[k]);
+                        if (sv !== null && sv >= 0) {
+                          if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+                          else if (sv > 50000) duBytes = Math.round(sv);
+                          else duBytes = 0;
+                          break;
+                        }
+                      }
                     }
-                    // SMS limit: raw.smsLimit
-                    const directSmsLimitRaw = (raw as any).smsLimit ?? nested?.smsLimit ?? (raw as any).enabledProfile?.smsLimit;
-                    let directSmsLimitCount: number | null = null;
-                    if (typeof directSmsLimitRaw === 'number' && Number.isFinite(directSmsLimitRaw) && directSmsLimitRaw >= 0) {
-                      directSmsLimitCount = Math.round(directSmsLimitRaw);
-                    } else if (typeof directSmsLimitRaw === 'string' && directSmsLimitRaw) {
-                      const n = Number(directSmsLimitRaw.replace(/[^\d.]/g, ''));
-                      if (Number.isFinite(n) && n >= 0) directSmsLimitCount = Math.round(n);
+                    if (duBytes === null && firstSetup) {
+                      for (const k of ['dataUsed','dataUsage','data_used','data_usage','usageData','usedData','consumed','dataConsumed','totalDataUsed','usage']) {
+                        const sv = safeNum((firstSetup as any)[k]);
+                        if (sv !== null && sv >= 0) {
+                          if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+                          else if (sv > 50000) duBytes = Math.round(sv);
+                          else duBytes = 0;
+                          break;
+                        }
+                      }
                     }
+                    if (duBytes === null) {
+                      const rawDataUsedRaw = (raw as any).dataUsed ?? (raw as any).dataUsage ?? (raw as any).data_used ?? (raw as any).data_usage ?? nested?.dataUsed ?? nested?.dataUsage ?? (raw as any).enabledProfile?.dataUsed;
+                      const sv = safeNum(rawDataUsedRaw);
+                      if (sv !== null && sv >= 0) {
+                        if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+                        else if (sv > 50000) duBytes = Math.round(sv);
+                        else duBytes = 0;
+                      }
+                    }
+                    const smsLimitRaw = (raw as any).smsLimit ?? nested?.smsLimit ?? (raw as any).enabledProfile?.smsLimit;
+                    const smsLowestLimitRaw = (raw as any).lowestSmsLimit ?? nested?.lowestSmsLimit ?? (raw as any).enabledProfile?.lowestSmsLimit;
+                    const smsUsedRaw = (raw as any).smsUsed ?? (raw as any).smsCount ?? (raw as any).totalSms ?? (raw as any).smsSent ?? nested?.smsUsed ?? (firstSub as any)?.smsUsed ?? (firstSub as any)?.smsCount ?? (firstSetup as any)?.smsUsed;
+                    const smsLimitNum = safeNum(smsLimitRaw);
+                    const smsLowestLimitNum = safeNum(smsLowestLimitRaw);
+                    const smsUsedNum = safeNum(smsUsedRaw);
+                    const directDataLimitBytes = (dlBytes !== null && dlBytes > 0) ? dlBytes : null;
+                    const directLowestDataLimitBytes = (ldlBytes !== null && ldlBytes > 0) ? ldlBytes : null;
+                    const directSmsLimitCount = (smsLimitNum !== null && smsLimitNum >= 0) ? smsLimitNum : null;
+                    const directLowestSmsLimitCount = (smsLowestLimitNum !== null && smsLowestLimitNum >= 0) ? smsLowestLimitNum : null;
+                    const directDataUsedBytes = (duBytes !== null && duBytes >= 0) ? duBytes : null;
+                    const directSmsUsedCount = (smsUsedNum !== null && smsUsedNum >= 0) ? smsUsedNum : null;
 
                     let s: SimhuisSimStatus | null = null;
                     try { s = toSimStatus(raw, directIccid || directEid || ''); } catch { s = null; }
@@ -3810,7 +3978,15 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                     if (directMsisdn) (base as any).msisdn = directMsisdn;
                     if (normalisedDirectStatus) (base as any).status = normalisedDirectStatus;
                     if (directDataLimitBytes !== null) (base as any).dataLimitBytes = directDataLimitBytes;
+                    if (directLowestDataLimitBytes !== null) (base as any).lowestDataLimitBytes = directLowestDataLimitBytes;
                     if (directSmsLimitCount !== null) (base as any).smsLimitCount = directSmsLimitCount;
+                    if (directLowestSmsLimitCount !== null) (base as any).lowestSmsLimitCount = directLowestSmsLimitCount;
+                    if (directDataUsedBytes !== null) (base as any).dataUsedBytes = directDataUsedBytes;
+                    if (directSmsUsedCount !== null) (base as any).smsUsedCount = directSmsUsedCount;
+                    // Fallback: lowest = dataLimit als lowest null is
+                    if (directLowestDataLimitBytes === null && directDataLimitBytes !== null) (base as any).lowestDataLimitBytes = directDataLimitBytes;
+                    if (directLowestSmsLimitCount === null && directSmsLimitCount !== null) (base as any).lowestSmsLimitCount = directSmsLimitCount;
+
                     const final = base as SimhuisSimStatus;
                     if ((final as any).iccid) batchItems.push(final);
                   } catch {
