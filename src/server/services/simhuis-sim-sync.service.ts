@@ -749,12 +749,8 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
       const lastUsageSyncAtVal = hasAnyUsage ? new Date() : null;
 
       if (existing) {
-        if (existing.deletedAt) {
-          skipped++;
-          h.skippedReasonDeleted++;
-          continue;
-        }
-        if (skipIfLocked && existing.status !== SimStatus.IN_STOCK && status === SimStatus.IN_STOCK) {
+        const wasSoftDeleted = !!existing.deletedAt;
+        if (skipIfLocked && !wasSoftDeleted && existing.status !== SimStatus.IN_STOCK && status === SimStatus.IN_STOCK) {
           skipped++;
           h.skippedReasonLocked++;
           continue;
@@ -779,9 +775,13 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           lowestSmsLimitCount: existing.lowestSmsLimitCount,
           lastUsageSyncAt: existing.lastUsageSyncAt,
           notes: existing.notes,
+          deletedAt: existing.deletedAt,
         };
         const newData: Record<string, any> = { ...oldData };
-        let changed = false;
+        let changed = wasSoftDeleted; // altijd "changed" als we zojuist hebben gerestaureerd
+        if (wasSoftDeleted) {
+          newData.deletedAt = null;
+        }
         if (existing.status !== status) { newData.status = status; changed = true; }
         if (msisdnVal && existing.msisdn !== msisdnVal) { newData.msisdn = msisdnVal; changed = true; }
         if (imsiVal && existing.imsi !== imsiVal) { newData.imsi = imsiVal; changed = true; }
@@ -813,7 +813,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
         }
         const validatedStatusForUpdate = validateAndNormalizeSimStatus(
           newData.status,
-          `UPDATE iccid=${iccid} existingId=${existing.id}`
+          `UPDATE${wasSoftDeleted ? "+RESTORE" : ""} iccid=${iccid} existingId=${existing.id}${wasSoftDeleted ? ` (was deletedAt=${String(existing.deletedAt)})` : ""}`
         );
         const p = prisma.sIM
           .update({
@@ -838,15 +838,21 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
               lowestSmsLimitCount: newData.lowestSmsLimitCount,
               lastUsageSyncAt: newData.lastUsageSyncAt,
               notes: newData.notes,
+              deletedAt: wasSoftDeleted ? null : undefined,
             },
           })
           .then(() => {
-            auditUpdatedEntries.push({ iccid, old: oldData, new: newData });
-            updated++;
+            if (wasSoftDeleted) {
+              auditCreatedEntries.push({ iccid, msisdn: msisdnVal, imsi: imsiVal });
+              created++;
+            } else {
+              auditUpdatedEntries.push({ iccid, old: oldData, new: newData });
+              updated++;
+            }
           })
           .catch((err) => {
             errorCount++;
-            errors.push(`[${iccid}] Update mislukt: ${err?.message ?? err}`);
+            errors.push(`[${iccid}] ${wasSoftDeleted ? "Restore+Update" : "Update"} mislukt: ${err?.message ?? err}`);
           });
         upsertPromises.push(p);
       } else {
