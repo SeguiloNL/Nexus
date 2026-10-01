@@ -225,16 +225,39 @@ export function SimList({
     return sims.filter((s) => s.status === statusFilter);
   }, [sims, statusFilter]);
 
+  function getUsageScore(sim: ListSim): { hasData: boolean; ratio: number; usedAbs: bigint } {
+    const used = sim.dataUsedBytes;
+    const limitRaw = sim.dataLimitBytes;
+    const threshold = sim.lowestDataLimitBytes;
+    const limit: bigint | null = limitRaw ?? threshold;
+
+    if (used === null || used === undefined) {
+      return { hasData: false, ratio: -1, usedAbs: 0n };
+    }
+    const usedNum = Number(used);
+    if (limit !== null && limit !== undefined && limit > 0n) {
+      const limitNum = Number(limit);
+      if (limitNum === 0) return { hasData: true, ratio: usedNum, usedAbs: used };
+      const ratio = usedNum / limitNum;
+      return { hasData: true, ratio, usedAbs: used };
+    }
+    return { hasData: true, ratio: usedNum, usedAbs: used };
+  }
+
   const usageSortFn: SortingFn<ListSim> = (rowA, rowB) => {
-    const aUsed = rowA.original.dataUsedBytes;
-    const bUsed = rowB.original.dataUsedBytes;
-    if (aUsed === null || aUsed === undefined) {
-      if (bUsed === null || bUsed === undefined) return 0;
+    const a = getUsageScore(rowA.original);
+    const b = getUsageScore(rowB.original);
+
+    if (!a.hasData) {
+      if (!b.hasData) return 0;
       return 1;
     }
-    if (bUsed === null || bUsed === undefined) return -1;
-    if (aUsed < bUsed) return -1;
-    if (aUsed > bUsed) return 1;
+    if (!b.hasData) return -1;
+
+    if (a.ratio < b.ratio) return -1;
+    if (a.ratio > b.ratio) return 1;
+    if (a.usedAbs < b.usedAbs) return -1;
+    if (a.usedAbs > b.usedAbs) return 1;
     return 0;
   };
 

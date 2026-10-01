@@ -1662,10 +1662,16 @@ function enrichSimhuisStatusWithDirectRawExtracts(
 
     const maxRealistic = 10 * _TB;
     const orderHint = fieldHint === 'limit' ? 'limit' : 'used';
-    const preference =
-      orderHint === 'limit'
-        ? [candMB, candGB, candB, candKB]
-        : [candMB, candB, candKB, candGB];
+    const isExactByteCountForLimit =
+      fieldHint === 'limit' && n > 10_000_000 && n % (1024 * 1024) === 0;
+    let preference: Array<number>;
+    if (orderHint === 'limit') {
+      preference = isExactByteCountForLimit
+        ? [candB, candKB, candMB, candGB]
+        : [candMB, candGB, candB, candKB];
+    } else {
+      preference = [candB, candKB, candMB, candGB];
+    }
     for (const c of preference) {
       if (c > 0 && c <= maxRealistic) return c;
     }
@@ -1734,13 +1740,22 @@ function enrichSimhuisStatusWithDirectRawExtracts(
         for (let bi = 0; bi < bundlesArr.length; bi++) {
           const b = bundlesArr[bi];
           if (!b || typeof b !== 'object') continue;
+          const bInit = safeNum((b as any).initialSize);
+          const bRem = safeNum((b as any).remainingBytes);
+          const bType = isValidStringValue((b as any).type)?.toLowerCase() ?? '';
+          const isPpuBundle = (bInit === 0 && bRem === 0) || bType === 'permb' || bType.includes('per') || bType.includes('pay');
           if (dataUsed === null) {
             for (const k of BUNDLE_DATA_KEYS) {
               const rawV = (b as any)[k];
-              const pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
-              if (pb !== null && pb >= 0) { dataUsed = pb; dataUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
-              const sv = safeNum(rawV);
-              if (sv !== null && sv === 0) { dataUsed = 0; dataUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
+              if (isPpuBundle) {
+                const sv = safeNum(rawV);
+                if (sv !== null && sv >= 0) { dataUsed = Math.round(sv); dataUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}|PPU-BYTES`; break; }
+              } else {
+                const pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
+                if (pb !== null && pb >= 0) { dataUsed = pb; dataUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
+                const sv = safeNum(rawV);
+                if (sv !== null && sv === 0) { dataUsed = 0; dataUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
+              }
             }
           }
           if (remainingBytes === null) {
@@ -1868,9 +1883,9 @@ function enrichSimhuisStatusWithDirectRawExtracts(
   // Bundles debug!
   try {
     const shortIccid = iccid.slice(-6);
-    const bdMb = bundleData.dataUsed !== null ? (bundleData.dataUsed / 1024 / 1024).toFixed(4) + ' MB' : '-';
-    const remMb = bundleData.remaining !== null ? (bundleData.remaining / 1024 / 1024 / 1024).toFixed(4) + ' GB' : '-';
-    const initMb = bundleData.initial !== null ? (bundleData.initial / 1024 / 1024 / 1024).toFixed(4) + ' GB' : '-';
+    const bdMb = bundleData.dataUsed !== null ? (bundleData.dataUsed / _MB).toFixed(4) + ' MB' : '-';
+    const remMb = bundleData.remaining !== null ? (bundleData.remaining / _MB).toFixed(4) + ' MB' : '-';
+    const initMb = bundleData.initial !== null ? (bundleData.initial / _MB).toFixed(4) + ' MB' : '-';
     console.info(`[simhuis:enrichExtract] [${shortIccid}] 🎁 BUNDLES[] extractie: dataUsed=${bdMb} remaining=${remMb} initial=${initMb} smsUsed=${JSON.stringify(bundleData.smsUsed)} product=${JSON.stringify(bundleData.productName)} (src=${bundleData.productSrc})`);
   } catch {}
   try {
