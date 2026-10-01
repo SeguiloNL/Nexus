@@ -1,6 +1,22 @@
 import { simhuisClient, SimhuisApiError, type SimhuisRequestOptions } from './client';
 import type { ActivateSimOptions, SimhuisApiResponse, SimhuisSimStatus } from './types';
 
+// ============================================================
+// 📅 billTime helper: bereken facturatieperiode voor /v3/cdr/stats
+// Formaat (Swagger): "YYYY-MM-DD HH:MM:SS,YYYY-MM-DD HH:MM:SS"
+//   - billTime filtert op tariferingsmoment in system, NIET op verkeersmoment.
+//   - Tijdzone: expliciet Europe/Amsterdam (TZ=Europe/Amsterdam per prod env var).
+// ============================================================
+function pad2(n: number): string { return n < 10 ? `0${n}` : String(n); }
+function billTimeCurrentMonth(refDate: Date = new Date()): { start: string; end: string; combined: string } {
+  const y = refDate.getFullYear();
+  const m = refDate.getMonth(); // 0-based
+  const firstDay = new Date(y, m, 1, 0, 0, 0, 0);
+  const lastDay = new Date(y, m + 1, 0, 23, 59, 59, 999);
+  const fmt = (d: Date): string => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  return { start: fmt(firstDay), end: fmt(lastDay), combined: `${fmt(firstDay)},${fmt(lastDay)}` };
+}
+
 function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, any>;
   const nestedSim = r.simCard ?? r.sim ?? r.asset ?? r.device ?? r.subscription ?? r.subscriber ?? r.esimProfile ?? r.esim ?? {};
@@ -1599,12 +1615,166 @@ function enrichSimhuisStatusWithDirectRawExtracts(
     'usageBytes','mbUsed','totalUsage','totalData','totalDataUsage','gprsUsed','trafficUsed','dataMbUsed',
     'dataMegaBytesUsed','downloadedBytes','uploadedBytes','totalDataBytes','dataUsageBytes','dataUsageMb',
     'sessionDataUsed','consumedMb','usedMegabytes','totalMegabytes','totalMegabytesUsed','totalMbUsed','megabytesUsed',
-    'gprsDataUsed','packetDataUsed','totalVolume','dataVolume','dataUsedMb','dataUsedMegaBytes','dataAmount'
+    'gprsDataUsed','packetDataUsed','totalVolume','dataVolume','dataUsedMb','dataUsedMegaBytes','dataAmount','bytes','usedBytes'
+  ];
+  const SMS_USED_KEYS = ['smsUsed','smsCount','totalSms','smsSent','smsUsage','usedSms','consumedSms','smsMessages','messageCount','moSms','mtSms','totalSmsUsed','sms','messagesUsed','sentSms'];
+
+  const BUNDLE_DATA_KEYS = ['dataUsed','remainingBytes','initialSize','usage','consumedData','usedData','bytesUsed','consumed','dataUsage'];
+  const BUNDLE_SMS_KEYS = ['smsUsed','smsCount','smsRemaining','smsInitial','remainingSms','smsMessages','messagesUsed','totalSms','smsSent'];
+  const BUNDLE_PRODUCT_KEYS = [
+    'localProductName','local_product_name','productName','product','bundleName','bundle_name','bundleId','bundle_id','bundle','name',
+    'description','localProductId','local_product_id','productId','product_code','productCode','tariff','tariffName','planName','offerName'
   ];
 
-  let duBytes: number | null = null;
-  let duSource: string = '';
-  if (firstSub) {
+  // ============================================================
+  // 🆕 Swagger-bevestigd: subscriptions[] is ARRAY. Elke subscription heeft bundles[] ARRAY!
+  //    Loop door subscriptions[*].bundles[*] → daar zitten ECHTE dataUsed + localProductName!
+  // ============================================================
+  const extractFromAllBundles = (): { found: boolean; dataUsed: number|null; remaining: number|null; initial: number|null; smsUsed: number|null; productName: string|null; productSrc: string } => {
+    let dataUsed: number | null = null;
+    let dataUsedSrc = '';
+    let remainingBytes: number | null = null;
+    let initialBytes: number | null = null;
+    let smsUsed: number | null = null;
+    let smsUsedSrc = '';
+    let pName: string | null = null;
+    let pSrc = '';
+    try {
+      const subscriptionsArr = Array.isArray(rawObj.subscriptions) ? rawObj.subscriptions
+        : Array.isArray(nested?.subscriptions) ? nested.subscriptions
+        : Array.isArray((rawObj as any).enabledProfile?.subscriptions) ? (rawObj as any).enabledProfile.subscriptions
+        : [];
+      const sLen = subscriptionsArr.length;
+      for (let si = 0; si < sLen; si++) {
+        const sub = subscriptionsArr[si];
+        if (!sub || typeof sub !== 'object') continue;
+        const bundlesArr = Array.isArray((sub as any).bundles) ? (sub as any).bundles : [];
+        for (let bi = 0; bi < bundlesArr.length; bi++) {
+          const b = bundlesArr[bi];
+          if (!b || typeof b !== 'object') continue;
+          // --- Data used ---
+          if (dataUsed === null) {
+            for (const k of BUNDLE_DATA_KEYS) {
+              const sv = safeNum((b as any)[k]);
+              if (sv !== null && sv >= 0) {
+                if (sv > 0 && sv <= 50_000_000) dataUsed = Math.round(sv * (sv <= 50000 ? MB : 1));
+                else if (sv > 50_000_000) dataUsed = Math.round(sv);
+                else dataUsed = 0;
+                dataUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`;
+                break;
+              }
+            }
+          }
+          if (remainingBytes === null) {
+            const sv = safeNum((b as any).remainingBytes);
+            if (sv !== null && sv >= 0) {
+              if (sv > 0 && sv <= 50_000_000) remainingBytes = Math.round(sv * (sv <= 50000 ? GB : 1));
+              else if (sv > 50_000_000) remainingBytes = Math.round(sv);
+              else remainingBytes = 0;
+            }
+          }
+          if (initialBytes === null) {
+            const sv = safeNum((b as any).initialSize);
+            if (sv !== null && sv >= 0) {
+              if (sv > 0 && sv <= 50_000_000) initialBytes = Math.round(sv * (sv <= 50000 ? GB : 1));
+              else if (sv > 50_000_000) initialBytes = Math.round(sv);
+              else initialBytes = 0;
+            }
+          }
+          // --- SMS used ---
+          if (smsUsed === null) {
+            for (const k of BUNDLE_SMS_KEYS) {
+              const sv = safeNum((b as any)[k]);
+              if (sv !== null && sv >= 0) { smsUsed = sv; smsUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
+            }
+          }
+          // --- Product name (HEET BIJ SWAGGER: localProductName!) ---
+          if (!pName) {
+            for (const k of BUNDLE_PRODUCT_KEYS) {
+              const s = isValidStringValue((b as any)[k]);
+              if (s && !looksLikeTechProfile(s)) { pName = s; pSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
+            }
+          }
+        }
+        // Als geen bundles[].productName, probeer subscriptions[].localProductName / rateplan zelf
+        if (!pName) {
+          for (const k of BUNDLE_PRODUCT_KEYS) {
+            const s = isValidStringValue((sub as any)[k]);
+            if (s && !looksLikeTechProfile(s)) { pName = s; pSrc = `SUBS[${si}].${k}`; break; }
+          }
+        }
+      }
+      // Als laatste: ratings.dataUsed (uit CDR response!)
+      if (dataUsed === null) {
+        const ratings = (rawObj as any).ratings;
+        if (ratings && typeof ratings === 'object') {
+          const ratingsArr = Array.isArray(ratings) ? ratings : [ratings];
+          for (let ri = 0; ri < ratingsArr.length; ri++) {
+            const rt = ratingsArr[ri];
+            const sv = safeNum((rt as any)?.dataUsed);
+            if (sv !== null && sv >= 0) {
+              if (sv > 0 && sv <= 50_000_000) dataUsed = Math.round(sv * (sv <= 50000 ? MB : 1));
+              else if (sv > 50_000_000) dataUsed = Math.round(sv);
+              else dataUsed = 0;
+              dataUsedSrc = `RATINGS[${ri}].dataUsed`;
+              break;
+            }
+            // Product via ratings.product ook proberen!
+            if (!pName && (rt as any)?.product && typeof (rt as any).product === 'object') {
+              for (const k of BUNDLE_PRODUCT_KEYS) {
+                const s = isValidStringValue(((rt as any).product as any)[k]);
+                if (s && !looksLikeTechProfile(s)) { pName = s; pSrc = `RATINGS[${ri}].product.${k}`; break; }
+              }
+              // ratings.product.remainingBytes ook!
+              if (remainingBytes === null) {
+                const sv2 = safeNum(((rt as any).product as any).remainingBytes);
+                if (sv2 !== null && sv2 >= 0) remainingBytes = sv2 > 50_000_000 ? Math.round(sv2) : Math.round(sv2 * (sv2 <= 50000 ? GB : 1));
+              }
+            }
+          }
+        }
+      }
+      // Tenslotte: losse data[] arrays (van /cdr response)
+      if (dataUsed === null && Array.isArray((rawObj as any).data)) {
+        let totaal = 0;
+        let hasAny = false;
+        for (const item of (rawObj as any).data as any[]) {
+          const sv = safeNum(item?.bytes);
+          if (sv !== null && sv >= 0) { totaal += sv; hasAny = true; }
+          if (remainingBytes === null && item?.roundedBytes) {
+            const sv2 = safeNum(item.roundedBytes);
+            if (sv2 !== null && sv2 >= 0) remainingBytes = sv2 > 50_000_000 ? Math.round(sv2) : remainingBytes;
+          }
+        }
+        if (hasAny) { dataUsed = totaal; dataUsedSrc = `data[].bytes SUM (${(rawObj as any).data.length} items)`; }
+      }
+      // Swagger: /cdr/stats top-level bytes field! (bytes = totaal CDR data bytes!)
+      if (dataUsed === null) {
+        const topBytes = safeNum((rawObj as any).bytes);
+        if (topBytes !== null && topBytes >= 0) {
+          dataUsed = topBytes; // cdr/stats bytes = ALTIJD raw bytes!
+          dataUsedSrc = 'TOP-LEVEL.bytes (/cdr/stats)';
+        }
+      }
+    } catch { /* ignore */ }
+    return {
+      found: dataUsed !== null || smsUsed !== null || !!pName,
+      dataUsed,
+      remaining: remainingBytes,
+      initial: initialBytes,
+      smsUsed,
+      productName: pName,
+      productSrc: pSrc + (dataUsedSrc ? `|data=${dataUsedSrc}` : '') + (smsUsedSrc ? `|sms=${smsUsedSrc}` : '')
+    };
+  };
+  const bundleData = extractFromAllBundles();
+
+  // ============================================================
+  // Nu: dataUsed = HOOGSTE PRIO = bundles[].dataUsed!
+  // ============================================================
+  let duBytes: number | null = bundleData.dataUsed;
+  let duSource: string = bundleData.productSrc.split('|data=').pop()?.split('|')[0] || '';
+  if (duBytes === null && firstSub) {
     for (const k of DATA_USED_KEYS) {
       const sv = safeNum((firstSub as any)[k]);
       if (sv !== null && sv >= 0) {
@@ -1664,6 +1834,14 @@ function enrichSimhuisStatusWithDirectRawExtracts(
       }
     }
   }
+  // Bundles debug!
+  try {
+    const shortIccid = iccid.slice(-6);
+    const bdMb = bundleData.dataUsed !== null ? (bundleData.dataUsed / 1024 / 1024).toFixed(4) + ' MB' : '-';
+    const remMb = bundleData.remaining !== null ? (bundleData.remaining / 1024 / 1024 / 1024).toFixed(4) + ' GB' : '-';
+    const initMb = bundleData.initial !== null ? (bundleData.initial / 1024 / 1024 / 1024).toFixed(4) + ' GB' : '-';
+    console.info(`[simhuis:enrichExtract] [${shortIccid}] 🎁 BUNDLES[] extractie: dataUsed=${bdMb} remaining=${remMb} initial=${initMb} smsUsed=${JSON.stringify(bundleData.smsUsed)} product=${JSON.stringify(bundleData.productName)} (src=${bundleData.productSrc})`);
+  } catch {}
   try {
     const shortIccid = iccid.slice(-6);
     const mbDisplay = duBytes !== null ? `${(duBytes / MB).toFixed(2)} MB` : '-';
@@ -1672,9 +1850,8 @@ function enrichSimhuisStatusWithDirectRawExtracts(
 
   const smsLimitRaw = rawObj.smsLimit ?? nested?.smsLimit ?? rawObj.enabledProfile?.smsLimit ?? (firstSub as any)?.smsLimit ?? (firstSetup as any)?.smsLimit;
   const smsLowestLimitRaw = rawObj.lowestSmsLimit ?? nested?.lowestSmsLimit ?? rawObj.enabledProfile?.lowestSmsLimit;
-  const SMS_USED_KEYS = ['smsUsed','smsCount','totalSms','smsSent','smsUsage','usedSms','consumedSms','smsMessages','messageCount','moSms','mtSms','totalSmsUsed'];
-  let smsUsedNum: number | null = null;
-  let smsSource = '';
+  let smsUsedNum: number | null = bundleData.smsUsed;
+  let smsSource = bundleData.productSrc.split('|sms=').pop() || '';
   for (const k of SMS_USED_KEYS) {
     const sv = safeNum((rawObj as any)[k]);
     if (sv !== null && sv >= 0) { smsUsedNum = sv; smsSource = `RAW.${k}`; break; }
@@ -1773,10 +1950,12 @@ function enrichSimhuisStatusWithDirectRawExtracts(
     if (s) { directGroupId = s; break; }
   }
 
-  // --- Product: EERST bundles[0]! DAN subscriptions → setups → carriers combi → raw → enabledProfile → cardProfile ALS ALLERLAATSTE
+  // --- Product: 🎯 HOOGSTE PRIO = bundles[].localProductName (uit ALL subscriptions[*].bundles[*]!) ---
   let directProductName: string | null = null;
   let productSrc = '';
-  if (firstBundle) { r = tryExtractStr(firstBundle, PRODUCT_KEYS, 'BUNDLE0'); if (r.val) { directProductName = r.val; productSrc = r.src; } }
+  // 🎯 NIEUW: extractFromAllBundles() heeft ALLE subscriptions[*].bundles[*] doorzocht! Dat is de ECHTE bron!
+  if (bundleData.productName) { directProductName = bundleData.productName; productSrc = bundleData.productSrc.split('|')[0]; }
+  if (!directProductName && firstBundle) { r = tryExtractStr(firstBundle, PRODUCT_KEYS, 'BUNDLE0'); if (r.val) { directProductName = r.val; productSrc = r.src; } }
   if (!directProductName) { r = tryExtractStr(firstSub, PRODUCT_KEYS, 'SUBS'); if (r.val) { directProductName = r.val; productSrc = r.src; } }
   if (!directProductName) { r = tryExtractStr(firstSetup, PRODUCT_KEYS, 'SETUP'); if (r.val) { directProductName = r.val; productSrc = r.src; } }
   if (!directProductName) { r = tryExtractStr(rawObj, PRODUCT_KEYS, 'RAW'); if (r.val) { directProductName = r.val; productSrc = r.src; } }
@@ -1977,70 +2156,98 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
       //   Dus: als er EEN BESTAANDE match is (phaseABest !== null) → eerst Phase A.5 (usage endpoints) proberen, DAN return!
       if (phaseABest) {
         const best = phaseABest as SimhuisSimStatus;
-        const needsUsage = best.dataUsedBytes === null || best.smsUsedCount === null;
+        const needsUsage = best.dataUsedBytes === null || best.smsUsedCount === null || best.productName === null || /cardcentri|mii|imeifplmn/i.test(best.productName ?? '');
         if (needsUsage && bearerToken && aidForGetSim) {
-          DEBUG_LOG(`🏆 Phase A.5: dataUsed/smsUsed nog leeg! Probeer 3 per-SIM usage endpoints met Bearer-token...`);
+          DEBUG_LOG(`🏆 Phase A.5: needsUsage=${needsUsage} dataUsed=${JSON.stringify((best as any).dataUsedBytes)} smsUsed=${JSON.stringify((best as any).smsUsedCount)} product=${JSON.stringify((best as any).productName)} → Probeer 4 Swagger-bevestigde per-SIM endpoints met Bearer-token + accountId!`);
+          const billTime = billTimeCurrentMonth();
+          DEBUG_LOG(`🏆 Phase A.5: billTime (huidige maand facturatieperiode) = ${billTime.combined}`);
           try {
+            // ============================================================
+            // 🆕 Swagger-bevestigde endpoints (volgorde = HOOGSTE PRIO eerst!):
+            //   1. GET /v3/assets/{iccid}?accountId={aid}
+            //      → subscriptions[].bundles[] bevat dataUsed + localProductName!
+            //   2. GET /v3/accounts/{aid}/assets/{iccid}?accountId={aid}
+            //      → Zelfde data, met accounts prefix!
+            //   3. GET /v3/cdr/stats?accountId={aid}&iccid={iccid}&type=data&billTime=...
+            //      → Top-level `bytes` = PERIODE TOTAAL DATAVERBRUIK! (100% bytes!)
+            //   4. GET /v3/cdr?accountId={aid}&iccid={iccid}&type=data&limit=50&order=desc
+            //      → data[].bytes + ratings[].dataUsed + ratings[].product.remainingBytes!
+            // ============================================================
             const usageTemplates: Array<{ method: 'GET' | 'POST'; path: string; query?: Record<string, any>; body?: Record<string, any>; contentType?: 'json' | 'form' | 'none' }> = [];
-            usageTemplates.push({ method: 'GET', path: `/accounts/${aidForGetSim}/assets/${iccid}/usage`, query: { accountId: aidForGetSim } });
-            usageTemplates.push({ method: 'GET', path: `/assets/${iccid}/usage`, query: { accountId: aidForGetSim } });
-            usageTemplates.push({ method: 'GET', path: `/accounts/${aidForGetSim}/assets/${iccid}/stats`, query: { accountId: aidForGetSim } });
-            usageTemplates.push({ method: 'GET', path: `/accounts/${aidForGetSim}/assets/${iccid}/diagnostic`, query: { accountId: aidForGetSim } });
+            usageTemplates.push({ method: 'GET', path: `/assets/${iccid}`, query: { accountId: aidForGetSim } });
+            usageTemplates.push({ method: 'GET', path: `/accounts/${aidForGetSim}/assets/${iccid}`, query: { accountId: aidForGetSim } });
+            usageTemplates.push({ method: 'GET', path: `/cdr/stats`, query: { accountId: aidForGetSim, iccid, type: 'data', billTime: billTime.combined } });
+            usageTemplates.push({ method: 'GET', path: `/cdr`, query: { accountId: aidForGetSim, iccid, type: 'data', limit: 50, sort: 'billTime', order: 'desc', billTime: billTime.combined } });
             for (let i = 0; i < usageTemplates.length; i++) {
               const ut = usageTemplates[i];
-              if (Date.now() - startedAtGetSim > 10_000) { DEBUG_LOG(`🏆 Phase A.5: time-out (>10s) na ${i} pogingen.`); break; }
+              if (Date.now() - startedAtGetSim > 15_000) { DEBUG_LOG(`🏆 Phase A.5: time-out (>15s) na ${i} pogingen.`); break; }
               try {
                 const auth: PerSimAuth = { tag: 'bearer-token', token: bearerToken };
                 const fullUrl = makePerSimFullUrl(creds.baseUrl, `/v3${ut.path}`, ut.query ?? {});
-                DEBUG_LOG(`🏆 Phase A.5: poging ${i+1}/${usageTemplates.length} → ${ut.method} /v3${ut.path} auth=bearer+aid...`);
+                DEBUG_LOG(`🏆 Phase A.5: poging ${i+1}/${usageTemplates.length} → ${ut.method} /v3${ut.path}${ut.query && Object.keys(ut.query).length ? `?${Object.entries(ut.query).map(([k,v]) => v && typeof v === 'string' && v.includes(',') ? `${k}=<periode>` : `${k}=${v}`).join('&')}` : ''} auth=bearer+aid...`);
                 const result = await doPerSimFetch({
                   fullUrl,
                   method: ut.method,
                   contentType: (ut as any).contentType ?? 'none',
                   body: (ut.body ?? null) as any,
                   auth,
-                  timeoutMs: 3000,
+                  timeoutMs: 5000,
                 });
                 if (result.tag === 'ok') {
                   try {
+                    // 🆕 Debug: print TOP-LEVEL keys van response (geen data dump!) zodat we weten wat erin zit!
+                    const topKeys = Array.isArray(result.body)
+                      ? `ARRAY len=${result.body.length}${result.body.length > 0 ? `; item[0] keys=${Object.keys((result.body as any[])[0] ?? {}).join(',')}` : ''}`
+                      : `OBJECT keys=${Object.keys((result.body ?? {}) as object).join(',')}`;
+                    DEBUG_LOG(`🏆 Phase A.5: ${ut.method} /v3${ut.path} HTTP 200! response=${topKeys}`);
                     const prevDU = (best as any).dataUsedBytes;
                     const prevSMS = (best as any).smsUsedCount;
+                    const prevProd = (best as any).productName;
                     const bestAsMutable: any = { ...best as any };
                     if (!bestAsMutable.iccid) bestAsMutable.iccid = iccid;
                     const enriched = enrichSimhuisStatusWithDirectRawExtracts(bestAsMutable as SimhuisSimStatus, result.body, iccid);
                     if (enriched) {
                       const newDU = (enriched as any).dataUsedBytes;
                       const newSMS = (enriched as any).smsUsedCount;
-                      DEBUG_LOG(`🏆 Phase A.5: ${ut.method} /v3${ut.path} HTTP 200! dataUsed ${prevDU ?? 'NULL'} → ${newDU ?? 'NULL'}, smsUsed ${prevSMS ?? 'NULL'} → ${newSMS ?? 'NULL'}.`);
+                      const newProd = (enriched as any).productName;
+                      DEBUG_LOG(`🏆 Phase A.5: ${ut.method} /v3${ut.path} → dataUsed ${prevDU ?? 'NULL'} → ${newDU ?? 'NULL'}, smsUsed ${prevSMS ?? 'NULL'} → ${newSMS ?? 'NULL'}, product ${prevProd ?? 'NULL'} → ${newProd ?? 'NULL'}.`);
+                      const verbeterd =
+                        (newDU !== null && prevDU === null) ||
+                        (newSMS !== null && prevSMS === null) ||
+                        (newProd !== null && !/cardcentri|mii|imeifplmn/i.test(newProd) && /cardcentri|mii|imeifplmn/i.test(prevProd ?? ''));
+                      // 💥 EARLY RETURN: als we dataUsed HEBBEN + geen lege tech profiel naam meer → meteen returnen!
                       if (newDU !== null && newSMS !== null) {
                         DEBUG_LOG(`🏆 Phase A.5: COMPLETE usage data (data+sms) → EARLY RETURN!`);
                         return enriched;
                       }
-                      if (newDU !== prevDU || newSMS !== prevSMS) {
+                      if (verbeterd) {
+                        DEBUG_LOG(`🏆 Phase A.5: Verbetering gevonden! Update phaseABest...`);
                         (best as any).dataUsedBytes = newDU;
                         (best as any).smsUsedCount = newSMS;
-                        // Expliciet andere velden van enriched ook overnemen (mocht het een los asset endpoint zijn met meer meta!)
+                        // Alle andere velden van enriched ook overnemen (mocht het een los asset endpoint zijn met meer meta!)
                         for (const f of ['productName','productType','simName','groupName','groupId','dataLimitBytes','smsLimitCount','lowestDataLimitBytes','lowestSmsLimitCount','status','msisdn','eid'] as const) {
                           const v = (enriched as any)[f];
-                          if (v !== null && v !== undefined && !(f === 'status' && (best as any)[f])) {
-                            (best as any)[f] = v;
+                          if (v !== null && v !== undefined) {
+                            if (f === 'productName' && (best as any)[f] && /cardcentri|mii|imeifplmn/i.test(String((best as any)[f]))) { (best as any)[f] = v; }
+                            else if (f === 'productName' && !(best as any)[f]) { (best as any)[f] = v; }
+                            else if (f !== 'status' || !(best as any)[f]) { (best as any)[f] = v; }
                           }
                         }
                       }
                     }
-                  } catch { /* ignore parse errors */ }
+                  } catch (err2) { DEBUG_LOG(`🏆 Phase A.5: parse error: ${(err2 as any)?.message ?? err2}`); }
                 } else {
                   DEBUG_LOG(`🏆 Phase A.5: ${ut.method} /v3${ut.path} HTTP ${result.statusCode}.`);
                 }
-              } catch { /* ignore fetch errors */ }
+              } catch (err3) { DEBUG_LOG(`🏆 Phase A.5: poging ${i+1} fetch error: ${(err3 as any)?.message ?? err3}`); }
             }
           } catch (err) {
             DEBUG_LOG(`🏆 Phase A.5 exceptie: ${(err as any)?.message ?? err}. Blijf phaseABest retourneren.`);
           }
         } else {
-          DEBUG_LOG(`🏆 Phase A.5: overslaan → ${!needsUsage ? 'Heeft al dataUsed+smsUsed!' : !bearerToken ? 'Geen bearer-token' : 'Geen aidForGetSim'}.`);
+          DEBUG_LOG(`🏆 Phase A.5: overslaan → needsUsage=${needsUsage} (${!needsUsage ? 'compleet!' : ''}${!bearerToken ? '; geen bearer-token' : ''}${!aidForGetSim ? '; geen aidForGetSim' : ''}).`);
         }
-        DEBUG_LOG(`🏆 Phase A: phaseABest iccid=${(best as any).iccid} score=${phaseABestScore} dataUsed=${JSON.stringify((best as any).dataUsedBytes)} smsUsed=${JSON.stringify((best as any).smsUsedCount)} → RETURN (Winning Combo + optioneel A.5).`);
+        DEBUG_LOG(`🏆 Phase A: phaseABest iccid=${(best as any).iccid} score=${phaseABestScore} dataUsed=${JSON.stringify((best as any).dataUsedBytes)} smsUsed=${JSON.stringify((best as any).smsUsedCount)} product=${JSON.stringify((best as any).productName)} → RETURN (Winning Combo + optioneel A.5).`);
         return best;
       }
       DEBUG_LOG(`🏆 Phase A: geen match (ongebruikelijk!). ${phaseABest ? `beste score=${phaseABestScore}` : 'phaseABest=null'}. Ga door met overige endpoints.`);
