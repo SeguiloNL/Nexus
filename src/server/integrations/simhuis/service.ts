@@ -1552,100 +1552,69 @@ function enrichSimhuisStatusWithDirectRawExtracts(
 }
 
 export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
+  const startedAtGetSim = Date.now();
+  const DEBUG_LOG = (msg: string) => {
+    try { console.debug(`[simhuis:getSimStatus] [${iccid.slice(-6)}] (+${Date.now() - startedAtGetSim}ms) ${msg}`); } catch {}
+  };
+  const GET_SIM_MAX_WALL_MS = 40_000;
+  const GET_SIM_MAX_ATTEMPTS = 50;
+  let totalFetchAttempts = 0;
+  let didBailEarly = false;
+  function bailCheck(label: string): boolean {
+    if (didBailEarly) return true;
+    totalFetchAttempts++;
+    const overTime = Date.now() - startedAtGetSim > GET_SIM_MAX_WALL_MS;
+    const overAttempts = totalFetchAttempts > GET_SIM_MAX_ATTEMPTS;
+    if (overTime || overAttempts) {
+      didBailEarly = true;
+      DEBUG_LOG(`⏹️ BAIL ${label}: attempts=${totalFetchAttempts} overAttempts=${overAttempts} overTime=${overTime} (+${Date.now() - startedAtGetSim}ms). Ga direct naar listAllSims fallback.`);
+      try { console.warn(`[simhuis:getSimStatus] ⏹️ Vroegtijdig gestopt na ${Date.now() - startedAtGetSim}ms / ${totalFetchAttempts} pogingen voor ICCID ${iccid}. Fallback listAllSims.`); } catch {}
+      return true;
+    }
+    return false;
+  }
+
   const creds = await getSimhuisCreds();
   const authBasic = basicAuthHeader(creds.username, creds.password);
   const aidForGetSim = getSimhuisAccountId();
-
   const bearerToken = await acquireBearerToken(creds);
 
   const authVariants: PerSimAuth[] = [];
-  // ✅ AUTH-VOLGORDE GEFIXT: Basic + X-Headers EERST (Bearer gaf alleen 401 op SIM endpoints!)
   authVariants.push({ tag: 'basic-header', header: authBasic });
   authVariants.push({ tag: 'x-custom-headers', username: creds.username, password: creds.password, resellerId: creds.resellerId });
+  if (bearerToken) authVariants.push({ tag: 'bearer-token', token: bearerToken });
   authVariants.push({ tag: 'creds-body', username: creds.username, password: creds.password, resellerId: creds.resellerId });
   authVariants.push({ tag: 'creds-query', username: creds.username, password: creds.password, resellerId: creds.resellerId });
-  if (bearerToken) authVariants.push({ tag: 'bearer-token', token: bearerToken }); // ✅ Bearer LAATSTE
 
   const rankedAttempts: RankedAttempt[] = [];
   let lastErrorResult: PerSimAttemptResult | null = null;
 
-  const prefixes = getSimhuisPathPrefixes(creds.endpoints.sims).slice(0, 6);
-
-  type Template = { method: 'GET' | 'POST' | 'PUT' | 'PATCH'; pathTpl: string; query?: Record<string, any>; body?: Record<string, any>; multiBody?: Array<Record<string, any>> };
+  // ⚡ SCHERPE SELECTIE: alleen 14 meest kansrijke endpoints (GEEN 50+ legacy endpoints!)
+  const prefixes = ['/v3'];
+  type Template = { method: 'GET' | 'POST'; pathTpl: string; query?: Record<string, any>; body?: Record<string, any>; multiBody?: Array<Record<string, any>> };
   const templates: Template[] = [];
-
-  // === ✅ NIEUW PRIORITEIT 0: Multi-tenant SCOPED paden (account/tenant) + /v3/sims (Swagger standaard!) ===
   if (aidForGetSim) {
     templates.push(
       { method: 'GET', pathTpl: `/accounts/${aidForGetSim}/assets/{iccid}` },
       { method: 'GET', pathTpl: `/accounts/${aidForGetSim}/assets/{iccid}/diagnostic` },
-      { method: 'GET', pathTpl: `/tenants/${aidForGetSim}/assets/{iccid}` },
-      { method: 'GET', pathTpl: `/tenants/${aidForGetSim}/assets/{iccid}/diagnostic` },
-      { method: 'GET', pathTpl: `/organizations/${aidForGetSim}/assets/{iccid}` },
       { method: 'GET', pathTpl: `/accounts/${aidForGetSim}/sims/{iccid}` },
-      { method: 'GET', pathTpl: `/tenants/${aidForGetSim}/sims/{iccid}` },
-      { method: 'GET', pathTpl: `/accounts/${aidForGetSim}/esims`, query: { iccid } },
-      { method: 'GET', pathTpl: `/tenants/${aidForGetSim}/esims`, query: { iccid } },
-      { method: 'GET', pathTpl: `/accounts/${aidForGetSim}/sims`, query: { iccid } },
-      { method: 'GET', pathTpl: `/tenants/${aidForGetSim}/sims`, query: { iccid } },
+      { method: 'POST', pathTpl: `/accounts/${aidForGetSim}/assetsbulk`, multiBody: [{ accountId: aidForGetSim, iccid, limit: 5 }, { accountId: aidForGetSim, filter: { iccid }, limit: 5 }] },
     );
   }
   templates.push(
-    { method: 'GET', pathTpl: '/sims/{iccid}' },                            // ✅ Swagger standaard endpoint /sims/{iccid}
-    { method: 'GET', pathTpl: '/sims/{iccid}/diagnostic' },
-    { method: 'GET', pathTpl: '/sims/{iccid}/sessions' },
-    { method: 'GET', pathTpl: '/sims/diagnostic', query: { iccid } },
-    { method: 'GET', pathTpl: '/sims', query: { iccid } },
-    { method: 'GET', pathTpl: '/sims', query: { filter: { iccid } } },
-    { method: 'GET', pathTpl: '/sims', query: { search: iccid } },
+    { method: 'GET',  pathTpl: '/assets/{iccid}' },
+    { method: 'GET',  pathTpl: '/sims/{iccid}' },
+    { method: 'GET',  pathTpl: '/assets/{iccid}/diagnostic' },
+    { method: 'GET',  pathTpl: '/assetsbulk',  query: { iccid, accountId: aidForGetSim, limit: 5 } },
+    { method: 'GET',  pathTpl: '/esimsbulk',   query: { iccid, accountId: aidForGetSim, limit: 5 } },
+    { method: 'POST', pathTpl: '/assetsbulk',  multiBody: [{ iccid, limit: 5 }, { filter: { iccid }, limit: 5 }, { query: { iccid }, limit: 5 }, { iccid, accountId: aidForGetSim, limit: 5 }] },
+    { method: 'POST', pathTpl: '/esimsbulk',   multiBody: [{ iccid, limit: 5 }, { filter: { iccid }, limit: 5 }, { query: { iccid }, limit: 5 }, { iccid, accountId: aidForGetSim, limit: 5 }] },
+    { method: 'GET',  pathTpl: '/esims', query: { iccid, accountId: aidForGetSim, limit: 5 } },
+    { method: 'GET',  pathTpl: '/assets', query: { iccid, accountId: aidForGetSim, limit: 5 } },
   );
 
-  templates.push(
-    // === PRIORITEIT 1: AirOn360 /assets/{iccid} (echte endpoints uit Swagger!) ===
-    { method: 'GET', pathTpl: '/assets/{iccid}' },                             // Assets get Info (exact!)
-    { method: 'GET', pathTpl: '/assets/{iccid}/diagnostic' },                  // Get simcard information (exact!)
-    { method: 'GET', pathTpl: '/assets/{iccid}/sessions' },                    // asset sessions
-    { method: 'GET', pathTpl: '/assets/{iccid}/location' },                    // location
-    { method: 'GET', pathTpl: '/assets/diagnostic', query: { iccid } },        // /assets/diagnostic met iccid query
-
-    // === PRIORITEIT 2: AirOn360 /esims endpoints (via ICCID-query of via EID) ===
-    { method: 'GET', pathTpl: '/esims', query: { iccid } },
-    { method: 'GET', pathTpl: '/esims', query: { filter: { iccid } } },
-    { method: 'GET', pathTpl: '/esims', query: { search: iccid } },
-    { method: 'POST', pathTpl: '/esimsbulk', multiBody: [{ iccid }, { filter: { iccid } }, { query: { iccid } }, { filters: { iccid } }, { include: iccid }] },
-
-    // === PRIORITEIT 3: ICCID via list-query endpoints ===
-    { method: 'GET', pathTpl: '/assets', query: { iccid } },
-    { method: 'GET', pathTpl: '/assets', query: { filter: iccid } },
-    { method: 'GET', pathTpl: '/assets', query: { search: iccid } },
-    { method: 'GET', pathTpl: '/assets', query: { iccid, expand: 'true' } },
-    { method: 'GET', pathTpl: '/imsis', query: { iccid } },
-
-    // === PRIORITEIT 4: /iot/device & /ulb/device endpoints (subscribers/trackers, per IMEI of per {id}) ===
-    { method: 'GET', pathTpl: '/iot/device', query: { iccid } },
-    { method: 'GET', pathTpl: '/ulb/device', query: { iccid } },
-
-    // === PRIORITEIT 5: Legacy fallback ===
-    { method: 'GET', pathTpl: '/sim/{iccid}' },
-    { method: 'GET', pathTpl: '/simcards/{iccid}' },
-    { method: 'GET', pathTpl: '/subscriptions/{iccid}' },
-    { method: 'GET', pathTpl: '/iccids/{iccid}' },
-    { method: 'GET', pathTpl: '/inventory/sims/{iccid}' },
-
-    { method: 'POST', pathTpl: '/assets', multiBody: [{ iccid }, { filter: { iccid } }, { query: { iccid } }, { filters: { iccid } }] },
-    { method: 'POST', pathTpl: '/assets/search', multiBody: [{ iccid }, { filter: { iccid } }, { query: { iccid } }] },
-    { method: 'POST', pathTpl: '/sims', multiBody: [{ iccid }, { filter: { iccid } }, { query: { iccid } }, { filters: { iccid } }] },
-    { method: 'POST', pathTpl: '/sims/search', multiBody: [{ iccid }, { filter: { iccid } }, { query: { iccid } }] },
-    { method: 'POST', pathTpl: '/sims/filter', multiBody: [{ iccid }, { filter: { iccid } }, { filters: { iccid } }] },
-    { method: 'POST', pathTpl: '/sims/list', multiBody: [{ iccid }] },
-    { method: 'POST', pathTpl: '/sims/query', multiBody: [{ iccid }, { query: { iccid } }] },
-    { method: 'POST', pathTpl: '/sim/status', multiBody: [{ iccid }] },
-    { method: 'POST', pathTpl: '/sims/lookup', multiBody: [{ iccid }] },
-    { method: 'POST', pathTpl: '/sims/get', multiBody: [{ iccid }] },
-  );
-
-  const METHOD_CYCLE: Array<'GET' | 'POST' | 'PUT' | 'PATCH'> = ['GET', 'POST', 'PUT', 'PATCH'];
-  function allMethodsAfter(start: 'GET' | 'POST' | 'PUT' | 'PATCH'): Array<'GET' | 'POST' | 'PUT' | 'PATCH'> {
+  const METHOD_CYCLE: Array<'GET' | 'POST'> = ['GET', 'POST'];
+  function allMethodsAfter(start: 'GET' | 'POST'): Array<'GET' | 'POST'> {
     const idx = METHOD_CYCLE.indexOf(start);
     const rest = METHOD_CYCLE.slice();
     rest.splice(idx, 1);
@@ -1733,12 +1702,14 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
 
           for (const contentType of contentTypes) {
             if (tpl.method === 'GET' && (auth.tag === 'creds-body')) continue;
+            if (bailCheck(`tpl=${tpl.method}:${tpl.pathTpl}`)) break;
 
             const endpointPath = `${prefix}${tpl.pathTpl}`.replace('{iccid}', encodeURIComponent(iccid));
             const query = tpl.method === 'GET' ? (tpl.query ?? {}) : null;
             const fullUrl = makePerSimFullUrl(creds.baseUrl, endpointPath, query);
-            const body = (tpl.method === 'POST' || tpl.method === 'PUT' || tpl.method === 'PATCH') ? (bodyVariant ?? {}) : null;
+            const body = tpl.method === 'POST' ? (bodyVariant ?? {}) : null;
             const meta: PerSimAttemptMeta = { endpointPath, method: tpl.method, authTag: toAuthTag(auth), contentType };
+            DEBUG_LOG(`attempt ${totalFetchAttempts}: ${tpl.method} ${endpointPath} auth=${auth.tag} ct=${contentType}`);
 
             const result = await doPerSimFetch({
               fullUrl,
@@ -1755,7 +1726,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
               if (extracted?.iccid) {
                 consider(extracted);
                 // Vroegtijdig stoppen ALLEEN als deze response echt complete usage data heeft
-                if (hasFullUsage(extracted)) return extracted;
+                if (hasFullUsage(extracted)) { DEBUG_LOG(`✅ EARLY EXIT: ${tpl.method}:${tpl.pathTpl} gaf complete usage data!`); return extracted; }
               }
             }
 
@@ -1765,6 +1736,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
             if (result.statusCode === 405) {
               const remaining = allMethodsAfter(tpl.method);
               for (const altMethod of remaining) {
+                if (bailCheck(`altMethod=${altMethod} (405)`)) break;
                 if (altMethod === 'GET' && auth.tag === 'creds-body') continue;
                 const altContentType: 'json' | 'form' | 'none' = altMethod === 'GET' ? 'none' : 'json';
                 const altQuery = altMethod === 'GET' ? { iccid, ...(tpl.query ?? {}) } : null;
@@ -1784,52 +1756,46 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                   try { extracted = toSimStatus(altResult.body, iccid); extracted = enrichSimhuisStatusWithDirectRawExtracts(extracted, altResult.body, iccid); } catch { extracted = null; }
                   if (extracted?.iccid) {
                     consider(extracted);
-                    if (hasFullUsage(extracted)) return extracted;
+                    if (hasFullUsage(extracted)) { DEBUG_LOG(`✅ EARLY EXIT (405 alt ${altMethod}): complete usage data!`); return extracted; }
                   }
                 }
                 pushRanked(altMeta, altResult);
                 if (altResult.tag === 'error') lastErrorResult = altResult;
               }
+              if (didBailEarly) break;
             }
           }
+          if (didBailEarly) break;
         }
+        if (didBailEarly) break;
       }
+      if (didBailEarly) break;
     }
   }
 
   // === Laatste redmiddel: listSims EN GET /v3/sims + scoped-accounts paden! ===
+  DEBUG_LOG(`⚡ FALLBACK: list queries + listSims fallback.`);
   const listAttempts: Array<{ label: string; items: any[] | null; iccidFound: boolean }> = [];
   try {
-    // ✅ NIEUW: Eerst SCOPED (accounts/tenant) → daarna /sims → daarna /esims
     const listPathCandidates: Array<{ label: string; suffix: string }> = [];
     if (aidForGetSim) {
       listPathCandidates.push(
-        { label: `/accounts/${aidForGetSim}/sims`, suffix: `/accounts/${aidForGetSim}/sims` },
         { label: `/accounts/${aidForGetSim}/assets`, suffix: `/accounts/${aidForGetSim}/assets` },
-        { label: `/tenants/${aidForGetSim}/sims`, suffix: `/tenants/${aidForGetSim}/sims` },
-        { label: `/tenants/${aidForGetSim}/assets`, suffix: `/tenants/${aidForGetSim}/assets` },
-        { label: `/accounts/${aidForGetSim}/esims`, suffix: `/accounts/${aidForGetSim}/esims` },
       );
     }
     listPathCandidates.push(
-      { label: '/sims', suffix: '/sims' },
       { label: '/assets', suffix: '/assets' },
       { label: '/esims', suffix: '/esims' },
     );
     const listQueryCandidates: Array<Record<string, any>> = [
-      { iccid },
-      { filter: iccid },
-      { search: iccid },
-      { query: iccid },
-      { 'filter[iccid]': iccid },
-      { 'iccid[]': iccid },
-      { page: 1, limit: 500, iccid } as any,
+      { iccid, accountId: aidForGetSim, page: 1, limit: 1000 },
     ];
 
-    for (const prefix of orderedPrefixes.slice(0, 3)) {
-      for (const auth of authVariants.slice(0, 4)) { // ✅ 4 auth varianten (geen bearer)
+    for (const prefix of orderedPrefixes.slice(0, 1)) {
+      for (const auth of authVariants.slice(0, 3)) {
         for (const pc of listPathCandidates) {
           for (const q of listQueryCandidates) {
+            if (bailCheck(`listGET pc=${pc.label}`)) break;
             try {
               const fullUrl = makePerSimFullUrl(creds.baseUrl, `${prefix}${pc.suffix}`, q);
               const result = await doPerSimFetch({ fullUrl, method: 'GET', contentType: 'none', body: null, auth, timeoutMs: 20_000 });
@@ -1838,7 +1804,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                   ? result.body
                   : ((result.body && typeof result.body === 'object' && Array.isArray((result.body as any).items)) ? (result.body as any).items : []);
                 const found = items.some((s: any) => String(s.iccid ?? '').trim() === iccid);
-                listAttempts.push({ label: `${prefix}${pc.label}?${Object.keys(q)[0]} auth=${toAuthTag(auth)} (items=${items.length})`, items, iccidFound: found });
+                listAttempts.push({ label: `${prefix}${pc.label} auth=${toAuthTag(auth)} (items=${items.length})`, items, iccidFound: found });
                 if (found) {
                   const match = items.find((s: any) => String(s.iccid ?? '').trim() === iccid);
                   if (match) {
@@ -1847,7 +1813,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                       st = enrichSimhuisStatusWithDirectRawExtracts(st, match, iccid);
                       if (st?.iccid) {
                         consider(st);
-                        if (hasFullUsage(st)) return st;
+                        if (hasFullUsage(st)) { DEBUG_LOG(`✅ listGET hit ${pc.label} found iccid! returning.`); return st; }
                       }
                     } catch { /* bad item, continue */ }
                   }
@@ -1857,19 +1823,22 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
               }
             } catch { /* negeer */ }
           }
+          if (didBailEarly) break;
         }
+        if (didBailEarly) break;
       }
+      if (didBailEarly) break;
     }
   } catch { /* negeer */ }
 
   try {
-    const statusVariants: Array<(string | undefined | null)> = [
-      undefined, null, 'active', 'inactive', 'available', 'ready', 'enabled', 'suspended', 'paused',
-    ];
+    const statusVariants: Array<(string | undefined | null)> = [undefined];
     for (const sv of statusVariants) {
+      if (bailCheck(`listSims sv=${sv}`)) break;
       try {
-        const opts: any = { page: 1, limit: 500 };
+        const opts: any = { page: 1, limit: 1000 };
         if (sv !== undefined) (opts as any).status = sv === null ? null : sv;
+        DEBUG_LOG(`listSims() aanroepen (+${Date.now() - startedAtGetSim}ms)`);
         const lr = await listSims(opts);
         const items: any[] = (lr && Array.isArray((lr as any).items)) ? (lr as any).items : [];
         const found = items.some((s: any) => String(s.iccid ?? '').trim() === iccid);
@@ -1886,7 +1855,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
               st = enrichSimhuisStatusWithDirectRawExtracts(st, match, iccid);
               if (st?.iccid) {
                 consider(st);
-                if (hasFullUsage(st)) return st;
+                if (hasFullUsage(st)) { DEBUG_LOG(`✅ listSims() fallback hit iccid! returning.`); return st; }
               }
             } catch { /* bad shape, continue */ }
           }

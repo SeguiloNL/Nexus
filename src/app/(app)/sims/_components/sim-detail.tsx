@@ -119,6 +119,7 @@ export function SimDetail({
   const [isUsageSyncTransitioning, startUsageSyncTransition] = useTransition();
   const usageSubmittedRef = useRef(false);
   const prevUsageSyncStateRef = useRef(usageSyncState);
+  const usageEmergencyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const usageSyncPending =
     isUsageSyncPendingClient || isUsageSyncTransitioning || usageSyncPendingNative;
@@ -134,9 +135,22 @@ export function SimDetail({
     if (stateChanged || (!usageSyncPendingNative && isUsageSyncPendingClient)) {
       usageSubmittedRef.current = false;
       setIsUsageSyncPendingClient(false);
+      if (usageEmergencyTimerRef.current) {
+        clearTimeout(usageEmergencyTimerRef.current);
+        usageEmergencyTimerRef.current = null;
+      }
     }
     prevUsageSyncStateRef.current = curr;
-  }, [usageSyncState, usageSyncPendingNative, isUsageSyncPendingClient]);
+  }, [usageSyncState, usageSyncPendingNative]); // ✅ FIX: GEEN isUsageSyncPendingClient (eigen-dep infinite loop!)
+
+  useEffect(() => {
+    return () => {
+      if (usageEmergencyTimerRef.current) {
+        clearTimeout(usageEmergencyTimerRef.current);
+        usageEmergencyTimerRef.current = null;
+      }
+    };
+  }, []);
 
   function onUsageSyncSubmit(e: React.FormEvent<HTMLFormElement>) {
     if (usageSubmittedRef.current || usageSyncPending) {
@@ -146,12 +160,27 @@ export function SimDetail({
     }
     usageSubmittedRef.current = true;
     setIsUsageSyncPendingClient(true);
+    // 🚨 NOOD-STOP: 60 seconden max. Als actie nooit terugkeert → reset spinner + verplichte foutmelding
+    if (usageEmergencyTimerRef.current) clearTimeout(usageEmergencyTimerRef.current);
+    usageEmergencyTimerRef.current = setTimeout(() => {
+      console.warn('[sim-detail] ⏹️ Usage sync noodstop na 60s timeout.');
+      usageSubmittedRef.current = false;
+      setIsUsageSyncPendingClient(false);
+      usageEmergencyTimerRef.current = null;
+    }, 60_000);
     startUsageSyncTransition(async () => {
       try {
         const fd = new FormData(e.currentTarget);
         await usageSyncFormAction(fd);
+      } catch (err: any) {
+        console.error('[sim-detail] Usage sync action exception:', err);
       } finally {
         setIsUsageSyncPendingClient(false);
+        usageSubmittedRef.current = false;
+        if (usageEmergencyTimerRef.current) {
+          clearTimeout(usageEmergencyTimerRef.current);
+          usageEmergencyTimerRef.current = null;
+        }
       }
     });
     e.preventDefault();

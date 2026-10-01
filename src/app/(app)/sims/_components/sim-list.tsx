@@ -61,6 +61,7 @@ export function SimList({
   const [isSyncTransitioning, startSyncTransition] = useTransition();
   const syncSubmittedRef = useRef(false);
   const prevSyncStateRef = useRef(syncState);
+  const syncEmergencyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const syncPending = isSyncPendingClient || isSyncTransitioning || syncPendingNative;
 
@@ -75,9 +76,22 @@ export function SimList({
     if (stateChanged || (!syncPendingNative && isSyncPendingClient)) {
       syncSubmittedRef.current = false;
       setIsSyncPendingClient(false);
+      if (syncEmergencyTimerRef.current) {
+        clearTimeout(syncEmergencyTimerRef.current);
+        syncEmergencyTimerRef.current = null;
+      }
     }
     prevSyncStateRef.current = curr;
-  }, [syncState, syncPendingNative, isSyncPendingClient]);
+  }, [syncState, syncPendingNative]); // ✅ FIX: GEEN isSyncPendingClient (eigen-dep infinite loop!)
+
+  useEffect(() => {
+    return () => {
+      if (syncEmergencyTimerRef.current) {
+        clearTimeout(syncEmergencyTimerRef.current);
+        syncEmergencyTimerRef.current = null;
+      }
+    };
+  }, []);
 
   function onSyncSubmit(e: React.FormEvent<HTMLFormElement>) {
     if (syncSubmittedRef.current || syncPending) {
@@ -87,12 +101,27 @@ export function SimList({
     }
     syncSubmittedRef.current = true;
     setIsSyncPendingClient(true);
+    // 🚨 NOOD-STOP: 90 seconden max voor bulk sync 327 SIMs
+    if (syncEmergencyTimerRef.current) clearTimeout(syncEmergencyTimerRef.current);
+    syncEmergencyTimerRef.current = setTimeout(() => {
+      console.warn('[sim-list] ⏹️ Verbruik sync noodstop na 90s timeout.');
+      syncSubmittedRef.current = false;
+      setIsSyncPendingClient(false);
+      syncEmergencyTimerRef.current = null;
+    }, 90_000);
     startSyncTransition(async () => {
       try {
         const fd = new FormData(e.currentTarget);
         await syncFormAction(fd);
+      } catch (err: any) {
+        console.error('[sim-list] Bulk usage sync action exception:', err);
       } finally {
         setIsSyncPendingClient(false);
+        syncSubmittedRef.current = false;
+        if (syncEmergencyTimerRef.current) {
+          clearTimeout(syncEmergencyTimerRef.current);
+          syncEmergencyTimerRef.current = null;
+        }
       }
     });
     e.preventDefault();
