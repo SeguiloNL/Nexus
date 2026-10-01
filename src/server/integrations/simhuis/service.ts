@@ -1878,26 +1878,72 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
           let extracted: SimhuisSimStatus | null = null;
           try {
             extracted = toSimStatus(raw, iccid);
-            extracted = enrichSimhuisStatusWithDirectRawExtracts(extracted, raw, iccid);
           } catch { extracted = null; }
-          if (!extracted?.iccid) continue;
-          const sc = scoreSimStatus(extracted);
-          if (hasFullUsage(extracted)) {
+
+          // 💥 CRITICIAL FIX: Catch-22 opheffen!
+          // WIJ WETEN dat dit de juiste SIM is (match op ICCID!). Dus:
+          // 1. Als toSimStatus() null of iccid=null gaf → initialiseer minimal safe object
+          // 2. FORCEER extracted.iccid = iccid (de gezochte!) zodat enrich NIET vroegtijdig returnt!
+          if (!extracted) {
+            extracted = { iccid } as SimhuisSimStatus;
+          }
+          if (!(extracted as any).iccid) {
+            (extracted as any).iccid = iccid;
+          }
+          // 3. Expliciet eid/msisdn vooraf vullen indien mogelijk (listAllSims Winning Combo strategie!)
+          const tryRawIccid = (v: any) => {
+            if (v === null || v === undefined) return '';
+            const s = String(v).trim();
+            if (!s) return '';
+            const lower = s.toLowerCase();
+            if (['iccid','sim_iccid','simiccid','esimid','esim_id','eid'].includes(lower)) return '';
+            return s;
+          };
+          const eidMaybe = tryRawIccid((raw as any).eid) || tryRawIccid((raw as any).esimId) || tryRawIccid((raw as any).enabledProfile?.eid);
+          if (eidMaybe && !(extracted as any).eid) (extracted as any).eid = eidMaybe;
+          if (Array.isArray((raw as any).msisdn) && (raw as any).msisdn.length > 0) {
+            const mFirst = String((raw as any).msisdn[0] ?? '').trim();
+            if (mFirst && !(extracted as any).msisdn) (extracted as any).msisdn = mFirst;
+          }
+
+          // Nu kan enrich VEILIG alles vullen! (baseStatus.iccid is nu IMMER gezet!)
+          try {
+            extracted = enrichSimhuisStatusWithDirectRawExtracts(extracted, raw, iccid);
+          } catch { /* ignore enrich errors */ }
+
+          if (!(extracted as any)?.iccid) {
+            DEBUG_LOG(`🏆 Phase A: extracted.iccid nog steeds NULL na enrich → SKIP (mogelijk corrupte raw data)`);
+            continue;
+          }
+          const valid = extracted as SimhuisSimStatus;
+          const sc = scoreSimStatus(valid);
+          DEBUG_LOG(`🏆 Phase A: match score=${sc}. hasAnyUsage=${hasAnyUsage(valid)} hasFullUsage=${hasFullUsage(valid)}`);
+          if (hasFullUsage(valid)) {
             DEBUG_LOG(`🏆 Phase A EARLY RETURN: complete usage data (score=${sc}).`);
-            return extracted;
+            return valid;
+          }
+          // 💥 DREMPEL VERLAAGD: Winning Combo data = altijd inventory data. Dus:
+          //   - Als we ANY usage hebben (dataLimit of dataUsed of smsLimit) → onmiddellijk return; beter dan 50 attempts!
+          //   - Als status gevuld is + msisdn → return (score>=3 ok)
+          if (hasAnyUsage(valid) && sc >= 4) {
+            DEBUG_LOG(`🏆 Phase A EARLY RETURN (drempel verlaagd): hasAnyUsage=true & score=${sc} ≥4. Beter dan 50× mislukte endpoints!`);
+            return valid;
           }
           if (sc > phaseABestScore) {
-            phaseABest = extracted;
+            phaseABest = valid;
             phaseABestScore = sc;
           }
         }
       }
 
-      if (phaseABest && phaseABestScore >= 10) {
-        DEBUG_LOG(`🏆 Phase A: beste score=${phaseABestScore} → return.`);
+      // 💥 DREMPEL VERLAAGD (geen 10 meer!):
+      //   We hebben IMMER een geldige inventory match. Phase A is 100× betrouwbaarder dan de 50× legacy endpoints.
+      //   Dus: als er EEN BESTAANDE match is (phaseABest !== null) → retourneer hem, ALTIJD!
+      if (phaseABest) {
+        DEBUG_LOG(`🏆 Phase A: phaseABest iccid=${(phaseABest as any).iccid} score=${phaseABestScore} → ALTIJD RETURN (Winning Combo = inventory, betrouwbaarder dan legacy endpoints!).`);
         return phaseABest;
       }
-      DEBUG_LOG(`🏆 Phase A: geen complete data, beste score=${phaseABestScore}. Ga door met overige endpoints.`);
+      DEBUG_LOG(`🏆 Phase A: geen match (ongebruikelijk!). ${phaseABest ? `beste score=${phaseABestScore}` : 'phaseABest=null'}. Ga door met overige endpoints.`);
     } catch (err) {
       DEBUG_LOG(`🏆 Phase A exceptie: ${(err as any)?.message ?? err}. Ga door.`);
     }
@@ -2134,10 +2180,12 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                   if (match) {
                     try {
                       let st: SimhuisSimStatus | null = toSimStatus(match, iccid);
+                      if (!st) st = { iccid } as SimhuisSimStatus;
+                      if (!(st as any).iccid) (st as any).iccid = iccid;
                       st = enrichSimhuisStatusWithDirectRawExtracts(st, match, iccid);
                       if (st?.iccid) {
                         consider(st);
-                        if (hasFullUsage(st)) { DEBUG_LOG(`✅ listGET hit ${pc.label} found iccid! returning.`); return st; }
+                        if (hasFullUsage(st) || hasAnyUsage(st)) { DEBUG_LOG(`✅ listGET hit ${pc.label} found iccid! returning.`); return st; }
                       }
                     } catch { /* bad item, continue */ }
                   }
@@ -2176,10 +2224,12 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
           if (match) {
             try {
               let st: SimhuisSimStatus | null = toSimStatus(match, iccid);
+              if (!st) st = { iccid } as SimhuisSimStatus;
+              if (!(st as any).iccid) (st as any).iccid = iccid;
               st = enrichSimhuisStatusWithDirectRawExtracts(st, match, iccid);
               if (st?.iccid) {
                 consider(st);
-                if (hasFullUsage(st)) { DEBUG_LOG(`✅ listSims() fallback hit iccid! returning.`); return st; }
+                if (hasFullUsage(st) || hasAnyUsage(st)) { DEBUG_LOG(`✅ listSims() fallback hit iccid! returning.`); return st; }
               }
             } catch { /* bad shape, continue */ }
           }
