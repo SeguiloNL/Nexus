@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { useFormState } from "react-dom";
-import type { ColumnDef, Row } from "@tanstack/react-table";
+import type { ColumnDef, Row, SortingFn } from "@tanstack/react-table";
 import { MoreHorizontal, Plus, Trash2, Edit, Upload, Download, Filter, RefreshCw, AlertTriangle } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { BulkActionForm } from "@/components/data-table/bulk-action-form";
@@ -225,10 +225,25 @@ export function SimList({
     return sims.filter((s) => s.status === statusFilter);
   }, [sims, statusFilter]);
 
+  const usageSortFn: SortingFn<ListSim> = (rowA, rowB) => {
+    const aUsed = rowA.original.dataUsedBytes;
+    const bUsed = rowB.original.dataUsedBytes;
+    if (aUsed === null || aUsed === undefined) {
+      if (bUsed === null || bUsed === undefined) return 0;
+      return 1;
+    }
+    if (bUsed === null || bUsed === undefined) return -1;
+    if (aUsed < bUsed) return -1;
+    if (aUsed > bUsed) return 1;
+    return 0;
+  };
+
   const columns: ColumnDef<ListSim>[] = [
     {
       accessorKey: "iccid",
       header: "ICCID",
+      enableSorting: true,
+      sortingFn: "alphanumeric",
       cell: ({ row }) => (
         <Link
           className="font-mono text-xs underline-offset-4 hover:underline"
@@ -241,6 +256,8 @@ export function SimList({
     {
       accessorKey: "msisdn",
       header: "MSISDN",
+      enableSorting: true,
+      sortingFn: "alphanumeric",
       cell: ({ row }) => {
         const v = row.getValue<string | null>("msisdn");
         return v ? (
@@ -253,6 +270,8 @@ export function SimList({
     {
       accessorKey: "provider",
       header: "Provider",
+      enableSorting: true,
+      sortingFn: "alphanumeric",
       cell: ({ row }) => (
         <div>
           <div className="font-medium">
@@ -272,6 +291,8 @@ export function SimList({
     {
       accessorKey: "imsi",
       header: "IMSI",
+      enableSorting: true,
+      sortingFn: "alphanumeric",
       cell: ({ row }) => {
         const v = row.original.imsi;
         return v ? (
@@ -284,6 +305,8 @@ export function SimList({
     {
       accessorKey: "status",
       header: "Status",
+      enableSorting: true,
+      sortingFn: "alphanumeric",
       cell: ({ row }) => (
         <SimStatusBadge status={row.getValue<SimStatus>("status")} />
       ),
@@ -291,7 +314,8 @@ export function SimList({
     {
       id: "usage",
       header: "Verbruik",
-      enableSorting: false,
+      enableSorting: true,
+      sortingFn: usageSortFn,
       cell: ({ row }) => <MiniUsageCell sim={row.original} />,
     },
     {

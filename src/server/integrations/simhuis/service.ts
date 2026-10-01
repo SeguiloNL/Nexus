@@ -17,6 +17,44 @@ function billTimeCurrentMonth(refDate: Date = new Date()): { start: string; end:
   return { start: fmt(firstDay), end: fmt(lastDay), combined: `${fmt(firstDay)},${fmt(lastDay)}` };
 }
 
+// ============================================================
+// parseBytes: accepteert "322.49 MB", "2,00GB", 33816576 (bytes), enz.
+// Retourneert number | null (aantal bytes).
+// ============================================================
+const BYTE_MULTIPLIERS: Record<string, number> = {
+  b: 1,
+  k: 1024, kb: 1024, kbit: 128,
+  m: 1024 ** 2, mb: 1024 ** 2, mib: 1024 ** 2, mbit: (1024 ** 2) / 8,
+  g: 1024 ** 3, gb: 1024 ** 3, gib: 1024 ** 3, gbit: (1024 ** 3) / 8,
+  t: 1024 ** 4, tb: 1024 ** 4, tib: 1024 ** 4,
+  p: 1024 ** 5, pb: 1024 ** 5, pib: 1024 ** 5,
+};
+function parseBytes(raw: unknown): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === 'bigint') {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) ? raw : null;
+  }
+  if (typeof raw !== 'string') return null;
+  let s = raw.trim();
+  if (!s || s === '-' || s === 'null' || s === 'undefined') return null;
+  s = s.replace(/,(\d)/g, '.$1');
+  s = s.replace(/\s+/g, '');
+  const match = s.match(/^(-?\d+(?:\.\d+)?)([a-zA-Z]*)$/);
+  if (!match) {
+    const justNum = Number(s.replace(/[^\d.]/g, ''));
+    return Number.isFinite(justNum) ? justNum : null;
+  }
+  const num = Number(match[1]);
+  if (!Number.isFinite(num)) return null;
+  const unit = (match[2] && typeof match[2] === 'string' ? match[2] : 'b').toLowerCase();
+  const mult = BYTE_MULTIPLIERS[unit] ?? 1;
+  return num * mult;
+}
+
 function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, any>;
   const nestedSim = r.simCard ?? r.sim ?? r.asset ?? r.device ?? r.subscription ?? r.subscriber ?? r.esimProfile ?? r.esim ?? {};
@@ -518,47 +556,6 @@ function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     }
     return null;
   };
-
-  // ============================================================
-  // parseBytes: accepteert "322.49 MB", "2,00GB", 33816576 (bytes), enz.
-  // Retourneert number | null (aantal bytes).
-  // ============================================================
-  const BYTE_MULTIPLIERS: Record<string, number> = {
-    b: 1,
-    k: 1024, kb: 1024, kbit: 128,
-    m: 1024 ** 2, mb: 1024 ** 2, mib: 1024 ** 2, mbit: (1024 ** 2) / 8,
-    g: 1024 ** 3, gb: 1024 ** 3, gib: 1024 ** 3, gbit: (1024 ** 3) / 8,
-    t: 1024 ** 4, tb: 1024 ** 4, tib: 1024 ** 4,
-    p: 1024 ** 5, pb: 1024 ** 5, pib: 1024 ** 5,
-  };
-  function parseBytes(raw: unknown): number | null {
-    if (raw === null || raw === undefined) return null;
-    if (typeof raw === 'bigint') {
-      const n = Number(raw);
-      return Number.isFinite(n) ? n : null;
-    }
-    if (typeof raw === 'number') {
-      return Number.isFinite(raw) ? raw : null;
-    }
-    if (typeof raw !== 'string') return null;
-    let s = raw.trim();
-    if (!s || s === '-' || s === 'null' || s === 'undefined') return null;
-    // Vervang Nederlands/Continentaal decimaal komma door punt
-    s = s.replace(/,(\d)/g, '.$1');
-    // Strip spaties tussen getal en unit
-    s = s.replace(/\s+/g, '');
-    const match = s.match(/^(-?\d+(?:\.\d+)?)([a-zA-Z]*)$/);
-    if (!match) {
-      // Misschien is het een getal met duizendtalseparator? Probeer te parsen als gewoon getal (bytes)
-      const justNum = Number(s.replace(/[^\d.]/g, ''));
-      return Number.isFinite(justNum) ? justNum : null;
-    }
-    const num = Number(match[1]);
-    if (!Number.isFinite(num)) return null;
-    const unit = (match[2] && typeof match[2] === 'string' ? match[2] : 'b').toLowerCase();
-    const mult = BYTE_MULTIPLIERS[unit] ?? 1;
-    return num * mult;
-  }
 
   // ============================================================
   // pickNumber: eerst findKey, dan expliciete paden. Accepteert
@@ -1625,20 +1622,72 @@ function enrichSimhuisStatusWithDirectRawExtracts(
     return null;
   };
 
-  const GB = 1024 * 1024 * 1024;
-  const MB = 1024 * 1024;
+  const _KB = 1024;
+  const _MB = _KB * 1024;
+  const _GB = _MB * 1024;
+  const _TB = _GB * 1024;
+
+  const baselineDataUsed = typeof baseStatus?.dataUsedBytes === 'number' ? baseStatus.dataUsedBytes : null;
+  const baselineDataLimit = typeof baseStatus?.dataLimitBytes === 'number' ? baseStatus.dataLimitBytes : null;
+  const baselineLowestLimit = typeof baseStatus?.lowestDataLimitBytes === 'number' ? baseStatus.lowestDataLimitBytes : null;
+
+  const pickBytesSmart = (rawVal: any, baseline: number | null | undefined, fieldHint: 'limit' | 'used'): number | null => {
+    if (typeof rawVal === 'string') {
+      const pb = parseBytes(rawVal);
+      if (pb !== null && pb >= 0 && Number.isFinite(pb)) return Math.round(pb);
+    }
+    const n = safeNum(rawVal);
+    if (n === null) return null;
+    if (n < 0) return null;
+    if (n === 0) return 0;
+
+    const candB = Math.round(n);
+    const candKB = Math.round(n * _KB);
+    const candMB = Math.round(n * _MB);
+    const candGB = Math.round(n * _GB);
+
+    if (baseline !== null && baseline !== undefined && baseline > 0) {
+      const cands = [
+        { v: candB, diff: Math.abs(candB - baseline) },
+        { v: candKB, diff: Math.abs(candKB - baseline) },
+        { v: candMB, diff: Math.abs(candMB - baseline) },
+        { v: candGB, diff: Math.abs(candGB - baseline) },
+      ];
+      cands.sort((a, b) => a.diff - b.diff);
+      const best = cands[0];
+      const ratio = Math.max(best.v, 1) / Math.max(baseline, 1);
+      if (ratio >= 0.001 && ratio <= 1000) return best.v;
+      return Math.round(baseline);
+    }
+
+    const maxRealistic = 10 * _TB;
+    const orderHint = fieldHint === 'limit' ? 'limit' : 'used';
+    const preference =
+      orderHint === 'limit'
+        ? [candMB, candGB, candB, candKB]
+        : [candMB, candB, candKB, candGB];
+    for (const c of preference) {
+      if (c > 0 && c <= maxRealistic) return c;
+    }
+    return candB;
+  };
+
   const toBytesBestEffort = (rawVal: any): number | null => {
+    if (typeof rawVal === 'string') {
+      const pb = parseBytes(rawVal);
+      if (pb !== null && pb >= 0 && Number.isFinite(pb)) return Math.round(pb);
+    }
     const n = safeNum(rawVal);
     if (n === null || n <= 0) return null;
-    if (n > 0 && n <= 50000) return Math.round(n * GB);
-    if (n > 50000 && n <= 50_000_000) return Math.round(n * MB);
+    const candMB = Math.round(n * _MB);
+    if (candMB > 0 && candMB <= 10 * _TB) return candMB;
     return Math.round(n);
   };
 
   const rawLimitRaw = rawObj.limit ?? nested?.limit ?? rawObj.enabledProfile?.limit;
   const rawLowestLimitRaw = rawObj.lowestDataLimit ?? rawObj.lowestLimit ?? nested?.lowestDataLimit ?? nested?.lowestLimit ?? rawObj.enabledProfile?.lowestDataLimit;
-  const dlBytes = toBytesBestEffort(rawLimitRaw);
-  const ldlBytes = toBytesBestEffort(rawLowestLimitRaw);
+  const dlBytes = pickBytesSmart(rawLimitRaw, baselineDataLimit, 'limit');
+  const ldlBytes = pickBytesSmart(rawLowestLimitRaw, baselineLowestLimit, 'limit');
 
   // ============================================================
   // 📊 DATA USED: 15+ EXTRA candidate keys!
@@ -1685,43 +1734,33 @@ function enrichSimhuisStatusWithDirectRawExtracts(
         for (let bi = 0; bi < bundlesArr.length; bi++) {
           const b = bundlesArr[bi];
           if (!b || typeof b !== 'object') continue;
-          // --- Data used ---
           if (dataUsed === null) {
             for (const k of BUNDLE_DATA_KEYS) {
-              const sv = safeNum((b as any)[k]);
-              if (sv !== null && sv >= 0) {
-                if (sv > 0 && sv <= 50_000_000) dataUsed = Math.round(sv * (sv <= 50000 ? MB : 1));
-                else if (sv > 50_000_000) dataUsed = Math.round(sv);
-                else dataUsed = 0;
-                dataUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`;
-                break;
-              }
+              const rawV = (b as any)[k];
+              const pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
+              if (pb !== null && pb >= 0) { dataUsed = pb; dataUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
+              const sv = safeNum(rawV);
+              if (sv !== null && sv === 0) { dataUsed = 0; dataUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
             }
           }
           if (remainingBytes === null) {
-            const sv = safeNum((b as any).remainingBytes);
-            if (sv !== null && sv >= 0) {
-              if (sv > 0 && sv <= 50_000_000) remainingBytes = Math.round(sv * (sv <= 50000 ? GB : 1));
-              else if (sv > 50_000_000) remainingBytes = Math.round(sv);
-              else remainingBytes = 0;
-            }
+            const rawV = (b as any).remainingBytes;
+            const pb = pickBytesSmart(rawV, baselineDataLimit, 'limit');
+            if (pb !== null && pb >= 0) { remainingBytes = pb; }
+            else { const sv = safeNum(rawV); if (sv === 0) remainingBytes = 0; }
           }
           if (initialBytes === null) {
-            const sv = safeNum((b as any).initialSize);
-            if (sv !== null && sv >= 0) {
-              if (sv > 0 && sv <= 50_000_000) initialBytes = Math.round(sv * (sv <= 50000 ? GB : 1));
-              else if (sv > 50_000_000) initialBytes = Math.round(sv);
-              else initialBytes = 0;
-            }
+            const rawV = (b as any).initialSize;
+            const pb = pickBytesSmart(rawV, baselineDataLimit, 'limit');
+            if (pb !== null && pb >= 0) { initialBytes = pb; }
+            else { const sv = safeNum(rawV); if (sv === 0) initialBytes = 0; }
           }
-          // --- SMS used ---
           if (smsUsed === null) {
             for (const k of BUNDLE_SMS_KEYS) {
               const sv = safeNum((b as any)[k]);
               if (sv !== null && sv >= 0) { smsUsed = sv; smsUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
             }
           }
-          // --- Product name (HEET BIJ SWAGGER: localProductName!) ---
           if (!pName) {
             for (const k of BUNDLE_PRODUCT_KEYS) {
               const s = isValidStringValue((b as any)[k]);
@@ -1729,7 +1768,6 @@ function enrichSimhuisStatusWithDirectRawExtracts(
             }
           }
         }
-        // Als geen bundles[].productName, probeer subscriptions[].localProductName / rateplan zelf
         if (!pName) {
           for (const k of BUNDLE_PRODUCT_KEYS) {
             const s = isValidStringValue((sub as any)[k]);
@@ -1737,37 +1775,31 @@ function enrichSimhuisStatusWithDirectRawExtracts(
           }
         }
       }
-      // Als laatste: ratings.dataUsed (uit CDR response!)
       if (dataUsed === null) {
         const ratings = (rawObj as any).ratings;
         if (ratings && typeof ratings === 'object') {
           const ratingsArr = Array.isArray(ratings) ? ratings : [ratings];
           for (let ri = 0; ri < ratingsArr.length; ri++) {
             const rt = ratingsArr[ri];
-            const sv = safeNum((rt as any)?.dataUsed);
-            if (sv !== null && sv >= 0) {
-              if (sv > 0 && sv <= 50_000_000) dataUsed = Math.round(sv * (sv <= 50000 ? MB : 1));
-              else if (sv > 50_000_000) dataUsed = Math.round(sv);
-              else dataUsed = 0;
-              dataUsedSrc = `RATINGS[${ri}].dataUsed`;
-              break;
-            }
-            // Product via ratings.product ook proberen!
+            const rawV = (rt as any)?.dataUsed;
+            const pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
+            if (pb !== null && pb >= 0) { dataUsed = pb; dataUsedSrc = `RATINGS[${ri}].dataUsed`; break; }
+            const sv = safeNum(rawV);
+            if (sv === 0) { dataUsed = 0; dataUsedSrc = `RATINGS[${ri}].dataUsed`; break; }
             if (!pName && (rt as any)?.product && typeof (rt as any).product === 'object') {
               for (const k of BUNDLE_PRODUCT_KEYS) {
                 const s = isValidStringValue(((rt as any).product as any)[k]);
                 if (s && !looksLikeTechProfile(s)) { pName = s; pSrc = `RATINGS[${ri}].product.${k}`; break; }
               }
-              // ratings.product.remainingBytes ook!
               if (remainingBytes === null) {
-                const sv2 = safeNum(((rt as any).product as any).remainingBytes);
-                if (sv2 !== null && sv2 >= 0) remainingBytes = sv2 > 50_000_000 ? Math.round(sv2) : Math.round(sv2 * (sv2 <= 50000 ? GB : 1));
+                const rawV2 = ((rt as any).product as any).remainingBytes;
+                const pb2 = pickBytesSmart(rawV2, baselineDataLimit, 'limit');
+                if (pb2 !== null) remainingBytes = pb2;
               }
             }
           }
         }
       }
-      // Tenslotte: losse data[] arrays (van /cdr response)
       if (dataUsed === null && Array.isArray((rawObj as any).data)) {
         let totaal = 0;
         let hasAny = false;
@@ -1776,16 +1808,15 @@ function enrichSimhuisStatusWithDirectRawExtracts(
           if (sv !== null && sv >= 0) { totaal += sv; hasAny = true; }
           if (remainingBytes === null && item?.roundedBytes) {
             const sv2 = safeNum(item.roundedBytes);
-            if (sv2 !== null && sv2 >= 0) remainingBytes = sv2 > 50_000_000 ? Math.round(sv2) : remainingBytes;
+            if (sv2 !== null && sv2 >= 0 && sv2 > 5_000_000) remainingBytes = sv2;
           }
         }
         if (hasAny) { dataUsed = totaal; dataUsedSrc = `data[].bytes SUM (${(rawObj as any).data.length} items)`; }
       }
-      // Swagger: /cdr/stats top-level bytes field! (bytes = totaal CDR data bytes!)
       if (dataUsed === null) {
         const topBytes = safeNum((rawObj as any).bytes);
         if (topBytes !== null && topBytes >= 0) {
-          dataUsed = topBytes; // cdr/stats bytes = ALTIJD raw bytes!
+          dataUsed = topBytes;
           dataUsedSrc = 'TOP-LEVEL.bytes (/cdr/stats)';
         }
       }
@@ -1802,69 +1833,36 @@ function enrichSimhuisStatusWithDirectRawExtracts(
   };
   const bundleData = extractFromAllBundles();
 
-  // ============================================================
-  // Nu: dataUsed = HOOGSTE PRIO = bundles[].dataUsed!
-  // ============================================================
   let duBytes: number | null = bundleData.dataUsed;
   let duSource: string = bundleData.productSrc.split('|data=').pop()?.split('|')[0] || '';
-  if (duBytes === null && firstSub) {
+
+  const pickDataUsedFrom = (obj: any, label: string): { bytes: number | null; src: string } => {
+    if (!obj) return { bytes: null, src: '' };
     for (const k of DATA_USED_KEYS) {
-      const sv = safeNum((firstSub as any)[k]);
-      if (sv !== null && sv >= 0) {
-        if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
-        else if (sv > 50000) duBytes = Math.round(sv);
-        else duBytes = 0;
-        duSource = `SUBS.${k}`;
-        break;
-      }
+      const rawV = (obj as any)[k];
+      const pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
+      if (pb !== null && pb >= 0) return { bytes: pb, src: `${label}.${k}` };
+      const sv = safeNum(rawV);
+      if (sv === 0) return { bytes: 0, src: `${label}.${k}` };
     }
-  }
-  if (duBytes === null && firstSetup) {
-    for (const k of DATA_USED_KEYS) {
-      const sv = safeNum((firstSetup as any)[k]);
-      if (sv !== null && sv >= 0) {
-        if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
-        else if (sv > 50000) duBytes = Math.round(sv);
-        else duBytes = 0;
-        duSource = `SETUP.${k}`;
-        break;
-      }
-    }
-  }
-  if (duBytes === null) {
-    for (const k of DATA_USED_KEYS) {
-      const sv = safeNum((rawObj as any)[k]);
-      if (sv !== null && sv >= 0) {
-        if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
-        else if (sv > 50000) duBytes = Math.round(sv);
-        else duBytes = 0;
-        duSource = `RAW.${k}`;
-        break;
-      }
-    }
-  }
-  if (duBytes === null && nested) {
-    for (const k of DATA_USED_KEYS) {
-      const sv = safeNum((nested as any)[k]);
-      if (sv !== null && sv >= 0) {
-        if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
-        else if (sv > 50000) duBytes = Math.round(sv);
-        else duBytes = 0;
-        duSource = `NESTED.${k}`;
-        break;
-      }
-    }
-  }
-  if (duBytes === null && cardProfile) {
-    for (const k of DATA_USED_KEYS) {
-      const sv = safeNum((cardProfile as any)[k]);
-      if (sv !== null && sv >= 0) {
-        if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
-        else if (sv > 50000) duBytes = Math.round(sv);
-        else duBytes = 0;
-        duSource = `CARDPROFILE.${k}`;
-        break;
-      }
+    return { bytes: null, src: '' };
+  };
+  if (duBytes === null && firstSub) { const r = pickDataUsedFrom(firstSub, 'SUBS'); if (r.bytes !== null) { duBytes = r.bytes; duSource = r.src; } }
+  if (duBytes === null && firstSetup) { const r = pickDataUsedFrom(firstSetup, 'SETUP'); if (r.bytes !== null) { duBytes = r.bytes; duSource = r.src; } }
+  if (duBytes === null) { const r = pickDataUsedFrom(rawObj, 'RAW'); if (r.bytes !== null) { duBytes = r.bytes; duSource = r.src; } }
+  if (duBytes === null && nested) { const r = pickDataUsedFrom(nested, 'NESTED'); if (r.bytes !== null) { duBytes = r.bytes; duSource = r.src; } }
+  if (duBytes === null && cardProfile) { const r = pickDataUsedFrom(cardProfile, 'CARDPROFILE'); if (r.bytes !== null) { duBytes = r.bytes; duSource = r.src; } }
+
+  if (duBytes !== null && baselineDataUsed !== null && baselineDataUsed > 0) {
+    const ratio = Math.max(duBytes, 1) / Math.max(baselineDataUsed, 1);
+    if (ratio > 1000 || ratio < 0.001) {
+      try {
+        const shortIccid = iccid.slice(-6);
+        console.info(
+          `[simhuis:enrichExtract] [${shortIccid}] ⚠️ dataUsed sanity-check: enrich=${duBytes} bytes (${(duBytes/_MB).toFixed(2)} MB) ≠ baseline=${baselineDataUsed} bytes (${(baselineDataUsed/_MB).toFixed(2)} MB). ratio=${ratio.toFixed(1)}x → baseline gehandhaafd.`
+        );
+      } catch {}
+      duBytes = baselineDataUsed;
     }
   }
   // Bundles debug!
@@ -1877,7 +1875,7 @@ function enrichSimhuisStatusWithDirectRawExtracts(
   } catch {}
   try {
     const shortIccid = iccid.slice(-6);
-    const mbDisplay = duBytes !== null ? `${(duBytes / MB).toFixed(2)} MB` : '-';
+    const mbDisplay = duBytes !== null ? `${(duBytes / _MB).toFixed(2)} MB` : '-';
     console.info(`[simhuis:enrichExtract] [${shortIccid}] 📊 dataUsed: source=${duSource || 'NOT_FOUND'} raw=${duBytes !== null ? 'FOUND' : 'NULL'} → ${mbDisplay}`);
   } catch {}
 

@@ -14,7 +14,7 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -244,14 +244,58 @@ export function DataTable<TData, TValue>({
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id}>
                 {headerGroup.headers.map((header) => {
+                  const canSort = header.column.getCanSort();
+                  const sorted = header.column.getIsSorted();
+                  const ariaSort =
+                    sorted === "asc"
+                      ? "ascending"
+                      : sorted === "desc"
+                      ? "descending"
+                      : undefined;
                   return (
-                    <TableHead key={header.id}>
-                      {header.isPlaceholder
-                        ? null
-                        : flexRender(
+                    <TableHead
+                      key={header.id}
+                      aria-sort={ariaSort}
+                    >
+                      {header.isPlaceholder ? null : canSort ? (
+                        <button
+                          type="button"
+                          onClick={header.column.getToggleSortingHandler()}
+                          className="flex w-full items-center gap-1.5 text-left font-medium text-slate-700 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 rounded-sm"
+                          title={
+                            sorted === "asc"
+                              ? "Klik om aflopend te sorteren"
+                              : sorted === "desc"
+                              ? "Klik om sortering te verwijderen"
+                              : "Klik om oplopend te sorteren"
+                          }
+                          aria-label={(() => {
+                            const label = typeof header.column.columnDef.header === "string" ? `${header.column.columnDef.header}. ` : "";
+                            if (sorted === "asc") return `${label}Sorteert oplopend. Klik om aflopend te sorteren.`;
+                            if (sorted === "desc") return `${label}Sorteert aflopend. Klik om sortering te verwijderen.`;
+                            return `${label}Klik om oplopend te sorteren.`;
+                          })()}
+                        >
+                          {flexRender(
                             header.column.columnDef.header,
                             header.getContext()
                           )}
+                          <span className="flex shrink-0 items-center" aria-hidden="true">
+                            {sorted === "asc" ? (
+                              <ChevronUp className="h-3.5 w-3.5 text-slate-600" />
+                            ) : sorted === "desc" ? (
+                              <ChevronDown className="h-3.5 w-3.5 text-slate-600" />
+                            ) : (
+                              <ChevronsUpDown className="h-3.5 w-3.5 text-slate-400" />
+                            )}
+                          </span>
+                        </button>
+                      ) : (
+                        flexRender(
+                          header.column.columnDef.header,
+                          header.getContext()
+                        )
+                      )}
                     </TableHead>
                   );
                 })}
