@@ -1398,6 +1398,159 @@ async function doPerSimFetch(args: {
   }
 }
 
+/**
+ * ULTRA-ROBUUSTE expliciete extractie van status, dataLimits, dataUsed en smsUsed
+ * DIRECT UIT DE RUWE API RESPONSE (raw), NA de standaard toSimStatus() call.
+ * Dit voorkomt de 2 PB bug en zorgt dat usage uit subscriptions[]/setups[] wordt gehaald.
+ * Wordt gedeeld door listAllSims() en getSimStatus().
+ */
+function enrichSimhuisStatusWithDirectRawExtracts(
+  baseStatus: SimhuisSimStatus | null | undefined,
+  raw: unknown,
+  iccid: string
+): SimhuisSimStatus | null {
+  if (!baseStatus || !baseStatus.iccid) return baseStatus ?? null;
+
+  const rawObj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, any>;
+  const nested: any =
+    rawObj.enabledProfile ??
+    rawObj.asset ??
+    rawObj.sim ??
+    rawObj.simCard ??
+    rawObj.device ??
+    rawObj.subscription ??
+    rawObj.subscriber ??
+    rawObj.esimProfile ??
+    rawObj.esim ??
+    rawObj.profile ??
+    (Array.isArray(rawObj.profiles) && rawObj.profiles.length > 0 ? rawObj.profiles[0] : null) ??
+    {};
+
+  const tryRawStr = (v: any) => {
+    if (v === null || v === undefined) return '';
+    const s = String(v).trim();
+    if (!s) return '';
+    const lower = s.toLowerCase();
+    if (['status','profilestate','state','lifecycle','lifecyclestatus','lifecycle_status','sim_status','simstate','sim_state','type'].includes(lower)) return '';
+    return s;
+  };
+
+  let directStatus = (
+    tryRawStr(rawObj.status) ||
+    tryRawStr(rawObj.profileState) ||
+    tryRawStr(nested?.status) ||
+    tryRawStr(nested?.profileState) ||
+    ''
+  ).toLowerCase();
+  if (!directStatus && (rawObj?.enabledProfile)) {
+    directStatus = (tryRawStr(rawObj.enabledProfile.status) || tryRawStr(rawObj.enabledProfile.profileState) || '').toLowerCase();
+  }
+  if (!directStatus && Array.isArray(rawObj?.profiles) && rawObj.profiles.length > 0) {
+    const profiles: any[] = rawObj.profiles;
+    const best = profiles.find((p: any) => p && (p.enabled === true || p.status || p.profileState)) ?? profiles[0];
+    if (best) directStatus = (tryRawStr(best.status) || tryRawStr(best.profileState) || '').toLowerCase();
+  }
+
+  if (directStatus) {
+    const ds = directStatus;
+    if (['active', 'enabled', 'online', 'activated', 'in_service', 'provisioned'].includes(ds)) baseStatus.status = 'active';
+    else if (['inactive', 'disabled', 'offline', 'deactivated', 'retired', 'stock', 'in_stock', 'available', 'ready'].includes(ds)) baseStatus.status = 'inactive';
+    else if (['suspended', 'paused', 'barred', 'suspend', 'bar', 'hibernated', 'hibernate'].includes(ds)) baseStatus.status = 'suspended';
+    else if (['terminated', 'deleted', 'cancelled', 'canceled', 'cancel', 'destroyed', 'expired'].includes(ds)) baseStatus.status = 'terminated';
+    else if (['provisioning', 'activating', 'pending', 'activating_subscription', 'pre_active'].includes(ds)) baseStatus.status = 'provisioning';
+    else (baseStatus as any).status = ds;
+  }
+
+  const safeNum = (v: any): number | null => {
+    if (v === null || v === undefined) return null;
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+    if (typeof v === 'bigint') { const n = Number(v); return Number.isFinite(n) ? n : null; }
+    if (typeof v === 'string') {
+      const s = v.trim();
+      if (!s || s === '-' || s.toLowerCase() === 'null') return null;
+      const n = Number(s.replace(/[^\d.\-]/g, ''));
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  };
+
+  const GB = 1024 * 1024 * 1024;
+  const MB = 1024 * 1024;
+  const toBytesBestEffort = (rawVal: any): number | null => {
+    const n = safeNum(rawVal);
+    if (n === null || n <= 0) return null;
+    if (n > 0 && n <= 50000) return Math.round(n * GB);
+    if (n > 50000 && n <= 50_000_000) return Math.round(n * MB);
+    return Math.round(n);
+  };
+
+  const rawLimitRaw = rawObj.limit ?? nested?.limit ?? rawObj.enabledProfile?.limit;
+  const rawLowestLimitRaw = rawObj.lowestDataLimit ?? rawObj.lowestLimit ?? nested?.lowestDataLimit ?? nested?.lowestLimit ?? rawObj.enabledProfile?.lowestDataLimit;
+  const dlBytes = toBytesBestEffort(rawLimitRaw);
+  const ldlBytes = toBytesBestEffort(rawLowestLimitRaw);
+
+  const firstSub = Array.isArray(rawObj.subscriptions) && rawObj.subscriptions.length > 0 ? rawObj.subscriptions[0] : (Array.isArray(nested?.subscriptions) && nested?.subscriptions.length > 0 ? nested.subscriptions[0] : null);
+  const firstSetup = Array.isArray(rawObj.setups) && rawObj.setups.length > 0 ? rawObj.setups[0] : (Array.isArray(nested?.setups) && nested?.setups.length > 0 ? nested.setups[0] : null);
+
+  let duBytes: number | null = null;
+  if (firstSub) {
+    for (const k of ['dataUsed','dataUsage','data_used','data_usage','usageData','usedData','consumed','dataConsumed','totalDataUsed','usage']) {
+      const sv = safeNum((firstSub as any)[k]);
+      if (sv !== null && sv >= 0) {
+        if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+        else if (sv > 50000) duBytes = Math.round(sv);
+        else duBytes = 0;
+        break;
+      }
+    }
+  }
+  if (duBytes === null && firstSetup) {
+    for (const k of ['dataUsed','dataUsage','data_used','data_usage','usageData','usedData','consumed','dataConsumed','totalDataUsed','usage']) {
+      const sv = safeNum((firstSetup as any)[k]);
+      if (sv !== null && sv >= 0) {
+        if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+        else if (sv > 50000) duBytes = Math.round(sv);
+        else duBytes = 0;
+        break;
+      }
+    }
+  }
+  if (duBytes === null) {
+    const rawDataUsedRaw = rawObj.dataUsed ?? rawObj.dataUsage ?? rawObj.data_used ?? rawObj.data_usage ?? nested?.dataUsed ?? nested?.dataUsage ?? rawObj.enabledProfile?.dataUsed;
+    const sv = safeNum(rawDataUsedRaw);
+    if (sv !== null && sv >= 0) {
+      if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+      else if (sv > 50000) duBytes = Math.round(sv);
+      else duBytes = 0;
+    }
+  }
+
+  const smsLimitRaw = rawObj.smsLimit ?? nested?.smsLimit ?? rawObj.enabledProfile?.smsLimit;
+  const smsLowestLimitRaw = rawObj.lowestSmsLimit ?? nested?.lowestSmsLimit ?? rawObj.enabledProfile?.lowestSmsLimit;
+  const smsUsedRaw = rawObj.smsUsed ?? rawObj.smsCount ?? rawObj.totalSms ?? rawObj.smsSent ?? nested?.smsUsed ?? (firstSub as any)?.smsUsed ?? (firstSub as any)?.smsCount ?? (firstSetup as any)?.smsUsed;
+  const smsLimitNum = safeNum(smsLimitRaw);
+  const smsLowestLimitNum = safeNum(smsLowestLimitRaw);
+  const smsUsedNum = safeNum(smsUsedRaw);
+
+  const directDataLimitBytes = (dlBytes !== null && dlBytes > 0) ? dlBytes : null;
+  const directLowestDataLimitBytes = (ldlBytes !== null && ldlBytes > 0) ? ldlBytes : null;
+  const directSmsLimitCount = (smsLimitNum !== null && smsLimitNum >= 0) ? smsLimitNum : null;
+  const directLowestSmsLimitCount = (smsLowestLimitNum !== null && smsLowestLimitNum >= 0) ? smsLowestLimitNum : null;
+  const directDataUsedBytes = (duBytes !== null && duBytes >= 0) ? duBytes : null;
+  const directSmsUsedCount = (smsUsedNum !== null && smsUsedNum >= 0) ? smsUsedNum : null;
+
+  if (directDataLimitBytes !== null) (baseStatus as any).dataLimitBytes = directDataLimitBytes;
+  if (directLowestDataLimitBytes !== null) (baseStatus as any).lowestDataLimitBytes = directLowestDataLimitBytes;
+  else if (directDataLimitBytes !== null) (baseStatus as any).lowestDataLimitBytes = directDataLimitBytes;
+  if (directSmsLimitCount !== null) (baseStatus as any).smsLimitCount = directSmsLimitCount;
+  if (directLowestSmsLimitCount !== null) (baseStatus as any).lowestSmsLimitCount = directLowestSmsLimitCount;
+  else if (directSmsLimitCount !== null) (baseStatus as any).lowestSmsLimitCount = directSmsLimitCount;
+  if (directDataUsedBytes !== null) (baseStatus as any).dataUsedBytes = directDataUsedBytes;
+  if (directSmsUsedCount !== null) (baseStatus as any).smsUsedCount = directSmsUsedCount;
+
+  return baseStatus;
+}
+
 export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
   const creds = await getSimhuisCreds();
   const authBasic = basicAuthHeader(creds.username, creds.password);
@@ -1598,7 +1751,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
 
             if (result.tag === 'ok') {
               let extracted: SimhuisSimStatus | null = null;
-              try { extracted = toSimStatus(result.body, iccid); } catch { extracted = null; }
+              try { extracted = toSimStatus(result.body, iccid); extracted = enrichSimhuisStatusWithDirectRawExtracts(extracted, result.body, iccid); } catch { extracted = null; }
               if (extracted?.iccid) {
                 consider(extracted);
                 // Vroegtijdig stoppen ALLEEN als deze response echt complete usage data heeft
@@ -1628,7 +1781,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                 });
                 if (altResult.tag === 'ok') {
                   let extracted: SimhuisSimStatus | null = null;
-                  try { extracted = toSimStatus(altResult.body, iccid); } catch { extracted = null; }
+                  try { extracted = toSimStatus(altResult.body, iccid); extracted = enrichSimhuisStatusWithDirectRawExtracts(extracted, altResult.body, iccid); } catch { extracted = null; }
                   if (extracted?.iccid) {
                     consider(extracted);
                     if (hasFullUsage(extracted)) return extracted;
@@ -1690,7 +1843,8 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                   const match = items.find((s: any) => String(s.iccid ?? '').trim() === iccid);
                   if (match) {
                     try {
-                      const st = toSimStatus(match, iccid);
+                      let st: SimhuisSimStatus | null = toSimStatus(match, iccid);
+                      st = enrichSimhuisStatusWithDirectRawExtracts(st, match, iccid);
                       if (st?.iccid) {
                         consider(st);
                         if (hasFullUsage(st)) return st;
@@ -1728,7 +1882,8 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
           const match = items.find((s: any) => String(s.iccid ?? '').trim() === iccid);
           if (match) {
             try {
-              const st = toSimStatus(match, iccid);
+              let st: SimhuisSimStatus | null = toSimStatus(match, iccid);
+              st = enrichSimhuisStatusWithDirectRawExtracts(st, match, iccid);
               if (st?.iccid) {
                 consider(st);
                 if (hasFullUsage(st)) return st;
