@@ -244,7 +244,8 @@ export function DataTable<TData, TValue>({
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id}>
                 {headerGroup.headers.map((header) => {
-                  const canSort = header.column.getCanSort();
+                  const defEnabled = (header.column.columnDef.enableSorting as unknown) === true;
+                  const canSort = header.column.getCanSort() || defEnabled;
                   const sorted = header.column.getIsSorted();
                   const ariaSort =
                     sorted === "asc"

@@ -336,6 +336,7 @@ export function SimList({
     },
     {
       id: "usage",
+      accessorFn: (row) => row.dataUsedBytes,
       header: "Verbruik",
       enableSorting: true,
       sortingFn: usageSortFn,
