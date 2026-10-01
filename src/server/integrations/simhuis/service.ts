@@ -1104,6 +1104,14 @@ function attemptRankScore(statusCode: number, error: string | null): number {
 }
 
 let _bearerTokenCache: { token: string; expiresAt: number; baseUrl: string; accountId: string | null } | null = null;
+function invalidateBearerTokenCache(baseUrl?: string): void {
+  try {
+    if (!baseUrl || !_bearerTokenCache || _bearerTokenCache.baseUrl === baseUrl) {
+      console.warn('[simhuis] 🗑️ Bearer-token cache GEINVALIDEERD (401 / ongeldig). Nieuwe token verkrijgen bij volgende call!');
+      _bearerTokenCache = null;
+    }
+  } catch {}
+}
 
 function parseJwtPayload(token: string): Record<string, any> | null {
   try {
@@ -1278,20 +1286,45 @@ async function acquireBearerToken(creds: { baseUrl: string; username: string; pa
           if (!token) token = null;
         }
         if (token) {
-          let expiresIn = 3600;
+          // 💥 KRITIEKE BUG FIX (JWT exp vs expiresIn)!
+          //   - JWT `exp` veld = UNIX TIMESTAMP SECONDEN (epoch), NIET duration!
+          //   - Alleen `expires_in / expiresIn` = duration seconden!
+          //   - Vroeger: p.exp (1790886757 = ~2026-10-01) → Date.now() + 1790886757*1000 = +57 JAAR in de toekomst.
+          //              Dus token cache werd NOOIT automatisch vervallen, ook al was de echte JWT na 25m al verlopen → HTTP 401!
+          let expiresIn = 900; // Default SAFE = 15 min (ruim onder de waarschijnlijke 20-25 min van Simhuis!)
+          let epochExp: number | null = null;
           if (parsed && typeof parsed === 'object') {
             const p = parsed as Record<string, any>;
-            const ei = Number(p.expires_in || p.expiresIn || p.exp || 0);
-            if (Number.isFinite(ei) && ei > 0) expiresIn = ei;
+            // 1) ECHTE duration fields (altijd kleiner dan 100.000):
+            const eiDuration = Number(p.expires_in || p.expiresIn || 0);
+            if (Number.isFinite(eiDuration) && eiDuration > 60 && eiDuration < 100_000_000) {
+              expiresIn = eiDuration;
+            }
+            // 2) JWT payload `exp` = EPOCH SECONDEN! (>= 1_700_000_000 = jaar 2024+)
+            const eiEpoch = Number(p.exp || 0);
+            if (Number.isFinite(eiEpoch) && eiEpoch > 1_700_000_000) {
+              epochExp = eiEpoch * 1000; // naar ms
+            }
           }
+          // 3) Parse de JWT payload zelf VOOR exp veld — als login response geen los exp heeft, maar de JWT wel!
+          if (!epochExp) {
+            const jwtPayload = parseJwtPayload(token);
+            const jwtExp = Number(jwtPayload?.exp || 0);
+            if (Number.isFinite(jwtExp) && jwtExp > 1_700_000_000) epochExp = jwtExp * 1000;
+          }
+          // BEREKEN expiresAt = prefer epoch (JWT echt exp) > duration!
+          const nowCalc = Date.now();
+          const expiresAt = epochExp
+            ? Math.min(epochExp - 60_000, nowCalc + expiresIn * 1000) // min van beiden, en altijd 60s buffer voor epoch
+            : nowCalc + expiresIn * 1000;
           // PRIORITEIT: 1) accountId UIT USER OBJECT (vanuit login response!) → 2) pas JWT payload fallback
           const accountIdFromUser = extractAccountIdFromUserObj(userFromResponse);
           const accountIdFromJwt = extractAccountIdFromToken(token);
           const accountId = accountIdFromUser ?? accountIdFromJwt;
           try {
-            console.error(`[acquireBearerToken] ✅ Token OK. accountIdFromUser=${accountIdFromUser ?? 'N/A'}, accountIdFromJwt=${accountIdFromJwt ?? 'N/A'}. Gebruikt: ${accountId ?? 'N/A'}. user.shape=${shapeOf(userFromResponse)}`);
+            console.error(`[acquireBearerToken] ✅ Token OK. duration=${expiresIn}s jwtExp=${epochExp ? new Date(epochExp).toISOString() : 'N/A'}. accountIdFromUser=${accountIdFromUser ?? 'N/A'}, accountIdFromJwt=${accountIdFromJwt ?? 'N/A'}. Gebruikt: ${accountId ?? 'N/A'}. user.shape=${shapeOf(userFromResponse)}`);
           } catch { /* ignore */ }
-          _bearerTokenCache = { token, expiresAt: Date.now() + expiresIn * 1000, baseUrl: creds.baseUrl, accountId };
+          _bearerTokenCache = { token, expiresAt, baseUrl: creds.baseUrl, accountId };
           return token;
         }
       }
@@ -2051,32 +2084,62 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
   if (aidForGetSim && bearerToken) {
     DEBUG_LOG(`🏆 STAP 0: Phase A - PRECIEZE WINNING COMBO (POST /v3/assetsbulk + esimsbulk) eerst!`);
     try {
-      const winAuth: PerSimAuth = { tag: 'bearer-token', token: bearerToken };
+      let winAuth: PerSimAuth = { tag: 'bearer-token', token: bearerToken };
+      let finalBatches: Array<{ name: string; items: any[] }> = [];
+      let finalAssetsOk = false;
+      let finalEsimsOk = false;
 
-      const [assetsRes, esimsRes] = await Promise.all([
-        doPerSimFetch({
-          fullUrl: makePerSimFullUrl(creds.baseUrl, '/v3/assetsbulk', { accountId: aidForGetSim }),
-          method: 'POST',
-          contentType: 'json',
-          body: { accountId: aidForGetSim, page: 1, limit: 1000 },
-          auth: winAuth,
-          timeoutMs: 15_000,
-        }),
-        doPerSimFetch({
-          fullUrl: makePerSimFullUrl(creds.baseUrl, '/v3/esimsbulk', { accountId: aidForGetSim }),
-          method: 'POST',
-          contentType: 'json',
-          body: { accountId: aidForGetSim, page: 1, limit: 1000 },
-          auth: winAuth,
-          timeoutMs: 15_000,
-        }),
-      ]);
+      // 💥 KRITIEK: MAX 2 POGINGEN! Bij HTTP 401 (InvalidCredentials):
+      //   Poging 1 faalt met 401 → token cache WEGDOEN + NIEUW token halen + POGING 2!
+      for (let wcAttempt = 1; wcAttempt <= 2; wcAttempt++) {
+        const [assetsRes, esimsRes] = await Promise.all([
+          doPerSimFetch({
+            fullUrl: makePerSimFullUrl(creds.baseUrl, '/v3/assetsbulk', { accountId: aidForGetSim }),
+            method: 'POST',
+            contentType: 'json',
+            body: { accountId: aidForGetSim, page: 1, limit: 1000 },
+            auth: winAuth,
+            timeoutMs: 15_000,
+          }),
+          doPerSimFetch({
+            fullUrl: makePerSimFullUrl(creds.baseUrl, '/v3/esimsbulk', { accountId: aidForGetSim }),
+            method: 'POST',
+            contentType: 'json',
+            body: { accountId: aidForGetSim, page: 1, limit: 1000 },
+            auth: winAuth,
+            timeoutMs: 15_000,
+          }),
+        ]);
+        const both401 = assetsRes.statusCode === 401 && esimsRes.statusCode === 401;
+        finalAssetsOk = assetsRes.tag === 'ok';
+        finalEsimsOk = esimsRes.tag === 'ok';
+        if (both401 && wcAttempt === 1) {
+          DEBUG_LOG(`🏆 STAP 0 Poging 1/2: Winning Combo BULK endpoints gaven BEIDE HTTP 401 (InvalidCredentials)! Token cache WEGGOOIEN + OPNIEUW /v3/auth/token aanroepen...`);
+          invalidateBearerTokenCache(creds.baseUrl);
+          const freshToken = await acquireBearerToken(creds);
+          if (!freshToken) { DEBUG_LOG(`🏆 STAP 0 Poging 2/2: NIEUW token verkrijgen MISLUKT! Stop Winning Combo.`); break; }
+          winAuth = { tag: 'bearer-token', token: freshToken };
+          DEBUG_LOG(`🏆 STAP 0 Poging 2/2: FRESH token OK (len=${freshToken.length}). Winning Combo opnieuw proberen!`);
+          continue;
+        }
+        if (wcAttempt === 2 && both401) { DEBUG_LOG(`🏆 STAP 0 Poging 2/2: NOG STEEDS HTTP 401! Winning Combo compleet mislukt.`); break; }
+        // Data verzamelen
+        const batches: Array<{ name: string; items: any[] }> = [];
+        if (assetsRes.tag === 'ok') batches.push({ name: 'assetsbulk-aid', items: extractSimList(assetsRes.body) });
+        if (esimsRes.tag === 'ok') batches.push({ name: 'esimsbulk-aid', items: extractSimList(esimsRes.body) });
+        DEBUG_LOG(`🏆 Phase A poging ${wcAttempt}/2: HTTP assetsbulk=${assetsRes.tag === 'ok' ? '200' : assetsRes.statusCode} esimsbulk=${esimsRes.tag === 'ok' ? '200' : esimsRes.statusCode}. items.len=${batches.map(b => `${b.name}=${b.items.length}`).join(', ') || '(geen 200)'}`);
+        if (batches.length === 0 && wcAttempt === 1 && (assetsRes.statusCode === 401 || esimsRes.statusCode === 401)) {
+          // Ook als slechts 1 van de 2 401 geeft (randgeval): invalidate + retry
+          DEBUG_LOG(`🏆 STAP 0 Poging 1/2: 1 van de 2 bulk = 401. Cache wegdoen + retry.`);
+          invalidateBearerTokenCache(creds.baseUrl);
+          const freshToken = await acquireBearerToken(creds);
+          if (freshToken) { winAuth = { tag: 'bearer-token', token: freshToken }; continue; }
+        }
+        finalBatches = batches;
+        break; // Succes (of: na poging 2 altijd uit de loop!)
+      }
 
-      const batches: Array<{ name: string; items: any[] }> = [];
-      if (assetsRes.tag === 'ok') batches.push({ name: 'assetsbulk-aid', items: extractSimList(assetsRes.body) });
-      if (esimsRes.tag === 'ok') batches.push({ name: 'esimsbulk-aid', items: extractSimList(esimsRes.body) });
-      DEBUG_LOG(`🏆 Phase A: HTTP assetsbulk=${assetsRes.tag === 'ok' ? '200' : assetsRes.statusCode} esimsbulk=${esimsRes.tag === 'ok' ? '200' : esimsRes.statusCode}. items.len=${batches.map(b => `${b.name}=${b.items.length}`).join(', ')}`);
-
+      const batches = finalBatches;
       let phaseABest: SimhuisSimStatus | null = null;
       let phaseABestScore = -1;
 
@@ -4130,27 +4193,35 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
               b: JSON.stringify({ page: 1, limit: 1000, ...(accountId ? { accountId: String(accountId) } : {}), external: false, applyTenantFilter: false }),
             },
           ];
-          for (const win of WIN_URL) {
-            try {
-              const wh: Record<string, string> = { ...baseWafHeaders, 'Authorization': `Bearer ${bearerToken}` };
-              if (win.ct) wh['Content-Type'] = win.ct;
-              const wresp = await fetch(win.u, { method: win.m, headers: wh, body: win.b, signal: AbortSignal.timeout(25000) });
-              const wtext = await wresp.text();
-              let wparsed: unknown = null;
-              try { wparsed = JSON.parse(wtext); } catch { wparsed = wtext; }
-              const warr = extractSimList(wparsed);
-              const wpreview = warr.length > 0
-                ? `\n  🎯 0# ${JSON.stringify(Object.keys(warr[0] ?? {}).slice(0,25))}\n  🎯 0# values[0..8]=${JSON.stringify(Object.values(warr[0] ?? {}).slice(0,8)).slice(0,280)}${warr.length > 1 ? `\n  🎯 1# keys=${JSON.stringify(Object.keys(warr[1] ?? {}).slice(0,20))}` : ''}`
-                : ` rawText[0..300]=${JSON.stringify(wtext.slice(0,300))}`;
+          // 💥 KRITIEK: 2x retry bij HTTP 401! (Zelfde bug als in getSimStatus: JWT token cache!)
+          let wcAttempt = 0;
+          while (wcAttempt < 2) {
+            wcAttempt++;
+            let hadAny401 = false;
+            let hadAnyOk = false;
+            for (const win of WIN_URL) {
               try {
-                console.info(
-                  `[simhuis-listAllSims] 🏆 ECHTE WINNER ${win.tag}: HTTP ${wresp.status}. ` +
-                  `arr.len=${warr.length} shape=${shapeOf(wparsed)}.${wpreview}`
-                );
-              } catch { /* ignore */ }
-              if (wresp.ok && warr.length > 0) {
-                let debugIdx = 0;
-                for (const raw of warr) {
+                const wh: Record<string, string> = { ...baseWafHeaders, 'Authorization': `Bearer ${bearerToken}` };
+                if (win.ct) wh['Content-Type'] = win.ct;
+                const wresp = await fetch(win.u, { method: win.m, headers: wh, body: win.b, signal: AbortSignal.timeout(25000) });
+                const wtext = await wresp.text();
+                let wparsed: unknown = null;
+                try { wparsed = JSON.parse(wtext); } catch { wparsed = wtext; }
+                const warr = extractSimList(wparsed);
+                const wpreview = warr.length > 0
+                  ? `\n  🎯 0# ${JSON.stringify(Object.keys(warr[0] ?? {}).slice(0,25))}\n  🎯 0# values[0..8]=${JSON.stringify(Object.values(warr[0] ?? {}).slice(0,8)).slice(0,280)}${warr.length > 1 ? `\n  🎯 1# keys=${JSON.stringify(Object.keys(warr[1] ?? {}).slice(0,20))}` : ''}`
+                  : ` rawText[0..300]=${JSON.stringify(wtext.slice(0,300))}`;
+                if (wresp.status === 401) hadAny401 = true;
+                if (wresp.ok) hadAnyOk = true;
+                try {
+                  console.info(
+                    `[simhuis-listAllSims] 🏆 ECHTE WINNER ${win.tag} poging ${wcAttempt}/2: HTTP ${wresp.status}. ` +
+                    `arr.len=${warr.length} shape=${shapeOf(wparsed)}.${wpreview}`
+                  );
+                } catch { /* ignore */ }
+                if (wresp.ok && warr.length > 0) {
+                  let debugIdx = 0;
+                  for (const raw of warr) {
                   try {
                     const nested = (raw as any)?.simCard ?? (raw as any)?.sim ?? (raw as any)?.asset ?? (raw as any)?.device ?? (raw as any)?.subscription ?? (raw as any)?.subscriber ?? (raw as any)?.enabledProfile ?? {};
                     // =========================================================
@@ -4563,7 +4634,29 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
             } catch (ew: any) {
               try { console.info(`[simhuis-listAllSims] 🏆 ECHTE WINNER ${win.tag} exceptie: ${ew?.message ?? ew}.`); } catch { /* ignore */ }
             }
+          } // EINDE for (const win of WIN_URL)
+
+          // 💥 401 RETRY logica in listAllSims!
+          if (wcAttempt === 1 && hadAny401 && !hadAnyOk) {
+            try {
+              console.warn(`[simhuis-listAllSims] 🏆 WIN-COMBO Poging 1/2: BEIDE bulk endpoints gaven HTTP 401 (InvalidCredentials)! Token cache WEGGOOIEN + OPNIEUW token halen...`);
+              invalidateBearerTokenCache(creds.baseUrl);
+              const fresh = await acquireBearerToken(creds);
+              if (fresh) {
+                bearerToken = fresh;
+                console.info(`[simhuis-listAllSims] 🏆 WIN-COMBO Poging 2/2: FRESH token OK (len=${fresh.length}). Winning Combo opnieuw proberen!`);
+                continue; // while-loop opnieuw draaien met nieuw token!
+              } else {
+                console.warn(`[simhuis-listAllSims] 🏆 WIN-COMBO Poging 2/2: NIEUW token verkrijgen MISLUKT! Stoppen met Winning Combo.`);
+              }
+            } catch (e) {
+              try { console.warn(`[simhuis-listAllSims] 🏆 WIN-COMBO 401 retry exceptie: ${(e as any)?.message ?? e}.`); } catch {}
+            }
+            break; // geen nieuw token → uit while
           }
+          break; // Geen 401, of WEL data → uit while!
+        } // EINDE while (wcAttempt<2) retry loop
+
           // Wanneer WINNING COMBO succesvol data heeft: return onmiddellijk.
           if (all.length > 0) {
             try {
