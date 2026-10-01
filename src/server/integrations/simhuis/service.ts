@@ -3348,66 +3348,75 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                 for (const raw of warr) {
                   try {
                     const nested = (raw as any)?.simCard ?? (raw as any)?.sim ?? (raw as any)?.asset ?? (raw as any)?.device ?? (raw as any)?.subscription ?? (raw as any)?.subscriber ?? (raw as any)?.enabledProfile ?? {};
-                    let rawIccid = String(
-                      (raw as any).iccid ?? (raw as any).sim_iccid ?? (raw as any).simIccid
-                        ?? nested?.iccid ?? nested?.sim_iccid ?? nested?.simIccid ?? ''
-                    ).trim();
-                    if (!rawIccid && (raw as any)?.enabledProfile?.iccid) {
-                      rawIccid = String((raw as any).enabledProfile.iccid).trim();
+                    // =========================================================
+                    // 🔐 ULTRA-ROBUUST: Extract kritieke velden RECHTSTREEKS uit raw
+                    //   (GEEN afhankelijkheid van pickString / toSimStatus filters!)
+                    // =========================================================
+                    let directIccid = '';
+                    const tryRawIccid = (v: any) => {
+                      if (v === null || v === undefined) return '';
+                      const s = String(v).trim();
+                      if (!s) return '';
+                      // placeholders (key===value of iccid=="iccid"): alleen weiger als letterlijk == veldnaam
+                      const lower = s.toLowerCase();
+                      if (['iccid','sim_iccid','simiccid','esimid','esim_id','eid'].includes(lower)) return '';
+                      return s;
+                    };
+                    directIccid = tryRawIccid((raw as any).iccid) || tryRawIccid((raw as any).sim_iccid) || tryRawIccid((raw as any).simIccid)
+                               || tryRawIccid(nested?.iccid) || tryRawIccid(nested?.sim_iccid) || tryRawIccid(nested?.simIccid);
+                    if (!directIccid && (raw as any)?.enabledProfile?.iccid) {
+                      directIccid = tryRawIccid((raw as any).enabledProfile.iccid);
                     }
-                    if (!rawIccid && Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
+                    if (!directIccid && Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
                       const profiles: any[] = (raw as any).profiles;
                       const best = profiles.find(p => p && p.iccid && (p.enabled === true || p.status === 'active' || p.bootstrap === true))
                         ?? profiles.find(p => p && p.iccid);
-                      if (best?.iccid) rawIccid = String(best.iccid).trim();
+                      if (best?.iccid) directIccid = tryRawIccid(best.iccid);
                     }
-                    const rawEid = String(
-                      (raw as any).eid ?? (raw as any).esimId ?? (raw as any).esim_id
-                        ?? nested?.eid ?? nested?.esimId ?? nested?.esim_id ?? ''
-                    ).trim();
-                    const iccidStr = rawIccid || rawEid || '';
-                    const s = toSimStatus(raw, iccidStr);
-                    const beforeIccid = s ? (s as any).iccid : undefined;
-                    const beforeEid = s ? (s as any).eid : undefined;
-                    const beforeMsisdn = s ? (s as any).msisdn : undefined;
-                    // =========================================================
-                    // 🔧💥 EXPLICIET OVERSCHRIJVEN NA toSimStatus():
-                    //   -> placeholders/sanity filter mogen GEEN ECHTE DATA weggooien!
-                    // =========================================================
-                    if (s) {
-                      if (rawIccid) (s as any).iccid = rawIccid;
-                      else if (iccidStr) (s as any).iccid = iccidStr;
-                      if (rawEid && !(s as any).eid) (s as any).eid = rawEid;
-                      if (Array.isArray((raw as any)?.msisdn) && (raw as any).msisdn.length > 0) {
-                        const first = String((raw as any).msisdn[0] ?? '').trim();
-                        if (first) (s as any).msisdn = first;
-                      } else if (Array.isArray((raw as any)?.enabledProfile?.msisdn) && (raw as any).enabledProfile.msisdn.length > 0) {
-                        (s as any).msisdn = String((raw as any).enabledProfile.msisdn[0]).trim();
-                      } else if ((raw as any)?.enabledProfile?.msisdn) {
-                        (s as any).msisdn = String((raw as any).enabledProfile.msisdn).trim();
-                      } else {
-                        const direct = String((raw as any).msisdn ?? nested?.msisdn ?? '').trim();
-                        if (direct && !Array.isArray((raw as any).msisdn)) (s as any).msisdn = direct;
-                      }
-                      if (!(s as any).msisdn && Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
-                        const profiles: any[] = (raw as any).profiles;
-                        const best = profiles.find(p => p && p.msisdn) ?? profiles[0];
-                        if (best?.msisdn) (s as any).msisdn = String(best.msisdn).trim();
-                      }
+                    let directEid = tryRawIccid((raw as any).eid) || tryRawIccid((raw as any).esimId) || tryRawIccid((raw as any).esim_id)
+                               || tryRawIccid(nested?.eid) || tryRawIccid(nested?.esimId) || tryRawIccid(nested?.esim_id);
+                    let directMsisdn = '';
+                    if (Array.isArray((raw as any)?.msisdn) && (raw as any).msisdn.length > 0) {
+                      const first = String((raw as any).msisdn[0] ?? '').trim();
+                      const lower = first.toLowerCase();
+                      if (first && !['msisdn','phonenumber','primarymsisdn','virtualmsisdn'].includes(lower)) directMsisdn = first;
+                    } else if (Array.isArray((raw as any)?.enabledProfile?.msisdn) && (raw as any).enabledProfile.msisdn.length > 0) {
+                      directMsisdn = String((raw as any).enabledProfile.msisdn[0] ?? '').trim();
+                    } else if ((raw as any)?.enabledProfile?.msisdn) {
+                      directMsisdn = String((raw as any).enabledProfile.msisdn).trim();
+                    } else if ((raw as any)?.msisdn && typeof (raw as any).msisdn === 'string') {
+                      directMsisdn = String((raw as any).msisdn).trim();
+                    } else if (Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
+                      const profiles: any[] = (raw as any).profiles;
+                      const best = profiles.find(p => p && p.msisdn) ?? profiles[0];
+                      if (best?.msisdn) directMsisdn = String(best.msisdn).trim();
                     }
+                    if (!directIccid && directEid) directIccid = directEid;
+
+                    // Nu: toSimStatus voor overige (niet-kritieke) velden.
+                    // Daarna OVERSCHRIJVEN we de kritieke velden met onze directe extractie (altijd wint!).
+                    let s: SimhuisSimStatus | null = null;
+                    try {
+                      s = toSimStatus(raw, directIccid || directEid || '');
+                    } catch { s = null; }
+                    const base: Partial<SimhuisSimStatus> = s ? { ...(s as any) } : {};
+                    // 🔐💥 Kritieke velden: altijd de directe extractie wint!
+                    if (directIccid) (base as any).iccid = directIccid;
+                    if (directEid)  (base as any).eid  = directEid;
+                    if (directMsisdn) (base as any).msisdn = directMsisdn;
+                    const final = base as SimhuisSimStatus;
                     if (debugIdx < 3) {
                       try {
                         console.info(
-                          `[simhuis-listAllSims]   🐛 ${win.tag} item#${debugIdx}: rawIccid=${JSON.stringify(rawIccid)} rawEid=${JSON.stringify(rawEid)} msisdnRaw=${JSON.stringify((raw as any).msisdn)} → BEFORE iccid=${JSON.stringify(beforeIccid)} eid=${JSON.stringify(beforeEid)} msisdn=${JSON.stringify(beforeMsisdn)} → AFTER iccid=${JSON.stringify(s ? (s as any).iccid : undefined)} msisdn=${JSON.stringify(s ? (s as any).msisdn : undefined)} push=${s && (s as any).iccid ? '✅' : '❌'}`
+                          `[simhuis-listAllSims]   🐛 ${win.tag} item#${debugIdx}: ` +
+                          `directIccid=${JSON.stringify(directIccid)} directEid=${JSON.stringify(directEid)} directMsisdn=${JSON.stringify(directMsisdn)} | ` +
+                          `toSim.iccid=${JSON.stringify(s ? (s as any).iccid : null)} toSim.eid=${JSON.stringify(s ? (s as any).eid : null)} toSim.msisdn=${JSON.stringify(s ? (s as any).msisdn : null)} | ` +
+                          `FINAL iccid=${JSON.stringify((final as any).iccid)} eid=${JSON.stringify((final as any).eid)} msisdn=${JSON.stringify((final as any).msisdn)} push=${(final as any).iccid ? '✅' : '❌'}`
                         );
                       } catch { /* ignore */ }
                     }
                     debugIdx++;
-                    if (s && !s.iccid && s.eid && !iccidFromEidFallback.has(s.eid)) {
-                      iccidFromEidFallback.add(s.eid);
-                      (s as any).iccid = s.eid;
-                    }
-                    if (s?.iccid) batchItems_win.push(s);
+                    if ((final as any).iccid) batchItems_win.push(final);
                   } catch { /* bad item skip */ }
                 }
                 const beforeWin = all.length;
@@ -3641,60 +3650,53 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                 for (const raw of arr) {
                   try {
                     const nested = (raw as any)?.simCard ?? (raw as any)?.sim ?? (raw as any)?.asset ?? (raw as any)?.device ?? (raw as any)?.subscription ?? (raw as any)?.subscriber ?? (raw as any)?.enabledProfile ?? {};
-                    // SWAGGER eSIM: { eid, profiles: [{iccid, status, enabled, bootstrap}], enabledProfile: AssetSimcard{iccid,msisdn[],...} }
-                    // SWAGGER AssetSimcard: { iccid(REQUIRED!), msisdn[], status, ... }
-                    let rawIccid = String(
-                      (raw as any).iccid ?? (raw as any).sim_iccid ?? (raw as any).simIccid
-                        ?? nested?.iccid ?? nested?.sim_iccid ?? nested?.simIccid ?? ''
-                    ).trim();
-                    // ✅ NIEUW (SWAGGER): kijk in enabledProfile.iccid (bestaat altijd op AssetSimcard!)
-                    if (!rawIccid && (raw as any)?.enabledProfile?.iccid) {
-                      rawIccid = String((raw as any).enabledProfile.iccid).trim();
+                    const tryRawIccid = (v: any): string => {
+                      if (v === null || v === undefined) return '';
+                      const s = String(v).trim();
+                      if (!s) return '';
+                      const lower = s.toLowerCase();
+                      if (['iccid','sim_iccid','simiccid','esimid','esim_id','eid'].includes(lower)) return '';
+                      return s;
+                    };
+                    let directIccid = tryRawIccid((raw as any).iccid) || tryRawIccid((raw as any).sim_iccid) || tryRawIccid((raw as any).simIccid)
+                                   || tryRawIccid(nested?.iccid) || tryRawIccid(nested?.sim_iccid) || tryRawIccid(nested?.simIccid);
+                    if (!directIccid && (raw as any)?.enabledProfile?.iccid) {
+                      directIccid = tryRawIccid((raw as any).enabledProfile.iccid);
                     }
-                    // ✅ NIEUW (SWAGGER): kijk in profiles[] array voor enabled=true / status=active
-                    if (!rawIccid && Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
+                    if (!directIccid && Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
                       const profiles: any[] = (raw as any).profiles;
-                      // Eerst: enabled=true + bootstrap=true (of enabled=true)
                       const best = profiles.find(p => p && p.iccid && (p.enabled === true || p.status === 'active' || p.bootstrap === true))
                         ?? profiles.find(p => p && p.iccid);
-                      if (best?.iccid) rawIccid = String(best.iccid).trim();
+                      if (best?.iccid) directIccid = tryRawIccid(best.iccid);
                     }
-                    const rawEid = String(
-                      (raw as any).eid ?? (raw as any).esimId ?? (raw as any).esim_id
-                        ?? nested?.eid ?? nested?.esimId ?? nested?.esim_id ?? ''
-                    ).trim();
-                    const iccidStr = rawIccid || rawEid || '';
-                    const s = toSimStatus(raw, iccidStr);
-                    // =========================================================
-                    // 🔧💥 EXPLICIET OVERSCHRIJVEN NA toSimStatus():
-                    //   -> placeholders/sanity filter mogen GEEN ECHTE DATA weggooien!
-                    // =========================================================
-                    if (s) {
-                      if (rawIccid) (s as any).iccid = rawIccid;
-                      else if (iccidStr) (s as any).iccid = iccidStr;
-                      if (rawEid && !(s as any).eid) (s as any).eid = rawEid;
-                      if (Array.isArray((raw as any)?.msisdn) && (raw as any).msisdn.length > 0) {
-                        const first = String((raw as any).msisdn[0] ?? '').trim();
-                        if (first) (s as any).msisdn = first;
-                      } else if (Array.isArray((raw as any)?.enabledProfile?.msisdn) && (raw as any).enabledProfile.msisdn.length > 0) {
-                        (s as any).msisdn = String((raw as any).enabledProfile.msisdn[0]).trim();
-                      } else if ((raw as any)?.enabledProfile?.msisdn) {
-                        (s as any).msisdn = String((raw as any).enabledProfile.msisdn).trim();
-                      } else {
-                        const direct = String((raw as any).msisdn ?? nested?.msisdn ?? '').trim();
-                        if (direct && !Array.isArray((raw as any).msisdn)) (s as any).msisdn = direct;
-                      }
-                      if (!(s as any).msisdn && Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
-                        const profiles: any[] = (raw as any).profiles;
-                        const best = profiles.find(p => p && p.msisdn) ?? profiles[0];
-                        if (best?.msisdn) (s as any).msisdn = String(best.msisdn).trim();
-                      }
+                    let directEid = tryRawIccid((raw as any).eid) || tryRawIccid((raw as any).esimId) || tryRawIccid((raw as any).esim_id)
+                                   || tryRawIccid(nested?.eid) || tryRawIccid(nested?.esimId) || tryRawIccid(nested?.esim_id);
+                    let directMsisdn = '';
+                    if (Array.isArray((raw as any)?.msisdn) && (raw as any).msisdn.length > 0) {
+                      const first = String((raw as any).msisdn[0] ?? '').trim();
+                      const lower = first.toLowerCase();
+                      if (first && !['msisdn','phonenumber','primarymsisdn','virtualmsisdn'].includes(lower)) directMsisdn = first;
+                    } else if (Array.isArray((raw as any)?.enabledProfile?.msisdn) && (raw as any).enabledProfile.msisdn.length > 0) {
+                      directMsisdn = String((raw as any).enabledProfile.msisdn[0] ?? '').trim();
+                    } else if ((raw as any)?.enabledProfile?.msisdn) {
+                      directMsisdn = String((raw as any).enabledProfile.msisdn).trim();
+                    } else if ((raw as any)?.msisdn && typeof (raw as any).msisdn === 'string') {
+                      directMsisdn = String((raw as any).msisdn).trim();
+                    } else if (Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
+                      const profiles: any[] = (raw as any).profiles;
+                      const best = profiles.find(p => p && p.msisdn) ?? profiles[0];
+                      if (best?.msisdn) directMsisdn = String(best.msisdn).trim();
                     }
-                    if (s && !s.iccid && s.eid && !iccidFromEidFallback.has(s.eid)) {
-                      iccidFromEidFallback.add(s.eid);
-                      (s as any).iccid = s.eid;
-                    }
-                    if (s?.iccid) batchItems.push(s);
+                    if (!directIccid && directEid) directIccid = directEid;
+
+                    let s: SimhuisSimStatus | null = null;
+                    try { s = toSimStatus(raw, directIccid || directEid || ''); } catch { s = null; }
+                    const base: Partial<SimhuisSimStatus> = s ? { ...(s as any) } : {};
+                    if (directIccid) (base as any).iccid = directIccid;
+                    if (directEid)  (base as any).eid  = directEid;
+                    if (directMsisdn) (base as any).msisdn = directMsisdn;
+                    const final = base as SimhuisSimStatus;
+                    if ((final as any).iccid) batchItems.push(final);
                   } catch {
                     // bad item - skip
                   }
