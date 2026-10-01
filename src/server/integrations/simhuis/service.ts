@@ -3351,6 +3351,7 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                     // =========================================================
                     // 🔐 ULTRA-ROBUUST: Extract kritieke velden RECHTSTREEKS uit raw
                     //   (GEEN afhankelijkheid van pickString / toSimStatus filters!)
+                    // AssetSimcard shape keys: ["status","profileState","limit","smsLimit",...]
                     // =========================================================
                     let directIccid = '';
                     const tryRawIccid = (v: any) => {
@@ -3393,6 +3394,59 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                     }
                     if (!directIccid && directEid) directIccid = directEid;
 
+                    // =========================================================
+                    // STATUS + LIMIT + SMS LIMIT (ook RECHTSTREEKS, geen findKey!)
+                    // AssetSimcard: raw.status = "Active"/"Terminated"/... raw.profileState = "enabled"/...
+                    // eSIM.profileState: enabled/disabled; eSIM.enabledProfile.status/profiles[].status
+                    // =========================================================
+                    let directStatus: any = undefined;
+                    const tryRawStr = (v: any) => {
+                      if (v === null || v === undefined) return '';
+                      const s = String(v).trim();
+                      if (!s) return '';
+                      const lower = s.toLowerCase();
+                      if (['status','profilestate','state','lifecycle','lifecyclestatus','lifecycle_status','sim_status','simstate','sim_state','type'].includes(lower)) return '';
+                      return s;
+                    };
+                    directStatus = (tryRawStr((raw as any).status) || tryRawStr((raw as any).profileState) || tryRawStr(nested?.status) || tryRawStr(nested?.profileState) || '').toLowerCase();
+                    if (!directStatus && (raw as any)?.enabledProfile) {
+                      directStatus = (tryRawStr((raw as any).enabledProfile.status) || tryRawStr((raw as any).enabledProfile.profileState) || '').toLowerCase();
+                    }
+                    if (!directStatus && Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
+                      const profiles: any[] = (raw as any).profiles;
+                      const best = profiles.find(p => p && (p.enabled === true || p.status || p.profileState)) ?? profiles[0];
+                      if (best) directStatus = (tryRawStr(best.status) || tryRawStr(best.profileState) || '').toLowerCase();
+                    }
+                    // Normaliseer de status direct al naar de SimhuisSimStatus strings
+                    let normalisedDirectStatus: SimhuisSimStatus['status'] | undefined = undefined;
+                    if (directStatus) {
+                      const ds = directStatus;
+                      if (['active', 'enabled', 'online', 'activated', 'in_service', 'provisioned'].includes(ds)) normalisedDirectStatus = 'active';
+                      else if (['inactive', 'disabled', 'offline', 'deactivated', 'retired', 'stock', 'in_stock', 'available', 'ready'].includes(ds)) normalisedDirectStatus = 'inactive';
+                      else if (['suspended', 'paused', 'barred', 'suspend', 'bar', 'hibernated', 'hibernate'].includes(ds)) normalisedDirectStatus = 'suspended';
+                      else if (['terminated', 'deleted', 'cancelled', 'canceled', 'cancel', 'destroyed', 'expired'].includes(ds)) normalisedDirectStatus = 'terminated';
+                      else if (['provisioning', 'activating', 'pending', 'activating_subscription', 'pre_active'].includes(ds)) normalisedDirectStatus = 'provisioning';
+                      else normalisedDirectStatus = ds as any;
+                    }
+                    // Data limit: raw.limit (MB volgens Swagger: "limit" default 10 → megabytes?)
+                    const directDataLimitMbRaw = (raw as any).limit ?? nested?.limit ?? (raw as any).enabledProfile?.limit;
+                    let directDataLimitBytes: number | null = null;
+                    if (typeof directDataLimitMbRaw === 'number' && Number.isFinite(directDataLimitMbRaw) && directDataLimitMbRaw > 0) {
+                      directDataLimitBytes = Math.round(directDataLimitMbRaw * 1024 * 1024);
+                    } else if (typeof directDataLimitMbRaw === 'string' && directDataLimitMbRaw) {
+                      const n = Number(directDataLimitMbRaw.replace(/[^\d.]/g, ''));
+                      if (Number.isFinite(n) && n > 0) directDataLimitBytes = Math.round(n * 1024 * 1024);
+                    }
+                    // SMS limit: raw.smsLimit
+                    const directSmsLimitRaw = (raw as any).smsLimit ?? nested?.smsLimit ?? (raw as any).enabledProfile?.smsLimit;
+                    let directSmsLimitCount: number | null = null;
+                    if (typeof directSmsLimitRaw === 'number' && Number.isFinite(directSmsLimitRaw) && directSmsLimitRaw >= 0) {
+                      directSmsLimitCount = Math.round(directSmsLimitRaw);
+                    } else if (typeof directSmsLimitRaw === 'string' && directSmsLimitRaw) {
+                      const n = Number(directSmsLimitRaw.replace(/[^\d.]/g, ''));
+                      if (Number.isFinite(n) && n >= 0) directSmsLimitCount = Math.round(n);
+                    }
+
                     // Nu: toSimStatus voor overige (niet-kritieke) velden.
                     // Daarna OVERSCHRIJVEN we de kritieke velden met onze directe extractie (altijd wint!).
                     let s: SimhuisSimStatus | null = null;
@@ -3404,14 +3458,18 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                     if (directIccid) (base as any).iccid = directIccid;
                     if (directEid)  (base as any).eid  = directEid;
                     if (directMsisdn) (base as any).msisdn = directMsisdn;
+                    if (normalisedDirectStatus) (base as any).status = normalisedDirectStatus;
+                    if (directDataLimitBytes !== null) (base as any).dataLimitBytes = directDataLimitBytes;
+                    if (directSmsLimitCount !== null) (base as any).smsLimitCount = directSmsLimitCount;
                     const final = base as SimhuisSimStatus;
                     if (debugIdx < 3) {
                       try {
                         console.info(
                           `[simhuis-listAllSims]   🐛 ${win.tag} item#${debugIdx}: ` +
-                          `directIccid=${JSON.stringify(directIccid)} directEid=${JSON.stringify(directEid)} directMsisdn=${JSON.stringify(directMsisdn)} | ` +
-                          `toSim.iccid=${JSON.stringify(s ? (s as any).iccid : null)} toSim.eid=${JSON.stringify(s ? (s as any).eid : null)} toSim.msisdn=${JSON.stringify(s ? (s as any).msisdn : null)} | ` +
-                          `FINAL iccid=${JSON.stringify((final as any).iccid)} eid=${JSON.stringify((final as any).eid)} msisdn=${JSON.stringify((final as any).msisdn)} push=${(final as any).iccid ? '✅' : '❌'}`
+                          `directIccid=${JSON.stringify(directIccid)} directEid=${JSON.stringify(directEid)} directMsisdn=${JSON.stringify(directMsisdn)} ` +
+                          `directStatus=${JSON.stringify(directStatus)}→${JSON.stringify(normalisedDirectStatus)} dataLimitBytes=${JSON.stringify(directDataLimitBytes)} smsLimitCount=${JSON.stringify(directSmsLimitCount)} | ` +
+                          `toSim.iccid=${JSON.stringify(s ? (s as any).iccid : null)} toSim.status=${JSON.stringify(s ? (s as any).status : null)} | ` +
+                          `FINAL iccid=${JSON.stringify((final as any).iccid)} status=${JSON.stringify((final as any).status)} push=${(final as any).iccid ? '✅' : '❌'}`
                         );
                       } catch { /* ignore */ }
                     }
@@ -3424,9 +3482,14 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                 const addedWin = all.length - beforeWin;
                 try {
                   const sampleIccids = batchItems_win.slice(0,3).map(s => s.iccid).join(',');
+                  const statusCounts: Record<string, number> = {};
+                  for (const s of batchItems_win) {
+                    const k = String(s.status ?? 'null');
+                    statusCounts[k] = (statusCounts[k] ?? 0) + 1;
+                  }
                   console.info(
                     `[simhuis-listAllSims] 🎯 WIN-COMBO ${win.tag} VERWERKT: in.len=${warr.length} ` +
-                    `batchItems.len=${batchItems_win.length} added=${addedWin} TOTAL all.len=${all.length}. sampleIccids=${sampleIccids}`
+                    `batchItems.len=${batchItems_win.length} added=${addedWin} TOTAL all.len=${all.length}. sampleIccids=${sampleIccids} statusCounts=${JSON.stringify(statusCounts)}`
                   );
                 } catch { /* ignore */ }
               }
@@ -3689,12 +3752,65 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                     }
                     if (!directIccid && directEid) directIccid = directEid;
 
+                    // =========================================================
+                    // STATUS + LIMIT + SMS LIMIT (ook RECHTSTREEKS, geen findKey!)
+                    // =========================================================
+                    let directStatus: any = undefined;
+                    const tryRawStr = (v: any) => {
+                      if (v === null || v === undefined) return '';
+                      const s = String(v).trim();
+                      if (!s) return '';
+                      const lower = s.toLowerCase();
+                      if (['status','profilestate','state','lifecycle','lifecyclestatus','lifecycle_status','sim_status','simstate','sim_state','type'].includes(lower)) return '';
+                      return s;
+                    };
+                    directStatus = (tryRawStr((raw as any).status) || tryRawStr((raw as any).profileState) || tryRawStr(nested?.status) || tryRawStr(nested?.profileState) || '').toLowerCase();
+                    if (!directStatus && (raw as any)?.enabledProfile) {
+                      directStatus = (tryRawStr((raw as any).enabledProfile.status) || tryRawStr((raw as any).enabledProfile.profileState) || '').toLowerCase();
+                    }
+                    if (!directStatus && Array.isArray((raw as any)?.profiles) && (raw as any).profiles.length > 0) {
+                      const profiles: any[] = (raw as any).profiles;
+                      const best = profiles.find(p => p && (p.enabled === true || p.status || p.profileState)) ?? profiles[0];
+                      if (best) directStatus = (tryRawStr(best.status) || tryRawStr(best.profileState) || '').toLowerCase();
+                    }
+                    let normalisedDirectStatus: SimhuisSimStatus['status'] | undefined = undefined;
+                    if (directStatus) {
+                      const ds = directStatus;
+                      if (['active', 'enabled', 'online', 'activated', 'in_service', 'provisioned'].includes(ds)) normalisedDirectStatus = 'active';
+                      else if (['inactive', 'disabled', 'offline', 'deactivated', 'retired', 'stock', 'in_stock', 'available', 'ready'].includes(ds)) normalisedDirectStatus = 'inactive';
+                      else if (['suspended', 'paused', 'barred', 'suspend', 'bar', 'hibernated', 'hibernate'].includes(ds)) normalisedDirectStatus = 'suspended';
+                      else if (['terminated', 'deleted', 'cancelled', 'canceled', 'cancel', 'destroyed', 'expired'].includes(ds)) normalisedDirectStatus = 'terminated';
+                      else if (['provisioning', 'activating', 'pending', 'activating_subscription', 'pre_active'].includes(ds)) normalisedDirectStatus = 'provisioning';
+                      else normalisedDirectStatus = ds as any;
+                    }
+                    // Data limit: raw.limit (in MB? → *1024*1024)
+                    const directDataLimitMbRaw = (raw as any).limit ?? nested?.limit ?? (raw as any).enabledProfile?.limit;
+                    let directDataLimitBytes: number | null = null;
+                    if (typeof directDataLimitMbRaw === 'number' && Number.isFinite(directDataLimitMbRaw) && directDataLimitMbRaw > 0) {
+                      directDataLimitBytes = Math.round(directDataLimitMbRaw * 1024 * 1024);
+                    } else if (typeof directDataLimitMbRaw === 'string' && directDataLimitMbRaw) {
+                      const n = Number(directDataLimitMbRaw.replace(/[^\d.]/g, ''));
+                      if (Number.isFinite(n) && n > 0) directDataLimitBytes = Math.round(n * 1024 * 1024);
+                    }
+                    // SMS limit: raw.smsLimit
+                    const directSmsLimitRaw = (raw as any).smsLimit ?? nested?.smsLimit ?? (raw as any).enabledProfile?.smsLimit;
+                    let directSmsLimitCount: number | null = null;
+                    if (typeof directSmsLimitRaw === 'number' && Number.isFinite(directSmsLimitRaw) && directSmsLimitRaw >= 0) {
+                      directSmsLimitCount = Math.round(directSmsLimitRaw);
+                    } else if (typeof directSmsLimitRaw === 'string' && directSmsLimitRaw) {
+                      const n = Number(directSmsLimitRaw.replace(/[^\d.]/g, ''));
+                      if (Number.isFinite(n) && n >= 0) directSmsLimitCount = Math.round(n);
+                    }
+
                     let s: SimhuisSimStatus | null = null;
                     try { s = toSimStatus(raw, directIccid || directEid || ''); } catch { s = null; }
                     const base: Partial<SimhuisSimStatus> = s ? { ...(s as any) } : {};
                     if (directIccid) (base as any).iccid = directIccid;
                     if (directEid)  (base as any).eid  = directEid;
                     if (directMsisdn) (base as any).msisdn = directMsisdn;
+                    if (normalisedDirectStatus) (base as any).status = normalisedDirectStatus;
+                    if (directDataLimitBytes !== null) (base as any).dataLimitBytes = directDataLimitBytes;
+                    if (directSmsLimitCount !== null) (base as any).smsLimitCount = directSmsLimitCount;
                     const final = base as SimhuisSimStatus;
                     if ((final as any).iccid) batchItems.push(final);
                   } catch {
