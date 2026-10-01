@@ -1426,6 +1426,8 @@ function enrichSimhuisStatusWithDirectRawExtracts(
     (Array.isArray(rawObj.profiles) && rawObj.profiles.length > 0 ? rawObj.profiles[0] : null) ??
     {};
 
+  const cardProfile: any = rawObj.cardProfile ?? nested?.cardProfile ?? rawObj.product ?? nested?.product ?? null;
+
   const tryRawStr = (v: any) => {
     if (v === null || v === undefined) return '';
     const s = String(v).trim();
@@ -1434,6 +1436,85 @@ function enrichSimhuisStatusWithDirectRawExtracts(
     if (['status','profilestate','state','lifecycle','lifecyclestatus','lifecycle_status','sim_status','simstate','sim_state','type'].includes(lower)) return '';
     return s;
   };
+
+  const isValidStringValue = (v: any): string => {
+    const s = tryRawStr(v);
+    if (!s) return '';
+    const lower = s.toLowerCase();
+    const placeholders = [
+      'simname','sim_name','assetname','asset_name','displayname','display_name','label','name',
+      'groupname','group_name','groupid','group_id','group','poolname','pool_name','batchname','batch_name',
+      'productname','product_name','productcode','product_code','offername','offer_name','planname','plan_name',
+      'producttype','product_type','subscriptiontype','subscription_type','iccid','eid','msisdn','status'
+    ];
+    if (placeholders.includes(lower)) return '';
+    if (lower.length <= 2 && ['id','na','ok','--','n/a'].includes(lower)) return '';
+    return s;
+  };
+
+  const firstSub = Array.isArray(rawObj.subscriptions) && rawObj.subscriptions.length > 0 ? rawObj.subscriptions[0] : (Array.isArray(nested?.subscriptions) && nested?.subscriptions.length > 0 ? nested.subscriptions[0] : null);
+  const firstSetup = Array.isArray(rawObj.setups) && rawObj.setups.length > 0 ? rawObj.setups[0] : (Array.isArray(nested?.setups) && nested?.setups.length > 0 ? nested.setups[0] : null);
+
+  // ============================================================
+  // 🔍 EXTENSIVE DEBUG LOGGING: Ontdek WELKE keys de echte data bevatten!
+  //    Log per ICCID match de structuur van raw, subscriptions[0], setups[0], cardProfile
+  // ============================================================
+  try {
+    const shortIccid = iccid.slice(-6);
+    const rawKeys = Object.keys(rawObj).slice(0, 30);
+    const subKeys = firstSub ? Object.keys(firstSub).slice(0, 20) : null;
+    const subValuesPreview: Record<string, any> | null = firstSub ? {} : null;
+    if (firstSub && subKeys) {
+      for (const k of subKeys) {
+        const v = (firstSub as any)[k];
+        if (v === null || v === undefined) { subValuesPreview![k] = null; continue; }
+        if (typeof v === 'object' && !Array.isArray(v)) { subValuesPreview![k] = `{obj keys=${Object.keys(v).length}}`; continue; }
+        if (Array.isArray(v)) { subValuesPreview![k] = `[arr len=${v.length}]`; continue; }
+        const s = String(v);
+        subValuesPreview![k] = s.length > 80 ? s.slice(0, 80) + '...' : s;
+      }
+    }
+    const setupKeys = firstSetup ? Object.keys(firstSetup).slice(0, 20) : null;
+    const setupValuesPreview: Record<string, any> | null = firstSetup ? {} : null;
+    if (firstSetup && setupKeys) {
+      for (const k of setupKeys) {
+        const v = (firstSetup as any)[k];
+        if (v === null || v === undefined) { setupValuesPreview![k] = null; continue; }
+        if (typeof v === 'object' && !Array.isArray(v)) { setupValuesPreview![k] = `{obj keys=${Object.keys(v).length}}`; continue; }
+        if (Array.isArray(v)) { setupValuesPreview![k] = `[arr len=${v.length}]`; continue; }
+        const s = String(v);
+        setupValuesPreview![k] = s.length > 80 ? s.slice(0, 80) + '...' : s;
+      }
+    }
+    const cardProfileKeys = cardProfile && typeof cardProfile === 'object' ? Object.keys(cardProfile).slice(0, 20) : null;
+    const cardProfileValuesPreview: Record<string, any> | null = cardProfileKeys ? {} : null;
+    if (cardProfileKeys && cardProfile && typeof cardProfile === 'object') {
+      for (const k of cardProfileKeys) {
+        const v = (cardProfile as any)[k];
+        if (v === null || v === undefined) { cardProfileValuesPreview![k] = null; continue; }
+        if (typeof v === 'object' && !Array.isArray(v)) { cardProfileValuesPreview![k] = `{obj keys=${Object.keys(v).length}}`; continue; }
+        if (Array.isArray(v)) { cardProfileValuesPreview![k] = `[arr len=${v.length}]`; continue; }
+        const s = String(v);
+        cardProfileValuesPreview![k] = s.length > 80 ? s.slice(0, 80) + '...' : s;
+      }
+    }
+    const ownerInfo: Record<string, any> = {};
+    for (const k of ['ownerAccountId','ownerAccountName','ownership','customerRef','customerName','tenantName','accountName']) {
+      if (rawObj[k] !== undefined && rawObj[k] !== null) ownerInfo[k] = typeof rawObj[k] === 'object' ? `[obj]` : String(rawObj[k]).slice(0, 60);
+    }
+    console.info(
+      `[simhuis:enrichExtract] [${shortIccid}] 🔍 DEBUG STRUCTUUR:\n` +
+      `     raw keys(${rawKeys.length})=${JSON.stringify(rawKeys)}\n` +
+      `     raw[limit=${JSON.stringify(rawObj.limit)} smsLimit=${JSON.stringify(rawObj.smsLimit)} status=${JSON.stringify(rawObj.status)} profileState=${JSON.stringify(rawObj.profileState)}]\n` +
+      `     ownerInfo=${JSON.stringify(ownerInfo)}\n` +
+      `     subscriptions[0] keys=${JSON.stringify(subKeys)}\n` +
+      `     subscriptions[0] values=${JSON.stringify(subValuesPreview)}\n` +
+      `     setups[0] keys=${JSON.stringify(setupKeys)}\n` +
+      `     setups[0] values=${JSON.stringify(setupValuesPreview)}\n` +
+      `     cardProfile keys=${JSON.stringify(cardProfileKeys)}\n` +
+      `     cardProfile values=${JSON.stringify(cardProfileValuesPreview)}`
+    );
+  } catch { /* ignore logging errors */ }
 
   let directStatus = (
     tryRawStr(rawObj.status) ||
@@ -1489,48 +1570,214 @@ function enrichSimhuisStatusWithDirectRawExtracts(
   const dlBytes = toBytesBestEffort(rawLimitRaw);
   const ldlBytes = toBytesBestEffort(rawLowestLimitRaw);
 
-  const firstSub = Array.isArray(rawObj.subscriptions) && rawObj.subscriptions.length > 0 ? rawObj.subscriptions[0] : (Array.isArray(nested?.subscriptions) && nested?.subscriptions.length > 0 ? nested.subscriptions[0] : null);
-  const firstSetup = Array.isArray(rawObj.setups) && rawObj.setups.length > 0 ? rawObj.setups[0] : (Array.isArray(nested?.setups) && nested?.setups.length > 0 ? nested.setups[0] : null);
+  // ============================================================
+  // 📊 DATA USED: 15+ EXTRA candidate keys!
+  // ============================================================
+  const DATA_USED_KEYS = [
+    'dataUsed','dataUsage','data_used','data_usage','usageData','usedData','consumed','dataConsumed','totalDataUsed','usage',
+    'usageBytes','mbUsed','totalUsage','totalData','totalDataUsage','gprsUsed','trafficUsed','dataMbUsed',
+    'dataMegaBytesUsed','downloadedBytes','uploadedBytes','totalDataBytes','dataUsageBytes','dataUsageMb',
+    'sessionDataUsed','consumedMb','usedMegabytes','totalMegabytes','totalMegabytesUsed','totalMbUsed','megabytesUsed',
+    'gprsDataUsed','packetDataUsed','totalVolume','dataVolume','dataUsedMb','dataUsedMegaBytes','dataAmount'
+  ];
 
   let duBytes: number | null = null;
+  let duSource: string = '';
   if (firstSub) {
-    for (const k of ['dataUsed','dataUsage','data_used','data_usage','usageData','usedData','consumed','dataConsumed','totalDataUsed','usage']) {
+    for (const k of DATA_USED_KEYS) {
       const sv = safeNum((firstSub as any)[k]);
       if (sv !== null && sv >= 0) {
         if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
         else if (sv > 50000) duBytes = Math.round(sv);
         else duBytes = 0;
+        duSource = `SUBS.${k}`;
         break;
       }
     }
   }
   if (duBytes === null && firstSetup) {
-    for (const k of ['dataUsed','dataUsage','data_used','data_usage','usageData','usedData','consumed','dataConsumed','totalDataUsed','usage']) {
+    for (const k of DATA_USED_KEYS) {
       const sv = safeNum((firstSetup as any)[k]);
       if (sv !== null && sv >= 0) {
         if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
         else if (sv > 50000) duBytes = Math.round(sv);
         else duBytes = 0;
+        duSource = `SETUP.${k}`;
         break;
       }
     }
   }
   if (duBytes === null) {
-    const rawDataUsedRaw = rawObj.dataUsed ?? rawObj.dataUsage ?? rawObj.data_used ?? rawObj.data_usage ?? nested?.dataUsed ?? nested?.dataUsage ?? rawObj.enabledProfile?.dataUsed;
-    const sv = safeNum(rawDataUsedRaw);
-    if (sv !== null && sv >= 0) {
-      if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
-      else if (sv > 50000) duBytes = Math.round(sv);
-      else duBytes = 0;
+    for (const k of DATA_USED_KEYS) {
+      const sv = safeNum((rawObj as any)[k]);
+      if (sv !== null && sv >= 0) {
+        if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+        else if (sv > 50000) duBytes = Math.round(sv);
+        else duBytes = 0;
+        duSource = `RAW.${k}`;
+        break;
+      }
+    }
+  }
+  if (duBytes === null && nested) {
+    for (const k of DATA_USED_KEYS) {
+      const sv = safeNum((nested as any)[k]);
+      if (sv !== null && sv >= 0) {
+        if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+        else if (sv > 50000) duBytes = Math.round(sv);
+        else duBytes = 0;
+        duSource = `NESTED.${k}`;
+        break;
+      }
+    }
+  }
+  if (duBytes === null && cardProfile) {
+    for (const k of DATA_USED_KEYS) {
+      const sv = safeNum((cardProfile as any)[k]);
+      if (sv !== null && sv >= 0) {
+        if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+        else if (sv > 50000) duBytes = Math.round(sv);
+        else duBytes = 0;
+        duSource = `CARDPROFILE.${k}`;
+        break;
+      }
+    }
+  }
+  try {
+    const shortIccid = iccid.slice(-6);
+    const mbDisplay = duBytes !== null ? `${(duBytes / MB).toFixed(2)} MB` : '-';
+    console.info(`[simhuis:enrichExtract] [${shortIccid}] 📊 dataUsed: source=${duSource || 'NOT_FOUND'} raw=${duBytes !== null ? 'FOUND' : 'NULL'} → ${mbDisplay}`);
+  } catch {}
+
+  const smsLimitRaw = rawObj.smsLimit ?? nested?.smsLimit ?? rawObj.enabledProfile?.smsLimit ?? (firstSub as any)?.smsLimit ?? (firstSetup as any)?.smsLimit;
+  const smsLowestLimitRaw = rawObj.lowestSmsLimit ?? nested?.lowestSmsLimit ?? rawObj.enabledProfile?.lowestSmsLimit;
+  const SMS_USED_KEYS = ['smsUsed','smsCount','totalSms','smsSent','smsUsage','usedSms','consumedSms','smsMessages','messageCount','moSms','mtSms','totalSmsUsed'];
+  let smsUsedNum: number | null = null;
+  let smsSource = '';
+  for (const k of SMS_USED_KEYS) {
+    const sv = safeNum((rawObj as any)[k]);
+    if (sv !== null && sv >= 0) { smsUsedNum = sv; smsSource = `RAW.${k}`; break; }
+  }
+  if (smsUsedNum === null && firstSub) {
+    for (const k of SMS_USED_KEYS) {
+      const sv = safeNum((firstSub as any)[k]);
+      if (sv !== null && sv >= 0) { smsUsedNum = sv; smsSource = `SUBS.${k}`; break; }
+    }
+  }
+  if (smsUsedNum === null && firstSetup) {
+    for (const k of SMS_USED_KEYS) {
+      const sv = safeNum((firstSetup as any)[k]);
+      if (sv !== null && sv >= 0) { smsUsedNum = sv; smsSource = `SETUP.${k}`; break; }
+    }
+  }
+  const smsLimitNum = safeNum(smsLimitRaw);
+  const smsLowestLimitNum = safeNum(smsLowestLimitRaw);
+
+  // ============================================================
+  // 🏷️ SIM NAME / GROUP / PRODUCT: EXPLICIET UIT RAW HALEN!
+  // ============================================================
+  const SIM_NAME_KEYS = [
+    'simName','sim_name','assetName','asset_name','displayName','display_name','label','name','nickname','friendlyName',
+    'deviceName','customerLabel','userLabel','description','customName','simLabel','cardName','profileName'
+  ];
+  const GROUP_KEYS = [
+    'groupName','group_name','group','groupId','group_id','poolName','pool_name','batchName','batch_name',
+    'pool','batch','segment','department','costCenter','costcenter','customerGroup','accountGroup'
+  ];
+  const PRODUCT_KEYS = [
+    'productName','product_name','planName','plan_name','offerName','offer_name','productCode','product_code',
+    'product','plan','offer','tariff','tariffName','rateplan','ratePlan','subscriptionName','packageName',
+    'profile','priceplan','productDescription','planDescription','offerDescription'
+  ];
+  const PRODUCT_TYPE_KEYS = ['productType','product_type','subscriptionType','subscription_type','assetType','asset_type','type','category','simCategory'];
+
+  let directSimName: string | null = null;
+  let simNameSrc = '';
+  const tryExtractStr = (obj: any, keys: string[], label: string): { val: string; src: string } => {
+    if (!obj || typeof obj !== 'object') return { val: '', src: '' };
+    for (const k of keys) {
+      const v = (obj as any)[k];
+      const s = isValidStringValue(v);
+      if (s) return { val: s, src: `${label}.${k}` };
+    }
+    return { val: '', src: '' };
+  };
+
+  let r;
+  // --- SimName: eerst subscriptions, dan setups, dan raw, dan cardProfile, dan nested, dan enabledProfile ---
+  r = tryExtractStr(firstSub, SIM_NAME_KEYS, 'SUBS');
+  if (r.val) { directSimName = r.val; simNameSrc = r.src; }
+  if (!directSimName) { r = tryExtractStr(firstSetup, SIM_NAME_KEYS, 'SETUP'); if (r.val) { directSimName = r.val; simNameSrc = r.src; } }
+  if (!directSimName) { r = tryExtractStr(rawObj, SIM_NAME_KEYS, 'RAW'); if (r.val) { directSimName = r.val; simNameSrc = r.src; } }
+  if (!directSimName) { r = tryExtractStr(cardProfile, SIM_NAME_KEYS, 'CARDPROFILE'); if (r.val) { directSimName = r.val; simNameSrc = r.src; } }
+  if (!directSimName && nested) { r = tryExtractStr(nested, SIM_NAME_KEYS, 'NESTED'); if (r.val) { directSimName = r.val; simNameSrc = r.src; } }
+  if (!directSimName && rawObj.enabledProfile) { r = tryExtractStr(rawObj.enabledProfile, SIM_NAME_KEYS, 'ENABLEDPROFILE'); if (r.val) { directSimName = r.val; simNameSrc = r.src; } }
+
+  // --- Group: eerst ownership/ownerAccountName fallback, dan expliciete keys ---
+  let directGroupName: string | null = null;
+  let groupSrc = '';
+  r = tryExtractStr(firstSub, GROUP_KEYS, 'SUBS');
+  if (r.val) { directGroupName = r.val; groupSrc = r.src; }
+  if (!directGroupName) { r = tryExtractStr(firstSetup, GROUP_KEYS, 'SETUP'); if (r.val) { directGroupName = r.val; groupSrc = r.src; } }
+  if (!directGroupName) { r = tryExtractStr(rawObj, GROUP_KEYS, 'RAW'); if (r.val) { directGroupName = r.val; groupSrc = r.src; } }
+  if (!directGroupName) { r = tryExtractStr(cardProfile, GROUP_KEYS, 'CARDPROFILE'); if (r.val) { directGroupName = r.val; groupSrc = r.src; } }
+  if (!directGroupName && nested) { r = tryExtractStr(nested, GROUP_KEYS, 'NESTED'); if (r.val) { directGroupName = r.val; groupSrc = r.src; } }
+  // Fallback: ownerAccountName als group! (Simhuis portal: Group = VZA International, owner = Seguilo B.V.)
+  if (!directGroupName) {
+    const owner = isValidStringValue(rawObj.ownerAccountName) || isValidStringValue(nested?.ownerAccountName);
+    if (owner) { directGroupName = owner; groupSrc = 'OWNER.ownerAccountName'; }
+  }
+  // Fallback: ownership array[1]? Soms bevat ownership de group naam
+  if (!directGroupName && Array.isArray(rawObj.ownership) && rawObj.ownership.length > 1) {
+    for (const item of rawObj.ownership) {
+      const s = isValidStringValue(item);
+      if (s && s.toLowerCase() !== isValidStringValue(rawObj.ownerAccountId).toLowerCase()) {
+        directGroupName = s; groupSrc = 'OWNERSHIP[]'; break;
+      }
+    }
+  }
+  let directGroupId: string | null = null;
+  for (const k of ['groupId','group_id','poolId','pool_id','batchId','batch_id']) {
+    const s = isValidStringValue((rawObj as any)[k] ?? (firstSub as any)?.[k] ?? (firstSetup as any)?.[k]);
+    if (s) { directGroupId = s; break; }
+  }
+
+  // --- Product: eerst subscriptions, dan cardProfile, dan raw ---
+  let directProductName: string | null = null;
+  let productSrc = '';
+  r = tryExtractStr(firstSub, PRODUCT_KEYS, 'SUBS');
+  if (r.val) { directProductName = r.val; productSrc = r.src; }
+  if (!directProductName) { r = tryExtractStr(firstSetup, PRODUCT_KEYS, 'SETUP'); if (r.val) { directProductName = r.val; productSrc = r.src; } }
+  if (!directProductName) { r = tryExtractStr(cardProfile, PRODUCT_KEYS, 'CARDPROFILE'); if (r.val) { directProductName = r.val; productSrc = r.src; } }
+  if (!directProductName) { r = tryExtractStr(rawObj, PRODUCT_KEYS, 'RAW'); if (r.val) { directProductName = r.val; productSrc = r.src; } }
+  if (!directProductName && nested) { r = tryExtractStr(nested, PRODUCT_KEYS, 'NESTED'); if (r.val) { directProductName = r.val; productSrc = r.src; } }
+  if (!directProductName && rawObj.enabledProfile) { r = tryExtractStr(rawObj.enabledProfile, PRODUCT_KEYS, 'ENABLEDPROFILE'); if (r.val) { directProductName = r.val; productSrc = r.src; } }
+  // Fallback: carriers object keys (bv {"ROPD":true})
+  if (!directProductName && rawObj.carriers && typeof rawObj.carriers === 'object') {
+    const carrierKeys = Object.keys(rawObj.carriers);
+    if (carrierKeys.length > 0) {
+      directProductName = carrierKeys.join(', ');
+      productSrc = 'CARRIERS[] keys';
     }
   }
 
-  const smsLimitRaw = rawObj.smsLimit ?? nested?.smsLimit ?? rawObj.enabledProfile?.smsLimit;
-  const smsLowestLimitRaw = rawObj.lowestSmsLimit ?? nested?.lowestSmsLimit ?? rawObj.enabledProfile?.lowestSmsLimit;
-  const smsUsedRaw = rawObj.smsUsed ?? rawObj.smsCount ?? rawObj.totalSms ?? rawObj.smsSent ?? nested?.smsUsed ?? (firstSub as any)?.smsUsed ?? (firstSub as any)?.smsCount ?? (firstSetup as any)?.smsUsed;
-  const smsLimitNum = safeNum(smsLimitRaw);
-  const smsLowestLimitNum = safeNum(smsLowestLimitRaw);
-  const smsUsedNum = safeNum(smsUsedRaw);
+  let directProductType: string | null = null;
+  for (const k of PRODUCT_TYPE_KEYS) {
+    const s = isValidStringValue((rawObj as any)[k] ?? (firstSub as any)?.[k] ?? (cardProfile as any)?.[k] ?? (nested as any)?.[k]);
+    if (s) { directProductType = s; break; }
+  }
+
+  try {
+    const shortIccid = iccid.slice(-6);
+    console.info(
+      `[simhuis:enrichExtract] [${shortIccid}] 🏷️ META VELDEN:\n` +
+      `     simName=${JSON.stringify(directSimName)} (src=${simNameSrc || '-'})\n` +
+      `     groupName=${JSON.stringify(directGroupName)} groupId=${JSON.stringify(directGroupId)} (src=${groupSrc || '-'})\n` +
+      `     productName=${JSON.stringify(directProductName)} (src=${productSrc || '-'})\n` +
+      `     productType=${JSON.stringify(directProductType)}\n` +
+      `     smsUsed=${JSON.stringify(smsUsedNum)} (src=${smsSource || '-'})`
+    );
+  } catch {}
 
   const directDataLimitBytes = (dlBytes !== null && dlBytes > 0) ? dlBytes : null;
   const directLowestDataLimitBytes = (ldlBytes !== null && ldlBytes > 0) ? ldlBytes : null;
@@ -1547,6 +1794,12 @@ function enrichSimhuisStatusWithDirectRawExtracts(
   else if (directSmsLimitCount !== null) (baseStatus as any).lowestSmsLimitCount = directSmsLimitCount;
   if (directDataUsedBytes !== null) (baseStatus as any).dataUsedBytes = directDataUsedBytes;
   if (directSmsUsedCount !== null) (baseStatus as any).smsUsedCount = directSmsUsedCount;
+
+  if (directSimName) { (baseStatus as any).simName = directSimName; (baseStatus as any).displayName = directSimName; (baseStatus as any).assetName = directSimName; (baseStatus as any).label = directSimName; }
+  if (directGroupName) { (baseStatus as any).groupName = directGroupName; (baseStatus as any).group = directGroupName; }
+  if (directGroupId) { (baseStatus as any).groupId = directGroupId; }
+  if (directProductName) { (baseStatus as any).productName = directProductName; (baseStatus as any).planName = directProductName; (baseStatus as any).offerName = directProductName; }
+  if (directProductType) { (baseStatus as any).productType = directProductType; }
 
   return baseStatus;
 }
@@ -1578,6 +1831,77 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
   const authBasic = basicAuthHeader(creds.username, creds.password);
   const aidForGetSim = getSimhuisAccountId();
   const bearerToken = await acquireBearerToken(creds);
+
+  // 🏆 STAP 0: EERST DE PRECIEZE WINNING COMBO UIT listAllSims! (Geen 50 nutteloze attempts!)
+  if (aidForGetSim && bearerToken) {
+    DEBUG_LOG(`🏆 STAP 0: Phase A - PRECIEZE WINNING COMBO (POST /v3/assetsbulk + esimsbulk) eerst!`);
+    try {
+      const winAuth: PerSimAuth = { tag: 'bearer-token', token: bearerToken };
+
+      const [assetsRes, esimsRes] = await Promise.all([
+        doPerSimFetch({
+          fullUrl: makePerSimFullUrl(creds.baseUrl, '/v3/assetsbulk', { accountId: aidForGetSim }),
+          method: 'POST',
+          contentType: 'json',
+          body: { accountId: aidForGetSim, page: 1, limit: 1000 },
+          auth: winAuth,
+          timeoutMs: 15_000,
+        }),
+        doPerSimFetch({
+          fullUrl: makePerSimFullUrl(creds.baseUrl, '/v3/esimsbulk', { accountId: aidForGetSim }),
+          method: 'POST',
+          contentType: 'json',
+          body: { accountId: aidForGetSim, page: 1, limit: 1000 },
+          auth: winAuth,
+          timeoutMs: 15_000,
+        }),
+      ]);
+
+      const batches: Array<{ name: string; items: any[] }> = [];
+      if (assetsRes.tag === 'ok') batches.push({ name: 'assetsbulk-aid', items: extractSimList(assetsRes.body) });
+      if (esimsRes.tag === 'ok') batches.push({ name: 'esimsbulk-aid', items: extractSimList(esimsRes.body) });
+      DEBUG_LOG(`🏆 Phase A: HTTP assetsbulk=${assetsRes.tag === 'ok' ? '200' : assetsRes.statusCode} esimsbulk=${esimsRes.tag === 'ok' ? '200' : esimsRes.statusCode}. items.len=${batches.map(b => `${b.name}=${b.items.length}`).join(', ')}`);
+
+      let phaseABest: SimhuisSimStatus | null = null;
+      let phaseABestScore = -1;
+
+      for (const batch of batches) {
+        for (const raw of batch.items) {
+          const tryStr = (v: any) => v == null ? '' : String(v).trim();
+          const rawIccid = tryStr((raw as any).iccid);
+          const profilesIccid = Array.isArray((raw as any).profiles)
+            ? ((raw as any).profiles.map((p: any) => tryStr(p.iccid)).find((x: string) => !!x) ?? '')
+            : '';
+          const enabledIccid = tryStr((raw as any).enabledProfile?.iccid);
+          if (rawIccid !== iccid && profilesIccid !== iccid && enabledIccid !== iccid) continue;
+          DEBUG_LOG(`🏆 Phase A GEVONDEN in ${batch.name}! ICCID match!`);
+          let extracted: SimhuisSimStatus | null = null;
+          try {
+            extracted = toSimStatus(raw, iccid);
+            extracted = enrichSimhuisStatusWithDirectRawExtracts(extracted, raw, iccid);
+          } catch { extracted = null; }
+          if (!extracted?.iccid) continue;
+          const sc = scoreSimStatus(extracted);
+          if (hasFullUsage(extracted)) {
+            DEBUG_LOG(`🏆 Phase A EARLY RETURN: complete usage data (score=${sc}).`);
+            return extracted;
+          }
+          if (sc > phaseABestScore) {
+            phaseABest = extracted;
+            phaseABestScore = sc;
+          }
+        }
+      }
+
+      if (phaseABest && phaseABestScore >= 10) {
+        DEBUG_LOG(`🏆 Phase A: beste score=${phaseABestScore} → return.`);
+        return phaseABest;
+      }
+      DEBUG_LOG(`🏆 Phase A: geen complete data, beste score=${phaseABestScore}. Ga door met overige endpoints.`);
+    } catch (err) {
+      DEBUG_LOG(`🏆 Phase A exceptie: ${(err as any)?.message ?? err}. Ga door.`);
+    }
+  }
 
   const authVariants: PerSimAuth[] = [];
   authVariants.push({ tag: 'basic-header', header: authBasic });
@@ -3599,56 +3923,193 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                     const { bytes: dlBytes, debug: dlDbg } = toBytesBestEffort(rawLimitRaw, 'limit');
                     const { bytes: ldlBytes, debug: ldlDbg } = toBytesBestEffort(rawLowestLimitRaw, 'lowestDataLimit');
 
-                    // Data Used: probeer MB (0.00 MB in portal)
-                    const rawDataUsedRaw = (raw as any).dataUsed ?? (raw as any).dataUsage ?? (raw as any).data_used ?? (raw as any).data_usage
-                      ?? nested?.dataUsed ?? nested?.dataUsage ?? (raw as any).enabledProfile?.dataUsed;
-                    let duBytes: number | null = null;
-                    let duDbg = `dataUsedRaw=${typeof rawDataUsedRaw}=${JSON.stringify(rawDataUsedRaw)}`;
-                    // Kijk eerst in subscriptions[] / setups[]!
                     const firstSub = Array.isArray((raw as any).subscriptions) && (raw as any).subscriptions.length > 0 ? (raw as any).subscriptions[0] : null;
                     const firstSetup = Array.isArray((raw as any).setups) && (raw as any).setups.length > 0 ? (raw as any).setups[0] : null;
+                    const cardProfile: any = (raw as any).cardProfile ?? nested?.cardProfile ?? (raw as any).product ?? nested?.product ?? null;
+
+                    const isValidStr = (v: any): string => {
+                      if (v === null || v === undefined) return '';
+                      const s = String(v).trim();
+                      if (!s) return '';
+                      const lower = s.toLowerCase();
+                      const placeholders = [
+                        'simname','sim_name','assetname','asset_name','displayname','display_name','label','name',
+                        'groupname','group_name','groupid','group_id','group','poolname','pool_name','batchname','batch_name',
+                        'productname','product_name','productcode','product_code','offername','offer_name','planname','plan_name',
+                        'producttype','product_type','subscriptiontype','subscription_type','iccid','eid','msisdn','status'
+                      ];
+                      if (placeholders.includes(lower)) return '';
+                      if (lower.length <= 2 && ['id','na','ok','--','n/a'].includes(lower)) return '';
+                      return s;
+                    };
+
+                    // ============================================================
+                    // 📊 DATA USED: 35+ EXTRA candidate keys!
+                    // ============================================================
+                    const DATA_USED_KEYS_WIN = [
+                      'dataUsed','dataUsage','data_used','data_usage','usageData','usedData','consumed','dataConsumed','totalDataUsed','usage',
+                      'usageBytes','mbUsed','totalUsage','totalData','totalDataUsage','gprsUsed','trafficUsed','dataMbUsed',
+                      'dataMegaBytesUsed','downloadedBytes','uploadedBytes','totalDataBytes','dataUsageBytes','dataUsageMb',
+                      'sessionDataUsed','consumedMb','usedMegabytes','totalMegabytes','totalMegabytesUsed','totalMbUsed','megabytesUsed',
+                      'gprsDataUsed','packetDataUsed','totalVolume','dataVolume','dataUsedMb','dataUsedMegaBytes','dataAmount'
+                    ];
+                    const SMS_USED_KEYS_WIN = ['smsUsed','smsCount','totalSms','smsSent','smsUsage','usedSms','consumedSms','smsMessages','messageCount','moSms','mtSms','totalSmsUsed'];
+
+                    let duBytes: number | null = null;
+                    let duDbg = '';
+                    let duSource = '';
                     if (firstSub) {
-                      for (const k of ['dataUsed','dataUsage','data_used','data_usage','usageData','usedData','consumed','dataConsumed','totalDataUsed','usage']) {
+                      for (const k of DATA_USED_KEYS_WIN) {
                         const sv = safeNum((firstSub as any)[k]);
                         if (sv !== null && sv >= 0) {
                           if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
                           else if (sv > 50000) duBytes = Math.round(sv);
                           else duBytes = 0;
-                          duDbg += ` → SUBS.${k}=${sv}`;
+                          duSource = `SUBS.${k}`;
+                          duDbg = ` → SUBS.${k}=${sv}`;
                           break;
                         }
                       }
                     }
                     if (duBytes === null && firstSetup) {
-                      for (const k of ['dataUsed','dataUsage','data_used','data_usage','usageData','usedData','consumed','dataConsumed','totalDataUsed','usage']) {
+                      for (const k of DATA_USED_KEYS_WIN) {
                         const sv = safeNum((firstSetup as any)[k]);
                         if (sv !== null && sv >= 0) {
                           if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
                           else if (sv > 50000) duBytes = Math.round(sv);
                           else duBytes = 0;
-                          duDbg += ` → SETUP.${k}=${sv}`;
+                          duSource = `SETUP.${k}`;
+                          duDbg = ` → SETUP.${k}=${sv}`;
                           break;
                         }
                       }
                     }
                     if (duBytes === null) {
-                      const sv = safeNum(rawDataUsedRaw);
-                      if (sv !== null && sv >= 0) {
-                        if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
-                        else if (sv > 50000) duBytes = Math.round(sv);
-                        else duBytes = 0;
-                        duDbg += ` → DIRECT=${sv}`;
+                      for (const k of DATA_USED_KEYS_WIN) {
+                        const sv = safeNum((raw as any)[k]);
+                        if (sv !== null && sv >= 0) {
+                          if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+                          else if (sv > 50000) duBytes = Math.round(sv);
+                          else duBytes = 0;
+                          duSource = `RAW.${k}`;
+                          duDbg = ` → RAW.${k}=${sv}`;
+                          break;
+                        }
                       }
                     }
+                    if (duBytes === null && nested) {
+                      for (const k of DATA_USED_KEYS_WIN) {
+                        const sv = safeNum((nested as any)[k]);
+                        if (sv !== null && sv >= 0) {
+                          if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+                          else if (sv > 50000) duBytes = Math.round(sv);
+                          else duBytes = 0;
+                          duSource = `NESTED.${k}`;
+                          duDbg = ` → NESTED.${k}=${sv}`;
+                          break;
+                        }
+                      }
+                    }
+                    if (duBytes === null && cardProfile) {
+                      for (const k of DATA_USED_KEYS_WIN) {
+                        const sv = safeNum((cardProfile as any)[k]);
+                        if (sv !== null && sv >= 0) {
+                          if (sv > 0 && sv <= 50000) duBytes = Math.round(sv * MB);
+                          else if (sv > 50000) duBytes = Math.round(sv);
+                          else duBytes = 0;
+                          duSource = `CARDPROFILE.${k}`;
+                          duDbg = ` → CARDPROFILE.${k}=${sv}`;
+                          break;
+                        }
+                      }
+                    }
+                    if (duBytes === null) duDbg = ` → NOT_FOUND keys=${DATA_USED_KEYS_WIN.length}`;
 
                     // SMS limits/used
-                    const smsLimitRaw = (raw as any).smsLimit ?? nested?.smsLimit ?? (raw as any).enabledProfile?.smsLimit;
+                    const smsLimitRaw = (raw as any).smsLimit ?? nested?.smsLimit ?? (raw as any).enabledProfile?.smsLimit ?? (firstSub as any)?.smsLimit ?? (firstSetup as any)?.smsLimit;
                     const smsLowestLimitRaw = (raw as any).lowestSmsLimit ?? nested?.lowestSmsLimit ?? (raw as any).enabledProfile?.lowestSmsLimit;
-                    const smsUsedRaw = (raw as any).smsUsed ?? (raw as any).smsCount ?? (raw as any).totalSms ?? (raw as any).smsSent
-                      ?? nested?.smsUsed ?? (firstSub as any)?.smsUsed ?? (firstSub as any)?.smsCount ?? (firstSetup as any)?.smsUsed;
+                    let smsUsedNum: number | null = null;
+                    let smsSrc = '';
+                    for (const k of SMS_USED_KEYS_WIN) {
+                      const sv = safeNum((raw as any)[k]);
+                      if (sv !== null && sv >= 0) { smsUsedNum = sv; smsSrc = `RAW.${k}`; break; }
+                    }
+                    if (smsUsedNum === null && firstSub) {
+                      for (const k of SMS_USED_KEYS_WIN) {
+                        const sv = safeNum((firstSub as any)[k]);
+                        if (sv !== null && sv >= 0) { smsUsedNum = sv; smsSrc = `SUBS.${k}`; break; }
+                      }
+                    }
+                    if (smsUsedNum === null && firstSetup) {
+                      for (const k of SMS_USED_KEYS_WIN) {
+                        const sv = safeNum((firstSetup as any)[k]);
+                        if (sv !== null && sv >= 0) { smsUsedNum = sv; smsSrc = `SETUP.${k}`; break; }
+                      }
+                    }
                     const smsLimitNum = safeNum(smsLimitRaw);
                     const smsLowestLimitNum = safeNum(smsLowestLimitRaw);
-                    const smsUsedNum = safeNum(smsUsedRaw);
+
+                    // ============================================================
+                    // 🏷️ SIM NAME / GROUP / PRODUCT: EXPLICIET UIT RAW HALEN!
+                    // ============================================================
+                    const SIM_NAME_KEYS_WIN = [
+                      'simName','sim_name','assetName','asset_name','displayName','display_name','label','name','nickname','friendlyName',
+                      'deviceName','customerLabel','userLabel','description','customName','simLabel','cardName','profileName'
+                    ];
+                    const GROUP_KEYS_WIN = [
+                      'groupName','group_name','group','groupId','group_id','poolName','pool_name','batchName','batch_name',
+                      'pool','batch','segment','department','costCenter','costcenter','customerGroup','accountGroup'
+                    ];
+                    const PRODUCT_KEYS_WIN = [
+                      'productName','product_name','planName','plan_name','offerName','offer_name','productCode','product_code',
+                      'product','plan','offer','tariff','tariffName','rateplan','ratePlan','subscriptionName','packageName',
+                      'profile','priceplan','productDescription','planDescription','offerDescription'
+                    ];
+                    const PRODUCT_TYPE_KEYS_WIN = ['productType','product_type','subscriptionType','subscription_type','assetType','asset_type','type','category','simCategory'];
+
+                    const tryExtract = (obj: any, keys: string[]): string => {
+                      if (!obj || typeof obj !== 'object') return '';
+                      for (const k of keys) {
+                        const s = isValidStr((obj as any)[k]);
+                        if (s) return s;
+                      }
+                      return '';
+                    };
+
+                    let wDirectSimName: string | null = null;
+                    wDirectSimName = tryExtract(firstSub, SIM_NAME_KEYS_WIN) || tryExtract(firstSetup, SIM_NAME_KEYS_WIN) || tryExtract(raw, SIM_NAME_KEYS_WIN) || tryExtract(cardProfile, SIM_NAME_KEYS_WIN) || tryExtract(nested, SIM_NAME_KEYS_WIN) || tryExtract((raw as any).enabledProfile, SIM_NAME_KEYS_WIN) || null;
+
+                    let wDirectGroupName: string | null = null;
+                    wDirectGroupName = tryExtract(firstSub, GROUP_KEYS_WIN) || tryExtract(firstSetup, GROUP_KEYS_WIN) || tryExtract(raw, GROUP_KEYS_WIN) || tryExtract(cardProfile, GROUP_KEYS_WIN) || tryExtract(nested, GROUP_KEYS_WIN) || null;
+                    if (!wDirectGroupName) {
+                      const owner = isValidStr((raw as any).ownerAccountName) || isValidStr(nested?.ownerAccountName);
+                      if (owner) wDirectGroupName = owner;
+                    }
+                    if (!wDirectGroupName && Array.isArray((raw as any).ownership) && (raw as any).ownership.length > 1) {
+                      for (const item of (raw as any).ownership) {
+                        const s = isValidStr(item);
+                        if (s && s.toLowerCase() !== isValidStr((raw as any).ownerAccountId).toLowerCase()) {
+                          wDirectGroupName = s; break;
+                        }
+                      }
+                    }
+                    let wDirectGroupId: string | null = null;
+                    for (const k of ['groupId','group_id','poolId','pool_id','batchId','batch_id']) {
+                      const s = isValidStr((raw as any)[k] ?? (firstSub as any)?.[k] ?? (firstSetup as any)?.[k]);
+                      if (s) { wDirectGroupId = s; break; }
+                    }
+
+                    let wDirectProductName: string | null = null;
+                    wDirectProductName = tryExtract(firstSub, PRODUCT_KEYS_WIN) || tryExtract(firstSetup, PRODUCT_KEYS_WIN) || tryExtract(cardProfile, PRODUCT_KEYS_WIN) || tryExtract(raw, PRODUCT_KEYS_WIN) || tryExtract(nested, PRODUCT_KEYS_WIN) || tryExtract((raw as any).enabledProfile, PRODUCT_KEYS_WIN) || null;
+                    if (!wDirectProductName && (raw as any).carriers && typeof (raw as any).carriers === 'object') {
+                      const carrierKeys = Object.keys((raw as any).carriers);
+                      if (carrierKeys.length > 0) wDirectProductName = carrierKeys.join(', ');
+                    }
+                    let wDirectProductType: string | null = null;
+                    for (const k of PRODUCT_TYPE_KEYS_WIN) {
+                      const s = isValidStr((raw as any)[k] ?? (firstSub as any)?.[k] ?? (cardProfile as any)?.[k] ?? (nested as any)?.[k]);
+                      if (s) { wDirectProductType = s; break; }
+                    }
 
                     const directDataLimitBytes = (dlBytes !== null && dlBytes > 0) ? dlBytes : null;
                     const directLowestDataLimitBytes = (ldlBytes !== null && ldlBytes > 0) ? ldlBytes : null;
@@ -3657,57 +4118,55 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                     const directDataUsedBytes = (duBytes !== null && duBytes >= 0) ? duBytes : null;
                     const directSmsUsedCount = (smsUsedNum !== null && smsUsedNum >= 0) ? smsUsedNum : null;
 
-                    // Vervang NU: dataLimitBytes (2 PB bug was hier!) laagste prioriteit: als directe null is, probeer toSimStatus dan pas.
-                    // We zetten ALLE velden expliciet NA toSimStatus.
-
-                    // Nu: toSimStatus voor overige (niet-kritieke) velden.
-                    // Daarna OVERSCHRIJVEN we de kritieke velden met onze directe extractie (altijd wint!).
                     let s: SimhuisSimStatus | null = null;
                     try {
                       s = toSimStatus(raw, directIccid || directEid || '');
                     } catch { s = null; }
                     const base: Partial<SimhuisSimStatus> = s ? { ...(s as any) } : {};
-                    // 🔐💥 Kritieke velden: altijd de directe extractie wint! (OOK lowest* en used*!)
                     if (directIccid) (base as any).iccid = directIccid;
                     if (directEid)  (base as any).eid  = directEid;
                     if (directMsisdn) (base as any).msisdn = directMsisdn;
                     if (normalisedDirectStatus) (base as any).status = normalisedDirectStatus;
                     if (directDataLimitBytes !== null) (base as any).dataLimitBytes = directDataLimitBytes;
                     if (directLowestDataLimitBytes !== null) (base as any).lowestDataLimitBytes = directLowestDataLimitBytes;
+                    else if (directDataLimitBytes !== null) (base as any).lowestDataLimitBytes = directDataLimitBytes;
                     if (directSmsLimitCount !== null) (base as any).smsLimitCount = directSmsLimitCount;
                     if (directLowestSmsLimitCount !== null) (base as any).lowestSmsLimitCount = directLowestSmsLimitCount;
+                    else if (directSmsLimitCount !== null) (base as any).lowestSmsLimitCount = directSmsLimitCount;
                     if (directDataUsedBytes !== null) (base as any).dataUsedBytes = directDataUsedBytes;
                     if (directSmsUsedCount !== null) (base as any).smsUsedCount = directSmsUsedCount;
-
-                    // UI BUG FIX: als lowestDataLimitBytes null is, gebruik dataLimitBytes
-                    if (directLowestDataLimitBytes === null && directDataLimitBytes !== null) {
-                      (base as any).lowestDataLimitBytes = directDataLimitBytes;
-                    }
-                    if (directLowestSmsLimitCount === null && directSmsLimitCount !== null) {
-                      (base as any).lowestSmsLimitCount = directSmsLimitCount;
-                    }
+                    if (wDirectSimName) { (base as any).simName = wDirectSimName; (base as any).displayName = wDirectSimName; (base as any).assetName = wDirectSimName; (base as any).label = wDirectSimName; }
+                    if (wDirectGroupName) { (base as any).groupName = wDirectGroupName; (base as any).group = wDirectGroupName; }
+                    if (wDirectGroupId) { (base as any).groupId = wDirectGroupId; }
+                    if (wDirectProductName) { (base as any).productName = wDirectProductName; (base as any).planName = wDirectProductName; (base as any).offerName = wDirectProductName; }
+                    if (wDirectProductType) { (base as any).productType = wDirectProductType; }
 
                     const final = base as SimhuisSimStatus;
                     if (debugIdx < 3) {
                       try {
-                        const firstSubKeys = firstSub ? Object.keys(firstSub).slice(0, 12) : null;
-                        const firstSetupKeys = firstSetup ? Object.keys(firstSetup).slice(0, 12) : null;
+                        const firstSubKeys = firstSub ? Object.keys(firstSub).slice(0, 20) : null;
+                        const firstSetupKeys = firstSetup ? Object.keys(firstSetup).slice(0, 20) : null;
+                        const cardProfileKeys = cardProfile && typeof cardProfile === 'object' ? Object.keys(cardProfile).slice(0, 15) : null;
+                        const fIccid = (final as any).iccid ?? '';
                         console.info(
                           `[simhuis-listAllSims]   🐛 ${win.tag} item#${debugIdx}: ` +
                           `directIccid=${JSON.stringify(directIccid)} directEid=${JSON.stringify(directEid)} directMsisdn=${JSON.stringify(directMsisdn)}\n` +
                           `     status=${JSON.stringify(directStatus)}→${JSON.stringify(normalisedDirectStatus)}\n` +
                           `     DL  raw=${JSON.stringify(rawLimitRaw)} → ${dlDbg} → DIRECT=${JSON.stringify(directDataLimitBytes)} bytes (${directDataLimitBytes!==null?`${(directDataLimitBytes/GB).toFixed(2)} GB`:'-'})\n` +
                           `     LDL raw=${JSON.stringify(rawLowestLimitRaw)} → ${ldlDbg} → DIRECT=${JSON.stringify(directLowestDataLimitBytes)} bytes\n` +
-                          `     DU  ${duDbg} → DIRECT=${JSON.stringify(directDataUsedBytes)} bytes (${directDataUsedBytes!==null?`${(directDataUsedBytes/MB).toFixed(2)} MB`:'-'})\n` +
-                          `     SMS limit=${JSON.stringify(smsLimitRaw)}→${JSON.stringify(directSmsLimitCount)} lowestSMS=${JSON.stringify(smsLowestLimitRaw)}→${JSON.stringify(directLowestSmsLimitCount)} usedSMS=${JSON.stringify(smsUsedRaw)}→${JSON.stringify(directSmsUsedCount)}\n` +
-                          `     firstSub keys=${JSON.stringify(firstSubKeys)} firstSetup keys=${JSON.stringify(firstSetupKeys)}\n` +
+                          `     DU  src=${duSource || '-'} ${duDbg} → DIRECT=${JSON.stringify(directDataUsedBytes)} bytes (${directDataUsedBytes!==null?`${(directDataUsedBytes/MB).toFixed(2)} MB`:'-'})\n` +
+                          `     SMS limit=${JSON.stringify(smsLimitRaw)}→${JSON.stringify(directSmsLimitCount)} lowestSMS=${JSON.stringify(smsLowestLimitRaw)}→${JSON.stringify(directLowestSmsLimitCount)} usedSMS src=${smsSrc || '-'}→${JSON.stringify(directSmsUsedCount)}\n` +
+                          `     🏷️  simName=${JSON.stringify(wDirectSimName)} group=${JSON.stringify(wDirectGroupName)} groupId=${JSON.stringify(wDirectGroupId)}\n` +
+                          `     🏷️  productName=${JSON.stringify(wDirectProductName)} productType=${JSON.stringify(wDirectProductType)}\n` +
+                          `     firstSub keys=${JSON.stringify(firstSubKeys)} firstSetup keys=${JSON.stringify(firstSetupKeys)} cardProfile keys=${JSON.stringify(cardProfileKeys)}\n` +
                           `     toSim: iccid=${JSON.stringify(s ? (s as any).iccid : null)} status=${JSON.stringify(s ? (s as any).status : null)} ` +
                           `DL=${JSON.stringify(s ? (s as any).dataLimitBytes : null)} LDL=${JSON.stringify(s ? (s as any).lowestDataLimitBytes : null)} ` +
                           `DU=${JSON.stringify(s ? (s as any).dataUsedBytes : null)} SMSu=${JSON.stringify(s ? (s as any).smsUsedCount : null)}\n` +
-                          `     FINAL: iccid=${JSON.stringify((final as any).iccid)} status=${JSON.stringify((final as any).status)} ` +
+                          `     FINAL: iccid=${JSON.stringify(fIccid)} status=${JSON.stringify((final as any).status)} ` +
                           `DL=${JSON.stringify((final as any).dataLimitBytes)}(${((final as any).dataLimitBytes ?? 0)/GB}GB) ` +
                           `LDL=${JSON.stringify((final as any).lowestDataLimitBytes)} DU=${JSON.stringify((final as any).dataUsedBytes)} ` +
-                          `SMSlim=${JSON.stringify((final as any).smsLimitCount)} SMSused=${JSON.stringify((final as any).smsUsedCount)} push=${(final as any).iccid ? '✅' : '❌'}`
+                          `SMSlim=${JSON.stringify((final as any).smsLimitCount)} SMSused=${JSON.stringify((final as any).smsUsedCount)} ` +
+                          `sim=${JSON.stringify((final as any).simName)} grp=${JSON.stringify((final as any).groupName)} prod=${JSON.stringify((final as any).productName)} push=${fIccid ? '✅' : '❌'}`
                         );
                       } catch { /* ignore */ }
                     }
