@@ -57,7 +57,7 @@ import {
 import { canUserRole } from "@/lib/auth/session";
 import type { UserRole, AuditAction } from "@/types/enums";
 import type { SIM, SimStatus, AssignmentReason } from "@prisma/client";
-import type { SimUsageSyncState, SimSuspendActionState } from "../actions";
+import type { SimUsageSyncState, SimSuspendActionState, SimStatusRefreshActionState } from "../actions";
 
 type DetailSim = SIM & {
   assignments: Array<{
@@ -114,6 +114,11 @@ type SimDetailProps = {
     prev: SimSuspendActionState,
     formData: FormData
   ) => Promise<SimSuspendActionState>;
+  refreshStatusAction: (
+    simId: string,
+    prev: SimStatusRefreshActionState,
+    formData: FormData
+  ) => Promise<SimStatusRefreshActionState>;
   isAdmin: boolean;
 };
 
@@ -579,6 +584,7 @@ export function SimDetail({
   syncUsageAction,
   suspendAction,
   unsuspendAction,
+  refreshStatusAction,
   isAdmin,
 }: SimDetailProps) {
   const canEdit = canUserRole(role, "edit", "sim");
@@ -614,6 +620,26 @@ export function SimDetail({
     unsuspendAction ? unsuspendAction.bind(null, simId) : async () => ({ ok: false, confirmedStatus: null, pendingConfirmation: false, message: "", error: undefined }) as SimSuspendActionState,
     { ok: false, confirmedStatus: null, pendingConfirmation: false, message: "", error: undefined } satisfies SimSuspendActionState
   );
+
+  const [refreshState, refreshFormAction, refreshPendingNative] = useFormState(
+    refreshStatusAction.bind(null, simId),
+    { ok: false, message: "" } satisfies SimStatusRefreshActionState
+  );
+  const [isStatusRefreshPendingClient, setIsStatusRefreshPendingClient] = useState(false);
+  const [isStatusRefreshTransitioning, startStatusRefreshTransition] = useTransition();
+  const statusRefreshSubmittedOnceRef = useRef(false);
+  const statusRefreshRanRef = useRef(false);
+  const prevRefreshStateRef = useRef(refreshState);
+  const [simStatusOverride, setSimStatusOverride] = useState<SimStatus | null>(null);
+  const statusRefreshEmergencyRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isStatusRefreshPending =
+    isStatusRefreshPendingClient ||
+    isStatusRefreshTransitioning ||
+    refreshPendingNative;
+
+  const effectiveSimStatus: SimStatus = simStatusOverride ?? sim.status;
+
   const prevSuspendStateRef = useRef(suspendState);
   const prevUnsuspendStateRef = useRef(unsuspendState);
 
@@ -674,8 +700,98 @@ export function SimDetail({
         clearTimeout(usageEmergencyTimerRef.current);
         usageEmergencyTimerRef.current = null;
       }
+      if (statusRefreshEmergencyRef.current) {
+        clearTimeout(statusRefreshEmergencyRef.current);
+        statusRefreshEmergencyRef.current = null;
+      }
     };
   }, []);
+
+  useEffect(() => {
+    const prev = prevRefreshStateRef.current;
+    const curr = refreshState;
+    const stateChanged =
+      prev !== curr &&
+      ((prev?.ok !== curr?.ok) ||
+        (prev?.message !== curr?.message) ||
+        (prev?.changed !== curr?.changed) ||
+        (prev?.refreshedStatus !== curr?.refreshedStatus) ||
+        (prev?.error !== curr?.error));
+    if (stateChanged || (!refreshPendingNative && isStatusRefreshPendingClient)) {
+      statusRefreshSubmittedOnceRef.current = false;
+      setIsStatusRefreshPendingClient(false);
+      if (statusRefreshEmergencyRef.current) {
+        clearTimeout(statusRefreshEmergencyRef.current);
+        statusRefreshEmergencyRef.current = null;
+      }
+      if (curr?.ok && curr?.changed && curr?.refreshedStatus) {
+        setSimStatusOverride(curr.refreshedStatus as SimStatus);
+      }
+    }
+    prevRefreshStateRef.current = curr;
+  }, [refreshState, refreshPendingNative]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (statusRefreshRanRef.current) return;
+    if (!refreshStatusAction) return;
+    statusRefreshRanRef.current = true;
+    statusRefreshSubmittedOnceRef.current = true;
+    setIsStatusRefreshPendingClient(true);
+    if (statusRefreshEmergencyRef.current) clearTimeout(statusRefreshEmergencyRef.current);
+    statusRefreshEmergencyRef.current = setTimeout(() => {
+      console.warn("[sim-detail] ⏹️ Status refresh noodstop na 40s timeout.");
+      statusRefreshSubmittedOnceRef.current = false;
+      setIsStatusRefreshPendingClient(false);
+      statusRefreshEmergencyRef.current = null;
+    }, 40_000);
+    startStatusRefreshTransition(async () => {
+      try {
+        const fd = new FormData();
+        await refreshFormAction(fd);
+      } catch (err: any) {
+        console.error("[sim-detail] Status refresh action exception:", err);
+      } finally {
+        setTimeout(() => {
+          setIsStatusRefreshPendingClient(false);
+          statusRefreshSubmittedOnceRef.current = false;
+          if (statusRefreshEmergencyRef.current) {
+            clearTimeout(statusRefreshEmergencyRef.current);
+            statusRefreshEmergencyRef.current = null;
+          }
+        }, 0);
+      }
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function triggerManualStatusRefresh() {
+    if (statusRefreshSubmittedOnceRef.current || isStatusRefreshPending) return;
+    statusRefreshSubmittedOnceRef.current = true;
+    setIsStatusRefreshPendingClient(true);
+    if (statusRefreshEmergencyRef.current) clearTimeout(statusRefreshEmergencyRef.current);
+    statusRefreshEmergencyRef.current = setTimeout(() => {
+      console.warn("[sim-detail] ⏹️ Status refresh noodstop na 40s timeout.");
+      statusRefreshSubmittedOnceRef.current = false;
+      setIsStatusRefreshPendingClient(false);
+      statusRefreshEmergencyRef.current = null;
+    }, 40_000);
+    startStatusRefreshTransition(async () => {
+      try {
+        const fd = new FormData();
+        await refreshFormAction(fd);
+      } catch (err: any) {
+        console.error("[sim-detail] Status refresh action exception:", err);
+      } finally {
+        setTimeout(() => {
+          setIsStatusRefreshPendingClient(false);
+          statusRefreshSubmittedOnceRef.current = false;
+          if (statusRefreshEmergencyRef.current) {
+            clearTimeout(statusRefreshEmergencyRef.current);
+            statusRefreshEmergencyRef.current = null;
+          }
+        }, 0);
+      }
+    });
+  }
 
   function onUsageSyncSubmit(e: React.FormEvent<HTMLFormElement>) {
     if (usageSubmittedRef.current || usageSyncPending) {
@@ -723,9 +839,88 @@ export function SimDetail({
 
   const suspendBanner = isAdmin && suspendAction ? renderActionResult(suspendState, "suspend") : null;
   const unsuspendBanner = isAdmin && unsuspendAction ? renderActionResult(unsuspendState, "unsuspend") : null;
+
+  let statusRefreshBanner: React.ReactNode = null;
+  if (refreshState && (refreshState.ok || refreshState.error)) {
+    if (refreshState.ok && refreshState.changed) {
+      statusRefreshBanner = (
+        <div
+          role="status"
+          className="flex items-start gap-2.5 rounded-md border border-emerald-300 bg-emerald-50 px-3.5 py-2.5 text-sm text-emerald-800 shadow-sm w-full"
+          key="banner-status-refresh-updated"
+        >
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+          <div className="flex-1 min-w-0">
+            <p className="font-medium text-emerald-900">Status bijgewerkt vanuit Simhuis</p>
+            {refreshState.message ? <p className="whitespace-pre-wrap break-words text-emerald-800/90">{refreshState.message}</p> : null}
+          </div>
+        </div>
+      );
+    } else if (refreshState.ok && !refreshState.changed) {
+      statusRefreshBanner = null;
+    } else if (refreshState.error) {
+      const kind = refreshState.error?.kind;
+      const isPermission = kind === "PERMISSION";
+      const isNotFound = kind === "NOT_FOUND";
+      const isTimeout = kind === "TIMEOUT_OR_NETWORK";
+      const isProvider = kind === "PROVIDER";
+      const isInvalid = kind === "INVALID_STATUS_TRANSITION";
+      const title = isPermission
+        ? "Onvoldoende rechten"
+        : isNotFound
+          ? "Simkaart niet gevonden"
+          : isTimeout
+            ? "Kon status niet verversen"
+            : isProvider
+              ? "Simhuis verbindingsprobleem"
+              : isInvalid
+                ? "Ongeldige status"
+                : "Fout bij verversen";
+      statusRefreshBanner = (
+        <div
+          role="alert"
+          className="flex items-start gap-2.5 rounded-md border border-red-300 bg-red-50 px-3.5 py-2.5 text-sm text-red-800 shadow-sm w-full"
+          key="banner-status-refresh-error"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
+          <div className="flex-1 min-w-0">
+            <p className="font-medium text-red-900">{title}</p>
+            <p className="whitespace-pre-wrap break-words text-red-800/90">
+              {refreshState.message || refreshState.error?.detail || "Onbekende fout."}
+            </p>
+            {isTimeout ? (
+              <p className="mt-1 text-xs text-red-700/80">
+                Controleer je internetverbinding en ververs handmatig de status.
+              </p>
+            ) : null}
+            <div className="mt-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={isStatusRefreshPending}
+                aria-disabled={isStatusRefreshPending}
+                aria-busy={isStatusRefreshPending}
+                onClick={triggerManualStatusRefresh}
+                className="gap-1.5"
+              >
+                <RefreshCw
+                  className={"h-3.5 w-3.5 " + (isStatusRefreshPending ? "animate-spin" : "")}
+                  aria-hidden="true"
+                />
+                Opnieuw proberen
+              </Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+  }
+
   const actionBanners =
-    suspendBanner || unsuspendBanner ? (
-      <div className="flex flex-col gap-3">
+    suspendBanner || unsuspendBanner || statusRefreshBanner ? (
+      <div className="flex flex-col gap-3" aria-live="polite">
+        {statusRefreshBanner}
         {suspendBanner}
         {unsuspendBanner}
       </div>
@@ -741,12 +936,50 @@ export function SimDetail({
             </Link>
           </Button>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <CreditCard className="h-5 w-5 text-slate-500" />
               <h1 className="text-2xl font-bold tracking-tight">
                 {sim.provider}
               </h1>
-              <SimStatusBadge status={sim.status as SimStatus} />
+              <div className="flex items-center gap-2">
+                <SimStatusBadge status={effectiveSimStatus as SimStatus} />
+                <div
+                  className="inline-flex items-center gap-1.5 text-xs text-slate-500"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >
+                  {isStatusRefreshPending ? (
+                    <>
+                      <RefreshCw
+                        className="h-3.5 w-3.5 animate-spin text-slate-500"
+                        aria-hidden="true"
+                      />
+                      <span>
+                        Simhuis-status wordt opgehaald…
+                      </span>
+                    </>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs text-slate-500 hover:text-slate-700 gap-1"
+                      onClick={triggerManualStatusRefresh}
+                      disabled={isStatusRefreshPending}
+                      aria-disabled={isStatusRefreshPending}
+                      aria-busy={isStatusRefreshPending}
+                      title="Simhuis status verversen"
+                      aria-label="Simhuis status verversen"
+                    >
+                      <RefreshCw
+                        className="h-3.5 w-3.5"
+                        aria-hidden="true"
+                      />
+                      Ververs
+                    </Button>
+                  )}
+                </div>
+              </div>
             </div>
             <div className="text-sm text-slate-500 font-mono">
               ICCID: {formatIccid(sim.iccid)}
@@ -909,7 +1142,7 @@ export function SimDetail({
                     <Package className="h-4 w-4 text-slate-500" /> Product
                   </CardTitle>
                   <div className="flex flex-wrap gap-2 sm:gap-3 shrink-0">
-                    {isAdmin && suspendAction && sim.status === "ACTIVE" ? (
+                    {isAdmin && suspendAction && effectiveSimStatus === "ACTIVE" ? (
                       <SuspendSimDialog
                         sim={sim}
                         open={suspendOpen}
@@ -919,7 +1152,7 @@ export function SimDetail({
                         hasResult={Boolean(suspendState?.ok || suspendState?.error)}
                       />
                     ) : null}
-                    {isAdmin && unsuspendAction && sim.status === "SUSPENDED" ? (
+                    {isAdmin && unsuspendAction && effectiveSimStatus === "SUSPENDED" ? (
                       <UnsuspendSimDialog
                         sim={sim}
                         open={unsuspendOpen}

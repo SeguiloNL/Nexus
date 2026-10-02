@@ -11,6 +11,7 @@ import {
   syncUsageForSingleSimAction,
   suspendSimAction,
   unsuspendSimAction,
+  refreshSimStatusAction,
 } from "../actions";
 import { RoleScope, UserRole } from "@/types/enums";
 
@@ -70,6 +71,7 @@ export default async function SimDetailPage({
       syncUsageAction={syncUsageForSingleSimAction}
       suspendAction={isAdmin ? suspendSimAction : undefined}
       unsuspendAction={isAdmin ? unsuspendSimAction : undefined}
+      refreshStatusAction={refreshSimStatusAction}
       isAdmin={isAdmin}
     />
   );

@@ -414,4 +414,174 @@ export async function unsuspendSimById(simId: string, ctx: AuthContext): Promise
   return performAction("unsuspend", simId, ctx);
 }
 
+export type SimStatusRefreshResult = {
+  ok: boolean;
+  message: string;
+  previousStatus: string | null;
+  refreshedStatus: string | null;
+  simhuisStatusRaw: string | null;
+  changed: boolean;
+  error?: SimSuspendError;
+};
+
+export async function refreshSimStatusById(
+  simId: string,
+  ctx: AuthContext
+): Promise<SimStatusRefreshResult> {
+  try {
+    await requirePermission(pickAuth(ctx), "view", "sim");
+  } catch (e: any) {
+    return {
+      ok: false,
+      message: e?.message ? String(e.message) : "Onvoldoende rechten.",
+      previousStatus: null,
+      refreshedStatus: null,
+      simhuisStatusRaw: null,
+      changed: false,
+      error: { kind: "PERMISSION", detail: e?.message ? String(e.message) : "Onvoldoende rechten." },
+    };
+  }
+
+  const sim = await findSimById(simId, ctx.customerScope);
+  if (!sim) {
+    return {
+      ok: false,
+      message: "SIM is niet (meer) beschikbaar in dit account.",
+      previousStatus: null,
+      refreshedStatus: null,
+      simhuisStatusRaw: null,
+      changed: false,
+      error: { kind: "NOT_FOUND", detail: "SIM niet gevonden of onvoldoende toegang." },
+    };
+  }
+
+  const previousStatus = sim.status;
+
+  const configured = await simhuisClient.isConfigured();
+  if (!configured) {
+    return {
+      ok: false,
+      message: "Simhuis integratie is niet geconfigureerd.",
+      previousStatus,
+      refreshedStatus: null,
+      simhuisStatusRaw: null,
+      changed: false,
+      error: {
+        kind: "PROVIDER",
+        detail: "Simhuis integratie is niet geconfigureerd (username/password ontbreken).",
+      },
+    };
+  }
+
+  let live: Awaited<ReturnType<typeof getSimStatus>> | null = null;
+  try {
+    live = await getSimStatus(sim.iccid);
+  } catch (e: any) {
+    return {
+      ok: false,
+      message: "Kon actuele status niet ophalen van Simhuis.",
+      previousStatus,
+      refreshedStatus: null,
+      simhuisStatusRaw: null,
+      changed: false,
+      error: {
+        kind: "TIMEOUT_OR_NETWORK",
+        detail: String(e?.message ?? e ?? "Netwerk- of timeout-fout bij Simhuis."),
+      },
+    };
+  }
+
+  const simhuisStatusRaw = (live?.status as string) ?? null;
+  const refreshedStatus = mapSimhuisStatusToNexus(live?.status ?? null);
+
+  if (!refreshedStatus) {
+    return {
+      ok: false,
+      message: `Simhuis retourneerde een onbekende status (${JSON.stringify(simhuisStatusRaw ?? "null")}).`,
+      previousStatus,
+      refreshedStatus: null,
+      simhuisStatusRaw,
+      changed: false,
+      error: {
+        kind: "PROVIDER",
+        detail: `Onbekende status-waarde van Simhuis: ${JSON.stringify(simhuisStatusRaw ?? "null")}`,
+      },
+    };
+  }
+
+  const changed = previousStatus !== refreshedStatus;
+
+  let dbUpdated = false;
+  try {
+    if (changed) {
+      await prisma.$transaction(async (tx) => {
+        const updated = await tx.sIM.update({
+          where: { id: sim.id },
+          data: { status: refreshedStatus, updatedAt: new Date() },
+        });
+        await logAudit(tx, {
+          entityType: "sim",
+          entityId: sim.id,
+          action: "UPDATE",
+          userId: ctx.userId,
+          oldValues: { status: previousStatus },
+          newValues: { status: refreshedStatus },
+          metadata: {
+            source: "sim-status-refresh",
+            simhuisStatusRaw,
+          },
+        });
+        return updated;
+      });
+      dbUpdated = true;
+    } else {
+      try {
+        await prisma.sIM.update({
+          where: { id: sim.id },
+          data: { updatedAt: new Date() },
+        });
+      } catch {
+        // Ignore; refreshed at timestamp is best effort
+      }
+    }
+  } catch (e: any) {
+    console.error(
+      `[simhuis-asset-service] Fout bij bijwerken DB na status refresh van sim ${sim.id}:`,
+      e?.message ?? e
+    );
+    return {
+      ok: false,
+      message: "Simhuis status opgehaald, maar lokaal opslaan mislukte.",
+      previousStatus,
+      refreshedStatus,
+      simhuisStatusRaw,
+      changed,
+      error: {
+        kind: "TIMEOUT_OR_NETWORK",
+        detail: String(e?.message ?? e ?? "Database-fout tijdens status-opslag."),
+      },
+    };
+  }
+
+  if (changed && dbUpdated) {
+    return {
+      ok: true,
+      message: `Status bijgewerkt van ${previousStatus} naar ${refreshedStatus}.`,
+      previousStatus,
+      refreshedStatus,
+      simhuisStatusRaw,
+      changed: true,
+    };
+  }
+
+  return {
+    ok: true,
+    message: `Status is actueel (${refreshedStatus}).`,
+    previousStatus,
+    refreshedStatus,
+    simhuisStatusRaw,
+    changed: false,
+  };
+}
+
 export type { AuthContext };

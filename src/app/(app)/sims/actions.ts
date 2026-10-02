@@ -25,8 +25,10 @@ import type { PerSimUsageSyncResult } from "@/server/services/simhuis-sim-sync.s
 import {
   suspendSimById,
   unsuspendSimById,
+  refreshSimStatusById,
   type SimSuspendResult,
   type SimSuspendError,
+  type SimStatusRefreshResult,
 } from "@/server/services/simhuis-asset.service";
 import { hasMinRole } from "@/lib/rbac";
 import { UserRole, RoleScope } from "@/types/enums";
@@ -646,5 +648,63 @@ export async function unsuspendSimAction(
     pendingConfirmation: false,
     message: mapErrorToFriendlyMessage(result.error),
     error: result.error,
+  };
+}
+
+export type SimStatusRefreshActionState = {
+  ok: boolean;
+  message: string;
+  error?: SimSuspendError;
+  previousStatus?: SimStatusRefreshResult["previousStatus"];
+  refreshedStatus?: SimStatusRefreshResult["refreshedStatus"];
+  simhuisStatusRaw?: SimStatusRefreshResult["simhuisStatusRaw"];
+  changed?: boolean;
+};
+
+export async function refreshSimStatusAction(
+  simId: string,
+  _prev: SimStatusRefreshActionState,
+  _form: FormData
+): Promise<SimStatusRefreshActionState> {
+  const user = await getCurrentUser();
+
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "view", "sim");
+
+  const ctx = buildActionCtx(user);
+  let result: SimStatusRefreshResult;
+  try {
+    result = await refreshSimStatusById(simId, ctx);
+  } catch (e: any) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      ok: false,
+      message: "Onverwachte fout tijdens verversen van status.",
+      error: { kind: "TIMEOUT_OR_NETWORK", detail: msg },
+    };
+  }
+
+  if (result.ok) {
+    try {
+      revalidatePath("/sims");
+      revalidatePath(`/sims/${simId}`);
+    } catch {}
+    return {
+      ok: true,
+      message: result.message,
+      previousStatus: result.previousStatus,
+      refreshedStatus: result.refreshedStatus,
+      simhuisStatusRaw: result.simhuisStatusRaw,
+      changed: result.changed,
+    };
+  }
+
+  return {
+    ok: false,
+    message: mapErrorToFriendlyMessage(result.error),
+    error: result.error,
+    previousStatus: result.previousStatus,
+    refreshedStatus: result.refreshedStatus,
+    simhuisStatusRaw: result.simhuisStatusRaw,
+    changed: false,
   };
 }
