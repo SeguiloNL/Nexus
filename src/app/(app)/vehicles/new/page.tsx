@@ -1,19 +1,17 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { VehicleForm } from "../_components/vehicle-form";
 import { createVehicleAction } from "../actions";
 import { PermissionError } from "@/lib/rbac";
-import { canUserRole } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 
 export default async function NewVehiclePage() {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "create", "vehicle")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "create", "vehicle")) {
     throw new PermissionError("Je mag geen voertuigen aanmaken.");
   }
 
-  const customerIds = session.user.customerIds ?? [];
+  const customerIds = user.customerIds ?? [];
   const hasScope = customerIds.length > 0;
   const customerScopeCustomer: any = hasScope ? { id: { in: customerIds } } : undefined;
 

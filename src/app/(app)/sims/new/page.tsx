@@ -1,14 +1,12 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { SimForm } from "../_components/sim-form";
 import { createSimAction } from "../actions";
 import { PermissionError } from "@/lib/rbac";
-import { canUserRole } from "@/lib/auth/session";
 
 export default async function NewSimPage() {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "create", "sim")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "create", "sim")) {
     throw new PermissionError("Je mag geen SIM-kaarten aanmaken.");
   }
 

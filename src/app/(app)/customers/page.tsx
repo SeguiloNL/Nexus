@@ -1,16 +1,14 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { findManyCustomers, getCustomerHierarchyTree } from "@/server/services/customer.service";
 import { CustomerList } from "./_components/customer-list";
 import { CustomerHierarchyTreeCard } from "./_components/customer-hierarchy-tree";
-import { canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { PermissionError } from "@/lib/rbac";
 
 export default async function CustomersPage() {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
+  const user = await requireUser();
 
-  if (!canUserRole(session.user.permissions, "view", "customer")) {
+  if (!canUserRole(user.permissions, "view", "customer")) {
     throw new PermissionError("Je mag geen klanten bekijken.");
   }
 
@@ -18,19 +16,19 @@ export default async function CustomersPage() {
     findManyCustomers({
       page: 1,
       perPage: 500,
-      viewerRole: session.user.role,
-      customerScope: session.user.customerIds,
+      viewerRole: user.role,
+      customerScope: user.customerIds,
     }),
     getCustomerHierarchyTree(null, {
-      customerScope: session.user.customerIds,
+      customerScope: user.customerIds,
     }),
   ]);
 
-  const canCreate = canUserRole(session.user.permissions, "create", "customer");
-  const canEdit = canUserRole(session.user.permissions, "edit", "customer");
-  const canDelete = canUserRole(session.user.permissions, "delete", "customer");
-  const canExport = canUserRole(session.user.permissions, "export", "customer");
-  const canImport = canUserRole(session.user.permissions, "import", "customer");
+  const canCreate = canUserRole(user.permissions, "create", "customer");
+  const canEdit = canUserRole(user.permissions, "edit", "customer");
+  const canDelete = canUserRole(user.permissions, "delete", "customer");
+  const canExport = canUserRole(user.permissions, "export", "customer");
+  const canImport = canUserRole(user.permissions, "import", "customer");
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[360px_1fr]">

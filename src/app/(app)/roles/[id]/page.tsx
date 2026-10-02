@@ -1,8 +1,7 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { notFound, redirect } from "next/navigation";
 import { findRoleById } from "@/server/services/role.service";
 import { RoleEditForm } from "../_components/role-edit-form";
-import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
 import type { ResourceAction, ResourceType } from "@/types/enums";
 
@@ -32,16 +31,15 @@ export default async function RoleEditPage({
 }: {
   params: { id: string };
 }) {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!resolveCan(session.user as any, "view", "role")) {
+  const user = await requireUser();
+  if (!resolveCan(user as any, "view", "role")) {
     throw new PermissionError("Je bent niet bevoegd rollen te bewerken.");
   }
 
   const role = await findRoleById(params.id);
   if (!role) notFound();
 
-  const canEdit = resolveCan(session.user as any, "edit", "role");
+  const canEdit = resolveCan(user as any, "edit", "role");
 
   return <RoleEditForm role={role as any} canEdit={canEdit} />;
 }

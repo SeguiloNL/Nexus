@@ -1,8 +1,7 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { findManyRoles } from "@/server/services/role.service";
 import { RoleList } from "./_components/role-list";
-import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
 import type { ResourceAction, ResourceType, RoleScope } from "@/types/enums";
 
@@ -45,15 +44,14 @@ export default async function RolesPage({
     isSystem?: string;
   };
 }) {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!resolveCan(session.user as any, "view", "role")) {
+  const user = await requireUser();
+  if (!resolveCan(user as any, "view", "role")) {
     throw new PermissionError("Je bent niet bevoegd rollen te bekijken.");
   }
 
-  const canCreate = resolveCan(session.user as any, "create", "role");
-  const canEdit = resolveCan(session.user as any, "edit", "role");
-  const canDelete = resolveCan(session.user as any, "delete", "role");
+  const canCreate = resolveCan(user as any, "create", "role");
+  const canEdit = resolveCan(user as any, "edit", "role");
+  const canDelete = resolveCan(user as any, "delete", "role");
 
   const filters = {
     search: parseString(searchParams?.search),

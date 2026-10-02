@@ -18,6 +18,7 @@ import {
 import {
   pickAuth,
   requirePermission,
+  buildLegacyPermissionsForRole,
 } from "@/lib/rbac";
 import type { PermissionBits } from "@/types/next-auth";
 import type { UserRole } from "@/types/enums";
@@ -167,16 +168,31 @@ export async function findRoleById(id: string): Promise<RoleDetail | null> {
   };
 }
 
+const LEGACY_ROLE_NAMES = new Set(["ADMIN", "EMPLOYEE", "VIEWER"]);
+
 export async function getPermissionsByRoleId(
   roleId: string
 ): Promise<Record<ResourceType, { read: boolean; write: boolean }>> {
   const role = await prisma.role.findUnique({
     where: { id: roleId },
-    select: { scope: true, permissions: { select: { resource: true, read: true, write: true } } },
+    select: {
+      scope: true,
+      name: true,
+      isSystem: true,
+      permissions: { select: { resource: true, read: true, write: true } },
+    },
   });
   if (!role) {
     return defaultPermissionsForScope(RoleScope.INTERNAL);
   }
+
+  if (role.isSystem && LEGACY_ROLE_NAMES.has(role.name)) {
+    return buildLegacyPermissionsForRole(
+      role.name as UserRole,
+      (role.scope as RoleScope) ?? RoleScope.INTERNAL
+    );
+  }
+
   const base = defaultPermissionsForScope(role.scope as RoleScope);
   for (const p of role.permissions) {
     if (p.resource in base) {

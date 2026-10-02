@@ -1,5 +1,4 @@
-import { auth } from "@/auth";
-import { redirect } from "next/navigation";
+import { requireUser } from "@/lib/auth/session";
 import Link from "next/link";
 import { PermissionError } from "@/lib/rbac";
 import { canUserRole } from "@/lib/auth/session";
@@ -28,13 +27,12 @@ import {
 } from "@/lib/formatters";
 
 export default async function DashboardPage() {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "view", "dashboard")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "view", "dashboard")) {
     throw new PermissionError("Je hebt geen toegang tot het dashboard.");
   }
 
-  const customerIds = session.user.customerIds ?? [];
+  const customerIds = user.customerIds ?? [];
   const hasScope = customerIds.length > 0;
 
   const customerScopeCustomer: any = hasScope

@@ -1,4 +1,4 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { notFound, redirect } from "next/navigation";
 import {
   findCustomerById,
@@ -7,7 +7,6 @@ import {
 } from "@/server/services/customer.service";
 import { findManyAuditLogs } from "@/server/services/audit.service";
 import { CustomerDetail } from "../_components/customer-detail";
-import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
 import {
   deleteCustomerAction,
@@ -19,23 +18,22 @@ export default async function CustomerDetailPage({
 }: {
   params: { id: string };
 }) {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "view", "customer")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "view", "customer")) {
     throw new PermissionError("Je mag geen klanten bekijken.");
   }
 
-  const ctx = { customerScope: session.user.customerIds };
+  const ctx = { customerScope: user.customerIds };
 
   const [customer, parentOptions, auditResult, users] = await Promise.all([
-    findCustomerById(params.id, session.user.customerIds),
-    listParentCustomers(session.user.customerIds),
+    findCustomerById(params.id, user.customerIds),
+    listParentCustomers(user.customerIds),
     findManyAuditLogs({
       entityType: "customer",
       perPage: 50,
       order: "desc",
-      viewerUserId: session.user.id,
-      viewerRole: session.user.role,
+      viewerUserId: user.id,
+      viewerRole: user.role,
     }).then((r) =>
       Promise.all(
         r.data.map(async (log: any) => {
@@ -64,7 +62,7 @@ export default async function CustomerDetailPage({
     <CustomerDetail
       customer={customer as any}
       parentOptions={parentOptions}
-      role={session.user.role}
+      role={user.role}
       updateAction={updateCustomerAction}
       deleteAction={deleteCustomerAction}
       customerId={params.id}

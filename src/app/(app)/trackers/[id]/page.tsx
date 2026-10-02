@@ -1,9 +1,8 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { notFound, redirect } from "next/navigation";
 import { findTrackerById } from "@/server/services/tracker.service";
 import { findManyAuditLogs } from "@/server/services/audit.service";
 import { TrackerDetail } from "../_components/tracker-detail";
-import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
 import { deleteTrackerAction, updateTrackerAction } from "../actions";
 
@@ -12,20 +11,19 @@ export default async function TrackerDetailPage({
 }: {
   params: { id: string };
 }) {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "view", "tracker")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "view", "tracker")) {
     throw new PermissionError("Je mag geen trackers bekijken.");
   }
 
   const [tracker, auditResult] = await Promise.all([
-    findTrackerById(params.id, session.user.customerIds),
+    findTrackerById(params.id, user.customerIds),
     findManyAuditLogs({
       entityType: "tracker",
       perPage: 50,
       order: "desc",
-      viewerUserId: session.user.id,
-      viewerRole: session.user.role,
+      viewerUserId: user.id,
+      viewerRole: user.role,
     }).then((r) =>
       Promise.all(
         r.data.map(async (log: any) => {
@@ -51,7 +49,7 @@ export default async function TrackerDetailPage({
   return (
     <TrackerDetail
       tracker={tracker as any}
-      role={session.user.role}
+      role={user.role}
       updateAction={updateTrackerAction}
       deleteAction={deleteTrackerAction}
       trackerId={params.id}

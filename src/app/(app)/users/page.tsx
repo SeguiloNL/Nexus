@@ -1,11 +1,10 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { findManyUsers } from "@/server/services/user.service";
 import { findManyRoles } from "@/server/services/role.service";
 import { findManyCustomers } from "@/server/services/customer.service";
 import { UserList } from "./_components/user-list";
 import { UserRole, RoleScope, CustomerType, ResourceType, ResourceAction } from "@/types/enums";
-import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
 
 function parseNumber(
@@ -73,25 +72,24 @@ export default async function UsersPage({
     lastLoginAfter?: string;
   };
 }) {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
+  const user = await requireUser();
 
-  if (!userCan(session.user.permissions, "view", "user")) {
+  if (!userCan(user.permissions, "view", "user")) {
     throw new PermissionError("Je mag geen gebruikers bekijken.");
   }
 
   const canView = true;
-  const canCreate = userCan(session.user.permissions, "create", "user");
-  const canEdit = userCan(session.user.permissions, "edit", "user");
-  const canDelete = userCan(session.user.permissions, "delete", "user");
+  const canCreate = userCan(user.permissions, "create", "user");
+  const canEdit = userCan(user.permissions, "edit", "user");
+  const canDelete = userCan(user.permissions, "delete", "user");
 
   const ctx = {
-    userId: session.user.id,
-    userRole: session.user.role,
-    roleId: session.user.roleId,
-    roleScope: session.user.roleScope,
-    permissions: session.user.permissions,
-    customerScope: session.user.customerIds,
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    permissions: user.permissions,
+    customerScope: user.customerIds,
   };
 
   const page = parseNumber(searchParams?.page, 1);
@@ -128,8 +126,8 @@ export default async function UsersPage({
     findManyCustomers({
       page: 1,
       perPage: 1000,
-      viewerRole: session.user.role,
-      customerScope: session.user.customerIds ?? undefined,
+      viewerRole: user.role,
+      customerScope: user.customerIds ?? undefined,
     }),
   ]);
 
@@ -161,8 +159,8 @@ export default async function UsersPage({
       canCreate={canCreate}
       canEdit={canEdit}
       canDelete={canDelete}
-      currentUserId={session.user.id}
-      viewerRoleScope={(session.user.roleScope ?? RoleScope.INTERNAL) as any}
+      currentUserId={user.id}
+      viewerRoleScope={(user.roleScope ?? RoleScope.INTERNAL) as any}
       errorMessage={searchParams?.error ?? null}
       pagination={appliedFilters}
     />

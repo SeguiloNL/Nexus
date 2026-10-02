@@ -1,27 +1,25 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { findManyVehicles } from "@/server/services/vehicle.service";
 import { VehicleList } from "./_components/vehicle-list";
-import { canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { PermissionError } from "@/lib/rbac";
 
 export default async function VehiclesPage() {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "view", "vehicle")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "view", "vehicle")) {
     throw new PermissionError("Je mag geen voertuigen bekijken.");
   }
 
   const result = await findManyVehicles({
     page: 1,
     perPage: 500,
-    viewerRole: session.user.role as any,
-    customerScope: session.user.customerIds,
+    viewerRole: user.role as any,
+    customerScope: user.customerIds,
   });
 
-  const canCreate = canUserRole(session.user.permissions, "create", "vehicle");
-  const canEdit = canUserRole(session.user.permissions, "edit", "vehicle");
-  const canDelete = canUserRole(session.user.permissions, "delete", "vehicle");
+  const canCreate = canUserRole(user.permissions, "create", "vehicle");
+  const canEdit = canUserRole(user.permissions, "edit", "vehicle");
+  const canDelete = canUserRole(user.permissions, "delete", "vehicle");
 
   return (
     <VehicleList

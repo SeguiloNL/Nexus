@@ -1,15 +1,13 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { listParentCustomers } from "@/server/services/customer.service";
 import { CustomerForm } from "../_components/customer-form";
 import { createCustomerAction } from "../actions";
 import { PermissionError } from "@/lib/rbac";
-import { canUserRole } from "@/lib/auth/session";
 
 export default async function NewCustomerPage() {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "create", "customer")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "create", "customer")) {
     throw new PermissionError("Je mag geen klanten aanmaken.");
   }
 

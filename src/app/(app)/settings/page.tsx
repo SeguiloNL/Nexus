@@ -1,6 +1,5 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
-import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -15,15 +14,14 @@ import {
 } from "@/server/services/app-setting.service";
 
 export default async function SettingsPage() {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "view", "setting")) {
-    if (!canUserRole(session.user.permissions, "edit", "setting")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "view", "setting")) {
+    if (!canUserRole(user.permissions, "edit", "setting")) {
       throw new PermissionError("Je mag geen instellingen bekijken.");
     }
   }
 
-  const canEdit = canUserRole(session.user.permissions, "edit", "setting");
+  const canEdit = canUserRole(user.permissions, "edit", "setting");
   const [inserveSettings, simhuisSettings, navixySettings] = await Promise.all([
     getInserveSettingsMasked(),
     getSimhuisSettingsMasked(),

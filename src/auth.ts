@@ -184,63 +184,68 @@ export const authConfig: NextAuthConfig = {
         password: { label: "Wachtwoord", type: "password" },
       },
       async authorize(credentials) {
-        const validated = LoginSchema.safeParse(credentials);
-        if (!validated.success) return null;
+        try {
+          const validated = LoginSchema.safeParse(credentials);
+          if (!validated.success) return null;
 
-        const { email, password } = validated.data;
+          const { email, password } = validated.data;
 
-        const user = await prisma.user.findUnique({
-          where: { email: email.toLowerCase() },
-          select: {
-            id: true,
-            email: true,
-            name: true,
-            passwordHash: true,
-            role: true,
-            roleId: true,
-            customerId: true,
-            isActive: true,
-          },
-        });
-        if (!user || !user.passwordHash) return null;
+          const user = await prisma.user.findUnique({
+            where: { email: email.toLowerCase() },
+            select: {
+              id: true,
+              email: true,
+              name: true,
+              passwordHash: true,
+              role: true,
+              roleId: true,
+              customerId: true,
+              isActive: true,
+            },
+          });
+          if (!user || !user.passwordHash) return null;
 
-        const ok = await verifyPassword(password, user.passwordHash);
-        if (!ok) return null;
+          const ok = await verifyPassword(password, user.passwordHash);
+          if (!ok) return null;
 
-        if (user.isActive === false) {
+          if (user.isActive === false) {
+            return null;
+          }
+
+          try {
+            await prisma.user.update({
+              where: { id: user.id },
+              data: { lastLoginAt: new Date() },
+            });
+          } catch (_e) {
+            /* noop */
+          }
+
+          const roleInfo = await resolveRoleForUser({
+            id: user.id,
+            roleId: user.roleId,
+            role: user.role as LegacyRoleName,
+            customerId: user.customerId,
+          });
+          const customerInfo = await resolveCustomerScope(user.id, user.customerId);
+
+          return {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            isActive: user.isActive,
+            role: user.role as unknown as UserRoleEnum,
+            roleId: roleInfo.roleId,
+            roleScope: roleInfo.roleScope,
+            roleName: roleInfo.roleName,
+            customerId: customerInfo.customerId,
+            customerIds: customerInfo.customerIds,
+            permissions: roleInfo.permissions,
+          };
+        } catch (e) {
+          console.error("[auth] Credentials authorize error:", e);
           return null;
         }
-
-        try {
-          await prisma.user.update({
-            where: { id: user.id },
-            data: { lastLoginAt: new Date() },
-          });
-        } catch (_e) {
-          /* noop */
-        }
-
-        const roleInfo = await resolveRoleForUser({
-          id: user.id,
-          roleId: user.roleId,
-          role: user.role as LegacyRoleName,
-          customerId: user.customerId,
-        });
-        const customerInfo = await resolveCustomerScope(user.id, user.customerId);
-
-        return {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          isActive: user.isActive,
-          role: user.role as unknown as UserRoleEnum,
-          roleId: roleInfo.roleId,
-          roleScope: roleInfo.roleScope,
-          roleName: roleInfo.roleName,
-          customerId: customerInfo.customerId,
-          customerIds: customerInfo.customerIds,
-          permissions: roleInfo.permissions,
-        };
       },
     }),
   ],
@@ -286,7 +291,8 @@ export const authConfig: NextAuthConfig = {
         !userId ||
         !hasFullFields ||
         typeof lastRefresh !== "number" ||
-        Date.now() - lastRefresh > CUSTOMER_SCOPE_REFRESH_MS;
+        Date.now() - lastRefresh > CUSTOMER_SCOPE_REFRESH_MS ||
+        !permissionsMeaningful((token as any).permissions);
 
       if (!shouldRefresh) return token;
 

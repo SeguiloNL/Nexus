@@ -1,4 +1,4 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { requirePermission } from "@/lib/rbac";
 import { findManyInvoices } from "@/server/services/invoice.service";
@@ -17,18 +17,17 @@ export default async function InvoicesPage(props: {
     issueDateTo?: string;
   }>;
 }) {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  await requirePermission(session.user.permissions, "view", "invoice");
+  const user = await requireUser();
+  await requirePermission(user.permissions, "view", "invoice");
 
   const sp = await props.searchParams;
   const ctx = {
-    userId: session.user.id,
-    userRole: session.user.role,
-    roleId: session.user.roleId,
-    roleScope: session.user.roleScope,
-    customerScope: session.user.customerIds,
-    permissions: session.user.permissions,
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
   };
   const page = sp.page ? Number(sp.page) || 1 : 1;
   const perPage = sp.perPage ? Number(sp.perPage) || 25 : 25;

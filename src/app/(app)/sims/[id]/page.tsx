@@ -1,9 +1,8 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { notFound, redirect } from "next/navigation";
 import { findSimById } from "@/server/services/sim.service";
 import { findManyAuditLogs } from "@/server/services/audit.service";
 import { SimDetail } from "../_components/sim-detail";
-import { canUserRole } from "@/lib/auth/session";
 import { PermissionError, hasMinRole } from "@/lib/rbac";
 import {
   deleteSimAction,
@@ -20,20 +19,19 @@ export default async function SimDetailPage({
 }: {
   params: { id: string };
 }) {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "view", "sim")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "view", "sim")) {
     throw new PermissionError("Je mag geen SIM-kaarten bekijken.");
   }
 
   const [sim, auditResult] = await Promise.all([
-    findSimById(params.id, session.user.customerIds),
+    findSimById(params.id, user.customerIds),
     findManyAuditLogs({
       entityType: "sim",
       perPage: 50,
       order: "desc",
-      viewerUserId: session.user.id,
-      viewerRole: session.user.role,
+      viewerUserId: user.id,
+      viewerRole: user.role,
     }).then((r) =>
       Promise.all(
         r.data.map(async (log: any) => {
@@ -57,13 +55,13 @@ export default async function SimDetailPage({
   if (!sim) notFound();
 
   const isAdmin =
-    session.user.roleScope === RoleScope.INTERNAL &&
-    hasMinRole(session.user.role, UserRole.ADMIN);
+    user.roleScope === RoleScope.INTERNAL &&
+    hasMinRole(user.role, UserRole.ADMIN);
 
   return (
     <SimDetail
       sim={sim as any}
-      role={session.user.role}
+      role={user.role}
       updateAction={updateSimAction}
       deleteAction={deleteSimAction}
       simId={params.id}

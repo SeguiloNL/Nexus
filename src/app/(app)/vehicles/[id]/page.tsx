@@ -1,8 +1,7 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { notFound, redirect } from "next/navigation";
 import { findVehicleById } from "@/server/services/vehicle.service";
 import { VehicleDetail } from "../_components/vehicle-detail";
-import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 
@@ -11,16 +10,15 @@ export default async function VehicleDetailPage({
 }: {
   params: { id: string };
 }) {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "view", "vehicle")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "view", "vehicle")) {
     throw new PermissionError("Je mag geen voertuigen bekijken.");
   }
 
-  const vehicle = await findVehicleById(params.id, session.user.customerIds);
+  const vehicle = await findVehicleById(params.id, user.customerIds);
   if (!vehicle) notFound();
 
-  const customerIds = session.user.customerIds ?? [];
+  const customerIds = user.customerIds ?? [];
   const hasScope = customerIds.length > 0;
   const customerWhere: any = { deletedAt: null };
   if (hasScope) customerWhere.id = { in: customerIds };
@@ -34,7 +32,7 @@ export default async function VehicleDetailPage({
   return (
     <VehicleDetail
       vehicle={vehicle as any}
-      role={session.user.role}
+      role={user.role}
       customerOptions={customers.map((c) => ({
         id: c.id,
         label: `${c.companyName} (${c.customerNumber})`,

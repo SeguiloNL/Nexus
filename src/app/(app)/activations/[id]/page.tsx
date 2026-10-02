@@ -1,8 +1,7 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { notFound, redirect } from "next/navigation";
 import { findActivationOrderById } from "@/server/services/activation-order.service";
 import { ActivationOrderDetail } from "../_components/activation-detail";
-import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
 import {
   markReadyAction,
@@ -19,9 +18,8 @@ export default async function ActivationDetailPage({
   params: { id: string };
   searchParams?: { action?: string };
 }) {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "view", "activation_order")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "view", "activation_order")) {
     throw new PermissionError("Je mag geen activatie orders bekijken.");
   }
 
@@ -44,7 +42,7 @@ export default async function ActivationDetailPage({
   return (
     <ActivationOrderDetail
       order={order}
-      role={session.user.role}
+      role={user.role}
       markReadyAction={markReadyAction as any}
       cancelAction={cancelOrderAction as any}
       retryAction={retryFailedAction as any}

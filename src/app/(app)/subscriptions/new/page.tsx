@@ -1,19 +1,17 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { SubscriptionForm } from "../_components/subscription-form";
 import { createSubscriptionAction } from "../actions";
 import { PermissionError } from "@/lib/rbac";
-import { canUserRole } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 
 export default async function NewSubscriptionPage() {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "create", "subscription")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "create", "subscription")) {
     throw new PermissionError("Je mag geen abonnementen aanmaken.");
   }
 
-  const customerIds = session.user.customerIds ?? [];
+  const customerIds = user.customerIds ?? [];
   const hasScope = customerIds.length > 0;
   const customerScopeCustomer: any = hasScope ? { id: { in: customerIds } } : undefined;
 

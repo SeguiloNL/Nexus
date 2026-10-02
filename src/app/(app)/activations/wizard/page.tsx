@@ -1,8 +1,7 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { ActivationWizard } from "../_components/activation-wizard";
-import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import {
@@ -21,15 +20,14 @@ type WizardPageProps = {
 export default async function ActivationWizardPage({
   searchParams,
 }: WizardPageProps) {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "create", "activation_order")) {
-    if (!canUserRole(session.user.permissions, "edit", "activation_order")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "create", "activation_order")) {
+    if (!canUserRole(user.permissions, "edit", "activation_order")) {
       throw new PermissionError("Je mag geen activatie orders aanmaken of bewerken.");
     }
   }
 
-  const customerIds = session.user.customerIds ?? [];
+  const customerIds = user.customerIds ?? [];
   const hasScope = customerIds.length > 0;
   const customerScopeCustomer: any = hasScope ? { id: { in: customerIds } } : undefined;
   const customerScopeAssignment: any = hasScope
@@ -108,7 +106,7 @@ export default async function ActivationWizardPage({
 
   let initial: any = null;
   if (searchParams?.orderId) {
-    const order = await findActivationOrderById(searchParams.orderId, session.user.customerIds);
+    const order = await findActivationOrderById(searchParams.orderId, user.customerIds);
     if (order) {
       initial = {
         id: order.id,
@@ -152,7 +150,7 @@ export default async function ActivationWizardPage({
   return (
     <Suspense fallback={<div>Laden...</div>}>
       <ActivationWizard
-        role={session.user.role as any}
+        role={user.role as any}
         customerOptions={customers as any}
         productOptions={productOptions}
         trackerStock={trackersStock as any}

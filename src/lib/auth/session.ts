@@ -1,4 +1,5 @@
 import { auth } from "@/auth";
+import { redirect } from "next/navigation";
 import {
   PermissionError,
   canWithBits,
@@ -90,6 +91,17 @@ export async function getCurrentUser(): Promise<SessionUser> {
 
 export async function getCurrentSession() {
   return auth();
+}
+
+export async function requireUser(): Promise<SessionUser> {
+  try {
+    return await getCurrentUser();
+  } catch (e) {
+    if (e instanceof PermissionError) {
+      redirect("/login");
+    }
+    throw e;
+  }
 }
 
 export async function isAuthenticated(): Promise<boolean> {

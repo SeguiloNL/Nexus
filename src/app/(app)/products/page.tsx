@@ -1,14 +1,12 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { findManyProducts } from "@/server/services/product.service";
 import { ProductList } from "./_components/product-list";
-import { canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { PermissionError } from "@/lib/rbac";
 
 export default async function ProductsPage() {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "view", "product")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "view", "product")) {
     throw new PermissionError("Je mag geen producten bekijken.");
   }
 
@@ -16,8 +14,8 @@ export default async function ProductsPage() {
     findManyProducts({ page: 1, perPage: 500 }),
   ]);
 
-  const canCreate = canUserRole(session.user.permissions, "create", "product");
-  const canEdit = canUserRole(session.user.permissions, "edit", "product");
+  const canCreate = canUserRole(user.permissions, "create", "product");
+  const canEdit = canUserRole(user.permissions, "edit", "product");
 
   return (
     <ProductList

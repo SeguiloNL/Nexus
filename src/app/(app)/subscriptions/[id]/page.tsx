@@ -1,9 +1,8 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { notFound, redirect } from "next/navigation";
 import { findSubscriptionById } from "@/server/services/subscription.service";
 import { findInvoicesBySubscriptionId } from "@/server/services/invoice.service";
 import { SubscriptionDetail } from "../_components/subscription-detail";
-import { canUserRole } from "@/lib/auth/session";
 import { PermissionError } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import {
@@ -29,13 +28,12 @@ export default async function SubscriptionDetailPage({
 }: {
   params: { id: string };
 }) {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.permissions, "view", "subscription")) {
+  const user = await requireUser();
+  if (!canUserRole(user.permissions, "view", "subscription")) {
     throw new PermissionError("Je mag geen abonnementen bekijken.");
   }
 
-  const raw = await findSubscriptionById(params.id, session.user.customerIds);
+  const raw = await findSubscriptionById(params.id, user.customerIds);
   if (!raw) notFound();
 
   const subscription: any = {
@@ -43,7 +41,7 @@ export default async function SubscriptionDetailPage({
     monthlyPrice: Number(raw.monthlyPrice),
   };
 
-  const customerIds = session.user.customerIds ?? [];
+  const customerIds = user.customerIds ?? [];
   const hasScope = customerIds.length > 0;
   const customerScopeCustomer: any = hasScope ? { id: { in: customerIds } } : undefined;
   const customerScopeAssignment: any = hasScope
@@ -71,11 +69,11 @@ export default async function SubscriptionDetailPage({
       select: { id: true, iccid: true, imsi: true, msisdn: true, provider: true },
       orderBy: { iccid: "asc" },
     }),
-    canUserRole(session.user.permissions, "view", "invoice")
+    canUserRole(user.permissions, "view", "invoice")
       ? findInvoicesBySubscriptionId(params.id, {
-          userId: session.user.id,
-          userRole: session.user.role,
-          customerScope: session.user.customerIds,
+          userId: user.id,
+          userRole: user.role,
+          customerScope: user.customerIds,
         })
       : Promise.resolve([]),
   ]);
@@ -83,7 +81,7 @@ export default async function SubscriptionDetailPage({
   return (
     <SubscriptionDetail
       subscription={subscription}
-      role={session.user.role}
+      role={user.role}
       customerOptions={customers.map((c) => ({
         id: c.id,
         label: `${c.companyName} (${c.customerNumber})`,

@@ -1,4 +1,4 @@
-import { auth } from "@/auth";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { requirePermission } from "@/lib/rbac";
 import { TrackerImportClient } from "./_components/tracker-import-client";
@@ -7,9 +7,8 @@ import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export default async function TrackersImportPage() {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  await requirePermission(session.user.permissions, "import", "tracker");
+  const user = await requireUser();
+  await requirePermission(user.permissions, "import", "tracker");
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto">
