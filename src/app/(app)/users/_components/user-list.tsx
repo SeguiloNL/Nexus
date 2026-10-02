@@ -14,6 +14,8 @@ import {
   Save,
   Building2,
   Users,
+  Power,
+  PowerOff,
 } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { Button } from "@/components/ui/button";
@@ -71,8 +73,29 @@ type RoleOption = Pick<
 
 type CustomerOption = Pick<Customer, "id" | "customerNumber" | "companyName">;
 
+interface PaginationInfo {
+  page: number;
+  perPage: number;
+  total: number;
+  totalPages: number;
+  sort: string;
+  order: "asc" | "desc";
+  search: string | null;
+  role: string | null;
+  scope: string | null;
+  roleId: string | null;
+  customerId: string | null;
+  isActive: boolean | null;
+  lastLoginBefore: string | null;
+  lastLoginAfter: string | null;
+}
+
 interface Props {
-  users: (User & { roleObj?: RoleOption | null; customer?: CustomerOption | null })[];
+  users: (User & {
+    roleObj?: RoleOption | null;
+    customer?: CustomerOption | null;
+    customerLinks?: Array<{ customerId: string; customer?: CustomerOption | null }>;
+  })[];
   roles: RoleOption[];
   customers: CustomerOption[];
   canCreate: boolean;
@@ -81,6 +104,7 @@ interface Props {
   currentUserId: string;
   viewerRoleScope: RoleScope | null;
   errorMessage?: string | null;
+  pagination?: PaginationInfo;
 }
 
 const ROLE_TONE: Record<string, string> = {
@@ -550,6 +574,7 @@ export function UserList({
   currentUserId,
   viewerRoleScope,
   errorMessage,
+  pagination,
 }: Props) {
   const router = useRouter();
   const [isPendingDelete, startDeleteTransition] = useTransition();
@@ -567,17 +592,25 @@ export function UserList({
     {
       accessorKey: "name",
       header: "Naam",
-      cell: ({ row }) => (
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-600">
-            <UserRound className="h-4 w-4" />
+      cell: ({ row }) => {
+        const u = row.original;
+        return (
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+              <UserRound className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <Link
+                href={`/users/${u.id}`}
+                className="font-medium underline-offset-4 hover:underline"
+              >
+                {row.getValue("name")}
+              </Link>
+              <div className="text-xs text-slate-500 truncate">{u.email}</div>
+            </div>
           </div>
-          <div>
-            <div className="font-medium">{row.getValue("name")}</div>
-            <div className="text-xs text-slate-500">{row.original.email}</div>
-          </div>
-        </div>
-      ),
+        );
+      },
     },
     {
       accessorKey: "role",
@@ -591,9 +624,37 @@ export function UserList({
       ),
     },
     {
+      id: "isActive",
+      header: "Status",
+      size: 120,
+      cell: ({ row }) => {
+        const active = row.original.isActive;
+        return (
+          <Badge
+            variant="outline"
+            className={
+              active
+                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                : "bg-slate-50 text-slate-600 border-slate-200"
+            }
+          >
+            {active ? (
+              <>
+                <Power className="mr-1 h-3 w-3" /> Actief
+              </>
+            ) : (
+              <>
+                <PowerOff className="mr-1 h-3 w-3" /> Inactief
+              </>
+            )}
+          </Badge>
+        );
+      },
+    },
+    {
       id: "customer",
       header: "Klant",
-      size: 240,
+      size: 220,
       cell: ({ row }) => {
         const cid = row.original.customerId;
         if (!cid)
@@ -616,6 +677,25 @@ export function UserList({
                 {c.customerNumber}
               </div>
             </div>
+          </div>
+        );
+      },
+    },
+    {
+      id: "customerLinks",
+      header: "Klant-koppelingen",
+      size: 140,
+      cell: ({ row }) => {
+        const u = row.original;
+        const direct = u.customerId ? 1 : 0;
+        const extra = Array.isArray(u.customerLinks)
+          ? u.customerLinks.length
+          : 0;
+        const total = direct + extra;
+        return (
+          <div className="flex items-center gap-2">
+            <Building2 className="h-3.5 w-3.5 text-slate-400" />
+            <span className="text-sm text-slate-600">{total}</span>
           </div>
         );
       },
@@ -662,6 +742,11 @@ export function UserList({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-44">
                 <DropdownMenuLabel>Acties</DropdownMenuLabel>
+                <DropdownMenuItem
+                  onClick={() => router.push(`/users/${u.id}`)}
+                >
+                  <UserRound className="mr-2 h-4 w-4" /> Bekijken
+                </DropdownMenuItem>
                 <EditDialog
                   user={u}
                   canEdit={canEdit && !isSelf}
@@ -706,13 +791,17 @@ export function UserList({
     },
   ];
 
+  const totalDisplay = pagination?.total ?? users.length;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Gebruikers</h1>
           <p className="text-sm text-slate-500">
-            Beheer gebruikers en hun rechten. ({users.length})
+            Beheer gebruikers en hun rechten. ({totalDisplay}
+            {pagination ? ` in totaal · pagina ${pagination.page}/${pagination.totalPages}` : ""}
+            )
           </p>
         </div>
         <CreateDialog
@@ -736,6 +825,7 @@ export function UserList({
             columns={columns}
             data={users}
             searchPlaceholder="Zoeken op naam of e-mail..."
+            totalCount={pagination?.total}
           />
         </CardContent>
       </Card>

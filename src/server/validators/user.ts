@@ -13,6 +13,8 @@ export const CreateUserSchema = z.object({
   role: z.nativeEnum(UserRole, { message: "Ongeldige rol" }).optional(),
   roleId: z.string().min(1, "Rol-ID is verplicht").optional(),
   customerId: z.string().min(1, "Klant-ID is verplicht").optional().nullable(),
+  customerIds: z.array(z.string().cuid()).min(0).optional(),
+  isActive: z.boolean().optional(),
 }).refine((data) => (data.roleId ? true : data.role !== undefined), {
   message: "Een rol (roleId of role) is verplicht",
   path: ["roleId"],
@@ -34,6 +36,8 @@ export const UpdateUserSchema = z.object({
   role: z.nativeEnum(UserRole, { message: "Ongeldige rol" }).optional(),
   roleId: z.string().min(1, "Rol-ID is verplicht").optional(),
   customerId: z.string().min(1, "Klant-ID is verplicht").optional().nullable(),
+  customerIds: z.array(z.string().cuid()).min(0).optional(),
+  isActive: z.boolean().optional(),
 });
 
 export const LoginSchema = z.object({
@@ -45,6 +49,22 @@ export const LoginSchema = z.object({
   password: z.string().min(1, "Wachtwoord is verplicht"),
 });
 
+export const UpdateUserCustomersSchema = z.object({
+  customerIds: z.array(z.string().cuid()).min(0),
+});
+
+export const ToggleUserActiveSchema = z.object({
+  isActive: z.boolean(),
+});
+
+export const BulkUpdateRoleSchema = z.object({
+  userIds: z.array(z.string().cuid()).min(1),
+  roleId: z.string().cuid(),
+});
+
 export type CreateUserInput = z.infer<typeof CreateUserSchema>;
 export type UpdateUserInput = z.infer<typeof UpdateUserSchema>;
 export type LoginInput = z.infer<typeof LoginSchema>;
+export type UpdateUserCustomersInput = z.infer<typeof UpdateUserCustomersSchema>;
+export type ToggleUserActiveInput = z.infer<typeof ToggleUserActiveSchema>;
+export type BulkUpdateRoleInput = z.infer<typeof BulkUpdateRoleSchema>;

@@ -313,3 +313,96 @@ export function isPartnerOrResellerScope(
 ): boolean {
   return isResellerScope(scope) || isPartnerScope(scope);
 }
+
+// ------------------------------
+// Customer Scope (M:N via UserCustomer junction + hiërarchie)
+// ------------------------------
+
+type CustomerScopeCacheEntry = {
+  ids: string[];
+  expiresAt: number;
+};
+
+const CUSTOMER_SCOPE_CACHE_TTL_MS = 5 * 60 * 1000;
+let customerScopeCache: Map<string, CustomerScopeCacheEntry> | null = null;
+let customerScopeInvalidator: (() => void) | null = null;
+
+function getCustomerScopeCache(): Map<string, CustomerScopeCacheEntry> {
+  if (!customerScopeCache) customerScopeCache = new Map();
+  return customerScopeCache;
+}
+
+export function clearCustomerScopeCache(): void {
+  getCustomerScopeCache().clear();
+}
+
+export function invalidateUserCustomerScope(userId: string): void {
+  getCustomerScopeCache().delete(userId);
+}
+
+export function registerCustomerScopeInvalidator(fn: () => void): void {
+  customerScopeInvalidator = fn;
+}
+
+async function resolveHierarchyIdsForCustomerIds(
+  directCustomerIds: string[]
+): Promise<string[]> {
+  if (directCustomerIds.length === 0) return [];
+  try {
+    const { collectCustomerHierarchyIds } = await import(
+      "@/server/services/customer.service"
+    );
+    const sets = await Promise.all(
+      directCustomerIds.map((id) => collectCustomerHierarchyIds(id))
+    );
+    const merged = new Set<string>();
+    for (const s of sets) for (const x of s) merged.add(x);
+    return Array.from(merged);
+  } catch (_e) {
+    return directCustomerIds;
+  }
+}
+
+/**
+ * Bepaalt alle effectieve customerIds voor een gebruiker:
+ *  1. Alle direct gekoppelde customers via UserCustomer junction
+ *  2. Plus de legacy user.customerId (indien aanwezig en nog niet in junction)
+ *  3. Plus per customerId de recursieve sub-hiërarchie
+ *
+ * Resultaat wordt 5 minuten gecachet per userId.
+ */
+export async function collectUserCustomerIds(
+  userId: string,
+  opts: { force?: boolean } = {}
+): Promise<string[]> {
+  if (!userId) return [];
+
+  const cache = getCustomerScopeCache();
+  const now = Date.now();
+  if (!opts.force) {
+    const cached = cache.get(userId);
+    if (cached && cached.expiresAt > now) return cached.ids;
+  }
+
+  let directCustomerIds: string[] = [];
+  try {
+    const { collectDirectUserCustomerIds } = await import(
+      "@/server/services/user.service"
+    );
+    directCustomerIds = await collectDirectUserCustomerIds(userId);
+  } catch (_e) {
+    directCustomerIds = [];
+  }
+
+  const fullIds = await resolveHierarchyIdsForCustomerIds(directCustomerIds);
+  cache.set(userId, { ids: fullIds, expiresAt: now + CUSTOMER_SCOPE_CACHE_TTL_MS });
+
+  if (customerScopeInvalidator) {
+    try {
+      customerScopeInvalidator();
+    } catch (_) {
+      /* noop */
+    }
+  }
+  return fullIds;
+}

@@ -176,11 +176,11 @@ function SuspendSimDialog({
     setIsPendingClient(true);
     if (emergencyTimerRef.current) clearTimeout(emergencyTimerRef.current);
     emergencyTimerRef.current = setTimeout(() => {
-      console.warn("[sim-detail] ⏹️ Blokkeren noodstop na 60s timeout.");
+      console.warn("[sim-detail] ⏹️ Blokkeren noodstop na 18s timeout.");
       submittedRef.current = false;
       setIsPendingClient(false);
       emergencyTimerRef.current = null;
-    }, 60_000);
+    }, 18_000);
     startTransition(async () => {
       try {
         const fd = new FormData(e.currentTarget);
@@ -315,11 +315,11 @@ function UnsuspendSimDialog({
     setIsPendingClient(true);
     if (emergencyTimerRef.current) clearTimeout(emergencyTimerRef.current);
     emergencyTimerRef.current = setTimeout(() => {
-      console.warn("[sim-detail] ⏹️ Deblokkeren noodstop na 60s timeout.");
+      console.warn("[sim-detail] ⏹️ Deblokkeren noodstop na 18s timeout.");
       submittedRef.current = false;
       setIsPendingClient(false);
       emergencyTimerRef.current = null;
-    }, 60_000);
+    }, 18_000);
     startTransition(async () => {
       try {
         const fd = new FormData(e.currentTarget);
@@ -483,8 +483,16 @@ function DeleteSimDialog({
   );
 }
 
-function renderActionResult(s: SimSuspendActionState, action: "suspend" | "unsuspend"): React.ReactNode {
+function renderActionResult(s: SimSuspendActionState, action: "suspend" | "unsuspend", lastAction: "suspend" | "unsuspend" | null): React.ReactNode {
   if (!s || (!s.message && !s.error)) return null;
+
+  if (lastAction && lastAction !== action && !s.ok && !s.error) return null;
+  if (lastAction && lastAction !== action) {
+    if (s.ok && !s.pendingConfirmation && (s.confirmedStatus === "ACTIVE" || s.confirmedStatus === "SUSPENDED")) {
+      const successFor = s.confirmedStatus === "ACTIVE" ? "unsuspend" : "suspend";
+      if (successFor !== lastAction) return null;
+    }
+  }
 
   if (s.ok && s.confirmedStatus === "SUSPENDED") {
     return (
@@ -520,17 +528,17 @@ function renderActionResult(s: SimSuspendActionState, action: "suspend" | "unsus
     return (
       <div
         role="status"
-        className="flex items-start gap-2.5 rounded-md border border-sky-300 bg-sky-50 px-3.5 py-2.5 text-sm text-sky-800 shadow-sm w-full"
+        className="flex items-start gap-2.5 rounded-md border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-sm text-amber-800 shadow-sm w-full"
         key={`banner-pending-${action}`}
       >
-        <Info className="mt-0.5 h-4 w-4 shrink-0 text-sky-600" aria-hidden="true" />
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
         <div className="flex-1 min-w-0">
-          <p className="font-medium text-sky-900">Statuswijziging in behandeling</p>
-          <p className="whitespace-pre-wrap break-words text-sky-800/90">
+          <p className="font-medium text-amber-900">Statuswijziging in behandeling</p>
+          <p className="whitespace-pre-wrap break-words text-amber-800/90">
             {s.message || "Het verzoek is verwerkt. De statuswijziging is nog niet bevestigd."}
           </p>
-          <p className="mt-1 text-xs text-sky-700/80">
-            De provider kan enige tijd nodig hebben om de wijziging te verwerken. Ververs de pagina om de actuele status te controleren.
+          <p className="mt-1 text-xs text-amber-700/80">
+            De provider kan enige tijd nodig hebben om de wijziging te verwerken. Controleer over enkele seconden opnieuw of ververs handmatig de SIM-status.
           </p>
         </div>
       </div>
@@ -538,33 +546,43 @@ function renderActionResult(s: SimSuspendActionState, action: "suspend" | "unsus
   }
   if (s.error || (!s.ok && s.message)) {
     const kind = s.error?.kind;
+    const isTimeout = kind === "TIMEOUT_OR_NETWORK";
+    const isWarning = isTimeout && s.ok === true;
     const isInvalid = kind === "INVALID_STATUS_TRANSITION";
     const isPermission = kind === "PERMISSION";
     const title = isPermission
       ? "Onvoldoende rechten"
       : isInvalid
         ? "Actie niet mogelijk"
-        : kind === "TIMEOUT_OR_NETWORK"
-          ? "Verzoek mislukt"
-          : "Fout bij verzoek";
-    const border = isInvalid ? "border-amber-300 bg-amber-50 text-amber-800" : "border-red-300 bg-red-50 text-red-800";
-    const iconColor = isInvalid ? "text-amber-600" : "text-red-600";
-    const titleColor = isInvalid ? "text-amber-900" : "text-red-900";
+        : isWarning
+          ? "Status nog niet bevestigd"
+          : isTimeout
+            ? "Verzoek mislukt"
+            : "Fout bij verzoek";
+    const border = isWarning
+      ? "border-amber-300 bg-amber-50 text-amber-800"
+      : isInvalid
+        ? "border-amber-300 bg-amber-50 text-amber-800"
+        : "border-red-300 bg-red-50 text-red-800";
+    const iconColor = isWarning || isInvalid ? "text-amber-600" : "text-red-600";
+    const titleColor = isWarning || isInvalid ? "text-amber-900" : "text-red-900";
     return (
       <div
-        role="alert"
+        role={isWarning || isInvalid ? "status" : "alert"}
         className={`flex items-start gap-2.5 rounded-md border ${border} px-3.5 py-2.5 text-sm shadow-sm w-full`}
-        key={`banner-error-${action}`}
+        key={`banner-${isWarning ? "warning" : "error"}-${action}`}
       >
         <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${iconColor}`} aria-hidden="true" />
         <div className="flex-1 min-w-0">
           <p className={`font-medium ${titleColor}`}>{title}</p>
-          <p className={`whitespace-pre-wrap break-words ${isInvalid ? "text-amber-800/90" : "text-red-800/90"}`}>
+          <p className={`whitespace-pre-wrap break-words ${isWarning || isInvalid ? "text-amber-800/90" : "text-red-800/90"}`}>
             {s.message || s.error?.detail || "Onbekende fout."}
           </p>
-          {kind === "TIMEOUT_OR_NETWORK" ? (
-            <p className={`mt-1 text-xs ${isInvalid ? "text-amber-700/80" : "text-red-700/80"}`}>
-              Herhaal het verzoek niet blind. Controleer eerst de actuele SIM-status alvorens opnieuw te proberen.
+          {isTimeout ? (
+            <p className={`mt-1 text-xs ${isWarning || isInvalid ? "text-amber-700/80" : "text-red-700/80"}`}>
+              {isWarning
+                ? "Herhaal het verzoek niet blind. Controleer eerst de actuele SIM-status alvorens opnieuw te proberen of ververs handmatig."
+                : "Herhaal het verzoek niet blind. Controleer eerst de actuele SIM-status alvorens opnieuw te proberen."}
             </p>
           ) : null}
         </div>
@@ -612,6 +630,14 @@ export function SimDetail({
   const [suspendOpen, setSuspendOpen] = useState(false);
   const [unsuspendOpen, setUnsuspendOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [lastAction, setLastAction] = useState<"suspend" | "unsuspend" | null>(null);
+
+  useEffect(() => {
+    if (suspendOpen) setLastAction("suspend");
+  }, [suspendOpen]);
+  useEffect(() => {
+    if (unsuspendOpen) setLastAction("unsuspend");
+  }, [unsuspendOpen]);
   const [suspendState, suspendFormAction, suspendPendingNative] = useFormState(
     suspendAction ? suspendAction.bind(null, simId) : async () => ({ ok: false, confirmedStatus: null, pendingConfirmation: false, message: "", error: undefined }) as SimSuspendActionState,
     { ok: false, confirmedStatus: null, pendingConfirmation: false, message: "", error: undefined } satisfies SimSuspendActionState
@@ -837,8 +863,8 @@ export function SimDetail({
     RESUME: "Hervat",
   };
 
-  const suspendBanner = isAdmin && suspendAction ? renderActionResult(suspendState, "suspend") : null;
-  const unsuspendBanner = isAdmin && unsuspendAction ? renderActionResult(unsuspendState, "unsuspend") : null;
+  const suspendBanner = isAdmin && suspendAction ? renderActionResult(suspendState, "suspend", lastAction) : null;
+  const unsuspendBanner = isAdmin && unsuspendAction ? renderActionResult(unsuspendState, "unsuspend", lastAction) : null;
 
   let statusRefreshBanner: React.ReactNode = null;
   if (refreshState && (refreshState.ok || refreshState.error)) {

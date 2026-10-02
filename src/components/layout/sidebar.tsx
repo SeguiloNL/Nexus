@@ -147,26 +147,21 @@ type SidebarProps = {
 
 export function Sidebar({
   userRole,
-  roleId: _roleId,
+  roleId,
   roleScope,
   permissions,
 }: SidebarProps) {
   const pathname = usePathname();
 
-  let authzArg: PermissionBits | UserRole | string | null = null;
-  if (permissions) {
-    let meaningful = false;
-    outer: for (const k of Object.keys(permissions) as Array<keyof PermissionBits>) {
-      const e = (permissions as any)[k];
-      if (e && (e.read || e.write)) {
-        meaningful = true;
-        break outer;
-      }
+  function resolveCan(action: "view", resource: ResourceType): boolean {
+    if (permissions && canUserRole(permissions, action, resource)) {
+      return true;
     }
-    if (meaningful) authzArg = permissions;
+    if (roleId && canUserRole(roleId, action, resource)) {
+      return true;
+    }
+    return canUserRole(userRole ?? null, action, resource);
   }
-  if (!authzArg && userRole) authzArg = userRole;
-  if (!authzArg && _roleId) authzArg = _roleId;
 
   const visibleItems = NAV_ITEMS.filter((item) => {
     if (roleScope === "CUSTOMER") {
@@ -183,7 +178,7 @@ export function Sidebar({
       }
     }
     if (item.resource === "dashboard") return true;
-    return canUserRole(authzArg, item.action, item.resource as ResourceType);
+    return resolveCan(item.action, item.resource as ResourceType);
   });
 
   return (

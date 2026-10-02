@@ -101,5 +101,13 @@ export const UpdateRoleSchema = z.object({
   permissions: PermissionsZod.optional(),
 });
 
+export const CloneRoleSchema = z.object({
+  sourceRoleId: z.string().cuid(),
+  name: z.string().min(1).max(120),
+  scope: z.nativeEnum(RoleScope).optional(),
+  description: z.string().max(500).nullable().optional(),
+});
+
 export type CreateRoleInput = z.infer<typeof CreateRoleSchema>;
 export type UpdateRoleInput = z.infer<typeof UpdateRoleSchema>;
+export type CloneRoleInput = z.infer<typeof CloneRoleSchema>;

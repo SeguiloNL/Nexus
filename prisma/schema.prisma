@@ -122,6 +122,11 @@ enum AuditAction {
   BATCH_ERROR
   SIMHUIS_SYNCED
   SIMHUIS_SYNC_FAILED
+  CLONE_ROLE
+  LINK_USER_CUSTOMER
+  UNLINK_USER_CUSTOMER
+  TOGGLE_USER_ACTIVE
+  BULK_UPDATE_ROLE
 }
 
 enum InserveSyncStatus {
@@ -176,26 +181,31 @@ model RolePermission {
 }
 
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  name          String
-  passwordHash  String
-  role          UserRole  @default(EMPLOYEE)
-  roleId        String?
-  roleObj       Role?     @relation(fields: [roleId], references: [id], onDelete: SetNull)
-  customerId    String?
-  customer      Customer? @relation("CustomerUsers", fields: [customerId], references: [id], onDelete: SetNull)
-  lastLoginAt   DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id                   String         @id @default(cuid())
+  email                String         @unique
+  name                 String
+  passwordHash         String
+  role                 UserRole       @default(EMPLOYEE)
+  roleId               String?
+  roleObj              Role?          @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  customerId           String?
+  customer             Customer?      @relation("CustomerUsers", fields: [customerId], references: [id], onDelete: SetNull)
+  isActive             Boolean        @default(true)
+  invitationToken      String?
+  invitationExpiresAt  DateTime?
+  lastLoginAt          DateTime?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
 
-  auditLogs     AuditLog[]
+  auditLogs            AuditLog[]
+  customerLinks        UserCustomer[]
   createdActivationOrders ActivationOrder[] @relation("CreatedOrders")
   createdTrackerAssignments TrackerAssignment[] @relation("CreatedTrackers")
   createdSimAssignments     SimAssignment[]     @relation("CreatedSims")
 
   @@index([roleId])
   @@index([customerId])
+  @@index([isActive])
   @@map("users")
 }
 
@@ -230,12 +240,28 @@ model Customer {
   subCustomerOrders ActivationOrder[] @relation("SubCustomerOrders")
   invoices          Invoice[]
   users             User[]           @relation("CustomerUsers")
+  userLinks         UserCustomer[]
 
   @@index([status])
   @@index([parentCustomerId])
   @@index([type])
   @@index([kvkNr])
   @@map("customers")
+}
+
+model UserCustomer {
+  userId      String
+  customerId String
+  assignedAt DateTime  @default(now())
+  assignedBy String?
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  customer  Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@id([userId, customerId])
+  @@index([userId])
+  @@index([customerId])
+  @@map("user_customers")
 }
 
 model Product {

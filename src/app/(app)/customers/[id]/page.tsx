@@ -2,6 +2,7 @@ import { auth } from "@/auth";
 import { notFound, redirect } from "next/navigation";
 import {
   findCustomerById,
+  findUsersForCustomer,
   listParentCustomers,
 } from "@/server/services/customer.service";
 import { findManyAuditLogs } from "@/server/services/audit.service";
@@ -24,7 +25,9 @@ export default async function CustomerDetailPage({
     throw new PermissionError("Je mag geen klanten bekijken.");
   }
 
-  const [customer, parentOptions, auditResult] = await Promise.all([
+  const ctx = { customerScope: session.user.customerIds };
+
+  const [customer, parentOptions, auditResult, users] = await Promise.all([
     findCustomerById(params.id, session.user.customerIds),
     listParentCustomers(session.user.customerIds),
     findManyAuditLogs({
@@ -52,6 +55,7 @@ export default async function CustomerDetailPage({
         })
       )
     ),
+    findUsersForCustomer(params.id, ctx),
   ]);
 
   if (!customer) notFound();
@@ -65,6 +69,7 @@ export default async function CustomerDetailPage({
       deleteAction={deleteCustomerAction}
       customerId={params.id}
       auditLogs={auditResult as any}
+      users={users as any}
     />
   );
 }

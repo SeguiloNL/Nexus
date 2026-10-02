@@ -19,6 +19,8 @@ import {
   Cpu,
   CreditCard,
   FileText,
+  UserRound,
+  Shield,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -29,12 +31,15 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { CustomerStatusBadge, TrackerStatusBadge, SimStatusBadge, ActivationOrderStatusBadge } from "@/components/ui/status-badges";
 import { CustomerForm } from "./customer-form";
 import { formatDate, formatImei, formatIccid, formatMsisdn } from "@/lib/formatters";
 import { canUserRole } from "@/lib/auth/session";
+import { RoleScope } from "@/types/enums";
 import type { UserRole, AuditAction } from "@/types/enums";
 import type { Customer, CustomerStatus } from "@prisma/client";
+import type { UserListItem } from "@/types/domain";
 
 type DetailCustomer = Customer & {
   parentCustomer: { id: string; companyName: string; customerNumber: string } | null;
@@ -145,6 +150,26 @@ type CustomerDetailProps = {
   deleteAction: (customerId: string) => Promise<void>;
   customerId: string;
   auditLogs?: AuditLogForDetail;
+  users?: UserListItem[];
+};
+
+const ROLE_TONE: Record<string, string> = {
+  ADMIN: "bg-purple-50 text-purple-700 border-purple-200",
+  EMPLOYEE: "bg-blue-50 text-blue-700 border-blue-200",
+  VIEWER: "bg-slate-50 text-slate-700 border-slate-200",
+};
+
+const SCOPE_TONE: Record<RoleScope, string> = {
+  INTERNAL: "bg-purple-50 text-purple-700 border-purple-200",
+  CUSTOMER: "bg-blue-50 text-blue-700 border-blue-200",
+  RESELLER: "bg-amber-50 text-amber-700 border-amber-200",
+  PARTNER: "bg-teal-50 text-teal-700 border-teal-200",
+};
+
+const ROLE_LABEL: Record<UserRole, string> = {
+  ADMIN: "Beheerder",
+  EMPLOYEE: "Medewerker",
+  VIEWER: "Alleen lezen",
 };
 
 export function CustomerDetail({
@@ -155,6 +180,7 @@ export function CustomerDetail({
   deleteAction,
   customerId,
   auditLogs = [],
+  users = [],
 }: CustomerDetailProps) {
   const canEdit = canUserRole(role, "edit", "customer");
   const canDelete = canUserRole(role, "delete", "customer");
@@ -282,6 +308,10 @@ export function CustomerDetail({
               Subklanten ({customer.subCustomers.length})
             </TabsTrigger>
           ) : null}
+          <TabsTrigger value="users">
+            <Users className="mr-1.5 h-4 w-4" />
+            Gebruikers ({users.length})
+          </TabsTrigger>
           <TabsTrigger value="history">
             <History className="mr-1.5 h-4 w-4" />
             Geschiedenis ({auditLogs.length})
@@ -720,6 +750,61 @@ export function CustomerDetail({
           </TabsContent>
         ) : null}
 
+        <TabsContent value="users" className="mt-6">
+          <Card>
+            <CardHeader>
+            <CardTitle className="text-base">Gebruikers met toegang</CardTitle>
+            <CardDescription>
+              Gebruikers die directe of overgeërfde toegang hebben tot deze klant (inclusief subklanten).
+            </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {users.length === 0 ? (
+                <div className="rounded-md border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-400">
+                  Nog geen gebruikers met toegang tot deze klant.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {users.map((u) => (
+                    <Link
+                      key={u.id}
+                      href={`/users/${u.id}`}
+                      className="flex items-start gap-3 rounded-md border p-3 hover:bg-slate-50"
+                    >
+                      <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+                        <UserRound className="h-5 w-5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-medium">
+                            {u.name || "—"}
+                          </span>
+                          <UserRoleBadge
+                            role={u.role}
+                            roleName={u.roleName}
+                            roleScope={u.roleScope}
+                          />
+                          {u.customerName ? (
+                            <Badge
+                              variant="outline"
+                              className="border-slate-200 bg-slate-50 text-slate-600"
+                            >
+                              {u.customerName}
+                            </Badge>
+                          ) : null}
+                        </div>
+                        <div className="text-sm text-slate-500 truncate">
+                          {u.email}
+                        </div>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="history" className="mt-6">
           <Card>
             <CardHeader>
@@ -801,6 +886,28 @@ export function CustomerDetail({
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+function UserRoleBadge({
+  role,
+  roleName,
+  roleScope,
+}: {
+  role: UserRole;
+  roleName?: string;
+  roleScope?: RoleScope;
+}) {
+  const displayName = roleName ?? ROLE_LABEL[role] ?? role;
+  const isCustomerScope = roleScope === RoleScope.CUSTOMER;
+  const tone = isCustomerScope
+    ? SCOPE_TONE.CUSTOMER
+    : (ROLE_TONE[role] ?? "");
+  return (
+    <Badge variant="outline" className={tone}>
+      <Shield className="mr-1 h-3 w-3" />
+      {displayName}
+    </Badge>
   );
 }
 

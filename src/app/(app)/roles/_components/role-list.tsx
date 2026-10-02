@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useFormState } from "react-dom";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
@@ -14,6 +14,10 @@ import {
   Unlock,
   Building2,
   Users,
+  Copy,
+  Search,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { Button } from "@/components/ui/button";
@@ -55,7 +59,7 @@ import { RoleScope, ALL_RESOURCE_TYPES, CUSTOMER_SCOPE_RESOURCES, RESELLER_SCOPE
 import type { PermissionLevel, RoleListItem } from "@/types/domain";
 import type { ResourceType } from "@/types/enums";
 import type { RoleActionState } from "../actions";
-import { createRoleAction, deleteRoleAction } from "../actions";
+import { createRoleAction, deleteRoleAction, cloneRoleAction } from "../actions";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 
@@ -65,7 +69,19 @@ interface Props {
   canEdit: boolean;
   canDelete: boolean;
   errorMessage?: string | null;
+  filters?: {
+    search?: string;
+    scope?: RoleScope;
+    isSystem?: boolean;
+  };
 }
+
+const ACTION_TONE: Record<string, string> = {
+  CREATE_ROLE: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  UPDATE_ROLE: "bg-blue-50 text-blue-700 border-blue-200",
+  DELETE_ROLE: "bg-red-50 text-red-700 border-red-200",
+  CLONE_ROLE: "bg-violet-50 text-violet-700 border-violet-200",
+};
 
 const RESOURCE_LABELS: Record<ResourceType | string, { label: string; icon: any }> = {
   customer: { label: "Klanten", icon: Building2 },
@@ -96,8 +112,28 @@ export function RoleList({
   canEdit,
   canDelete,
   errorMessage,
+  filters: initialFilters,
 }: Props) {
   const router = useRouter();
+  const [search, setSearch] = useState(initialFilters?.search ?? "");
+  const [scopeFilter, setScopeFilter] = useState<RoleScope | "ALL">(initialFilters?.scope ?? "ALL");
+  const [showSystem, setShowSystem] = useState(initialFilters?.isSystem ?? true);
+
+  const filteredRoles = useMemo(() => {
+    return roles.filter((r) => {
+      if (search && !r.name.toLowerCase().includes(search.toLowerCase()) && !(r.description?.toLowerCase().includes(search.toLowerCase()))) {
+        return false;
+      }
+      if (scopeFilter !== "ALL" && r.scope !== scopeFilter) {
+        return false;
+      }
+      if (!showSystem && r.isSystem) {
+        return false;
+      }
+      return true;
+    });
+  }, [roles, search, scopeFilter, showSystem]);
+
   const columns: ColumnDef<RoleListItem>[] = [
     {
       accessorKey: "name",
@@ -149,12 +185,21 @@ export function RoleList({
     {
       accessorKey: "userCount",
       header: "Gebruikers",
-      cell: ({ row }) => (
-        <div className="flex items-center gap-2">
-          <Users className="h-3.5 w-3.5 text-slate-400" />
-          <span className="text-sm text-slate-600">{row.original.userCount ?? 0}</span>
-        </div>
-      ),
+      cell: ({ row }) => {
+        const r = row.original;
+        const count = r.userCount ?? 0;
+        return (
+          <Link
+            href={`/users?roleId=${r.id}`}
+            className="inline-flex items-center gap-2 hover:opacity-80 transition-opacity"
+          >
+            <Users className="h-3.5 w-3.5 text-slate-400" />
+            <Badge variant="secondary" className="font-normal cursor-pointer">
+              {count}
+            </Badge>
+          </Link>
+        );
+      },
     },
     {
       accessorKey: "permissionCount",
@@ -192,6 +237,9 @@ export function RoleList({
                   <Edit className="mr-2 h-4 w-4" />
                   Bewerken
                 </DropdownMenuItem>
+              )}
+              {canCreate && (
+                <CloneDialog sourceRole={r} canClone={canCreate} />
               )}
               <DropdownMenuSeparator />
               {canDelete && !cannotDelete && (
@@ -240,12 +288,72 @@ export function RoleList({
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Alle rollen</CardTitle>
+          <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-center">
+            <div className="relative flex-1 md:max-w-sm">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+              <Input
+                placeholder="Zoek op naam of omschrijving..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="pl-9 h-9"
+              />
+            </div>
+            <Select
+              value={scopeFilter}
+              onValueChange={(v) => setScopeFilter(v as RoleScope | "ALL")}
+            >
+              <SelectTrigger className="h-9 md:w-48">
+                <SelectValue placeholder="Alle scopes" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">Alle scopes</SelectItem>
+                <SelectItem value={RoleScope.INTERNAL}>
+                  <div className="flex items-center gap-2">
+                    <Users className="h-3.5 w-3.5" /> Intern
+                  </div>
+                </SelectItem>
+                <SelectItem value={RoleScope.CUSTOMER}>
+                  <div className="flex items-center gap-2">
+                    <Building2 className="h-3.5 w-3.5" /> Klant
+                  </div>
+                </SelectItem>
+                <SelectItem value={RoleScope.RESELLER}>
+                  <div className="flex items-center gap-2">
+                    <Building2 className="h-3.5 w-3.5" /> Reseller
+                  </div>
+                </SelectItem>
+                <SelectItem value={RoleScope.PARTNER}>
+                  <div className="flex items-center gap-2">
+                    <Building2 className="h-3.5 w-3.5" /> Partner
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-9"
+              onClick={() => setShowSystem((s) => !s)}
+            >
+              {showSystem ? (
+                <>
+                  <EyeOff className="mr-2 h-4 w-4" />
+                  Verberg systeemrollen
+                </>
+              ) : (
+                <>
+                  <Eye className="mr-2 h-4 w-4" />
+                  Toon systeemrollen
+                </>
+              )}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <DataTable
             columns={columns}
-            data={roles as any}
-            searchColumnAccessor="name"
+            data={filteredRoles as any}
             searchPlaceholder="Zoek op naam..."
           />
         </CardContent>
@@ -435,6 +543,132 @@ function CreateDialog({ canCreate }: { canCreate: boolean }) {
               Annuleren
             </Button>
             <Button type="submit">Rol aanmaken</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CloneDialog({ sourceRole, canClone }: { sourceRole: RoleListItem; canClone: boolean }) {
+  const [open, setOpen] = useState(false);
+  const router = useRouter();
+  const initial: RoleActionState = { message: null };
+  const cloneWithSource = (prev: RoleActionState, formData: FormData) =>
+    cloneRoleAction(sourceRole.id, prev, formData);
+  const [state, formAction] = useFormState(cloneWithSource as any, initial);
+  const [scope, setScope] = useState<RoleScope>(sourceRole.scope as RoleScope);
+  const close = () => {
+    setOpen(false);
+    router.refresh();
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o && state?.roleId) {
+          toast.success(`Rol is gekloond naar "${sourceRole.name}".`);
+          setTimeout(() => router.push(`/roles/${state.roleId}`), 200);
+        }
+      }}
+    >
+      <DialogTrigger asChild>
+        <DropdownMenuItem
+          disabled={!canClone}
+          onSelect={(e) => {
+            e.preventDefault();
+            setOpen(true);
+          }}
+        >
+          <Copy className="mr-2 h-4 w-4" />
+          Klonen
+        </DropdownMenuItem>
+      </DialogTrigger>
+      <DialogContent className="max-w-xl">
+        <form action={formAction}>
+          <DialogHeader>
+            <DialogTitle>Rol klonen</DialogTitle>
+            <DialogDescription>
+              Maak een kopie van &quot;{sourceRole.name}&quot;. Je kunt de naam, scope en omschrijving aanpassen.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-4 space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="clone-name">Naam *</Label>
+              <Input
+                id="clone-name"
+                name="name"
+                required
+                defaultValue={`Kopie van ${sourceRole.name}`}
+              />
+              {state?.errors?.name?.length ? (
+                <p className="text-xs text-red-600">{state.errors.name.join(", ")}</p>
+              ) : null}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="clone-scope">Scope *</Label>
+              <Select
+                name="scope"
+                required
+                value={scope}
+                onValueChange={(v) => setScope(v as RoleScope)}
+              >
+                <SelectTrigger id="clone-scope">
+                  <SelectValue placeholder="Kies een scope" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={RoleScope.INTERNAL}>
+                    <div className="flex items-center gap-2">
+                      <Users className="h-3.5 w-3.5" /> Intern (medewerkers)
+                    </div>
+                  </SelectItem>
+                  <SelectItem value={RoleScope.CUSTOMER}>
+                    <div className="flex items-center gap-2">
+                      <Building2 className="h-3.5 w-3.5" /> Klant (toegang per klant)
+                    </div>
+                  </SelectItem>
+                  <SelectItem value={RoleScope.RESELLER}>
+                    <div className="flex items-center gap-2">
+                      <Building2 className="h-3.5 w-3.5" /> Reseller
+                    </div>
+                  </SelectItem>
+                  <SelectItem value={RoleScope.PARTNER}>
+                    <div className="flex items-center gap-2">
+                      <Building2 className="h-3.5 w-3.5" /> Partner
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              {state?.errors?.scope?.length ? (
+                <p className="text-xs text-red-600">{state.errors.scope.join(", ")}</p>
+              ) : null}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="clone-description">Omschrijving</Label>
+              <Textarea
+                id="clone-description"
+                name="description"
+                rows={2}
+                defaultValue={sourceRole.description ?? ""}
+              />
+            </div>
+            {state?.message && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                {state.message}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="mt-6">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={close}
+            >
+              Annuleren
+            </Button>
+            <Button type="submit">Rol klonen</Button>
           </DialogFooter>
         </form>
       </DialogContent>

@@ -10,7 +10,7 @@ import {
   isPartnerOrResellerScope,
 } from "@/lib/rbac";
 import type { PermissionBits } from "@/types/next-auth";
-import { UserRole, RoleScope, CUSTOMER_SCOPE_RESOURCES, RESELLER_SCOPE_RESOURCES, PARTNER_SCOPE_RESOURCES, ALL_RESOURCE_TYPES } from "@/types/enums";
+import { UserRole, RoleScope, CustomerType, CUSTOMER_SCOPE_RESOURCES, RESELLER_SCOPE_RESOURCES, PARTNER_SCOPE_RESOURCES, ALL_RESOURCE_TYPES } from "@/types/enums";
 import type { ResourceAction, ResourceType } from "@/types/enums";
 
 /**
@@ -244,5 +244,124 @@ describe("Scope helpers + hasMinRole() met RoleScope waardes", () => {
   it("hasMinRole() met null of ongeldig: altijd false", () => {
     expect(hasMinRole(null, UserRole.VIEWER)).toBe(false);
     expect(hasMinRole(undefined, UserRole.VIEWER)).toBe(false);
+  });
+});
+
+describe("collectUserCustomerIds: junction + legacy customerId merge (pure simulatie)", () => {
+  type SimCustomer = { id: string; parentCustomerId?: string | null; type?: CustomerType };
+  type SimUserCustomerLink = { customerId: string };
+
+  function collectDirectUserCustomerIds(
+    legacyCustomerId: string | null,
+    links: SimUserCustomerLink[]
+  ): string[] {
+    const set = new Set<string>();
+    if (legacyCustomerId) set.add(legacyCustomerId);
+    for (const l of links) {
+      if (l.customerId) set.add(l.customerId);
+    }
+    return Array.from(set);
+  }
+
+  function collectCustomerHierarchyIds(
+    rootIds: string[],
+    allCustomers: SimCustomer[]
+  ): string[] {
+    const byParent = new Map<string | null, string[]>();
+    for (const c of allCustomers) {
+      const key = c.parentCustomerId ?? null;
+      const arr = byParent.get(key) ?? [];
+      arr.push(c.id);
+      byParent.set(key, arr);
+    }
+    const result = new Set<string>();
+    const queue: string[] = [...rootIds];
+    while (queue.length) {
+      const id = queue.shift()!;
+      if (result.has(id)) continue;
+      result.add(id);
+      const children = byParent.get(id) ?? [];
+      for (const child of children) queue.push(child);
+    }
+    return Array.from(result);
+  }
+
+  function simCollectUserCustomerIds(
+    legacyCustomerId: string | null,
+    links: SimUserCustomerLink[],
+    allCustomers: SimCustomer[]
+  ): string[] {
+    const direct = collectDirectUserCustomerIds(legacyCustomerId, links);
+    return collectCustomerHierarchyIds(direct, allCustomers);
+  }
+
+  const CUSTOMERS: SimCustomer[] = [
+    { id: "res-1", type: CustomerType.RESELLER, parentCustomerId: null },
+    { id: "d-res-1a", type: CustomerType.DIRECT, parentCustomerId: "res-1" },
+    { id: "d-res-1b", type: CustomerType.DIRECT, parentCustomerId: "res-1" },
+    { id: "d-res-1b-sub", type: CustomerType.DIRECT, parentCustomerId: "d-res-1b" },
+    { id: "p-9", type: CustomerType.PARTNER, parentCustomerId: null },
+    { id: "d-p-9a", type: CustomerType.DIRECT, parentCustomerId: "p-9" },
+    { id: "d-loose", type: CustomerType.DIRECT, parentCustomerId: null },
+  ];
+
+  it("Legacy customerId alleen (geen junction): neemt tree van die klant mee", () => {
+    const ids = simCollectUserCustomerIds("res-1", [], CUSTOMERS);
+    expect(ids.sort()).toEqual(
+      ["res-1", "d-res-1a", "d-res-1b", "d-res-1b-sub"].sort()
+    );
+  });
+
+  it("Junction alleen (geen legacy): includeert alle gelinkte bomen", () => {
+    const ids = simCollectUserCustomerIds(null, [
+      { customerId: "d-loose" },
+      { customerId: "p-9" },
+    ], CUSTOMERS);
+    expect(ids.sort()).toEqual(
+      ["d-loose", "p-9", "d-p-9a"].sort()
+    );
+  });
+
+  it("Legacy EN junction met overlap: GEEN duplicaten (dedupe werkt)", () => {
+    const ids = simCollectUserCustomerIds("res-1", [
+      { customerId: "d-res-1a" },
+      { customerId: "res-1" },
+    ], CUSTOMERS);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.sort()).toEqual(
+      ["res-1", "d-res-1a", "d-res-1b", "d-res-1b-sub"].sort()
+    );
+  });
+
+  it("DIRECT-subklant als root: geeft alleen eigen subtree (geen broertjes/zusjes)", () => {
+    const ids = simCollectUserCustomerIds("d-res-1b", [], CUSTOMERS);
+    expect(ids.sort()).toEqual(
+      ["d-res-1b", "d-res-1b-sub"].sort()
+    );
+    expect(ids).not.toContain("d-res-1a");
+    expect(ids).not.toContain("res-1");
+  });
+
+  it("Geen links EN geen legacy: lege set", () => {
+    const ids = simCollectUserCustomerIds(null, [], CUSTOMERS);
+    expect(ids).toEqual([]);
+  });
+});
+
+describe("canUserRole 3-traps resolve (permissions → roleId → userRole)", () => {
+  it("Als permissions bits gezet zijn: gaat die voor (zelfs als roleId/userRole minder rechten hebben)", () => {
+    const viewerBits: PermissionBits = buildLegacyPermissionsForRole(UserRole.VIEWER);
+    expect(can(viewerBits, "view", "customer")).toBe(true);
+    expect(can(viewerBits, "create", "customer")).toBe(false);
+
+    const adminBits: PermissionBits = buildLegacyPermissionsForRole(UserRole.ADMIN);
+    expect(can(adminBits, "create", "customer")).toBe(true);
+    expect(can(adminBits, "delete", "user")).toBe(true);
+  });
+
+  it("Permissions=null of leeg: fallback moet nog steeds werken (geen crash)", () => {
+    expect(can(null as any, "view", "customer")).toBe(false);
+    expect(can(undefined as any, "view", "customer")).toBe(false);
+    expect(can({} as any, "view", "customer")).toBe(false);
   });
 });

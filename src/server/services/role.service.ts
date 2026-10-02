@@ -6,14 +6,23 @@ import type {
   UpdateRoleInput,
   RoleDetail,
   RoleListItem,
+  CloneRoleInput,
 } from "@/types/domain";
-import { RoleScope, type ResourceType } from "@/types/enums";
+import { RoleScope, type ResourceType, AuditAction } from "@/types/enums";
 import {
   ALL_RESOURCE_TYPES,
   CUSTOMER_SCOPE_RESOURCES,
   RESELLER_SCOPE_RESOURCES,
   PARTNER_SCOPE_RESOURCES,
 } from "@/types/enums";
+import {
+  pickAuth,
+  requirePermission,
+} from "@/lib/rbac";
+import type { PermissionBits } from "@/types/next-auth";
+import type { UserRole } from "@/types/enums";
+
+export { collectCustomerHierarchyIds } from "./customer.service";
 
 export type RoleCacheInvalidator = () => void;
 
@@ -349,24 +358,132 @@ export async function deleteRoleIfNotSystem(id: string, ctx: Ctx) {
   });
 }
 
-export async function collectCustomerHierarchyIds(
-  rootCustomerId: string
-): Promise<string[]> {
-  const result = await prisma.$queryRawUnsafe<{ id: string }[]>(
-    `
-    WITH RECURSIVE hierarchy AS (
-      SELECT id, "parentCustomerId"
-      FROM customers
-      WHERE id = $1::text AND "deletedAt" IS NULL
-      UNION ALL
-      SELECT c.id, c."parentCustomerId"
-      FROM customers c
-      INNER JOIN hierarchy h ON c."parentCustomerId" = h.id
-      WHERE c."deletedAt" IS NULL
-    )
-    SELECT DISTINCT id FROM hierarchy;
-    `,
-    rootCustomerId
-  );
-  return result.map((r) => r.id);
+type AuthzContext = {
+  userId: string;
+  userRole?: UserRole;
+  roleId?: string;
+  roleScope?: RoleScope | null;
+  permissions?: PermissionBits | null;
+  userName?: string;
+};
+
+export async function cloneRole(
+  sourceRoleId: string,
+  input: CloneRoleInput,
+  ctx: AuthzContext
+): Promise<RoleDetail> {
+  await requirePermission(pickAuth(ctx), "create", "role");
+
+  const sourceRole = await prisma.role.findUnique({
+    where: { id: sourceRoleId },
+    include: {
+      permissions: {
+        select: { resource: true, read: true, write: true },
+      },
+    },
+  });
+
+  if (!sourceRole) {
+    throw new Error(`Bronrol met id ${sourceRoleId} bestaat niet.`);
+  }
+
+  const newScope = input.scope ?? (sourceRole.scope as RoleScope);
+  const trimmedName = input.name.trim();
+
+  const existing = await prisma.role.findUnique({
+    where: { name_scope: { name: trimmedName, scope: newScope } },
+  });
+  if (existing) {
+    throw new Error(`Er bestaat al een rol met naam "${trimmedName}" binnen scope ${newScope}.`);
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const created = await tx.role.create({
+      data: {
+        name: trimmedName,
+        scope: newScope,
+        description: input.description ?? null,
+        isSystem: false,
+        isDefault: false,
+      },
+      include: { permissions: true, _count: { select: { users: true, permissions: true } } },
+    });
+
+    if (sourceRole.permissions && sourceRole.permissions.length > 0) {
+      const allowed = allowedResourcesForScope(newScope);
+      const permsToClone = sourceRole.permissions.filter((p) =>
+        allowed.has(p.resource as ResourceType)
+      );
+      if (permsToClone.length > 0) {
+        await tx.rolePermission.createMany({
+          data: permsToClone.map((p) => ({
+            roleId: created.id,
+            resource: p.resource,
+            read: p.read,
+            write: p.write,
+          })),
+        });
+      }
+    }
+
+    invalidatePermissionCache();
+
+    const permissionCount = sourceRole.permissions
+      ? sourceRole.permissions.filter((p) => p.read || p.write).length
+      : 0;
+
+    await logAudit(tx as any, {
+      entityType: "role",
+      entityId: created.id,
+      action: AuditAction.CLONE_ROLE,
+      userId: ctx.userId,
+      metadata: {
+        sourceRoleId,
+        sourceRoleName: sourceRole.name,
+        fromScope: sourceRole.scope,
+        toScope: newScope,
+        permissionCount,
+      },
+    });
+
+    const withPerms = await tx.role.findUnique({
+      where: { id: created.id },
+      include: {
+        _count: { select: { users: true, permissions: true } },
+        permissions: { select: { resource: true, read: true, write: true } },
+      },
+    });
+
+    if (!withPerms) {
+      throw new Error("Nieuwe rol niet gevonden na aanmaken.");
+    }
+
+    const perms = defaultPermissionsForScope(withPerms.scope as RoleScope);
+    for (const p of withPerms.permissions) {
+      if (p.resource in perms) {
+        perms[p.resource as ResourceType] = { read: p.read, write: p.write };
+      }
+    }
+
+    let readCount = 0;
+    let writeCount = 0;
+    for (const key of Object.keys(perms) as ResourceType[]) {
+      if (perms[key].read) readCount++;
+      if (perms[key].write) writeCount++;
+    }
+
+    return {
+      id: withPerms.id,
+      name: withPerms.name,
+      scope: withPerms.scope as RoleScope,
+      isSystem: withPerms.isSystem,
+      isDefault: withPerms.isDefault,
+      description: withPerms.description,
+      userCount: withPerms._count.users,
+      permissionCount: { read: readCount, write: writeCount },
+      createdAt: withPerms.createdAt,
+      updatedAt: withPerms.updatedAt,
+      permissions: perms,
+    };
+  });
 }

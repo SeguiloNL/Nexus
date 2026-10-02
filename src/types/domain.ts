@@ -67,8 +67,30 @@ export interface UserListItem {
   roleScope?: RoleScope;
   customerId: string | null;
   customerName?: string;
+  isActive: boolean;
   lastLoginAt: Date | null;
   createdAt: Date;
+}
+
+export interface UserCustomerLink {
+  userId: string;
+  customerId: string;
+  assignedAt: Date;
+  assignedBy?: string | null;
+  customer?: { id: string; customerNumber: string; companyName: string; type?: CustomerType | null };
+}
+
+export interface UserDetail extends UserListItem {
+  roleObj?: {
+    id: string;
+    name: string;
+    scope: RoleScope;
+    isSystem: boolean;
+    description: string | null;
+  } | null;
+  permissions: Record<ResourceType, { read: boolean; write: boolean }>;
+  customerLinks: UserCustomerLink[];
+  effectiveCustomerIds: string[];
 }
 
 export interface CreateUserInput {
@@ -78,6 +100,8 @@ export interface CreateUserInput {
   role?: UserRole;
   roleId?: string;
   customerId?: string | null;
+  customerIds?: string[];
+  isActive?: boolean;
 }
 
 export interface UpdateUserInput {
@@ -86,7 +110,22 @@ export interface UpdateUserInput {
   role?: UserRole;
   roleId?: string;
   customerId?: string | null;
+  customerIds?: string[];
   password?: string;
+  isActive?: boolean;
+}
+
+export interface UpdateUserCustomersInput {
+  customerIds: string[];
+}
+
+export interface ToggleUserActiveInput {
+  isActive: boolean;
+}
+
+export interface BulkUpdateRoleInput {
+  userIds: string[];
+  roleId: string;
 }
 
 // ------------------------------
@@ -129,6 +168,13 @@ export interface UpdateRoleInput {
   permissions?: PermissionMatrix;
 }
 
+export interface CloneRoleInput {
+  sourceRoleId: string;
+  name: string;
+  scope?: RoleScope;
+  description?: string | null;
+}
+
 // ------------------------------
 // Customer
 // ------------------------------
@@ -137,6 +183,21 @@ export interface CustomerFilterParams extends ListQueryParams {
   status?: CustomerStatus;
   parentCustomerId?: string;
   isParent?: boolean;
+  type?: CustomerType;
+}
+
+export interface CustomerHierarchyNode {
+  id: string;
+  customerNumber: string;
+  companyName: string;
+  type: CustomerType;
+  status: CustomerStatus;
+  directUserCount: number;
+  effectiveUserCount: number;
+  directSubscriptionCount: number;
+  parentCustomerId: string | null;
+  children: CustomerHierarchyNode[];
+  level: number;
 }
 
 export interface CreateCustomerInput {

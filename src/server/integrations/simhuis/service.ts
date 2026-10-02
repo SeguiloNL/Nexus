@@ -5335,7 +5335,7 @@ async function _performSimhuisAssetAction(
       contentType: 'json',
       body: { accountId: accountId! },
       auth: { tag: 'bearer-token', token: bearer },
-      timeoutMs: 15_000,
+      timeoutMs: 8_000,
     });
   };
 
@@ -5427,7 +5427,7 @@ async function _performSimhuisAssetAction(
         contentType: 'none',
         body: null,
         auth: { tag: 'bearer-token', token },
-        timeoutMs: 10_000,
+        timeoutMs: 3_000,
       });
       if (getRes.tag === 'ok') {
         rawGetBody = getRes.body;
@@ -5448,7 +5448,7 @@ async function _performSimhuisAssetAction(
             contentType: 'none',
             body: null,
             auth: { tag: 'bearer-token', token: fresh },
-            timeoutMs: 10_000,
+            timeoutMs: 3_000,
           });
           if (getRes2.tag === 'ok') {
             rawGetBody = getRes2.body;
@@ -5479,6 +5479,20 @@ async function _performSimhuisAssetAction(
       finalStatus = putParsedStatus;
     } else {
       finalStatus = getStatus;
+    }
+
+    if (!finalStatus) {
+      try {
+        const fastLive = await Promise.race<Awaited<ReturnType<typeof getSimStatusFast>> | null>([
+          (async () => getSimStatusFast(iccid))(),
+          new Promise<null>((r) => setTimeout(() => r(null), 4_200)),
+        ]);
+        if (fastLive?.status) {
+          finalStatus = fastLive.status;
+        }
+      } catch {
+        // negeer, fallback is optional
+      }
     }
 
     // #region debug-point dp-get-status

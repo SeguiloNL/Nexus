@@ -7,11 +7,13 @@ import { requirePermission } from "@/lib/rbac";
 import {
   CreateRoleSchema,
   UpdateRoleSchema,
+  CloneRoleSchema,
 } from "@/server/validators/role";
 import {
   createRoleWithPermissions as createRole,
   updateRoleWithPermissions as updateRole,
   deleteRoleIfNotSystem as deleteRole,
+  cloneRole,
 } from "@/server/services/role.service";
 import { RoleScope } from "@/types/enums";
 
@@ -154,4 +156,49 @@ export async function deleteRoleAction(roleId: string) {
   }
   revalidatePath("/roles");
   redirect("/roles");
+}
+
+export async function cloneRoleAction(
+  sourceRoleId: string,
+  _prev: RoleActionState,
+  formData: FormData
+): Promise<RoleActionState> {
+  const user = await getCurrentUser();
+  await requirePermission(
+    user.permissions ?? user.roleId ?? user.role,
+    "create",
+    "role"
+  );
+
+  const raw: any = {
+    sourceRoleId,
+    name: formData.get("name") || undefined,
+    scope: (formData.get("scope") as any) || undefined,
+    description: formData.get("description") ?? null,
+  };
+
+  const validated = CloneRoleSchema.safeParse(raw);
+  if (!validated.success) {
+    return {
+      errors: validated.error.flatten().fieldErrors as RoleActionState["errors"],
+      message: "Controleer de invoer.",
+    };
+  }
+
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    permissions: user.permissions,
+    customerScope: user.customerIds,
+  };
+  try {
+    const created = await cloneRole(sourceRoleId, validated.data as any, ctx);
+    revalidatePath("/roles");
+    revalidatePath(`/roles/${created.id}`);
+    return { roleId: created.id, message: null };
+  } catch (e: any) {
+    return { message: e?.message ?? "Kon rol niet klonen." };
+  }
 }

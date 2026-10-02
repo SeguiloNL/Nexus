@@ -216,7 +216,24 @@ async function performAction(
 
   if (providerRes.error?.kind === "TIMEOUT_OR_NETWORK") {
     try {
-      const live = await getSimStatus(sim.iccid);
+      const { getSimStatusFast } = await import('@/server/integrations/simhuis/service');
+      let live: Awaited<ReturnType<typeof getSimStatus>> | null = null;
+      try {
+        const fast = await Promise.race<Awaited<ReturnType<typeof getSimStatusFast>> | null>([
+          (async () => getSimStatusFast(sim.iccid))(),
+          new Promise<null>((r) => setTimeout(() => r(null), 4_200)),
+        ]);
+        if (fast && (fast as any)?.status) {
+          live = fast as Awaited<ReturnType<typeof getSimStatus>>;
+        } else {
+          live = await Promise.race<Awaited<ReturnType<typeof getSimStatus>> | null>([
+            (async () => getSimStatus(sim.iccid))(),
+            new Promise<null>((r) => setTimeout(() => r(null), 8_000)),
+          ]);
+        }
+      } catch {
+        live = null;
+      }
       const liveNexus = mapSimhuisStatusToNexus(live?.status ?? null);
       if (liveNexus === expectedAfter) {
         providerRes = {
@@ -243,6 +260,16 @@ async function performAction(
       error,
     };
   }
+
+  // ============================================================
+  // FIX 3: OVERALL ABORT 12s. Wanneer de status-checks langer duren
+  // dan 12s, retourneren we ok=true + pendingConfirmation=true
+  // (graceful degradation). De PUT is namelijk al 2xx OK bij Simhuis.
+  // ============================================================
+  type RaceResult = SimSuspendResult | "__OVERALL_TIMEOUT__";
+  const overallTimeoutMs = 12_000;
+
+  const workPromise: Promise<RaceResult> = (async () => {
 
   const nexusStatus = mapSimhuisStatusToNexus(providerRes.confirmedSimhuisStatus ?? null);
   let confirmed = nexusStatus === expectedAfter ? (expectedAfter as unknown as "ACTIVE" | "SUSPENDED") : null;
@@ -440,6 +467,47 @@ async function performAction(
     pendingConfirmation: true,
     message: "Het verzoek is verwerkt. De statuswijziging is nog niet bevestigd.",
   };
+
+  })();
+
+  const timeoutPromise: Promise<RaceResult> = new Promise((resolve) => {
+    setTimeout(() => resolve("__OVERALL_TIMEOUT__"), overallTimeoutMs);
+  });
+
+  const raceResult = await Promise.race([workPromise, timeoutPromise]);
+
+  if (raceResult === "__OVERALL_TIMEOUT__") {
+    try {
+      await logAudit(prisma, {
+        entityType: "sim",
+        entityId: sim.id,
+        action: auditAction,
+        userId: ctx.userId,
+        oldValues: { status: sim.status },
+        newValues: { status: `PENDING_${expectedAfter}` as unknown as string },
+        metadata: {
+          source: "simhuis-asset-action",
+          providerHttpStatusPut: providerRes.httpStatusPut,
+          pendingConfirmation: true,
+          confirmedStatusFromProvider: providerRes.confirmedSimhuisStatus ?? null,
+          note: `Overall timeout van ${overallTimeoutMs}ms bereikt. Provider call is 2xx OK, maar status-bevestiging duurde te lang. SIM-status wordt later bijgewerkt door verbruik-sync of handmatig verversen.`,
+        },
+      });
+    } catch {
+      // ignore audit log fouten
+    }
+    return {
+      ok: true,
+      confirmedStatus: null,
+      pendingConfirmation: true,
+      message:
+        action === "suspend"
+          ? "Het verzoek tot blokkeren is verwerkt bij Simhuis. De actuele SIM-status kon niet direct worden bevestigd (binnen 12s). Controleer de status over enkele seconden of ververs handmatig."
+          : "Het verzoek tot deblokkeren is verwerkt bij Simhuis. De actuele SIM-status kon niet direct worden bevestigd (binnen 12s). Controleer de status over enkele seconden of ververs handmatig.",
+    };
+  }
+
+  return raceResult as SimSuspendResult;
 }
 
 export async function suspendSimById(simId: string, ctx: AuthContext): Promise<SimSuspendResult> {

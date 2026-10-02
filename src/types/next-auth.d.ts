@@ -13,9 +13,11 @@ declare module "next-auth" {
       roleName: string;
       email: string;
       name: string;
+      isActive: boolean;
       customerId: string | null;
       customerIds: string[];
       permissions: PermissionBits;
+      customerScopeRefreshedAt?: number;
     } & DefaultSession["user"];
   }
 
@@ -27,6 +29,7 @@ declare module "next-auth" {
     roleName: string;
     email: string;
     name: string;
+    isActive: boolean;
     customerId: string | null;
     customerIds: string[];
     permissions: PermissionBits;
@@ -40,9 +43,11 @@ declare module "next-auth" {
     roleName: string;
     email: string;
     name: string;
+    isActive: boolean;
     customerId: string | null;
     customerIds: string[];
     permissions: PermissionBits;
+    customerScopeRefreshedAt?: number;
   }
 }
 
@@ -55,8 +60,10 @@ declare module "@auth/core/jwt" {
     roleName: string;
     email: string;
     name: string;
+    isActive: boolean;
     customerId: string | null;
     customerIds: string[];
     permissions: PermissionBits;
+    customerScopeRefreshedAt?: number;
   }
 }

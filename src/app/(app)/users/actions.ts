@@ -7,11 +7,17 @@ import { requirePermission } from "@/lib/rbac";
 import {
   CreateUserSchema,
   UpdateUserSchema,
+  UpdateUserCustomersSchema,
+  ToggleUserActiveSchema,
+  BulkUpdateRoleSchema,
 } from "@/server/validators/user";
 import {
   createUser,
   updateUser,
   deleteUser,
+  updateUserCustomerLinks,
+  toggleUserActive,
+  bulkUpdateUserRole,
 } from "@/server/services/user.service";
 
 export type UserActionState = {
@@ -136,4 +142,109 @@ export async function deleteUserAction(userId: string) {
   }
   revalidatePath("/users");
   redirect("/users");
+}
+
+export async function updateUserCustomersAction(
+  userId: string,
+  customerIds: string[]
+): Promise<{ ok: boolean; message?: string; linked?: string[]; unlinked?: string[] }> {
+  const user = await getCurrentUser();
+  await requirePermission(
+    user.permissions ?? user.roleId ?? user.role,
+    "edit",
+    "user"
+  );
+
+  const validated = UpdateUserCustomersSchema.safeParse({ customerIds });
+  if (!validated.success) {
+    return { ok: false, message: "Ongeldige klantselectie." };
+  }
+
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    permissions: user.permissions,
+    customerScope: user.customerIds,
+  };
+  try {
+    const result = await updateUserCustomerLinks(userId, validated.data.customerIds, ctx);
+    revalidatePath(`/users/${userId}`);
+    revalidatePath("/users");
+    return { ok: true, ...result };
+  } catch (e: any) {
+    return { ok: false, message: e?.message ?? "Kon klantkoppelingen niet bijwerken." };
+  }
+}
+
+export async function toggleUserActiveAction(
+  userId: string,
+  isActive: boolean
+): Promise<{ ok: boolean; message?: string }> {
+  const user = await getCurrentUser();
+  await requirePermission(
+    user.permissions ?? user.roleId ?? user.role,
+    "edit",
+    "user"
+  );
+
+  const validated = ToggleUserActiveSchema.safeParse({ isActive });
+  if (!validated.success) {
+    return { ok: false, message: "Ongeldige status." };
+  }
+
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    permissions: user.permissions,
+    customerScope: user.customerIds,
+  };
+  try {
+    await toggleUserActive(userId, validated.data.isActive, ctx);
+    revalidatePath(`/users/${userId}`);
+    revalidatePath("/users");
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, message: e?.message ?? "Kon gebruikerstatus niet bijwerken." };
+  }
+}
+
+export async function bulkUpdateRoleAction(
+  userIds: string[],
+  roleId: string
+): Promise<{ ok: boolean; message?: string; updated?: number }> {
+  const user = await getCurrentUser();
+  await requirePermission(
+    user.permissions ?? user.roleId ?? user.role,
+    "edit",
+    "user"
+  );
+
+  const validated = BulkUpdateRoleSchema.safeParse({ userIds, roleId });
+  if (!validated.success) {
+    return { ok: false, message: "Ongeldige invoer voor bulk-wijziging." };
+  }
+
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    permissions: user.permissions,
+    customerScope: user.customerIds,
+  };
+  try {
+    const { updated } = await bulkUpdateUserRole(
+      validated.data.userIds,
+      validated.data.roleId,
+      ctx
+    );
+    revalidatePath("/users");
+    return { ok: true, updated };
+  } catch (e: any) {
+    return { ok: false, message: e?.message ?? "Kon rollen niet bulk-wijzigen." };
+  }
 }

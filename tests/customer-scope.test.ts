@@ -171,4 +171,159 @@ describe("Customer scope business rules (pure herbouw van customer.service.ts)",
       expect(err).toBeNull();
     });
   });
+
+  describe("P2 Versoepeling: RESELLER/PARTNER-scope toegestaan op DIRECT-subklant", () => {
+    type SimCustomer = {
+      id: string;
+      type: CustomerType;
+      parentCustomer?: { type: CustomerType } | null;
+    };
+
+    function requiredCustomerTypeForScope(scope: RoleScope): CustomerType | null {
+      switch (scope) {
+        case RoleScope.RESELLER:
+          return CustomerType.RESELLER;
+        case RoleScope.PARTNER:
+          return CustomerType.PARTNER;
+        case RoleScope.CUSTOMER:
+          return CustomerType.DIRECT;
+        case RoleScope.INTERNAL:
+        default:
+          return null;
+      }
+    }
+
+    function simulValidateCustomerRoleBinding(
+      scope: RoleScope,
+      customer: SimCustomer | null
+    ): ValidatieFout {
+      const requiredType = requiredCustomerTypeForScope(scope);
+
+      if (scope === RoleScope.INTERNAL) {
+        return customer
+          ? "Interne rollen mogen geen klant toegewezen krijgen."
+          : null;
+      }
+
+      if (!customer) {
+        if (scope === RoleScope.RESELLER) {
+          return "Een Reseller-gebruiker moet gekoppeld zijn aan een Klant van type RESELLER of een DIRECT-subklant van een RESELLER.";
+        }
+        if (scope === RoleScope.PARTNER) {
+          return "Een Partner-gebruiker moet gekoppeld zijn aan een Klant van type PARTNER of een DIRECT-subklant van een PARTNER.";
+        }
+        return "Een klant-gebruiker moet gekoppeld zijn aan een Klant van type DIRECT.";
+      }
+
+      const matchesScopeType = (() => {
+        if (scope === RoleScope.CUSTOMER)
+          return customer.type === requiredType;
+        if (scope === RoleScope.RESELLER) {
+          if (customer.type === CustomerType.RESELLER) return true;
+          if (
+            customer.type === CustomerType.DIRECT &&
+            customer.parentCustomer?.type === CustomerType.RESELLER
+          )
+            return true;
+          return false;
+        }
+        if (scope === RoleScope.PARTNER) {
+          if (customer.type === CustomerType.PARTNER) return true;
+          if (
+            customer.type === CustomerType.DIRECT &&
+            customer.parentCustomer?.type === CustomerType.PARTNER
+          )
+            return true;
+          return false;
+        }
+        return requiredType ? customer.type === requiredType : true;
+      })();
+
+      if (!matchesScopeType) {
+        const scopeLabel =
+          scope === RoleScope.RESELLER
+            ? "Reseller"
+            : scope === RoleScope.PARTNER
+              ? "Partner"
+              : "Klant";
+        const parentInfo = customer.parentCustomer
+          ? ` (parent type: ${customer.parentCustomer.type})`
+          : "";
+        return `${scopeLabel}-gebruiker kan alleen worden gekoppeld aan een Klant van type ${requiredType} of een DIRECT-subklant ervan (huidig type: ${customer.type}${parentInfo}).`;
+      }
+      return null;
+    }
+
+    it("DIRECT-subklant onder RESELLER mag RESELLER-scope hebben (P2)", () => {
+      const err = simulValidateCustomerRoleBinding(RoleScope.RESELLER, {
+        id: "d-sub-1",
+        type: CustomerType.DIRECT,
+        parentCustomer: { type: CustomerType.RESELLER },
+      });
+      expect(err).toBeNull();
+    });
+
+    it("DIRECT-subklant onder PARTNER mag PARTNER-scope hebben (P2)", () => {
+      const err = simulValidateCustomerRoleBinding(RoleScope.PARTNER, {
+        id: "d-sub-2",
+        type: CustomerType.DIRECT,
+        parentCustomer: { type: CustomerType.PARTNER },
+      });
+      expect(err).toBeNull();
+    });
+
+    it("DIRECT-klant ZONDER parent (echt los) mag GEEN RESELLER-scope", () => {
+      const err = simulValidateCustomerRoleBinding(RoleScope.RESELLER, {
+        id: "d-loose",
+        type: CustomerType.DIRECT,
+        parentCustomer: null,
+      });
+      expect(err).not.toBeNull();
+      expect(err).toMatch(/alleen worden gekoppeld aan een Klant van type RESELLER/);
+    });
+
+    it("DIRECT-klant onder ANDERE DIRECT mag GEEN RESELLER-scope", () => {
+      const err = simulValidateCustomerRoleBinding(RoleScope.RESELLER, {
+        id: "d-sub-3",
+        type: CustomerType.DIRECT,
+        parentCustomer: { type: CustomerType.DIRECT },
+      });
+      expect(err).not.toBeNull();
+    });
+
+    it("DIRECT-subklant onder RESELLER mag GEEN PARTNER-scope (verkeerde parent)", () => {
+      const err = simulValidateCustomerRoleBinding(RoleScope.PARTNER, {
+        id: "d-sub-4",
+        type: CustomerType.DIRECT,
+        parentCustomer: { type: CustomerType.RESELLER },
+      });
+      expect(err).not.toBeNull();
+      expect(err).toMatch(/type PARTNER/);
+    });
+
+    it("Losse RESELLER-klant mag WEL RESELLER-scope", () => {
+      const err = simulValidateCustomerRoleBinding(RoleScope.RESELLER, {
+        id: "res-1",
+        type: CustomerType.RESELLER,
+      });
+      expect(err).toBeNull();
+    });
+
+    it("DIRECT-klant met CUSTOMER-scope → OK", () => {
+      const err = simulValidateCustomerRoleBinding(RoleScope.CUSTOMER, {
+        id: "d-normal",
+        type: CustomerType.DIRECT,
+        parentCustomer: null,
+      });
+      expect(err).toBeNull();
+    });
+
+    it("INTERNAL-scope met customer → fout", () => {
+      const err = simulValidateCustomerRoleBinding(RoleScope.INTERNAL, {
+        id: "x",
+        type: CustomerType.DIRECT,
+      });
+      expect(err).toMatch(/Interne rollen mogen geen klant toegewezen krijgen/);
+    });
+  });
 });

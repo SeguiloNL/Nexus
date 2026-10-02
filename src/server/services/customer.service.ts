@@ -8,6 +8,8 @@ import type {
   CreateCustomerInput,
   PaginatedResult,
   UpdateCustomerInput,
+  CustomerHierarchyNode,
+  UserListItem,
 } from "@/types/domain";
 import { CustomerStatus, UserRole, RoleScope, CustomerType } from "@/types/enums";
 import type { Prisma, Customer as PrismaCustomer } from "@prisma/client";
@@ -615,4 +617,280 @@ export async function bulkImportCustomers(
     }
   });
   return { count: ids.length, ids };
+}
+
+export async function collectCustomerHierarchyIds(
+  rootCustomerId: string
+): Promise<string[]> {
+  const result = await prisma.$queryRawUnsafe<{ id: string }[]>(
+    `
+    WITH RECURSIVE hierarchy AS (
+      SELECT id, "parentCustomerId"
+      FROM customers
+      WHERE id = $1::text AND "deletedAt" IS NULL
+      UNION ALL
+      SELECT c.id, c."parentCustomerId"
+      FROM customers c
+      INNER JOIN hierarchy h ON c."parentCustomerId" = h.id
+      WHERE c."deletedAt" IS NULL
+    )
+    SELECT DISTINCT id FROM hierarchy;
+    `,
+    rootCustomerId
+  );
+  return result.map((r) => r.id);
+}
+
+type HierarchyCtx = Ctx | { customerScope?: string[] } | undefined;
+
+export async function getCustomerHierarchyTree(
+  rootCustomerId?: string | null,
+  ctx?: HierarchyCtx
+): Promise<CustomerHierarchyNode[]> {
+  let hierarchyIds: Set<string> | null = null;
+  if (rootCustomerId) {
+    const ids = await collectCustomerHierarchyIds(rootCustomerId);
+    hierarchyIds = new Set(ids);
+  }
+
+  const where: Prisma.CustomerWhereInput = { deletedAt: null };
+
+  const customerScope = (ctx as any)?.customerScope as string[] | undefined;
+  if (customerScope && customerScope.length > 0) {
+    const scopeSet = new Set(customerScope);
+    if (hierarchyIds) {
+      const intersection: string[] = [];
+      for (const id of hierarchyIds) {
+        if (scopeSet.has(id)) intersection.push(id);
+      }
+      where.id = { in: intersection };
+    } else {
+      where.id = { in: customerScope };
+    }
+  } else if (hierarchyIds) {
+    where.id = { in: Array.from(hierarchyIds) };
+  }
+
+  const [customers, userCounts, subscriptionCounts] = await Promise.all([
+    prisma.customer.findMany({
+      where,
+      select: {
+        id: true,
+        customerNumber: true,
+        companyName: true,
+        type: true,
+        status: true,
+        parentCustomerId: true,
+      },
+      orderBy: { companyName: "asc" },
+    }),
+    prisma.userCustomer.groupBy({
+      by: ["customerId"],
+      where: { customer: { deletedAt: null } },
+      _count: { userId: true },
+    }),
+    prisma.subscription.groupBy({
+      by: ["customerId"],
+      where: { deletedAt: null },
+      _count: { id: true },
+    }),
+  ]);
+
+  const userCountMap = new Map<string, number>();
+  for (const row of userCounts) {
+    userCountMap.set(row.customerId, row._count.userId);
+  }
+
+  const subCountMap = new Map<string, number>();
+  for (const row of subscriptionCounts) {
+    subCountMap.set(row.customerId, row._count.id);
+  }
+
+  const nodeMap = new Map<string, CustomerHierarchyNode>();
+  for (const c of customers) {
+    nodeMap.set(c.id, {
+      id: c.id,
+      customerNumber: c.customerNumber,
+      companyName: c.companyName,
+      type: c.type as CustomerType,
+      status: c.status as CustomerStatus,
+      parentCustomerId: c.parentCustomerId,
+      children: [],
+      level: 0,
+      directUserCount: userCountMap.get(c.id) ?? 0,
+      effectiveUserCount: 0,
+      directSubscriptionCount: subCountMap.get(c.id) ?? 0,
+    });
+  }
+
+  const rootNodes: CustomerHierarchyNode[] = [];
+  for (const node of nodeMap.values()) {
+    if (node.parentCustomerId && nodeMap.has(node.parentCustomerId)) {
+      const parent = nodeMap.get(node.parentCustomerId)!;
+      parent.children.push(node);
+    } else if (rootCustomerId && node.id === rootCustomerId) {
+      rootNodes.push(node);
+    } else if (!rootCustomerId && !node.parentCustomerId) {
+      rootNodes.push(node);
+    }
+  }
+
+  function computeLevelsAndEffectiveUsers(
+    nodes: CustomerHierarchyNode[],
+    level: number
+  ): number {
+    let totalEffective = 0;
+    for (const node of nodes) {
+      node.level = level;
+      const childEffective = computeLevelsAndEffectiveUsers(node.children, level + 1);
+      node.effectiveUserCount = node.directUserCount + childEffective;
+      totalEffective += node.effectiveUserCount;
+    }
+    return totalEffective;
+  }
+  computeLevelsAndEffectiveUsers(rootNodes, 0);
+
+  function sortTree(nodes: CustomerHierarchyNode[]) {
+    nodes.sort((a, b) => a.companyName.localeCompare(b.companyName));
+    for (const n of nodes) sortTree(n.children);
+  }
+  sortTree(rootNodes);
+
+  return rootNodes;
+}
+
+type UsersCtx = Ctx | { customerScope?: string[] } | undefined;
+
+export async function findUsersForCustomer(
+  customerId: string,
+  ctx?: UsersCtx
+): Promise<UserListItem[]> {
+  const hierarchyIds = await collectCustomerHierarchyIds(customerId);
+
+  const customerScope = (ctx as any)?.customerScope as string[] | undefined;
+
+  let scopeFilteredHierarchyIds: string[];
+  let allowedHierarchySet: Set<string>;
+
+  if (customerScope && customerScope.length > 0) {
+    const scopeHierarchyAll = new Set<string>();
+    for (const sid of customerScope) {
+      const ids = await collectCustomerHierarchyIds(sid);
+      for (const id of ids) scopeHierarchyAll.add(id);
+    }
+    scopeFilteredHierarchyIds = hierarchyIds.filter((id) => scopeHierarchyAll.has(id));
+    allowedHierarchySet = scopeHierarchyAll;
+  } else {
+    scopeFilteredHierarchyIds = hierarchyIds;
+    allowedHierarchySet = new Set(hierarchyIds);
+  }
+
+  if (scopeFilteredHierarchyIds.length === 0) {
+    return [];
+  }
+
+  const users = await prisma.user.findMany({
+    where: {
+      OR: [
+        { customerId: { in: scopeFilteredHierarchyIds } },
+        {
+          customerLinks: {
+            some: { customerId: { in: scopeFilteredHierarchyIds } },
+          },
+        },
+      ],
+    },
+    include: {
+      customer: { select: { id: true, companyName: true } },
+      roleObj: { select: { id: true, name: true, scope: true } },
+      customerLinks: { select: { customerId: true } },
+    },
+    distinct: ["id"],
+    orderBy: [{ name: "asc" }, { email: "asc" }],
+  });
+
+  return users
+    .filter((u) => {
+      const userCustomerIds = new Set<string>();
+      if (u.customerId) userCustomerIds.add(u.customerId);
+      for (const link of u.customerLinks) userCustomerIds.add(link.customerId);
+      for (const ucid of userCustomerIds) {
+        if (allowedHierarchySet.has(ucid)) return true;
+      }
+      return false;
+    })
+    .map((u) => ({
+      id: u.id,
+      email: u.email,
+      name: u.name,
+      role: u.role as UserRole,
+      roleId: u.roleId,
+      roleName: u.roleObj?.name,
+      roleScope: u.roleObj?.scope as RoleScope | undefined,
+      customerId: u.customerId,
+      customerName: u.customer?.companyName,
+      isActive: true,
+      lastLoginAt: u.lastLoginAt,
+      createdAt: u.createdAt,
+    }));
+}
+
+export async function findManyCustomersWithUserCounts(
+  params: CustomerFilterParams & { viewerRole?: UserRole; customerScope?: string[] }
+): Promise<PaginatedResult<PrismaCustomer & { directUserCount: number; effectiveUserCount: number }>> {
+  const baseResult = await findManyCustomers(params);
+
+  const ids = baseResult.data.map((c) => c.id);
+  if (ids.length === 0) {
+    return {
+      ...baseResult,
+      data: [],
+    };
+  }
+
+  const [userCounts, subHierarchies] = await Promise.all([
+    prisma.userCustomer.groupBy({
+      by: ["customerId"],
+      where: { customerId: { in: ids }, customer: { deletedAt: null } },
+      _count: { userId: true },
+    }),
+    Promise.all(ids.map((id) => collectCustomerHierarchyIds(id))),
+  ]);
+
+  const directUserCountMap = new Map<string, number>();
+  for (const row of userCounts) {
+    directUserCountMap.set(row.customerId, row._count.userId);
+  }
+
+  const allHierarchyIdsSet = new Set<string>();
+  for (const hier of subHierarchies) for (const id of hier) allHierarchyIdsSet.add(id);
+
+  const allUserCounts = await prisma.userCustomer.groupBy({
+    by: ["customerId"],
+    where: { customerId: { in: Array.from(allHierarchyIdsSet) }, customer: { deletedAt: null } },
+    _count: { userId: true },
+  });
+  const globalDirectUserCountMap = new Map<string, number>();
+  for (const row of allUserCounts) {
+    globalDirectUserCountMap.set(row.customerId, row._count.userId);
+  }
+
+  const data = baseResult.data.map((customer, idx) => {
+    const hierarchy = subHierarchies[idx];
+    const direct = directUserCountMap.get(customer.id) ?? 0;
+    let effective = 0;
+    for (const hid of hierarchy) {
+      effective += globalDirectUserCountMap.get(hid) ?? 0;
+    }
+    return {
+      ...(customer as PrismaCustomer),
+      directUserCount: direct,
+      effectiveUserCount: effective,
+    };
+  });
+
+  return {
+    ...baseResult,
+    data,
+  };
 }
