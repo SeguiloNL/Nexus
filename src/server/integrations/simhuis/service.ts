@@ -5224,8 +5224,62 @@ async function _performSimhuisAssetAction(
   const durPut = Date.now() - t0;
 
   if (put.tag === 'ok') {
+    // #region debug-point dp-put-status
+    try {
+      const r = (put.body && typeof put.body === 'object' ? put.body : {}) as Record<string, any>;
+      function collectKeys(obj: any, depth = 0, maxDepth = 5): string[] {
+        const out: string[] = [];
+        if (!obj || typeof obj !== 'object' || depth > maxDepth) return out;
+        if (Array.isArray(obj)) {
+          for (let i = 0; i < Math.min(obj.length, 3); i++) {
+            for (const k of collectKeys(obj[i], depth + 1, maxDepth)) out.push(`[${i}].${k}`);
+          }
+          return out;
+        }
+        for (const k of Object.keys(obj)) {
+          const v = obj[k];
+          out.push(k);
+          if (v && typeof v === 'object') {
+            for (const sub of collectKeys(v, depth + 1, maxDepth)) out.push(`${k}.${sub}`);
+          }
+        }
+        return out;
+      }
+      const putKeys = collectKeys(r);
+      const statusLike: Record<string, any> = {};
+      for (const k of putKeys) {
+        if (/status|state|lifecycle|life_cycle|lifeCycle|suspend|bar|pause|active|enable|online/i.test(k)) {
+          try {
+            let v: any = r;
+            for (const part of k.split('.')) {
+              if (v && typeof v === 'object' && part in v) v = (v as any)[part];
+              else { v = undefined; break; }
+            }
+            if (v !== undefined && v !== null) statusLike[k] = typeof v === 'object' ? JSON.stringify(v).slice(0, 100) : v;
+          } catch {}
+        }
+      }
+      console.info(`[DEBUG-sim-status-sync-fout] dp-put-status action=${action} iccidSuffix=${iccidSuffix} putHttpStatus=${put.statusCode} putKeysSample=${JSON.stringify(putKeys.slice(0, 30))} statusLikeFields=${JSON.stringify(statusLike)}`);
+    } catch (debugErr) {
+      console.warn(`[DEBUG-sim-status-sync-fout] dp-put-status instrumentation error:`, debugErr instanceof Error ? debugErr.message : debugErr);
+    }
+    // #endregion debug-point dp-put-status
+
+    let putParsedStatus: SimhuisSimStatus['status'] | null = null;
+    try {
+      if (put.body) {
+        const parsed = toSimStatus(put.body, iccid);
+        const enriched = enrichSimhuisStatusWithDirectRawExtracts(parsed, put.body, iccid);
+        putParsedStatus = enriched?.status ?? parsed?.status ?? null;
+      }
+    } catch {}
+
+    const expectedAfterSimhuis: SimhuisSimStatus['status'] = action === 'suspend' ? 'suspended' : 'active';
+
     let getStatus: SimhuisSimStatus['status'] | null = null;
     let rawGetBody: unknown = null;
+    let parsedGetStatus: SimhuisSimStatus['status'] | undefined = undefined;
+    let enrichedGetStatus: SimhuisSimStatus['status'] | undefined = undefined;
     try {
       const getFullUrl = makePerSimFullUrl(base, `/v3/assets/${encodeURIComponent(iccid)}`, {
         accountId: accountId!,
@@ -5243,6 +5297,8 @@ async function _performSimhuisAssetAction(
         try {
           const parsed = toSimStatus(getRes.body, iccid);
           const enriched = enrichSimhuisStatusWithDirectRawExtracts(parsed, getRes.body, iccid);
+          parsedGetStatus = parsed?.status;
+          enrichedGetStatus = enriched?.status;
           getStatus = enriched?.status ?? parsed?.status ?? null;
         } catch {}
       } else if (getRes.statusCode === 401 && !retried401) {
@@ -5262,6 +5318,8 @@ async function _performSimhuisAssetAction(
             try {
               const parsed = toSimStatus(getRes2.body, iccid);
               const enriched = enrichSimhuisStatusWithDirectRawExtracts(parsed, getRes2.body, iccid);
+              parsedGetStatus = parsed?.status;
+              enrichedGetStatus = enriched?.status;
               getStatus = enriched?.status ?? parsed?.status ?? null;
             } catch {}
           }
@@ -5269,9 +5327,67 @@ async function _performSimhuisAssetAction(
       }
     } catch {}
 
+    // ============================================================
+    // FIX A/C: Kies de beste status uit PUT > GET
+    // Win-regels: als PUT de target-status heeft → gebruik PUT (zekerder na mutatie).
+    // Anders: als GET de target-status heeft → gebruik GET.
+    // Anders: gebruik eerst PUT-status (als die non-null is), daarna GET.
+    // ============================================================
+    let finalStatus: SimhuisSimStatus['status'] | null = null;
+    if (putParsedStatus === expectedAfterSimhuis) {
+      finalStatus = putParsedStatus;
+    } else if (getStatus === expectedAfterSimhuis) {
+      finalStatus = getStatus;
+    } else if (putParsedStatus) {
+      finalStatus = putParsedStatus;
+    } else {
+      finalStatus = getStatus;
+    }
+
+    // #region debug-point dp-get-status
+    try {
+      function collectKeys(obj: any, depth = 0, maxDepth = 5): string[] {
+        const out: string[] = [];
+        if (!obj || typeof obj !== 'object' || depth > maxDepth) return out;
+        if (Array.isArray(obj)) {
+          for (let i = 0; i < Math.min(obj.length, 3); i++) {
+            for (const k of collectKeys(obj[i], depth + 1, maxDepth)) out.push(`[${i}].${k}`);
+          }
+          return out;
+        }
+        for (const k of Object.keys(obj)) {
+          const v = obj[k];
+          out.push(k);
+          if (v && typeof v === 'object') {
+            for (const sub of collectKeys(v, depth + 1, maxDepth)) out.push(`${k}.${sub}`);
+          }
+        }
+        return out;
+      }
+      const r = (rawGetBody && typeof rawGetBody === 'object' ? rawGetBody : {}) as Record<string, any>;
+      const getKeys = collectKeys(r);
+      const statusLike: Record<string, any> = {};
+      for (const k of getKeys) {
+        if (/status|state|lifecycle|life_cycle|lifeCycle|suspend|bar|pause|active|enable|online/i.test(k)) {
+          try {
+            let v: any = r;
+            for (const part of k.split('.')) {
+              if (v && typeof v === 'object' && part in v) v = (v as any)[part];
+              else { v = undefined; break; }
+            }
+            if (v !== undefined && v !== null) statusLike[k] = typeof v === 'object' ? JSON.stringify(v).slice(0, 100) : v;
+          } catch {}
+        }
+      }
+      console.info(`[DEBUG-sim-status-sync-fout] dp-get-status action=${action} iccidSuffix=${iccidSuffix} putParsedStatus=${String(putParsedStatus ?? 'N/A')} expectedAfterSimhuis=${expectedAfterSimhuis} parsedGetStatus=${String(parsedGetStatus ?? 'N/A')} enrichedGetStatus=${String(enrichedGetStatus ?? 'N/A')} getStatus=${String(getStatus ?? 'N/A')} CHOSEN-finalStatus=${String(finalStatus ?? 'N/A')} getKeysSample=${JSON.stringify(getKeys.slice(0, 30))} statusLikeFields=${JSON.stringify(statusLike)}`);
+    } catch (debugErr) {
+      console.warn(`[DEBUG-sim-status-sync-fout] dp-get-status instrumentation error:`, debugErr instanceof Error ? debugErr.message : debugErr);
+    }
+    // #endregion debug-point dp-get-status
+
     try {
       console.info(
-        `[simhuis:assetAction] action=${action} iccidSuffix=${iccidSuffix} putStatus=${put.statusCode} getStatusIfAny=${String(getStatus ?? 'N/A')} durationMs=${durPut + (Date.now() - t0 - durPut)} retried401=${retried401}`
+        `[simhuis:assetAction] action=${action} iccidSuffix=${iccidSuffix} putStatus=${put.statusCode} getStatusIfAny=${String(getStatus ?? 'N/A')} putParsedStatus=${String(putParsedStatus ?? 'N/A')} FINAL=${String(finalStatus ?? 'N/A')} durationMs=${durPut + (Date.now() - t0 - durPut)} retried401=${retried401}`
       );
     } catch {}
 
@@ -5279,7 +5395,7 @@ async function _performSimhuisAssetAction(
       ok: true,
       rawPut: put.body,
       rawGet: rawGetBody,
-      confirmedSimhuisStatus: getStatus,
+      confirmedSimhuisStatus: finalStatus,
       accountIdUsed: accountId,
       httpStatusPut: put.statusCode,
     };

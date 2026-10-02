@@ -245,14 +245,80 @@ async function performAction(
   }
 
   const nexusStatus = mapSimhuisStatusToNexus(providerRes.confirmedSimhuisStatus ?? null);
-  const confirmed = nexusStatus === expectedAfter ? (expectedAfter as unknown as "ACTIVE" | "SUSPENDED") : null;
-  const pendingConfirmation = confirmed === null;
+  let confirmed = nexusStatus === expectedAfter ? (expectedAfter as unknown as "ACTIVE" | "SUSPENDED") : null;
+  let pendingConfirmation = confirmed === null;
+  let confirmedSource: string | null = confirmed ? "provider-direct" : null;
+
+  // #region debug-point dp-map-status
+  try {
+    console.info(
+      `[DEBUG-sim-status-sync-fout] dp-map-status action=${action} iccidSuffix=${sim.iccid.slice(-6)} simInternalId=${sim.id} ` +
+      `rawConfirmedSimhuisStatus=${JSON.stringify(providerRes.confirmedSimhuisStatus ?? null)} nexusStatus=${JSON.stringify(nexusStatus ?? null)} ` +
+      `expectedAfter=${expectedAfter} confirmed=${JSON.stringify(confirmed ?? null)} pendingConfirmation=${String(pendingConfirmation)}`
+    );
+  } catch (debugErr) {
+    console.warn(`[DEBUG-sim-status-sync-fout] dp-map-status instrumentation error:`, debugErr instanceof Error ? debugErr.message : debugErr);
+  }
+  // #endregion debug-point dp-map-status
+
+  // ============================================================
+  // FIX B: Fallback sanity check met bulk getSimStatus (robuust)
+  // Indien nog steeds pendingConfirmation (extractie faalde of eventual consistency)
+  // gebruiken we de assetsbulk/discover methode (die al bewezen werkt voor Simhuis).
+  // ============================================================
+  let fallbackBulkStatus: SimhuisSimStatus["status"] | null = null;
+  let fallbackBulkNexus: SimStatus | null = null;
+  if (pendingConfirmation) {
+    try {
+      const live = await getSimStatus(sim.iccid);
+      fallbackBulkStatus = live?.status ?? null;
+      fallbackBulkNexus = mapSimhuisStatusToNexus(live?.status ?? null);
+      if (fallbackBulkNexus === expectedAfter && !confirmed) {
+        confirmed = expectedAfter as unknown as "ACTIVE" | "SUSPENDED";
+        pendingConfirmation = false;
+        confirmedSource = "fallback-bulk";
+      }
+    } catch (e: any) {
+      // Ignore; probeer volgende methode
+      console.warn(`[simhuis-asset-service] Fallback bulk getSimStatus mislukte:`, e?.message ?? e);
+    }
+  }
+
+  // ============================================================
+  // FIX D (Delayed re-check, 1x, max 3s): Als nog pendingConfirmation,
+  // wacht 2.5s en probeer opnieuw bulk getSimStatus — eventual consistency.
+  // GEEN onbeperkt pollen! Maximaal 1x vertraagd herbevestigen.
+  // ============================================================
+  let delayedRecheckDone = false;
+  if (pendingConfirmation) {
+    try {
+      const timeoutMs = 2500;
+      await new Promise<void>((resolve) => setTimeout(resolve, timeoutMs));
+      const live2 = await getSimStatus(sim.iccid);
+      const live2Nexus = mapSimhuisStatusToNexus(live2?.status ?? null);
+      delayedRecheckDone = true;
+      if (live2Nexus === expectedAfter && !confirmed) {
+        confirmed = expectedAfter as unknown as "ACTIVE" | "SUSPENDED";
+        pendingConfirmation = false;
+        confirmedSource = "delayed-bulk";
+      }
+      try {
+        console.info(
+          `[DEBUG-sim-status-sync-fout] dp-delayed-recheck action=${action} iccidSuffix=${sim.iccid.slice(-6)} ` +
+          `delayedBulkStatus=${JSON.stringify(live2?.status ?? null)} delayedBulkNexus=${JSON.stringify(live2Nexus ?? null)} ` +
+          `confirmedAfterRecheck=${JSON.stringify(confirmed ?? null)}`
+        );
+      } catch {}
+    } catch (e: any) {
+      // negeer: blijf in pendingConfirmation
+    }
+  }
 
   let dbUpdated = false;
   try {
     if (!pendingConfirmation && confirmed) {
       await prisma.$transaction(async (tx) => {
-        await tx.sIM.update({
+        const updated = await tx.sIM.update({
           where: { id: sim.id },
           data: { status: confirmed as SimStatus, updatedAt: new Date() },
         });
@@ -267,8 +333,12 @@ async function performAction(
             source: "simhuis-asset-action",
             providerHttpStatusPut: providerRes.httpStatusPut,
             pendingConfirmation: false,
+            confirmedSource,
+            fallbackBulkStatus,
+            delayedRecheckDone,
           },
         });
+        return updated;
       });
       dbUpdated = true;
     } else if (pendingConfirmation) {
@@ -285,6 +355,9 @@ async function performAction(
             providerHttpStatusPut: providerRes.httpStatusPut,
             pendingConfirmation: true,
             confirmedStatusFromProvider: providerRes.confirmedSimhuisStatus ?? null,
+            fallbackBulkStatus,
+            delayedRecheckDone,
+            note: "Provider call is 2xx OK, maar status nog niet bevestigd. Gebruik debloxkeren/hervat na de eerstvolgende verbruik-sync of ververs handmatig de SIM-status.",
           },
         });
       } catch {
@@ -297,6 +370,16 @@ async function performAction(
       e?.message ?? e
     );
   }
+
+  // #region debug-point dp-db-update
+  try {
+    console.info(
+      `[DEBUG-sim-status-sync-fout] dp-db-update action=${action} iccidSuffix=${sim.iccid.slice(-6)} confirmed=${JSON.stringify(confirmed ?? null)} pendingConfirmation=${String(pendingConfirmation)} confirmedSource=${JSON.stringify(confirmedSource)} fallbackBulkNexus=${JSON.stringify(fallbackBulkNexus ?? null)} delayedRecheckDone=${String(delayedRecheckDone)} dbUpdated=${String(dbUpdated)} simStatusBefore=${sim.status}`
+    );
+  } catch (debugErr) {
+    console.warn(`[DEBUG-sim-status-sync-fout] dp-db-update instrumentation error:`, debugErr instanceof Error ? debugErr.message : debugErr);
+  }
+  // #endregion debug-point dp-db-update
 
   if (confirmed === "SUSPENDED") {
     return {
