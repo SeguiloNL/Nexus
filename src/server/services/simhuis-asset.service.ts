@@ -5,10 +5,16 @@ import {
   unsuspendSimhuisAsset,
   getSimStatus,
   simhuisClient,
+  precheckProductById,
+  precheckProductAvailability,
+  subscribeSimhuisAsset,
+  getAssetByIccid,
   type SimhuisAssetActionResult,
+  type SimhuisSubscribeResult,
 } from "@/server/integrations/simhuis/service";
 import type { SimhuisSimStatus } from "@/server/integrations/simhuis/types";
 import { findSimById } from "./sim.service";
+import { findActivationOrderById } from "./activation-order.service";
 import { pickAuth, requirePermission, hasMinRole } from "@/lib/rbac";
 import { SimStatus, UserRole, RoleScope } from "@/types/enums";
 import type { PermissionBits } from "@/types/next-auth";
@@ -29,6 +35,26 @@ export type SimSuspendError =
   | { kind: "PROVIDER"; detail: string; statusCode?: number }
   | { kind: "TIMEOUT_OR_NETWORK"; detail: string }
   | { kind: "NOT_FOUND"; detail: string };
+
+export type SimSubscribeError =
+  | { kind: "PERMISSION"; detail: string; statusCode?: number }
+  | { kind: "INVALID_STATUS_TRANSITION"; detail: string; statusCode?: number }
+  | { kind: "PRODUCT_MISMATCH"; detail: string; statusCode?: number }
+  | { kind: "PRODUCT_UNAVAILABLE_FOR_ICCID"; detail: string; statusCode?: number }
+  | { kind: "PROVIDER"; detail: string; statusCode?: number }
+  | { kind: "TIMEOUT_OR_NETWORK"; detail: string; statusCode?: number }
+  | { kind: "NOT_FOUND"; detail: string; statusCode?: number }
+  | { kind: "MISSING_PROVISIONING"; detail: string; statusCode?: number };
+
+export type SimSubscribeResult = {
+  ok: boolean;
+  confirmedStatus: "ACTIVE" | null;
+  pendingConfirmation: boolean;
+  message: string;
+  confirmedLocalProductId?: string | null;
+  confirmedLocalProductName?: string | null;
+  error?: SimSubscribeError;
+};
 
 export type SimSuspendResult = {
   ok: boolean;
@@ -123,11 +149,10 @@ function mapProviderError(
         detail: err.detail,
       };
     default: {
-      const exhaustive: never = err;
-      void exhaustive;
       return {
         kind: "PROVIDER" as const,
         detail: (err as any)?.detail || "Onbekende provider-fout.",
+        statusCode: (err as any)?.httpStatus ?? undefined,
       };
     }
   }
@@ -516,6 +541,584 @@ export async function suspendSimById(simId: string, ctx: AuthContext): Promise<S
 
 export async function unsuspendSimById(simId: string, ctx: AuthContext): Promise<SimSuspendResult> {
   return performAction("unsuspend", simId, ctx);
+}
+
+async function authorizeSubscribe(ctx: AuthContext): Promise<SimSubscribeError | null> {
+  try {
+    if (ctx.roleScope !== "INTERNAL") {
+      return {
+        kind: "PERMISSION",
+        detail: "Deze actie is alleen beschikbaar voor interne beheerders.",
+      };
+    }
+    if (!hasMinRole(ctx.userRole, UserRole.ADMIN)) {
+      return {
+        kind: "PERMISSION",
+        detail: "Deze actie is alleen beschikbaar voor beheerders (ADMIN).",
+      };
+    }
+    await requirePermission(pickAuth(ctx), "edit", "sim");
+    await requirePermission(pickAuth(ctx), "edit", "activation_order");
+    return null;
+  } catch (e: any) {
+    return {
+      kind: "PERMISSION",
+      detail: e?.message ? String(e.message) : "Onvoldoende rechten.",
+    };
+  }
+}
+
+export async function subscribeSimById(
+  simId: string,
+  ctx: AuthContext,
+  opts: {
+    orderId?: string;
+    targetProductId: string;
+    targetProductName: string;
+  }
+): Promise<SimSubscribeResult> {
+  const { orderId, targetProductId, targetProductName } = opts;
+  const t0 = Date.now();
+
+  const forbidden = await authorizeSubscribe(ctx);
+  if (forbidden) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: forbidden.detail,
+      error: forbidden,
+    };
+  }
+
+  const sim = await findSimById(simId, ctx.customerScope);
+  if (!sim) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "SIM is niet (meer) beschikbaar in dit account.",
+      error: {
+        kind: "NOT_FOUND",
+        detail: "SIM niet gevonden of onvoldoende toegang.",
+      },
+    };
+  }
+
+  const allowedBefore = new Set<SimStatus>([SimStatus.IN_STOCK, SimStatus.RESERVED]);
+  if (!allowedBefore.has(sim.status as any) && (sim.status as string) !== "IN_STOCK" && (sim.status as string) !== "RESERVED") {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: `Kan niet activeren: SIM heeft momenteel status ${sim.status}.`,
+      error: {
+        kind: "INVALID_STATUS_TRANSITION",
+        detail: `Kan niet activeren: SIM heeft momenteel status ${sim.status}. Alleen SIM's met status "Op voorraad" of "Gereserveerd" kunnen voor de eerstmaal worden geactiveerd. Gebruik Deblokkeren voor reeds geactiveerde, geblokkeerde SIM's.`,
+      },
+    };
+  }
+
+  const configured = await simhuisClient.isConfigured();
+  if (!configured) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Simhuis integratie is niet geconfigureerd.",
+      error: {
+        kind: "PROVIDER",
+        detail: "Simhuis integratie is niet geconfigureerd (username/password ontbreken).",
+      },
+    };
+  }
+
+  let subscriberAccountId: string | null = null;
+  if (orderId) {
+    try {
+      const order = await findActivationOrderById(orderId, ctx.customerScope);
+      if (order) {
+        subscriberAccountId =
+          (order as any).subCustomerId ?? (order as any).customerId ?? subscriberAccountId;
+        if (typeof subscriberAccountId === "string" && subscriberAccountId.trim().length === 0) {
+          subscriberAccountId = null;
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[simhuis-asset-service] order lookup (${orderId}) mislukte:`, e?.message ?? e);
+    }
+  }
+  if (!subscriberAccountId && ctx.customerId) {
+    subscriberAccountId = ctx.customerId;
+  }
+  if (!subscriberAccountId) {
+    try {
+      const fallback = await prisma.appSetting.findFirst({
+        where: { key: "simhuis.defaultSubscriberAccountId" },
+        select: { value: true },
+      });
+      if (fallback?.value && typeof fallback.value === "string") {
+        subscriberAccountId = fallback.value;
+      }
+    } catch {}
+  }
+  if (!subscriberAccountId) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Subscriber-account kon niet worden bepaald.",
+      error: {
+        kind: "MISSING_PROVISIONING",
+        detail: "SubscriberAccountId ontbreekt. Controleer de activatie-ordervoorkeuren of stel een standaardwaarde in via AppSetting 'simhuis.defaultSubscriberAccountId'.",
+      },
+    };
+  }
+
+  let ipPools: string[] | Record<string, string> | undefined = undefined;
+  try {
+    const prefixes = await prisma.appSetting.findMany({
+      where: { key: { startsWith: "simhuis.ipPool." } },
+      select: { key: true, value: true },
+    });
+    if (prefixes.length > 0) {
+      const pools: Record<string, string> = {};
+      for (const p of prefixes) {
+        const suffix = p.key.slice("simhuis.ipPool.".length);
+        if (suffix && typeof p.value === "string" && p.value.length > 0) {
+          pools[suffix] = p.value;
+        }
+      }
+      if (Object.keys(pools).length > 0) ipPools = pools;
+    }
+  } catch {}
+
+  try {
+    const pre1 = await precheckProductById(targetProductId, targetProductName);
+    if (!pre1.ok) {
+      return {
+        ok: false,
+        confirmedStatus: null,
+        pendingConfirmation: false,
+        message: pre1.detail ?? "Productcontrole (stap 1) mislukte.",
+        error: {
+          kind: "PRODUCT_MISMATCH",
+          detail: pre1.detail ?? "Product is ongeldig of naam komt niet overeen.",
+          statusCode: pre1.httpStatus,
+        },
+      };
+    }
+  } catch (e: any) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Productcontrole kon niet worden uitgevoerd.",
+      error: {
+        kind: "TIMEOUT_OR_NETWORK",
+        detail: String(e?.message ?? e ?? "Precheck product mislukte."),
+      },
+    };
+  }
+
+  try {
+    const pre2 = await precheckProductAvailability(sim.iccid, targetProductId);
+    if (!pre2.ok) {
+      return {
+        ok: false,
+        confirmedStatus: null,
+        pendingConfirmation: false,
+        message: pre2.detail ?? "Product is niet beschikbaar voor deze SIM.",
+        error: {
+          kind: "PRODUCT_UNAVAILABLE_FOR_ICCID",
+          detail: pre2.detail ?? "Product is niet beschikbaar voor deze ICCID.",
+          statusCode: pre2.httpStatus,
+        },
+      };
+    }
+  } catch (e: any) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Productbeschikbaarheid kon niet worden gecontroleerd.",
+      error: {
+        kind: "TIMEOUT_OR_NETWORK",
+        detail: String(e?.message ?? e ?? "Precheck availability mislukte."),
+      },
+    };
+  }
+
+  let providerRes: SimhuisSubscribeResult;
+  try {
+    providerRes = await subscribeSimhuisAsset(sim.iccid, {
+      productId: targetProductId,
+      subscriberAccountId: subscriberAccountId!,
+      ipPools,
+    });
+  } catch (e: any) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Onverwachte fout tijdens aanroep naar Simhuis.",
+      error: {
+        kind: "TIMEOUT_OR_NETWORK",
+        detail: String(e?.message ?? e ?? "Onverwachte fout."),
+      },
+    };
+  }
+
+  if (providerRes.error?.kind === "TIMEOUT_OR_NETWORK") {
+    try {
+      let live: Awaited<ReturnType<typeof getSimStatus>> | null = null;
+      const { getSimStatusFast } = await import('@/server/integrations/simhuis/service');
+      try {
+        const fast = await Promise.race<Awaited<ReturnType<typeof getSimStatusFast>> | null>([
+          (async () => getSimStatusFast(sim.iccid))(),
+          new Promise<null>((r) => setTimeout(() => r(null), 4_200)),
+        ]);
+        if (fast && (fast as any)?.status) {
+          live = fast as Awaited<ReturnType<typeof getSimStatus>>;
+        } else {
+          live = await Promise.race<Awaited<ReturnType<typeof getSimStatus>> | null>([
+            (async () => getSimStatus(sim.iccid))(),
+            new Promise<null>((r) => setTimeout(() => r(null), 8_000)),
+          ]);
+        }
+      } catch {
+        live = null;
+      }
+      const liveNexus = mapSimhuisStatusToNexus(live?.status ?? null);
+      if (liveNexus === SimStatus.ACTIVE) {
+        providerRes = {
+          ok: true,
+          rawPut: null,
+          rawGet: live?.raw ?? null,
+          accountIdUsed: providerRes.accountIdUsed,
+          httpStatusPut: 202,
+          confirmedSimhuisStatus: live?.status ?? "active",
+          confirmedLocalProductId: providerRes.confirmedLocalProductId ?? null,
+          confirmedLocalProductName: providerRes.confirmedLocalProductName ?? null,
+        };
+      } else {
+        try {
+          const fresh = await getAssetByIccid(sim.iccid);
+          if (fresh.ok && fresh.raw) {
+            const parsed = (await import('@/server/integrations/simhuis/service')).toSimStatus?.(fresh.raw, sim.iccid);
+            const status = parsed?.status ?? null;
+            const nexus = mapSimhuisStatusToNexus(status);
+            if (nexus === SimStatus.ACTIVE) {
+              providerRes = {
+                ok: true,
+                rawPut: null,
+                rawGet: fresh.raw,
+                accountIdUsed: fresh.accountIdUsed ?? providerRes.accountIdUsed,
+                httpStatusPut: 202,
+                confirmedSimhuisStatus: status ?? "active",
+                confirmedLocalProductId: providerRes.confirmedLocalProductId ?? null,
+                confirmedLocalProductName: providerRes.confirmedLocalProductName ?? null,
+              };
+            }
+          }
+        } catch {}
+      }
+    } catch {
+      // negeer: originele timeout error blijft
+    }
+  }
+
+  if (!providerRes.ok) {
+    const err = providerRes.error;
+    const mapKind = (k: string): SimSubscribeError['kind'] => {
+      switch (k) {
+        case 'NOT_CONFIGURED':
+        case 'AUTH_FAILED':
+        case 'INVALID_ACCOUNTID':
+        case 'PROVIDER_REJECTED':
+          return 'PROVIDER';
+        case 'PRODUCT_MISMATCH':
+          return 'PRODUCT_MISMATCH';
+        case 'PRODUCT_UNAVAILABLE_FOR_ICCID':
+          return 'PRODUCT_UNAVAILABLE_FOR_ICCID';
+        case 'MISSING_PROVISIONING_SETTINGS':
+          return 'MISSING_PROVISIONING';
+        case 'TIMEOUT_OR_NETWORK':
+        default:
+          return 'TIMEOUT_OR_NETWORK';
+      }
+    };
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: err?.detail ?? "Activeren mislukte.",
+      error: {
+        kind: err?.kind ? mapKind(err.kind) : 'PROVIDER',
+        detail: err?.detail ?? "Activeren via provider mislukte.",
+        statusCode: err?.httpStatus,
+      },
+    };
+  }
+
+  type RaceResult = SimSubscribeResult | "__OVERALL_TIMEOUT__";
+  const overallTimeoutMs = 15_000;
+
+  const workPromise: Promise<RaceResult> = (async () => {
+    const nexusStatus = mapSimhuisStatusToNexus(providerRes.confirmedSimhuisStatus ?? null);
+    let confirmed: "ACTIVE" | null = nexusStatus === SimStatus.ACTIVE ? "ACTIVE" : null;
+    let pendingConfirmation = confirmed === null;
+    let confirmedSource: string | null = confirmed ? "provider-direct" : null;
+
+    let confirmedLocalProductId: string | null = providerRes.confirmedLocalProductId ?? null;
+    let confirmedLocalProductName: string | null = providerRes.confirmedLocalProductName ?? null;
+
+    if (pendingConfirmation) {
+      try {
+        const { getSimStatusFast } = await import('@/server/integrations/simhuis/service');
+        let live: Awaited<ReturnType<typeof getSimStatus>> | null = null;
+        try {
+          const fast = await Promise.race<Awaited<ReturnType<typeof getSimStatusFast>> | null>([
+            (async () => getSimStatusFast(sim.iccid))(),
+            new Promise<null>((r) => setTimeout(() => r(null), 4_200)),
+          ]);
+          if (fast && (fast as any)?.status) {
+            live = fast as Awaited<ReturnType<typeof getSimStatus>>;
+          } else {
+            live = await Promise.race<Awaited<ReturnType<typeof getSimStatus>> | null>([
+              (async () => getSimStatus(sim.iccid))(),
+              new Promise<null>((r) => setTimeout(() => r(null), 8_000)),
+            ]);
+          }
+        } catch {
+          live = null;
+        }
+        const liveNexus = mapSimhuisStatusToNexus(live?.status ?? null);
+        if (liveNexus === SimStatus.ACTIVE && !confirmed) {
+          confirmed = "ACTIVE";
+          pendingConfirmation = false;
+          confirmedSource = "fallback-bulk";
+        }
+      } catch {}
+    }
+
+    if (pendingConfirmation) {
+      try {
+        await new Promise<void>((r) => setTimeout(r, 2500));
+        const { getSimStatusFast } = await import('@/server/integrations/simhuis/service');
+        let live2: Awaited<ReturnType<typeof getSimStatus>> | null = null;
+        try {
+          const fast = await Promise.race<Awaited<ReturnType<typeof getSimStatusFast>> | null>([
+            (async () => getSimStatusFast(sim.iccid))(),
+            new Promise<null>((r) => setTimeout(() => r(null), 3_200)),
+          ]);
+          if (fast && (fast as any)?.status) {
+            live2 = fast as Awaited<ReturnType<typeof getSimStatus>>;
+          } else {
+            live2 = await Promise.race<Awaited<ReturnType<typeof getSimStatus>> | null>([
+              (async () => getSimStatus(sim.iccid))(),
+              new Promise<null>((r) => setTimeout(() => r(null), 6_000)),
+            ]);
+          }
+        } catch {
+          live2 = null;
+        }
+        const live2Nexus = mapSimhuisStatusToNexus(live2?.status ?? null);
+        if (live2Nexus === SimStatus.ACTIVE && !confirmed) {
+          confirmed = "ACTIVE";
+          pendingConfirmation = false;
+          confirmedSource = "delayed-bulk";
+        }
+      } catch {}
+    }
+
+    if (confirmed === "ACTIVE" && (!confirmedLocalProductId || !confirmedLocalProductName)) {
+      try {
+        const fresh = await getAssetByIccid(sim.iccid);
+        if (fresh.ok && fresh.raw) {
+          const mod = await import('@/server/integrations/simhuis/service');
+          const r = fresh.raw as Record<string, any>;
+          const subscriptions = Array.isArray(r?.subscriptions) ? r.subscriptions : [];
+          outer: for (const sub of subscriptions) {
+            if (!sub || typeof sub !== "object") continue;
+            const bundles = Array.isArray((sub as any).bundles) ? (sub as any).bundles : [];
+            for (const bundle of bundles) {
+              if (!bundle || typeof bundle !== "object") continue;
+              const b = bundle as Record<string, any>;
+              const lpid = b?.['localProductId'] ?? b?.['productId'] ?? b?.['_id'] ?? b?.['id'];
+              const lpnm = b?.['localProductName'] ?? b?.['productName'] ?? b?.['name'] ?? b?.['displayName'];
+              if (lpid || lpnm) {
+                confirmedLocalProductId = lpid ? String(lpid) : confirmedLocalProductId;
+                confirmedLocalProductName = lpnm ? String(lpnm) : confirmedLocalProductName;
+                break outer;
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
+    let dbUpdated = false;
+    try {
+      if (!pendingConfirmation && confirmed) {
+        await prisma.$transaction(async (tx) => {
+          const updateData: any = {
+            status: SimStatus.ACTIVE,
+            updatedAt: new Date(),
+          };
+          if (confirmedLocalProductId || confirmedLocalProductName) {
+            const prev = (sim as any).productMetadata ?? {};
+            updateData.productMetadata = {
+              ...(typeof prev === "object" && prev ? prev : {}),
+              localProductId: confirmedLocalProductId ?? undefined,
+              localProductName: confirmedLocalProductName ?? undefined,
+              activatedProductId: targetProductId,
+              activatedProductName: targetProductName,
+              activatedAt: new Date().toISOString(),
+              subscriberAccountId: subscriberAccountId ?? undefined,
+              accountIdUsed: providerRes.accountIdUsed ?? undefined,
+            };
+          }
+          const updated = await tx.sIM.update({
+            where: { id: sim.id },
+            data: updateData,
+          });
+          await logAudit(tx, {
+            entityType: "sim",
+            entityId: sim.id,
+            action: "SUBSCRIBE_ACTIVATE",
+            userId: ctx.userId,
+            oldValues: { status: sim.status },
+            newValues: {
+              status: SimStatus.ACTIVE,
+              confirmedLocalProductId,
+              confirmedLocalProductName,
+            },
+            metadata: {
+              source: "simhuis-asset-subscribe",
+              providerHttpStatusPut: providerRes.httpStatusPut,
+              pendingConfirmation: false,
+              confirmedSource,
+              targetProductId,
+              targetProductName,
+              subscriberAccountId: subscriberAccountId ?? null,
+              accountIdUsed: providerRes.accountIdUsed ?? null,
+              orderId: orderId ?? null,
+            },
+          });
+          return updated;
+        });
+        dbUpdated = true;
+      } else if (pendingConfirmation) {
+        try {
+          await logAudit(prisma, {
+            entityType: "sim",
+            entityId: sim.id,
+            action: "SUBSCRIBE_ACTIVATE",
+            userId: ctx.userId,
+            oldValues: { status: sim.status },
+            newValues: { status: "PENDING_ACTIVE" as unknown as string },
+            metadata: {
+              source: "simhuis-asset-subscribe",
+              providerHttpStatusPut: providerRes.httpStatusPut,
+              pendingConfirmation: true,
+              confirmedStatusFromProvider: providerRes.confirmedSimhuisStatus ?? null,
+              confirmedLocalProductId: providerRes.confirmedLocalProductId ?? null,
+              confirmedLocalProductName: providerRes.confirmedLocalProductName ?? null,
+              targetProductId,
+              targetProductName,
+              subscriberAccountId: subscriberAccountId ?? null,
+              accountIdUsed: providerRes.accountIdUsed ?? null,
+              orderId: orderId ?? null,
+              note: "Provider call is 2xx OK, maar status en productkoppeling nog niet bevestigd. SIM-status wordt later bijgewerkt door verbruik-sync of handmatig verversen.",
+            },
+          });
+        } catch {}
+      }
+    } catch (e: any) {
+      console.error(
+        `[simhuis-asset-service] Fout bij bijwerken DB/audit na activeren van sim ${sim.id}:`,
+        e?.message ?? e
+      );
+    }
+
+    if (confirmed === "ACTIVE") {
+      const productOk =
+        confirmedLocalProductId === targetProductId ||
+        (confirmedLocalProductName && confirmedLocalProductName.trim().toLowerCase() === targetProductName.trim().toLowerCase());
+      if (productOk) {
+        return {
+          ok: true,
+          confirmedStatus: "ACTIVE",
+          pendingConfirmation: false,
+          message: "Simkaart geactiveerd.",
+          confirmedLocalProductId,
+          confirmedLocalProductName,
+        };
+      }
+      return {
+        ok: true,
+        confirmedStatus: "ACTIVE",
+        pendingConfirmation: false,
+        message: "Simkaart geactiveerd. Let op: de productkoppeling kon nog niet volledig worden bevestigd.",
+        confirmedLocalProductId,
+        confirmedLocalProductName,
+      };
+    }
+
+    return {
+      ok: true,
+      confirmedStatus: null,
+      pendingConfirmation: true,
+      message: "Het activatieverzoek is verwerkt. De activatie wordt nog gecontroleerd.",
+      confirmedLocalProductId,
+      confirmedLocalProductName,
+    };
+  })();
+
+  const timeoutPromise: Promise<RaceResult> = new Promise((resolve) => {
+    setTimeout(() => resolve("__OVERALL_TIMEOUT__"), overallTimeoutMs);
+  });
+
+  const raceResult = await Promise.race([workPromise, timeoutPromise]);
+
+  if (raceResult === "__OVERALL_TIMEOUT__") {
+    try {
+      await logAudit(prisma, {
+        entityType: "sim",
+        entityId: sim.id,
+        action: "SUBSCRIBE_ACTIVATE",
+        userId: ctx.userId,
+        oldValues: { status: sim.status },
+        newValues: { status: "PENDING_ACTIVE" as unknown as string },
+        metadata: {
+          source: "simhuis-asset-subscribe",
+          providerHttpStatusPut: providerRes.httpStatusPut,
+          pendingConfirmation: true,
+          confirmedStatusFromProvider: providerRes.confirmedSimhuisStatus ?? null,
+          confirmedLocalProductId: providerRes.confirmedLocalProductId ?? null,
+          confirmedLocalProductName: providerRes.confirmedLocalProductName ?? null,
+          targetProductId,
+          targetProductName,
+          subscriberAccountId: subscriberAccountId ?? null,
+          accountIdUsed: providerRes.accountIdUsed ?? null,
+          orderId: orderId ?? null,
+          note: `Overall timeout van ${overallTimeoutMs}ms bereikt. Provider call is 2xx OK, maar status-bevestiging duurde te lang. SIM-status wordt later bijgewerkt door verbruik-sync of handmatig verversen.`,
+        },
+      });
+    } catch {}
+    return {
+      ok: true,
+      confirmedStatus: null,
+      pendingConfirmation: true,
+      message:
+        "Het activatieverzoek is verwerkt bij Simhuis. De actuele SIM-status en productkoppeling kon niet direct worden bevestigd (binnen 15s). Controleer de status over enkele seconden of ververs handmatig.",
+      confirmedLocalProductId: providerRes.confirmedLocalProductId ?? null,
+      confirmedLocalProductName: providerRes.confirmedLocalProductName ?? null,
+    };
+  }
+
+  return raceResult as SimSubscribeResult;
 }
 
 export type SimStatusRefreshResult = {

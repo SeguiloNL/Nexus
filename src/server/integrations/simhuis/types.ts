@@ -61,6 +61,60 @@ export interface ActivateSimOptions {
   customerRef?: string | null;
 }
 
+export type SimhuisAssetErrorKind =
+  | 'NOT_CONFIGURED'
+  | 'AUTH_FAILED'
+  | 'INVALID_ACCOUNTID'
+  | 'PROVIDER_REJECTED'
+  | 'TIMEOUT_OR_NETWORK';
+
+export interface SimhuisAssetActionResult {
+  ok: boolean;
+  rawPut: unknown;
+  rawGet: unknown;
+  confirmedSimhuisStatus?: string | null;
+  accountIdUsed: string | null;
+  httpStatusPut?: number;
+  error?: {
+    kind: SimhuisAssetErrorKind;
+    detail: string;
+    httpStatus?: number;
+  };
+}
+
+export interface SimhuisSubscribeOptions {
+  productId: string;
+  subscriberAccountId: string;
+  startTime?: string;
+  ipPools?: string[] | Record<string, string>;
+}
+
+export type SimhuisSubscribeErrorKind =
+  | 'NOT_CONFIGURED'
+  | 'AUTH_FAILED'
+  | 'INVALID_ACCOUNTID'
+  | 'PRODUCT_MISMATCH'
+  | 'PRODUCT_UNAVAILABLE_FOR_ICCID'
+  | 'PROVIDER_REJECTED'
+  | 'MISSING_PROVISIONING_SETTINGS'
+  | 'TIMEOUT_OR_NETWORK';
+
+export interface SimhuisSubscribeResult {
+  ok: boolean;
+  rawPut: unknown;
+  rawGet: unknown;
+  accountIdUsed: string | null;
+  httpStatusPut?: number;
+  confirmedSimhuisStatus?: string | null;
+  confirmedLocalProductId?: string | null;
+  confirmedLocalProductName?: string | null;
+  error?: {
+    kind: SimhuisSubscribeErrorKind;
+    detail: string;
+    httpStatus?: number;
+  };
+}
+
 export interface SimhuisLoginResponse {
   token?: string;
   access_token?: string;

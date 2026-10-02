@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/session";
-import { requirePermission } from "@/lib/rbac";
+import { requirePermission, hasMinRole } from "@/lib/rbac";
+import { RoleScope } from "@/types/enums";
 import {
   CreateActivationOrderSchema,
   UpdateActivationOrderSchema,
@@ -17,6 +18,19 @@ import {
   retryFailed,
   deleteOrder,
 } from "@/server/services/activation-order.service";
+import {
+  precheckProductById,
+  precheckProductAvailability,
+} from "@/server/integrations/simhuis/service";
+import {
+  subscribeSimById,
+  type SimSubscribeResult,
+} from "@/server/services/simhuis-asset.service";
+import { UserRole } from "@/types/enums";
+
+const TARGET_PRODUCT_ID = "662a3e2f4e2af7a852384696";
+const TARGET_PRODUCT_NAME = "Seguilo B.V. ROPD LR 0.40 OU per MB 0.0029 EUR SMS";
+const KNOWN_ACCOUNT_CONTEXT = "6ffd71bb-c164-525f-ac89-64d086177d52";
 
 export type OrderActionState = {
   errors?: Record<string, string[] | undefined>;
@@ -252,6 +266,108 @@ export async function deleteOrderAction(
   revalidatePath(`/activations/${orderId}`);
   revalidatePath("/activations");
   redirect("/activations");
+}
+
+export type SimPrecheckResult = {
+  ok: boolean;
+  message: string;
+  productNameMatch?: boolean;
+  productAvailableForIccid?: boolean;
+  productNameFromApi?: string | null;
+  matchCount?: number;
+};
+
+export async function precheckSimProductAction(
+  iccid: string
+): Promise<SimPrecheckResult> {
+  const user = await getCurrentUser();
+  if (user.roleScope !== ("INTERNAL" as unknown as typeof user.roleScope) || !hasMinRole(user.role, UserRole.ADMIN)) {
+    return {
+      ok: false,
+      message: "Deze actie is alleen beschikbaar voor interne beheerders (ADMIN).",
+    };
+  }
+  if (!iccid || typeof iccid !== "string" || iccid.trim().length < 10) {
+    return {
+      ok: false,
+      message: "Ongeldige ICCID opgegeven.",
+    };
+  }
+  const iccidClean = iccid.trim();
+
+  try {
+    const pre1 = await precheckProductById(TARGET_PRODUCT_ID, TARGET_PRODUCT_NAME);
+    const pre2 = await precheckProductAvailability(iccidClean, TARGET_PRODUCT_ID);
+    return {
+      ok: pre1.ok && pre2.ok,
+      message: pre1.ok
+        ? pre2.ok
+          ? "Product is geldig en beschikbaar voor deze SIM."
+          : pre2.detail ?? "Product is niet beschikbaar voor deze SIM."
+        : pre1.detail ?? "Productcontrole mislukte.",
+      productNameMatch: pre1.ok,
+      productAvailableForIccid: pre2.ok,
+      productNameFromApi: pre1.productName ?? null,
+      matchCount: pre2.matchCount ?? 0,
+    };
+  } catch (e: any) {
+    return {
+      ok: false,
+      message: String(e?.message ?? e ?? "Onverwachte fout tijdens productcontroles."),
+    };
+  }
+}
+
+export async function validateAndSubscribeSimAction(
+  simId: string,
+  orderId?: string
+): Promise<SimSubscribeResult> {
+  const user = await getCurrentUser();
+  if (user.roleScope !== ("INTERNAL" as unknown as typeof user.roleScope) || !hasMinRole(user.role, UserRole.ADMIN)) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Deze actie is alleen beschikbaar voor interne beheerders (ADMIN).",
+      error: {
+        kind: "PERMISSION",
+        detail: "Onvoldoende rechten: INTERNAL scope + ADMIN rol vereist.",
+      },
+    };
+  }
+  if (!simId || typeof simId !== "string" || simId.trim().length === 0) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Ongeldige SIM-ID opgegeven.",
+      error: {
+        kind: "NOT_FOUND",
+        detail: "simId ontbreekt.",
+      },
+    };
+  }
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: (user as any).customerId ?? (user.customerIds?.[0] ?? null),
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
+  const result = await subscribeSimById(simId.trim(), ctx, {
+    orderId: orderId ? orderId.trim() : undefined,
+    targetProductId: TARGET_PRODUCT_ID,
+    targetProductName: TARGET_PRODUCT_NAME,
+  });
+  revalidatePath("/sims");
+  revalidatePath("/trackers");
+  revalidatePath("/activations");
+  if (orderId) {
+    revalidatePath(`/activations/${orderId.trim()}`);
+  }
+  return result;
 }
 
 export async function completeActivationAction(orderId: string) {

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
@@ -16,9 +16,13 @@ import {
   FileCheck2,
   RotateCcw,
   Play,
+  PlayCircle,
+  RefreshCw,
+  AlertCircle,
+  CheckCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -31,6 +35,16 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  DialogClose,
+} from "@/components/ui/dialog";
 import {
   DataTable,
   type ColumnDef,
@@ -125,6 +139,10 @@ interface Props {
   ) => Promise<OrderActionState>;
   markReadyAction: (id: string) => Promise<any>;
   completeActivationAction: (id: string) => Promise<any>;
+  validateAndSubscribeSimAction: (
+    simId: string,
+    orderId?: string
+  ) => Promise<any>;
 }
 
 const STEP_NAMES = [
@@ -148,12 +166,16 @@ export function ActivationWizard({
   updateAction,
   markReadyAction,
   completeActivationAction,
+  validateAndSubscribeSimAction,
 }: Props) {
   const router = useRouter();
   const sp = useSearchParams();
   const openOrderId = initialOrder?.id ?? null;
 
   const canEditPrice = canUserRole(role, "edit", "product");
+  const canActivateSim = canUserRole(role, "edit", "sim") && canUserRole(role, "edit", "activation_order");
+
+  const isAdmin = canActivateSim;
 
   const [step, setStep] = useState(
     Number(sp?.get("step") ?? (initialOrder?.status === "READY" ? 6 : 1))
@@ -369,7 +391,16 @@ export function ActivationWizard({
             options={trackerStock}
           />
         )}
-        {step === 4 && <StepSim form={form} setForm={setForm} options={simStock} />}
+        {step === 4 && (
+          <StepSim
+            form={form}
+            setForm={setForm}
+            options={simStock}
+            isAdmin={isAdmin}
+            orderId={openOrderId}
+            validateAndSubscribeSimAction={validateAndSubscribeSimAction}
+          />
+        )}
         {step === 5 && (
           <StepVehicle
             form={form}
@@ -808,15 +839,283 @@ function StepTracker({
   );
 }
 
+const TARGET_PRODUCT_NAME_FOR_UI = "Seguilo B.V. ROPD LR 0.40 OU per MB 0.0029 EUR SMS";
+
+type ActivateSimDialogProps = {
+  sim: SimOption;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => Promise<void>;
+  isPending: boolean;
+  resultMessage?: string | null;
+  resultOk?: boolean | null;
+};
+
+function ActivateSimDialog({
+  sim,
+  open,
+  onOpenChange,
+  onConfirm,
+  isPending,
+  resultMessage,
+  resultOk,
+}: ActivateSimDialogProps) {
+  const submittedRef = useRef(false);
+  const emergencyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isPendingClient, setIsPendingClient] = useState(false);
+
+  const combinedPending = isPending || isPendingClient;
+
+  useEffect(() => {
+    if (open === false && submittedRef.current && !combinedPending) {
+      submittedRef.current = false;
+      setIsPendingClient(false);
+      if (emergencyTimerRef.current) {
+        clearTimeout(emergencyTimerRef.current);
+        emergencyTimerRef.current = null;
+      }
+    }
+  }, [open, combinedPending]);
+
+  useEffect(() => {
+    return () => {
+      if (emergencyTimerRef.current) {
+        clearTimeout(emergencyTimerRef.current);
+        emergencyTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  async function handleConfirm() {
+    if (submittedRef.current || combinedPending) return;
+    submittedRef.current = true;
+    setIsPendingClient(true);
+    if (emergencyTimerRef.current) clearTimeout(emergencyTimerRef.current);
+    emergencyTimerRef.current = setTimeout(() => {
+      console.warn("[wizard-step4] ⏹️ Activeren noodstop na 30s timeout.");
+      submittedRef.current = false;
+      setIsPendingClient(false);
+      emergencyTimerRef.current = null;
+    }, 30_000);
+    try {
+      await onConfirm();
+    } finally {
+      setTimeout(() => {
+        submittedRef.current = false;
+        setIsPendingClient(false);
+        if (emergencyTimerRef.current) {
+          clearTimeout(emergencyTimerRef.current);
+          emergencyTimerRef.current = null;
+        }
+      }, 0);
+    }
+  }
+
+  const simLabel = sim.msisdn ? formatIccid(sim.iccid) + " (" + sim.msisdn + ")" : formatIccid(sim.iccid);
+  const showResult = resultMessage !== undefined && resultMessage !== null && resultMessage !== "" && !combinedPending;
+
+  return (
+    <Dialog open={open} onOpenChange={combinedPending ? () => {} : onOpenChange}>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="default"
+          size="sm"
+          disabled={combinedPending}
+          aria-busy={combinedPending}
+          aria-disabled={combinedPending}
+          className="gap-1"
+        >
+          {combinedPending ? (
+            <>
+              <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Bezig met activeren…
+            </>
+          ) : (
+            <>
+              <PlayCircle className="h-4 w-4" aria-hidden="true" />
+              Activeren
+            </>
+          )}
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Simkaart activeren?</DialogTitle>
+          <DialogDescription asChild>
+            <div aria-live="polite" className="space-y-3 text-sm">
+              <div>
+                Je staat op het punt om deze SIM-kaart te activeren:
+              </div>
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-3 space-y-1">
+                <div>
+                  <span className="font-semibold">SIM:</span> {simLabel}
+                </div>
+                <div>
+                  <span className="font-semibold">ICCID:</span>{" "}
+                  <span className="font-mono text-xs">{sim.iccid}</span>
+                </div>
+                <div>
+                  <span className="font-semibold">Product:</span>{" "}
+                  <span className="text-slate-900">{TARGET_PRODUCT_NAME_FOR_UI}</span>
+                </div>
+              </div>
+              <p className="text-xs text-slate-500">
+                Na activering wordt de SIM-kaart direct gebonden aan het bovenstaande product en
+                account. Deze actie kan niet ongedaan worden gemaakt via een enkele klik;
+                gebruik &quot;Deblokkeren&quot; voor tijdelijk geblokkeerde SIM&apos;s.
+              </p>
+            </div>
+          </DialogDescription>
+        </DialogHeader>
+        {showResult && (
+          <div
+            role="alert"
+            aria-live="polite"
+            className={
+              resultOk
+                ? "rounded-md border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 flex items-start gap-2"
+                : "rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 flex items-start gap-2"
+            }
+          >
+            {resultOk ? (
+              <CheckCircle className="h-4 w-4 mt-0.5 text-emerald-600 shrink-0" aria-hidden="true" />
+            ) : (
+              <AlertCircle className="h-4 w-4 mt-0.5 text-red-600 shrink-0" aria-hidden="true" />
+            )}
+            <div className="space-y-0.5">
+              <p className="font-medium">
+                {resultOk ? "Voltooid" : "Fout"}
+              </p>
+              <p className={resultOk ? "text-emerald-800" : "text-red-700"}>
+                {resultMessage}
+              </p>
+            </div>
+          </div>
+        )}
+        <DialogFooter className="gap-2 sm:justify-end pt-2">
+          <DialogClose asChild>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={combinedPending}
+              onClick={() => {
+                if (!combinedPending) submittedRef.current = false;
+              }}
+            >
+              Annuleren
+            </Button>
+          </DialogClose>
+          <Button
+            type="button"
+            variant="default"
+            onClick={handleConfirm}
+            disabled={combinedPending || (showResult && resultOk === true)}
+            aria-busy={combinedPending}
+            aria-disabled={combinedPending || (showResult && resultOk === true)}
+          >
+            {combinedPending ? (
+              <>
+                <RefreshCw className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                Bezig met activeren…
+              </>
+            ) : showResult && resultOk === true ? (
+              <>
+                <CheckCircle className="mr-2 h-4 w-4" aria-hidden="true" />
+                Sluiten
+              </>
+            ) : (
+              <>Activeren</>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function StepSim({
   form,
   setForm,
   options,
+  isAdmin,
+  orderId,
+  validateAndSubscribeSimAction,
 }: {
   form: any;
   setForm: (v: any) => void;
   options: SimOption[];
+  isAdmin: boolean;
+  orderId: string | null;
+  validateAndSubscribeSimAction: (simId: string, orderId?: string) => Promise<any>;
 }) {
+  const [activateOpen, setActivateOpen] = useState(false);
+  const [activateBusy, setActivateBusy] = useState(false);
+  const [activateResult, setActivateResult] = useState<{
+    message: string | null;
+    ok: boolean | null;
+  }>({ message: null, ok: null });
+
+  const selectedSim = useMemo(
+    () => options.find((s) => s.id === form.simId) ?? null,
+    [options, form.simId]
+  );
+
+  const canActivateThisSim = useMemo(() => {
+    if (!isAdmin) return false;
+    if (!selectedSim) return false;
+    const s = String(selectedSim.status ?? "").toUpperCase();
+    return s === "IN_STOCK" || s === "RESERVED";
+  }, [isAdmin, selectedSim]);
+
+  async function handleActivateConfirm() {
+    if (!selectedSim) return;
+    setActivateBusy(true);
+    setActivateResult({ message: null, ok: null });
+    try {
+      const res = await validateAndSubscribeSimAction(selectedSim.id, orderId ?? undefined);
+      if (res && res.ok) {
+        const msg =
+          res.pendingConfirmation
+            ? res.message ?? "Het activatieverzoek is verwerkt. De activatie wordt nog gecontroleerd."
+            : res.message ?? "Simkaart geactiveerd.";
+        setActivateResult({ message: msg, ok: true });
+        if (!res.pendingConfirmation) {
+          toast.success(res.message ?? "Simkaart geactiveerd.");
+        } else {
+          toast.message(res.message ?? "Activatie in behandeling.", {
+            description: "De actuele SIM-status wordt op de achtergrond bijgewerkt.",
+          });
+        }
+        if (res.confirmedStatus === "ACTIVE") {
+          try {
+            const fresh = [...options].map((o) =>
+              o.id === selectedSim.id ? { ...o, status: "ACTIVE" as any } : o
+            );
+            setForm({ ...form, simId: selectedSim.id });
+            void fresh;
+          } catch {}
+        }
+      } else {
+        const msg =
+          res?.message ?? res?.error?.detail ?? "Activeren mislukte. Probeer het opnieuw.";
+        setActivateResult({ message: msg, ok: false });
+        toast.error(msg);
+      }
+    } catch (e: any) {
+      const msg = String(e?.message ?? e ?? "Onverwachte fout tijdens activeren.");
+      setActivateResult({ message: msg, ok: false });
+      toast.error(msg);
+    } finally {
+      setActivateBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (activateOpen === false) {
+      setTimeout(() => setActivateResult({ message: null, ok: null }), 200);
+    }
+  }, [activateOpen]);
   const cols: ColumnDef<SimOption>[] = [
     {
       accessorKey: "iccid",
@@ -855,14 +1154,80 @@ function StepSim({
     },
   ];
   return (
-    <PickTable<SimOption>
-      title="Stap 4 — SIM-kaart"
-      description="Kies een SIM (IN_STOCK of RESERVED)."
-      columns={cols}
-      rows={options}
-      selectedId={form.simId}
-      onSelect={(r) => setForm({ ...form, simId: r.id })}
-    />
+    <div className="space-y-4">
+      <PickTable<SimOption>
+        title="Stap 4 — SIM-kaart"
+        description={
+          isAdmin
+            ? "Kies een SIM (IN_STOCK of RESERVED). Indien nodig kun je de gekozen SIM direct activeren via de Simhuis API."
+            : "Kies een SIM (IN_STOCK of RESERVED)."
+        }
+        columns={cols}
+        rows={options}
+        selectedId={form.simId}
+        onSelect={(r) => setForm({ ...form, simId: r.id })}
+      />
+      {selectedSim && isAdmin && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex flex-row items-center gap-2">
+              <CreditCard className="h-4 w-4 text-slate-600" aria-hidden="true" />
+              Geselecteerde SIM-kaart
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Activeer de SIM direct bij de provider voordat je de activatie-orde voltooit.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="text-sm space-y-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <span className="font-medium">ICCID:</span>{" "}
+                <span className="font-mono text-xs">{formatIccid(selectedSim.iccid)}</span>
+              </div>
+              <div>
+                <span className="font-medium">Status:</span>{" "}
+                <SimStatusBadge status={selectedSim.status as any} />
+              </div>
+              {selectedSim.msisdn && (
+                <div>
+                  <span className="font-medium">Nummer:</span> {selectedSim.msisdn}
+                </div>
+              )}
+              <div>
+                <span className="font-medium">Provider:</span> {selectedSim.provider ?? "—"}
+              </div>
+            </div>
+          </CardContent>
+          <CardFooter className="flex flex-col sm:flex-row sm:justify-end gap-2">
+            {canActivateThisSim ? (
+              selectedSim ? (
+                <ActivateSimDialog
+                  sim={selectedSim}
+                  open={activateOpen}
+                  onOpenChange={(o) => {
+                    if (!activateBusy) {
+                      setActivateOpen(o);
+                    }
+                  }}
+                  onConfirm={handleActivateConfirm}
+                  isPending={activateBusy}
+                  resultMessage={activateResult.message}
+                  resultOk={activateResult.ok}
+                />
+              ) : null
+            ) : (
+              <div className="text-xs text-slate-500 italic" aria-live="polite">
+                {!isAdmin
+                  ? "Alleen beheerders kunnen SIM-kaarten activeren."
+                  : !selectedSim
+                    ? "Kies eerst een SIM-kaart uit de tabel."
+                    : "Deze SIM kan niet direct worden geactiveerd (verkeerde status). Gebruik Deblokkeren voor reeds geactiveerde, geblokkeerde SIM's."}
+              </div>
+            )}
+          </CardFooter>
+        </Card>
+      )}
+    </div>
   );
 }
 

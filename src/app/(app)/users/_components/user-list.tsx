@@ -174,7 +174,20 @@ function CreateDialog({
     () => roles.find((r) => r.id === selectedRoleId),
     [roles, selectedRoleId]
   );
-  const needsCustomer = selectedRole?.scope === RoleScope.CUSTOMER;
+  const isInternalScope = selectedRole?.scope === RoleScope.INTERNAL;
+  const needsCustomer = !isInternalScope;
+  const scopeCustomerHint = (() => {
+    switch (selectedRole?.scope) {
+      case RoleScope.RESELLER:
+        return "Kies de RESELLER-klant of een DIRECT-subklant van een RESELLER.";
+      case RoleScope.PARTNER:
+        return "Kies de PARTNER-klant of een DIRECT-subklant van een PARTNER.";
+      case RoleScope.CUSTOMER:
+        return "Kies de DIRECT-klant waaraan deze gebruiker gekoppeld wordt.";
+      default:
+        return null;
+    }
+  })();
 
   const close = () => {
     setOpen(false);
@@ -250,23 +263,33 @@ function CreateDialog({
                         Geen rollen beschikbaar
                       </SelectItem>
                     ) : (
-                      availableRoles.map((r) => (
-                        <SelectItem key={r.id} value={r.id}>
-                          <div className="flex items-center gap-2">
-                            {r.scope === RoleScope.CUSTOMER ? (
-                              <Building2 className="h-3.5 w-3.5 text-blue-600" />
-                            ) : (
-                              <Users className="h-3.5 w-3.5 text-purple-600" />
-                            )}
-                            <span>{r.name}</span>
-                            {r.isSystem ? (
-                              <Badge variant="outline" className="text-[10px] h-4 py-0">
-                                Systeem
-                              </Badge>
-                            ) : null}
-                          </div>
-                        </SelectItem>
-                      ))
+                      availableRoles.map((r) => {
+                        let Icon: any = Users;
+                        let iconColor = "text-purple-600";
+                        if (r.scope === RoleScope.CUSTOMER) {
+                          Icon = Building2;
+                          iconColor = "text-blue-600";
+                        } else if (r.scope === RoleScope.RESELLER) {
+                          Icon = Building2;
+                          iconColor = "text-amber-600";
+                        } else if (r.scope === RoleScope.PARTNER) {
+                          Icon = Building2;
+                          iconColor = "text-teal-600";
+                        }
+                        return (
+                          <SelectItem key={r.id} value={r.id}>
+                            <div className="flex items-center gap-2">
+                              <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
+                              <span>{r.name}</span>
+                              {r.isSystem ? (
+                                <Badge variant="outline" className="text-[10px] h-4 py-0">
+                                  Systeem
+                                </Badge>
+                              ) : null}
+                            </div>
+                          </SelectItem>
+                        );
+                      })
                     )}
                   </SelectContent>
                 </Select>
@@ -288,14 +311,14 @@ function CreateDialog({
                       placeholder={
                         needsCustomer
                           ? "Kies een klant..."
-                          : "Alleen voor klant-rollen"
+                          : "N.v.t. — interne rollen"
                       }
                     />
                   </SelectTrigger>
                   <SelectContent>
                     {!needsCustomer ? (
                       <SelectItem value="__none" disabled>
-                        N.v.t. — alleen voor klant-rollen
+                        N.v.t. — interne rollen
                       </SelectItem>
                     ) : customers.length === 0 ? (
                       <SelectItem value="__none" disabled>
@@ -316,6 +339,9 @@ function CreateDialog({
                     )}
                   </SelectContent>
                 </Select>
+                {scopeCustomerHint ? (
+                  <p className="text-xs text-slate-500">{scopeCustomerHint}</p>
+                ) : null}
                 {state?.errors?.customerId?.length ? (
                   <p className="text-xs text-red-600">
                     {state.errors.customerId.join(", ")}
@@ -381,7 +407,20 @@ function EditDialog({
     if (selectedRoleId) return roles.find((r) => r.id === selectedRoleId);
     return user.roleObj as RoleOption | undefined;
   }, [roles, selectedRoleId, user.roleObj]);
-  const needsCustomer = selectedRole?.scope === RoleScope.CUSTOMER;
+  const isInternalScope = selectedRole?.scope === RoleScope.INTERNAL;
+  const needsCustomer = !isInternalScope;
+  const scopeCustomerHint = (() => {
+    switch (selectedRole?.scope) {
+      case RoleScope.RESELLER:
+        return "Kies de RESELLER-klant of een DIRECT-subklant van een RESELLER.";
+      case RoleScope.PARTNER:
+        return "Kies de PARTNER-klant of een DIRECT-subklant van een PARTNER.";
+      case RoleScope.CUSTOMER:
+        return "Kies de DIRECT-klant waaraan deze gebruiker gekoppeld wordt.";
+      default:
+        return null;
+    }
+  })();
 
   const availableRoles = useMemo(() => {
     if (viewerRoleScope === RoleScope.CUSTOMER) {
@@ -469,23 +508,33 @@ function EditDialog({
                         Geen rollen beschikbaar
                       </SelectItem>
                     ) : (
-                      availableRoles.map((r) => (
-                        <SelectItem key={r.id} value={r.id}>
-                          <div className="flex items-center gap-2">
-                            {r.scope === RoleScope.CUSTOMER ? (
-                              <Building2 className="h-3.5 w-3.5 text-blue-600" />
-                            ) : (
-                              <Users className="h-3.5 w-3.5 text-purple-600" />
-                            )}
-                            <span>{r.name}</span>
-                            {r.isSystem ? (
-                              <Badge variant="outline" className="text-[10px] h-4 py-0">
-                                Systeem
-                              </Badge>
-                            ) : null}
-                          </div>
-                        </SelectItem>
-                      ))
+                      availableRoles.map((r) => {
+                        let Icon: any = Users;
+                        let iconColor = "text-purple-600";
+                        if (r.scope === RoleScope.CUSTOMER) {
+                          Icon = Building2;
+                          iconColor = "text-blue-600";
+                        } else if (r.scope === RoleScope.RESELLER) {
+                          Icon = Building2;
+                          iconColor = "text-amber-600";
+                        } else if (r.scope === RoleScope.PARTNER) {
+                          Icon = Building2;
+                          iconColor = "text-teal-600";
+                        }
+                        return (
+                          <SelectItem key={r.id} value={r.id}>
+                            <div className="flex items-center gap-2">
+                              <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
+                              <span>{r.name}</span>
+                              {r.isSystem ? (
+                                <Badge variant="outline" className="text-[10px] h-4 py-0">
+                                  Systeem
+                                </Badge>
+                              ) : null}
+                            </div>
+                          </SelectItem>
+                        );
+                      })
                     )}
                   </SelectContent>
                 </Select>
@@ -505,39 +554,37 @@ function EditDialog({
                       placeholder={
                         needsCustomer
                           ? "Kies een klant..."
-                          : "Alleen voor klant-rollen"
+                          : "N.v.t. — interne rollen"
                       }
                     />
                   </SelectTrigger>
                   <SelectContent>
                     {!needsCustomer ? (
                       <SelectItem value="__none" disabled>
-                        N.v.t. — alleen voor klant-rollen
+                        N.v.t. — interne rollen
                       </SelectItem>
                     ) : customers.length === 0 ? (
                       <SelectItem value="__none" disabled>
                         Geen klanten beschikbaar
                       </SelectItem>
                     ) : (
-                      <>
-                        <SelectItem value="">
-                          <em className="text-slate-400">Geen klant (wissen)</em>
+                      customers.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>
+                          <div className="flex items-center gap-2">
+                            <Building2 className="h-3.5 w-3.5 text-slate-500" />
+                            <span className="font-medium">{c.companyName}</span>
+                            <span className="text-xs text-slate-400">
+                              ({c.customerNumber})
+                            </span>
+                          </div>
                         </SelectItem>
-                        {customers.map((c) => (
-                          <SelectItem key={c.id} value={c.id}>
-                            <div className="flex items-center gap-2">
-                              <Building2 className="h-3.5 w-3.5 text-slate-500" />
-                              <span className="font-medium">{c.companyName}</span>
-                              <span className="text-xs text-slate-400">
-                                ({c.customerNumber})
-                              </span>
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </>
+                      ))
                     )}
                   </SelectContent>
                 </Select>
+                {scopeCustomerHint ? (
+                  <p className="text-xs text-slate-500">{scopeCustomerHint}</p>
+                ) : null}
               </div>
             </div>
             {state?.message ? (

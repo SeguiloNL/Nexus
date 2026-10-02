@@ -10,6 +10,7 @@ import {
   updateOrderAction,
   markReadyAction,
   completeActivationAction,
+  validateAndSubscribeSimAction,
 } from "../actions";
 import { findActivationOrderById } from "@/server/services/activation-order.service";
 
@@ -162,6 +163,7 @@ export default async function ActivationWizardPage({
         updateAction={updateOrderAction as any}
         markReadyAction={markReadyAction as any}
         completeActivationAction={completeActivationAction as any}
+        validateAndSubscribeSimAction={validateAndSubscribeSimAction as any}
       />
     </Suspense>
   );

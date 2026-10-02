@@ -1,5 +1,12 @@
 import { simhuisClient, SimhuisApiError, type SimhuisRequestOptions } from './client';
-import type { ActivateSimOptions, SimhuisApiResponse, SimhuisSimStatus } from './types';
+import type {
+  ActivateSimOptions,
+  SimhuisApiResponse,
+  SimhuisSimStatus,
+  SimhuisSubscribeOptions,
+  SimhuisSubscribeResult,
+  SimhuisAssetActionResult,
+} from './types';
 
 // ============================================================
 // 📅 billTime helper: bereken facturatieperiode voor /v3/cdr/stats
@@ -55,7 +62,7 @@ function parseBytes(raw: unknown): number | null {
   return num * mult;
 }
 
-function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
+export function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, any>;
   const nestedSim = r.simCard ?? r.sim ?? r.asset ?? r.device ?? r.subscription ?? r.subscriber ?? r.esimProfile ?? r.esim ?? {};
 
@@ -5263,29 +5270,16 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
 }
 
 // ============================================================
-// Simhuis Asset Actions: suspend / unsuspend
+// Simhuis Asset Actions: suspend / unsuspend / subscribe
 // PUT /v3/assets/{iccid}/suspend   body: { accountId }
 // PUT /v3/assets/{iccid}/unsuspend body: { accountId }
+// PUT /v3/assets/{iccid}/subscribe body: { accountId, subscription: {...} }
 // ============================================================
 
-export type SimhuisAssetActionResult = {
-  ok: boolean;
-  rawPut: unknown;
-  rawGet: unknown;
-  confirmedSimhuisStatus: SimhuisSimStatus['status'] | null;
-  accountIdUsed: string | null;
-  httpStatusPut: number;
-  error?:
-    | { kind: 'NOT_CONFIGURED'; detail: string }
-    | { kind: 'AUTH_FAILED'; detail: string; httpStatus?: number }
-    | { kind: 'PROVIDER_REJECTED'; detail: string; httpStatus: number }
-    | { kind: 'TIMEOUT_OR_NETWORK'; detail: string }
-    | { kind: 'INVALID_ACCOUNTID'; detail: string };
-};
-
 async function _performSimhuisAssetAction(
-  action: 'suspend' | 'unsuspend',
-  iccid: string
+  action: 'suspend' | 'unsuspend' | 'subscribe',
+  iccid: string,
+  extraBody?: Record<string, unknown>
 ): Promise<SimhuisAssetActionResult> {
   const t0 = Date.now();
   const iccidSuffix = iccid.slice(-6);
@@ -5325,15 +5319,22 @@ async function _performSimhuisAssetAction(
     };
   }
 
-  const path = `/v3/assets/${encodeURIComponent(iccid)}/${action === 'suspend' ? 'suspend' : 'unsuspend'}`;
+  const path =
+    action === 'subscribe'
+      ? `/v3/assets/${encodeURIComponent(iccid)}/subscribe`
+      : `/v3/assets/${encodeURIComponent(iccid)}/${action === 'suspend' ? 'suspend' : 'unsuspend'}`;
 
   const doPut = async (bearer: string): Promise<PerSimAttemptResult> => {
     const fullUrl = makePerSimFullUrl(base, path, null);
+    const body =
+      action === 'subscribe'
+        ? { ...(extraBody ?? {}), accountId: accountId! }
+        : { accountId: accountId! };
     return doPerSimFetch({
       fullUrl,
       method: 'PUT',
       contentType: 'json',
-      body: { accountId: accountId! },
+      body,
       auth: { tag: 'bearer-token', token: bearer },
       timeoutMs: 8_000,
     });
@@ -5597,6 +5598,265 @@ async function _performSimhuisAssetAction(
   };
 }
 
+// ============================================================
+// Pre-activatie Productcontroles
+// ============================================================
+
+export async function precheckProductById(
+  productId: string,
+  expectedName: string
+): Promise<{ ok: boolean; httpStatus?: number; detail?: string; productName?: string | null }> {
+  let creds: { baseUrl: string; username: string; password: string; resellerId?: string | null } | null = null;
+  try {
+    creds = await getSimhuisCreds();
+  } catch (e: any) {
+    return { ok: false, detail: String(e?.message ?? e ?? 'Simhuis niet geconfigureerd.') };
+  }
+  const token = await acquireBearerToken(creds);
+  if (!token) {
+    return { ok: false, detail: 'Bearer-token kon niet worden verkregen (Simhuis login mislukt).' };
+  }
+  const accountId = getSimhuisAccountId();
+  if (!accountId) {
+    return { ok: false, detail: 'accountId is niet beschikbaar in de Bearer-token cache.' };
+  }
+  const fullUrl = makePerSimFullUrl(creds.baseUrl, `/v3/products/${encodeURIComponent(productId)}`, {
+    accountId,
+  });
+  const res = await doPerSimFetch({
+    fullUrl,
+    method: 'GET',
+    contentType: 'none',
+    body: null,
+    auth: { tag: 'bearer-token', token },
+    timeoutMs: 6_000,
+  });
+  if (res.tag !== 'ok') {
+    return {
+      ok: false,
+      httpStatus: res.statusCode,
+      detail: `Product kon niet worden opgehaald (HTTP ${res.statusCode || 0}).`,
+    };
+  }
+  const raw = res.body as Record<string, any> | null;
+  const name: string | null | undefined = raw?.['name'] ?? raw?.['productName'] ?? raw?.['displayName'] ?? null;
+  if (name !== expectedName) {
+    return {
+      ok: false,
+      httpStatus: res.statusCode,
+      productName: name,
+      detail: `Productnaam komt niet overeen. Verwacht: "${expectedName}", ontvangen: "${name ?? '(geen naam)'}".`,
+    };
+  }
+  return { ok: true, httpStatus: res.statusCode, productName: name };
+}
+
+export async function precheckProductAvailability(
+  iccid: string,
+  productId: string
+): Promise<{ ok: boolean; httpStatus?: number; detail?: string; matchCount?: number }> {
+  let creds: { baseUrl: string; username: string; password: string; resellerId?: string | null } | null = null;
+  try {
+    creds = await getSimhuisCreds();
+  } catch (e: any) {
+    return { ok: false, detail: String(e?.message ?? e ?? 'Simhuis niet geconfigureerd.') };
+  }
+  const token = await acquireBearerToken(creds);
+  if (!token) {
+    return { ok: false, detail: 'Bearer-token kon niet worden verkregen (Simhuis login mislukt).' };
+  }
+  const accountId = getSimhuisAccountId();
+  if (!accountId) {
+    return { ok: false, detail: 'accountId is niet beschikbaar in de Bearer-token cache.' };
+  }
+  const fullUrl = makePerSimFullUrl(creds.baseUrl, `/v3/products`, {
+    accountId,
+    iccid,
+    _id: productId,
+  });
+  const res = await doPerSimFetch({
+    fullUrl,
+    method: 'GET',
+    contentType: 'none',
+    body: null,
+    auth: { tag: 'bearer-token', token },
+    timeoutMs: 6_000,
+  });
+  if (res.tag !== 'ok') {
+    return {
+      ok: false,
+      httpStatus: res.statusCode,
+      detail: `Productbeschikbaarheid kon niet worden gecontroleerd (HTTP ${res.statusCode || 0}).`,
+    };
+  }
+  const body = res.body;
+  let items: unknown[] = [];
+  if (Array.isArray(body)) items = body;
+  else if (body && typeof body === 'object') {
+    const b = body as Record<string, any>;
+    if (Array.isArray(b?.data)) items = b.data;
+    else if (Array.isArray(b?.items)) items = b.items;
+    else if (Array.isArray(b?.results)) items = b.results;
+    else if (b?._id || b?.id || b?.name) items = [body];
+  }
+  const count = items.filter((x) => {
+    if (!x || typeof x !== 'object') return false;
+    const r = x as Record<string, any>;
+    const id = r['_id'] ?? r['id'] ?? r['productId'] ?? null;
+    return String(id ?? '') === String(productId);
+  }).length;
+  if (count === 0) {
+    return {
+      ok: false,
+      httpStatus: res.statusCode,
+      matchCount: 0,
+      detail: `Product is niet beschikbaar voor SIM met ICCID "${iccid.slice(0, 6)}…${iccid.slice(-4)}".`,
+    };
+  }
+  return { ok: true, httpStatus: res.statusCode, matchCount: count };
+}
+
+export async function getAssetByIccid(
+  iccid: string,
+  accountIdOverride?: string
+): Promise<{
+  ok: boolean;
+  httpStatus?: number;
+  raw?: unknown;
+  accountIdUsed?: string;
+  detail?: string;
+}> {
+  let creds: { baseUrl: string; username: string; password: string; resellerId?: string | null } | null = null;
+  try {
+    creds = await getSimhuisCreds();
+  } catch (e: any) {
+    return { ok: false, detail: String(e?.message ?? e ?? 'Simhuis niet geconfigureerd.') };
+  }
+  const token = await acquireBearerToken(creds);
+  if (!token) {
+    return { ok: false, detail: 'Bearer-token kon niet worden verkregen (Simhuis login mislukt).' };
+  }
+  const accountId = accountIdOverride ?? getSimhuisAccountId();
+  if (!accountId) {
+    return { ok: false, detail: 'accountId is niet beschikbaar.' };
+  }
+  const fullUrl = makePerSimFullUrl(creds.baseUrl, `/v3/assets/${encodeURIComponent(iccid)}`, {
+    accountId,
+  });
+  const res = await doPerSimFetch({
+    fullUrl,
+    method: 'GET',
+    contentType: 'none',
+    body: null,
+    auth: { tag: 'bearer-token', token },
+    timeoutMs: 5_000,
+  });
+  if (res.tag !== 'ok') {
+    return {
+      ok: false,
+      httpStatus: res.statusCode,
+      accountIdUsed: accountId,
+      detail: `Asset kon niet worden opgehaald (HTTP ${res.statusCode || 0}).`,
+    };
+  }
+  return { ok: true, httpStatus: res.statusCode, raw: res.body, accountIdUsed: accountId };
+}
+
+function extractLocalProductInfo(rawGet: unknown): { localProductId?: string | null; localProductName?: string | null } {
+  if (!rawGet || typeof rawGet !== 'object') return {};
+  const r = rawGet as Record<string, any>;
+  const subscriptions = Array.isArray(r?.subscriptions) ? r.subscriptions : [];
+  for (const sub of subscriptions) {
+    if (!sub || typeof sub !== 'object') continue;
+    const bundles = Array.isArray((sub as any).bundles) ? (sub as any).bundles : [];
+    for (const bundle of bundles) {
+      if (!bundle || typeof bundle !== 'object') continue;
+      const b = bundle as Record<string, any>;
+      const localProductId =
+        b?.['localProductId'] ??
+        b?.['productId'] ??
+        b?.['_id'] ??
+        b?.['id'] ??
+        null;
+      const localProductName =
+        b?.['localProductName'] ??
+        b?.['productName'] ??
+        b?.['name'] ??
+        b?.['displayName'] ??
+        null;
+      if (localProductId || localProductName) {
+        return {
+          localProductId: localProductId ? String(localProductId) : null,
+          localProductName: localProductName ? String(localProductName) : null,
+        };
+      }
+    }
+  }
+  return {};
+}
+
+export async function subscribeSimhuisAsset(
+  iccid: string,
+  options: SimhuisSubscribeOptions
+): Promise<SimhuisSubscribeResult> {
+  const { productId, subscriberAccountId, startTime, ipPools } = options;
+
+  const subscriptionBody: Record<string, unknown> = {
+    subscriberAccountId,
+    productId,
+  };
+  if (startTime !== undefined) subscriptionBody.startTime = startTime;
+  if (ipPools !== undefined) subscriptionBody.ipPools = ipPools;
+
+  const assetResult = await _performSimhuisAssetAction('subscribe', iccid, {
+    subscription: subscriptionBody,
+  });
+
+  const empty: SimhuisSubscribeResult = {
+    ok: false,
+    rawPut: assetResult.rawPut,
+    rawGet: assetResult.rawGet,
+    accountIdUsed: assetResult.accountIdUsed,
+    httpStatusPut: assetResult.httpStatusPut,
+  };
+
+  if (!assetResult.ok) {
+    const err = assetResult.error;
+    const errKind = err?.kind;
+    const kindMap: Record<string, unknown> = {
+      NOT_CONFIGURED: 'NOT_CONFIGURED',
+      AUTH_FAILED: 'AUTH_FAILED',
+      INVALID_ACCOUNTID: 'INVALID_ACCOUNTID',
+      PROVIDER_REJECTED: 'PROVIDER_REJECTED',
+      TIMEOUT_OR_NETWORK: 'TIMEOUT_OR_NETWORK',
+    };
+    let resolvedKind: unknown = 'PROVIDER_REJECTED';
+    if (errKind && typeof errKind === 'string' && errKind in kindMap) {
+      resolvedKind = kindMap[errKind];
+    }
+    return {
+      ...empty,
+      error: {
+        kind: resolvedKind as any,
+        detail: err?.detail ?? 'Onbekende fout bij activeren via provider.',
+        httpStatus: err?.httpStatus,
+      },
+    };
+  }
+
+  const productInfo = extractLocalProductInfo(assetResult.rawGet);
+  return {
+    ok: true,
+    rawPut: assetResult.rawPut,
+    rawGet: assetResult.rawGet,
+    accountIdUsed: assetResult.accountIdUsed,
+    httpStatusPut: assetResult.httpStatusPut,
+    confirmedSimhuisStatus: assetResult.confirmedSimhuisStatus,
+    confirmedLocalProductId: productInfo.localProductId ?? null,
+    confirmedLocalProductName: productInfo.localProductName ?? null,
+  };
+}
+
 export async function suspendSimhuisAsset(iccid: string): Promise<SimhuisAssetActionResult> {
   return _performSimhuisAssetAction('suspend', iccid);
 }
@@ -5606,4 +5866,4 @@ export async function unsuspendSimhuisAsset(iccid: string): Promise<SimhuisAsset
 }
 
 export { simhuisClient, SimhuisApiError };
-export type { SimhuisRequestOptions };
+export type { SimhuisRequestOptions, SimhuisAssetActionResult, SimhuisSubscribeResult };
