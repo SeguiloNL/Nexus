@@ -2065,6 +2065,143 @@ function enrichSimhuisStatusWithDirectRawExtracts(
   return baseStatus;
 }
 
+// ============================================================
+// ⚡ getSimStatusFast — LIGHTWEIGHT fast-path voor UI refresh
+// Alleen voor STATUS bepaling (GEEN verbruik, GEEN 50-pogingen!)
+//   - Overall max: ~4 seconden
+//   - Eerst: Winning Combo (POST assetsbulk + esimsbulk) met 2.5s timeout (1 retry op 401)
+//   - Daarna: 1x GET /assets/{iccid} (met bearer + aid) 2s timeout
+//   - Indien match + status onbekend → return nul (geen zware fallback)
+// ============================================================
+export async function getSimStatusFast(iccid: string): Promise<SimhuisSimStatus | null> {
+  const startedAt = Date.now();
+  const OVERALL_MAX_MS = 4000;
+  const DEBUG_LOG = (msg: string) => {
+    try { console.debug(`[simhuis:getSimStatusFast] [${iccid.slice(-6)}] (+${Date.now() - startedAt}ms) ${msg}`); } catch {}
+  };
+  const timedOut = () => Date.now() - startedAt > OVERALL_MAX_MS;
+
+  let creds: { username: string; password: string; baseUrl: string; resellerId?: string | null | undefined };
+  let aid: string | null;
+  let bearer: string | null;
+  try {
+    creds = await getSimhuisCreds();
+    aid = getSimhuisAccountId();
+    bearer = await acquireBearerToken(creds);
+  } catch (e: any) {
+    DEBUG_LOG(`❌ Creds/acquireBearer mislukt: ${e?.message ?? e}`);
+    return null;
+  }
+  if (!aid || !bearer) {
+    DEBUG_LOG(`❌ Geen accountId of bearer-token (aid=${aid ? 'OK' : 'null'}, bearer=${bearer ? 'OK' : 'null'}) → skip fast-path`);
+    return null;
+  }
+
+  // ====== STAP 1: Winning Combo (POST assetsbulk + esimsbulk parallel) ======
+  let wcAuth: PerSimAuth = { tag: 'bearer-token', token: bearer };
+  const wcBulkTimeoutMs = 2500;
+  for (let wcAttempt = 1; wcAttempt <= 2; wcAttempt++) {
+    if (timedOut()) break;
+    try {
+      const [aRes, eRes] = await Promise.all([
+        doPerSimFetch({
+          fullUrl: makePerSimFullUrl(creds.baseUrl, '/v3/assetsbulk', { accountId: aid }),
+          method: 'POST',
+          contentType: 'json',
+          body: { accountId: aid, page: 1, limit: 1000 },
+          auth: wcAuth,
+          timeoutMs: wcBulkTimeoutMs,
+        }),
+        doPerSimFetch({
+          fullUrl: makePerSimFullUrl(creds.baseUrl, '/v3/esimsbulk', { accountId: aid }),
+          method: 'POST',
+          contentType: 'json',
+          body: { accountId: aid, page: 1, limit: 1000 },
+          auth: wcAuth,
+          timeoutMs: wcBulkTimeoutMs,
+        }),
+      ]);
+      const both401 = aRes.statusCode === 401 && eRes.statusCode === 401;
+      if (both401 && wcAttempt === 1) {
+        DEBUG_LOG(`🏆 Bulk = beide 401 → refresh token + retry`);
+        invalidateBearerTokenCache(creds.baseUrl);
+        const fresh = await acquireBearerToken(creds);
+        if (fresh) { wcAuth = { tag: 'bearer-token', token: fresh }; continue; }
+        break;
+      }
+      const batches: Array<{ name: string; items: any[] }> = [];
+      if (aRes.tag === 'ok') batches.push({ name: 'assetsbulk-aid-fast', items: extractSimList(aRes.body) });
+      if (eRes.tag === 'ok') batches.push({ name: 'esimsbulk-aid-fast', items: extractSimList(eRes.body) });
+      DEBUG_LOG(`🏆 Fast poging ${wcAttempt}/2: HTTP assetsbulk=${aRes.tag === 'ok' ? '200' : aRes.statusCode} esimsbulk=${eRes.tag === 'ok' ? '200' : eRes.statusCode} items=${batches.map(b => `${b.name}=${b.items.length}`).join(',') || '0'}`);
+      for (const batch of batches) {
+        for (const raw of batch.items) {
+          const s = (v: any) => v == null ? '' : String(v).trim();
+          const ic1 = s((raw as any).iccid);
+          const ic2 = Array.isArray((raw as any).profiles) ? s(((raw as any).profiles ?? []).find((p: any) => !!s(p?.iccid))?.iccid) : '';
+          const ic3 = s((raw as any).enabledProfile?.iccid);
+          if (ic1 !== iccid && ic2 !== iccid && ic3 !== iccid) continue;
+          let parsed: SimhuisSimStatus | null = null;
+          try { parsed = toSimStatus(raw, iccid); } catch { parsed = null; }
+          if (!parsed) parsed = { iccid } as SimhuisSimStatus;
+          if (!(parsed as any).iccid) (parsed as any).iccid = iccid;
+          try { parsed = enrichSimhuisStatusWithDirectRawExtracts(parsed, raw, iccid); } catch {}
+          if (parsed && (parsed as any).status) {
+            DEBUG_LOG(`🏆 Fast: GEVONDEN in ${batch.name}, status=${(parsed as any).status} → return`);
+            return parsed;
+          } else if (parsed) {
+            DEBUG_LOG(`🏆 Fast: GEVONDEN in ${batch.name}, maar status=null. Opslaan als beste fallback...`);
+            return parsed;
+          }
+        }
+      }
+      if (batches.length === 0 && wcAttempt === 1 && (aRes.statusCode === 401 || eRes.statusCode === 401)) {
+        invalidateBearerTokenCache(creds.baseUrl);
+        const fresh = await acquireBearerToken(creds);
+        if (fresh) { wcAuth = { tag: 'bearer-token', token: fresh }; continue; }
+      }
+      break;
+    } catch (e: any) {
+      DEBUG_LOG(`🏆 Fast Winning Combo exceptie: ${e?.message ?? e}`);
+      break;
+    }
+  }
+
+  // ====== STAP 2: 1x per-SIM fast GET (2s timeout) ======
+  if (!timedOut()) {
+    try {
+      const res = await doPerSimFetch({
+        fullUrl: makePerSimFullUrl(creds.baseUrl, `/v3/assets/${iccid}`, { accountId: aid }),
+        method: 'GET',
+        contentType: 'none',
+        body: null,
+        auth: { tag: 'bearer-token', token: bearer },
+        timeoutMs: 2000,
+      });
+      if (res.tag === 'ok') {
+        let parsed: SimhuisSimStatus | null = null;
+        try { parsed = toSimStatus(res.body, iccid); } catch { parsed = null; }
+        if (!parsed) parsed = { iccid } as SimhuisSimStatus;
+        if (!(parsed as any).iccid) (parsed as any).iccid = iccid;
+        try { parsed = enrichSimhuisStatusWithDirectRawExtracts(parsed, res.body, iccid); } catch {}
+        if (parsed && (parsed as any).status) {
+          DEBUG_LOG(`⚡ Fast single /v3/assets/{iccid} success, status=${(parsed as any).status} → return`);
+          return parsed;
+        } else if (parsed) {
+          DEBUG_LOG(`⚡ Fast single /v3/assets/{iccid} zonder status → null`);
+          return parsed;
+        }
+      } else {
+        DEBUG_LOG(`⚡ Fast single GET: HTTP ${res.statusCode}`);
+      }
+    } catch (e: any) {
+      DEBUG_LOG(`⚡ Fast single GET exceptie: ${e?.message ?? e}`);
+    }
+  }
+
+  DEBUG_LOG(`⏹️ Fast-path leverde geen status op na ${Date.now() - startedAt}ms → return null (zware discovery overslaan)`);
+  return null;
+}
+
 export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
   const startedAtGetSim = Date.now();
   const DEBUG_LOG = (msg: string) => {

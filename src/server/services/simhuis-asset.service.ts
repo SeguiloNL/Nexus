@@ -270,7 +270,25 @@ async function performAction(
   let fallbackBulkNexus: SimStatus | null = null;
   if (pendingConfirmation) {
     try {
-      const live = await getSimStatus(sim.iccid);
+      // ⚡ Fast-path eerst (max 4s), daarna fallback (max 8s). GEEN 17s wachten!
+      const { getSimStatusFast } = await import('@/server/integrations/simhuis/service');
+      let live: Awaited<ReturnType<typeof getSimStatus>> | null = null;
+      try {
+        const fast = await Promise.race<Awaited<ReturnType<typeof getSimStatusFast>> | null>([
+          (async () => getSimStatusFast(sim.iccid))(),
+          new Promise<null>((r) => setTimeout(() => r(null), 4_200)),
+        ]);
+        if (fast && (fast as any)?.status) {
+          live = fast as Awaited<ReturnType<typeof getSimStatus>>;
+        } else {
+          live = await Promise.race<Awaited<ReturnType<typeof getSimStatus>> | null>([
+            (async () => getSimStatus(sim.iccid))(),
+            new Promise<null>((r) => setTimeout(() => r(null), 8_000)),
+          ]);
+        }
+      } catch {
+        live = null;
+      }
       fallbackBulkStatus = live?.status ?? null;
       fallbackBulkNexus = mapSimhuisStatusToNexus(live?.status ?? null);
       if (fallbackBulkNexus === expectedAfter && !confirmed) {
@@ -294,7 +312,25 @@ async function performAction(
     try {
       const timeoutMs = 2500;
       await new Promise<void>((resolve) => setTimeout(resolve, timeoutMs));
-      const live2 = await getSimStatus(sim.iccid);
+      // ⚡ Delayed recheck: eerst fast-path (3s max)
+      const { getSimStatusFast } = await import('@/server/integrations/simhuis/service');
+      let live2: Awaited<ReturnType<typeof getSimStatus>> | null = null;
+      try {
+        const fast = await Promise.race<Awaited<ReturnType<typeof getSimStatusFast>> | null>([
+          (async () => getSimStatusFast(sim.iccid))(),
+          new Promise<null>((r) => setTimeout(() => r(null), 3_200)),
+        ]);
+        if (fast && (fast as any)?.status) {
+          live2 = fast as Awaited<ReturnType<typeof getSimStatus>>;
+        } else {
+          live2 = await Promise.race<Awaited<ReturnType<typeof getSimStatus>> | null>([
+            (async () => getSimStatus(sim.iccid))(),
+            new Promise<null>((r) => setTimeout(() => r(null), 6_000)),
+          ]);
+        }
+      } catch {
+        live2 = null;
+      }
       const live2Nexus = mapSimhuisStatusToNexus(live2?.status ?? null);
       delayedRecheckDone = true;
       if (live2Nexus === expectedAfter && !confirmed) {
@@ -475,7 +511,43 @@ export async function refreshSimStatusById(
 
   let live: Awaited<ReturnType<typeof getSimStatus>> | null = null;
   try {
-    live = await getSimStatus(sim.iccid);
+    // ⚡ Eerst fast-path (max 4s). Alleen als fast-path geen result geeft
+    //    → fallback naar volledige getSimStatus (met 10s overall abort, GEEN 40s!)
+    //    zodat de gebruiker nooit 17s hoeft te wachten.
+    const { getSimStatusFast } = await import('@/server/integrations/simhuis/service');
+    let fast: Awaited<ReturnType<typeof getSimStatusFast>> | null = null;
+    try {
+      fast = await Promise.race<Awaited<ReturnType<typeof getSimStatusFast>> | null>([
+        (async () => getSimStatusFast(sim.iccid))(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 4_200)),
+      ]);
+    } catch {
+      fast = null;
+    }
+
+    if (fast && (fast as any)?.status) {
+      live = fast as Awaited<ReturnType<typeof getSimStatus>>;
+    } else {
+      // Fallback (vrij zelden nodig): geef getSimStatus MAXIMAAL 10 seconden
+      live = await Promise.race<Awaited<ReturnType<typeof getSimStatus>> | null>([
+        (async () => getSimStatus(sim.iccid))(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
+      ]);
+      if (!live) {
+        return {
+          ok: false,
+          message: "Simhuis-antwoord liet te lang op zich wachten. De getoonde status is mogelijk niet actueel.",
+          previousStatus,
+          refreshedStatus: null,
+          simhuisStatusRaw: null,
+          changed: false,
+          error: {
+            kind: "TIMEOUT_OR_NETWORK",
+            detail: "Fall-back getSimStatus timeout (>10s). Fast-path heeft ook geen match.",
+          },
+        };
+      }
+    }
   } catch (e: any) {
     return {
       ok: false,

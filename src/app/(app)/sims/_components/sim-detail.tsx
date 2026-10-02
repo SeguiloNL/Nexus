@@ -739,11 +739,11 @@ export function SimDetail({
     setIsStatusRefreshPendingClient(true);
     if (statusRefreshEmergencyRef.current) clearTimeout(statusRefreshEmergencyRef.current);
     statusRefreshEmergencyRef.current = setTimeout(() => {
-      console.warn("[sim-detail] ⏹️ Status refresh noodstop na 40s timeout.");
+      console.warn("[sim-detail] ⏹️ Status refresh noodstop na 12s timeout (achtergrond sync gaat door).");
       statusRefreshSubmittedOnceRef.current = false;
       setIsStatusRefreshPendingClient(false);
       statusRefreshEmergencyRef.current = null;
-    }, 40_000);
+    }, 12_000);
     startStatusRefreshTransition(async () => {
       try {
         const fd = new FormData();
@@ -769,11 +769,11 @@ export function SimDetail({
     setIsStatusRefreshPendingClient(true);
     if (statusRefreshEmergencyRef.current) clearTimeout(statusRefreshEmergencyRef.current);
     statusRefreshEmergencyRef.current = setTimeout(() => {
-      console.warn("[sim-detail] ⏹️ Status refresh noodstop na 40s timeout.");
+      console.warn("[sim-detail] ⏹️ Status refresh noodstop na 12s timeout (achtergrond sync gaat door).");
       statusRefreshSubmittedOnceRef.current = false;
       setIsStatusRefreshPendingClient(false);
       statusRefreshEmergencyRef.current = null;
-    }, 40_000);
+    }, 12_000);
     startStatusRefreshTransition(async () => {
       try {
         const fd = new FormData();
@@ -865,31 +865,45 @@ export function SimDetail({
       const isTimeout = kind === "TIMEOUT_OR_NETWORK";
       const isProvider = kind === "PROVIDER";
       const isInvalid = kind === "INVALID_STATUS_TRANSITION";
+      const isWarning = isTimeout || (isProvider && !isPermission && !isNotFound);
       const title = isPermission
         ? "Onvoldoende rechten"
         : isNotFound
           ? "Simkaart niet gevonden"
           : isTimeout
-            ? "Kon status niet verversen"
+            ? "Status verversen duurde te lang"
             : isProvider
               ? "Simhuis verbindingsprobleem"
               : isInvalid
                 ? "Ongeldige status"
                 : "Fout bij verversen";
+      const bannerBorder = isWarning
+        ? "border-amber-300 bg-amber-50 text-amber-800"
+        : "border-red-300 bg-red-50 text-red-800";
+      const iconColor = isWarning ? "text-amber-600" : "text-red-600";
+      const titleColor = isWarning ? "text-amber-900" : "text-red-900";
+      const msgColor = isWarning ? "text-amber-800/90" : "text-red-800/90";
+      const hintColor = isWarning ? "text-amber-700/80" : "text-red-700/80";
+      const IconComp = isWarning ? AlertTriangle : AlertTriangle;
+      const bannerRole = isWarning ? "status" : "alert";
       statusRefreshBanner = (
         <div
-          role="alert"
-          className="flex items-start gap-2.5 rounded-md border border-red-300 bg-red-50 px-3.5 py-2.5 text-sm text-red-800 shadow-sm w-full"
+          role={bannerRole}
+          className={"flex items-start gap-2.5 rounded-md border " + bannerBorder + " px-3.5 py-2.5 text-sm shadow-sm w-full"}
           key="banner-status-refresh-error"
         >
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
+          <IconComp className={"mt-0.5 h-4 w-4 shrink-0 " + iconColor} aria-hidden="true" />
           <div className="flex-1 min-w-0">
-            <p className="font-medium text-red-900">{title}</p>
-            <p className="whitespace-pre-wrap break-words text-red-800/90">
+            <p className={"font-medium " + titleColor}>{title}</p>
+            <p className={"whitespace-pre-wrap break-words " + msgColor}>
               {refreshState.message || refreshState.error?.detail || "Onbekende fout."}
             </p>
-            {isTimeout ? (
-              <p className="mt-1 text-xs text-red-700/80">
+            {isWarning ? (
+              <p className={"mt-1 text-xs " + hintColor}>
+                De laatst bekende status blijft zichtbaar. Ververs handmatig als je zeker wilt zijn van de actuele waarde.
+              </p>
+            ) : isTimeout ? (
+              <p className={"mt-1 text-xs " + hintColor}>
                 Controleer je internetverbinding en ververs handmatig de status.
               </p>
             ) : null}
@@ -908,7 +922,7 @@ export function SimDetail({
                   className={"h-3.5 w-3.5 " + (isStatusRefreshPending ? "animate-spin" : "")}
                   aria-hidden="true"
                 />
-                Opnieuw proberen
+                {isWarning ? "Status opnieuw verversen" : "Opnieuw proberen"}
               </Button>
             </div>
           </div>
