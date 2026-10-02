@@ -28,9 +28,6 @@ import {
 
 export default async function DashboardPage() {
   const user = await requireUser();
-  if (!canUserRole(user.permissions, "view", "dashboard")) {
-    throw new PermissionError("Je hebt geen toegang tot het dashboard.");
-  }
 
   const customerIds = user.customerIds ?? [];
   const hasScope = customerIds.length > 0;
