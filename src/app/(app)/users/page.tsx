@@ -4,8 +4,9 @@ import { findManyUsers } from "@/server/services/user.service";
 import { findManyRoles } from "@/server/services/role.service";
 import { findManyCustomers } from "@/server/services/customer.service";
 import { UserList } from "./_components/user-list";
-import { UserRole, RoleScope, CustomerType } from "@/types/enums";
-import { hasMinRole } from "@/lib/rbac";
+import { UserRole, RoleScope, CustomerType, ResourceType, ResourceAction } from "@/types/enums";
+import { canUserRole } from "@/lib/auth/session";
+import { PermissionError } from "@/lib/rbac";
 
 function parseNumber(
   value: string | string[] | undefined | null,
@@ -45,6 +46,14 @@ function parseDate(
   return isNaN(d.getTime()) ? undefined : raw;
 }
 
+function userCan(
+  permissions: any,
+  action: ResourceAction,
+  resource: ResourceType
+): boolean {
+  return canUserRole(permissions, action, resource);
+}
+
 export default async function UsersPage({
   searchParams,
 }: {
@@ -67,20 +76,14 @@ export default async function UsersPage({
   const session = await auth();
   if (!session?.user) redirect("/login");
 
-  const userRole = (session.user.role ?? UserRole.VIEWER) as UserRole;
-
-  if (!hasMinRole(userRole, UserRole.VIEWER)) {
-    redirect("/");
+  if (!userCan(session.user.permissions, "view", "user")) {
+    throw new PermissionError("Je mag geen gebruikers bekijken.");
   }
 
-  const canView = hasMinRole(userRole, UserRole.VIEWER);
-  const canCreate = hasMinRole(userRole, UserRole.ADMIN);
-  const canEdit = hasMinRole(userRole, UserRole.ADMIN);
-  const canDelete = hasMinRole(userRole, UserRole.ADMIN);
-
-  if (!canView) {
-    redirect("/");
-  }
+  const canView = true;
+  const canCreate = userCan(session.user.permissions, "create", "user");
+  const canEdit = userCan(session.user.permissions, "edit", "user");
+  const canDelete = userCan(session.user.permissions, "delete", "user");
 
   const ctx = {
     userId: session.user.id,

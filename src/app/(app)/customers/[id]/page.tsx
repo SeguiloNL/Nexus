@@ -21,7 +21,7 @@ export default async function CustomerDetailPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "customer")) {
+  if (!canUserRole(session.user.permissions, "view", "customer")) {
     throw new PermissionError("Je mag geen klanten bekijken.");
   }
 

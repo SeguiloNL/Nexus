@@ -8,7 +8,7 @@ import { canUserRole } from "@/lib/auth/session";
 export default async function NewSimPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "create", "sim")) {
+  if (!canUserRole(session.user.permissions, "create", "sim")) {
     throw new PermissionError("Je mag geen SIM-kaarten aanmaken.");
   }
 

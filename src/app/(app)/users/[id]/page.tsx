@@ -17,7 +17,7 @@ export default async function UserDetailPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "user")) {
+  if (!canUserRole(session.user.permissions, "view", "user")) {
     throw new PermissionError("Je mag geen gebruikers bekijken.");
   }
 

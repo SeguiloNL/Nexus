@@ -35,6 +35,42 @@ async function resolveRoleForUser(
   const legacyRole: UserRoleEnum =
     (user.role as UserRoleEnum) ?? UserRoleEnum.VIEWER;
 
+  const legacyRoleValues: string[] = ["ADMIN", "EMPLOYEE", "VIEWER"];
+  const hasDynamicRoleId =
+    typeof user.roleId === "string" &&
+    user.roleId.length > 0 &&
+    !legacyRoleValues.includes(user.roleId);
+
+  if (hasDynamicRoleId) {
+    try {
+      const [dbRole, permissionsService] = await Promise.all([
+        prisma.role.findUnique({
+          where: { id: user.roleId! },
+          select: {
+            id: true,
+            name: true,
+            scope: true,
+          },
+        }),
+        import("@/server/services/role.service").then(
+          (m) => m.getPermissionsByRoleId
+        ),
+      ]);
+
+      if (dbRole) {
+        const permissions = await permissionsService(user.roleId!);
+        return {
+          roleId: dbRole.id,
+          roleScope: dbRole.scope as RoleScope,
+          roleName: dbRole.name,
+          permissions,
+        };
+      }
+    } catch (_e) {
+      /* fallthrough naar legacy fallback indien dbRole niet gevonden */
+    }
+  }
+
   let scope = RoleScope.INTERNAL;
 
   if (user.customerId) {

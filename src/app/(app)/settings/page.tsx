@@ -17,13 +17,13 @@ import {
 export default async function SettingsPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "setting")) {
-    if (!canUserRole(session.user.role, "edit", "setting")) {
+  if (!canUserRole(session.user.permissions, "view", "setting")) {
+    if (!canUserRole(session.user.permissions, "edit", "setting")) {
       throw new PermissionError("Je mag geen instellingen bekijken.");
     }
   }
 
-  const canEdit = canUserRole(session.user.role, "edit", "setting");
+  const canEdit = canUserRole(session.user.permissions, "edit", "setting");
   const [inserveSettings, simhuisSettings, navixySettings] = await Promise.all([
     getInserveSettingsMasked(),
     getSimhuisSettingsMasked(),

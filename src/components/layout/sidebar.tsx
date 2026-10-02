@@ -177,7 +177,6 @@ export function Sidebar({
         return false;
       }
     }
-    if (item.resource === "dashboard") return true;
     return resolveCan(item.action, item.resource as ResourceType);
   });
 

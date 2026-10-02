@@ -8,7 +8,7 @@ import { PermissionError } from "@/lib/rbac";
 export default async function VehiclesPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "vehicle")) {
+  if (!canUserRole(session.user.permissions, "view", "vehicle")) {
     throw new PermissionError("Je mag geen voertuigen bekijken.");
   }
 
@@ -19,9 +19,9 @@ export default async function VehiclesPage() {
     customerScope: session.user.customerIds,
   });
 
-  const canCreate = canUserRole(session.user.role, "create", "vehicle");
-  const canEdit = canUserRole(session.user.role, "edit", "vehicle");
-  const canDelete = canUserRole(session.user.role, "delete", "vehicle");
+  const canCreate = canUserRole(session.user.permissions, "create", "vehicle");
+  const canEdit = canUserRole(session.user.permissions, "edit", "vehicle");
+  const canDelete = canUserRole(session.user.permissions, "delete", "vehicle");
 
   return (
     <VehicleList

@@ -13,7 +13,7 @@ export default async function AuditLogPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "audit_log")) {
+  if (!canUserRole(session.user.permissions, "view", "audit_log")) {
     throw new PermissionError("Je mag geen auditlogs bekijken.");
   }
 

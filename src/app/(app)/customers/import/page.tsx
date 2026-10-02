@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 export default async function CustomersImportPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  await requirePermission(session.user.role, "import", "customer");
+  await requirePermission(session.user.permissions, "import", "customer");
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto">

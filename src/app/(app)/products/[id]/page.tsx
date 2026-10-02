@@ -13,7 +13,7 @@ export default async function ProductDetailPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "product")) {
+  if (!canUserRole(session.user.permissions, "view", "product")) {
     throw new PermissionError("Je mag geen producten bekijken.");
   }
 

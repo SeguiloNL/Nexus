@@ -42,6 +42,7 @@ import {
   Database,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { SIM_PROVIDER_REGISTRY } from "@/lib/providers/provider-registry";
 
 interface SimhuisSettingsFormProps {
   initial: SimhuisSettingsMasked;
@@ -59,6 +60,9 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
   const [connectionResult, setConnectionResult] = useState<ConnectionTestResult | null>(null);
   const [isSyncPending, startSyncTransition] = useTransition();
   const [syncResult, setSyncResult] = useState<SimSyncActionResult | null>(null);
+
+  const PROVIDER = SIM_PROVIDER_REGISTRY.simhuis.displayNameForAdmins;
+  const PROVIDER_CARD_TITLE = `${PROVIDER} API-koppeling`;
 
   const [baseUrl, setBaseUrl] = useState(initial.baseUrl ?? "");
   const [authMode, setAuthMode] = useState<"basic" | "bearer">(initial.authMode ?? "basic");
@@ -95,7 +99,7 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
   const handleSyncSims = () => {
     setSyncResult({
       ok: true,
-      message: "Sync wordt gestart… Simhuis SIM-voorraad wordt opgehaald en verwerkt.",
+      message: `Sync wordt gestart… ${PROVIDER} SIM-voorraad wordt opgehaald en verwerkt.`,
     });
     startSyncTransition(async () => {
       try {
@@ -107,7 +111,7 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
           message:
             err instanceof Error
               ? `Sync-fout: ${err.message}`
-              : "Sync Simhuis SIM-voorraad is onverwachts gestopt. Probeer het opnieuw of controleer de server-logboeken.",
+              : `Sync ${PROVIDER} SIM-voorraad is onverwachts gestopt. Probeer het opnieuw of controleer de server-logboeken.`,
           errorMessages: [
             err instanceof Error ? String(err.message) : String(err ?? "Onbekende fout"),
           ].filter(Boolean) as string[],
@@ -132,13 +136,13 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
           </div>
           <div className="flex-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <CardTitle className="text-base">Simhuis API-koppeling</CardTitle>
+              <CardTitle className="text-base">{PROVIDER_CARD_TITLE}</CardTitle>
               <Badge variant={sourceLabel.variant} className={cn("text-xs font-normal", sourceLabel.className)}>
                 {sourceLabel.text}
               </Badge>
             </div>
             <CardDescription>
-              Configureer hier de API-verbinding met Simhuis voor SIM-activatie en
+              Configureer hier de API-verbinding met {PROVIDER} voor SIM-activatie en
               -status. Alleen beheerders kunnen deze waarden aanpassen.
             </CardDescription>
           </div>
@@ -171,7 +175,7 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
             >
               <Info className="mt-0.5 h-4 w-4 flex-shrink-0" />
               <span>
-                De Simhuis-verbinding is nu ingesteld via omgevingsvariabelen. Vul
+                De {PROVIDER}-verbinding is nu ingesteld via omgevingsvariabelen. Vul
                 hieronder nieuwe waarden in om deze via de database te
                 overschrijven. Laat het wachtwoord leeg om de huidige waarde te
                 behouden.
@@ -273,7 +277,7 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
                       ? "••••••••"
                       : initial.hasPassword
                         ? "Laat leeg om huidige wachtwoord te behouden"
-                        : "Voer het Simhuis wachtwoord in"
+                        : `Voer het ${PROVIDER} wachtwoord in`
                   }
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -330,11 +334,11 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
               </div>
               <div>
                 <p className="text-sm font-medium text-amber-900">
-                  Standaard Simhuis-product voor nieuwe SIM-activaties
+                  Standaard {PROVIDER}-product voor nieuwe SIM-activaties
                 </p>
                 <p className="text-xs text-amber-800/80 mt-0.5">
                   Bij elke SIM-activering voor een tracker wordt automatisch dit product
-                  (offer/plan) doorgestuurd naar Simhuis. Productnaam is alleen voor
+                  (offer/plan) doorgestuurd naar {PROVIDER}. Productnaam is alleen voor
                   eigen referentie.
                 </p>
               </div>
@@ -541,7 +545,7 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
                 </>
               ) : (
                 <p className="text-xs text-slate-500">
-                  Alleen <strong>Beheerders</strong> kunnen de Simhuis API-instellingen
+                  Alleen <strong>Beheerders</strong> kunnen de {PROVIDER} API-instellingen
                   wijzigen.
                 </p>
               )}
@@ -565,8 +569,8 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
                 <div className="flex-1">
                   <p className="font-medium">
                     {connectionResult.ok
-                      ? `Verbinding Simhuis gelukt (${connectionResult.latencyMs ?? "-"}ms)`
-                      : connectionResult.message ?? "Verbinding Simhuis mislukt."}
+                      ? `Verbinding ${PROVIDER} gelukt (${connectionResult.latencyMs ?? "-"}ms)`
+                      : connectionResult.message ?? `Verbinding ${PROVIDER} mislukt.`}
                   </p>
                   {connectionResult.endpoint && (
                     <p className="mt-0.5 font-mono text-[11px] opacity-80">
@@ -601,7 +605,7 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
                 <div className="flex-1">
                   <p className="font-medium">{syncResult.message}</p>
                   <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] opacity-80">
-                    <span>Totaal Simhuis: {syncResult.totalInSimhuis ?? "-"}</span>
+                    <span>Totaal {PROVIDER}: {syncResult.totalInSimhuis ?? "-"}</span>
                     <span>Gekwalificeerd: {syncResult.eligibleInSimhuis ?? "-"}</span>
                     <span>🆕 Aangemaakt: {syncResult.created ?? 0}</span>
                     <span>♻️ Bijgewerkt: {syncResult.updated ?? 0}</span>
@@ -624,7 +628,7 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
                   {syncResult.debugContext?.wafBlocked && (
                     <div className="mt-3 rounded-md border border-red-300 bg-white p-2.5 text-[11px] text-red-900 shadow-sm">
                       <p className="font-semibold text-red-700">
-                        ⚠️ Simhuis WAF blokkeert jouw Nexus-server (IP-whitelist probleem!)
+                        ⚠️ {PROVIDER} WAF blokkeert jouw Nexus-server (IP-whitelist probleem!)
                       </p>
                       <ol className="mt-2 list-decimal space-y-1.5 pl-5">
                         {syncResult.debugContext.wafSteps.map((s, i) => (
@@ -642,7 +646,7 @@ export function SimhuisSettingsForm({ initial, readOnly }: SimhuisSettingsFormPr
                       {syncResult.debugContext.wafEmailTemplate && (
                         <details className="mt-3">
                           <summary className="cursor-pointer rounded-md bg-red-100/70 px-2 py-1 font-semibold text-red-900 hover:bg-red-100">
-                            📨 Klik hier voor de kant-en-klare e-mail naar Simhuis Support
+                            📨 Klik hier voor de kant-en-klare e-mail naar {PROVIDER} Support
                           </summary>
                           <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md border border-amber-200 bg-amber-50 p-2 font-mono text-[10.5px] leading-relaxed text-amber-950">
 {syncResult.debugContext.wafEmailTemplate}

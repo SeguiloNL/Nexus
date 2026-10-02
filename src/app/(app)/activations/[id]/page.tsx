@@ -21,7 +21,7 @@ export default async function ActivationDetailPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "activation_order")) {
+  if (!canUserRole(session.user.permissions, "view", "activation_order")) {
     throw new PermissionError("Je mag geen activatie orders bekijken.");
   }
 

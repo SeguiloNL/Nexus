@@ -23,8 +23,8 @@ export default async function ActivationWizardPage({
 }: WizardPageProps) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "create", "activation_order")) {
-    if (!canUserRole(session.user.role, "edit", "activation_order")) {
+  if (!canUserRole(session.user.permissions, "create", "activation_order")) {
+    if (!canUserRole(session.user.permissions, "edit", "activation_order")) {
       throw new PermissionError("Je mag geen activatie orders aanmaken of bewerken.");
     }
   }

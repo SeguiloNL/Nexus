@@ -55,6 +55,7 @@ import {
   formatCount,
 } from "@/lib/formatters";
 import { canUserRole } from "@/lib/auth/session";
+import { SIM_PROVIDER_UI_LABELS } from "@/lib/providers/provider-registry";
 import type { UserRole, AuditAction } from "@/types/enums";
 import type { SIM, SimStatus, AssignmentReason } from "@prisma/client";
 import type { SimUsageSyncState, SimSuspendActionState, SimStatusRefreshActionState } from "../actions";
@@ -877,7 +878,7 @@ export function SimDetail({
         >
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
           <div className="flex-1 min-w-0">
-            <p className="font-medium text-emerald-900">Status bijgewerkt vanuit Simhuis</p>
+            <p className="font-medium text-emerald-900">{SIM_PROVIDER_UI_LABELS.statusUpdatedFromProvider()}</p>
             {refreshState.message ? <p className="whitespace-pre-wrap break-words text-emerald-800/90">{refreshState.message}</p> : null}
           </div>
         </div>
@@ -899,7 +900,7 @@ export function SimDetail({
           : isTimeout
             ? "Status verversen duurde te lang"
             : isProvider
-              ? "Simhuis verbindingsprobleem"
+              ? SIM_PROVIDER_UI_LABELS.providerConnectionError()
               : isInvalid
                 ? "Ongeldige status"
                 : "Fout bij verversen";
@@ -995,7 +996,7 @@ export function SimDetail({
                         aria-hidden="true"
                       />
                       <span>
-                        Simhuis-status wordt opgehaald…
+                        {SIM_PROVIDER_UI_LABELS.providerStatusLoading()}
                       </span>
                     </>
                   ) : (
@@ -1008,8 +1009,8 @@ export function SimDetail({
                       disabled={isStatusRefreshPending}
                       aria-disabled={isStatusRefreshPending}
                       aria-busy={isStatusRefreshPending}
-                      title="Simhuis status verversen"
-                      aria-label="Simhuis status verversen"
+                      title={SIM_PROVIDER_UI_LABELS.providerStatusRefreshButtonAria()}
+                      aria-label={SIM_PROVIDER_UI_LABELS.providerStatusRefreshButtonAria()}
                     >
                       <RefreshCw
                         className="h-3.5 w-3.5"

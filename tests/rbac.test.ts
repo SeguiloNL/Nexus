@@ -365,3 +365,55 @@ describe("canUserRole 3-traps resolve (permissions → roleId → userRole)", ()
     expect(can({} as any, "view", "customer")).toBe(false);
   });
 });
+
+describe("Sim-only restricted rol (klant@seguilo.nl bug): sim.read=true en legacy EMPLOYEE achtergrond", () => {
+  it("Permissions bits met alleen sim.read=true → alleen sim.view toegestaan", () => {
+    const simOnlyBits: PermissionBits = {
+      customer:       { read: false, write: false },
+      tracker:        { read: false, write: false },
+      sim:            { read: true,  write: false },
+      vehicle:        { read: false, write: false },
+      subscription:   { read: false, write: false },
+      invoice:        { read: false, write: false },
+      activation_order: { read: false, write: false },
+      user:           { read: false, write: false },
+      role:           { read: false, write: false },
+      audit_log:      { read: false, write: false },
+      setting:        { read: false, write: false },
+      product:        { read: false, write: false },
+      dashboard:      { read: false, write: false },
+    };
+
+    expect(can(simOnlyBits, "view", "sim")).toBe(true);
+    expect(can(simOnlyBits, "create", "sim")).toBe(false);
+    expect(can(simOnlyBits, "edit",   "sim")).toBe(false);
+    expect(can(simOnlyBits, "delete", "sim")).toBe(false);
+
+    expect(can(simOnlyBits, "view", "dashboard")).toBe(false);
+    expect(can(simOnlyBits, "view", "customer")).toBe(false);
+    expect(can(simOnlyBits, "view", "tracker")).toBe(false);
+    expect(can(simOnlyBits, "view", "vehicle")).toBe(false);
+    expect(can(simOnlyBits, "view", "subscription")).toBe(false);
+    expect(can(simOnlyBits, "view", "invoice")).toBe(false);
+    expect(can(simOnlyBits, "view", "activation_order")).toBe(false);
+    expect(can(simOnlyBits, "view", "user")).toBe(false);
+    expect(can(simOnlyBits, "view", "role")).toBe(false);
+    expect(can(simOnlyBits, "view", "audit_log")).toBe(false);
+    expect(can(simOnlyBits, "view", "setting")).toBe(false);
+    expect(can(simOnlyBits, "view", "product")).toBe(false);
+  });
+
+  it("Bewijs: legacy EMPLOYEE geeft WEL toegang tot dashboard/customer/tracker (te breed; mag dus niet gebruikt worden als roleId != null)", () => {
+    const legacyEmployeeBits = buildLegacyPermissionsForRole(UserRole.EMPLOYEE, RoleScope.RESELLER);
+    expect(legacyEmployeeBits.dashboard.read).toBe(true);
+    expect(legacyEmployeeBits.customer.read).toBe(true);
+    expect(legacyEmployeeBits.customer.write).toBe(true);
+    expect(legacyEmployeeBits.sim.read).toBe(true);
+    expect(legacyEmployeeBits.tracker.read).toBe(true);
+    expect(legacyEmployeeBits.tracker.write).toBe(true);
+    expect(legacyEmployeeBits.vehicle.read).toBe(true);
+    expect(legacyEmployeeBits.subscription.read).toBe(true);
+    expect(legacyEmployeeBits.invoice.read).toBe(true);
+    expect(legacyEmployeeBits.activation_order.read).toBe(true);
+  });
+});

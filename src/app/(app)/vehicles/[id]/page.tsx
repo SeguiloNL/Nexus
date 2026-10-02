@@ -13,7 +13,7 @@ export default async function VehicleDetailPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "vehicle")) {
+  if (!canUserRole(session.user.permissions, "view", "vehicle")) {
     throw new PermissionError("Je mag geen voertuigen bekijken.");
   }
 

@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { SIM, SimStatus } from "@prisma/client";
 import { formatBytes, formatIccid } from "@/lib/formatters";
+import { SIM_PROVIDER_UI_LABELS } from "@/lib/providers/provider-registry";
 import {
   exportSimsCsvAction,
   bulkSoftDeleteSimsAction,
@@ -465,7 +466,7 @@ export function SimList({
           <div className="flex-1 min-w-0">
             <p className="font-medium text-blue-900">Verbruikssynchronisatie bezig...</p>
             <p className="text-blue-800/90">
-              De meest recente verbruiksgegevens worden voor alle actieve SIM-kaarten opgehaald bij Simhuis. Dit kan enkele seconden tot een minuut duren, afhankelijk van het aantal SIMs.
+              {SIM_PROVIDER_UI_LABELS.usageSyncProgress()}
             </p>
           </div>
         </div>

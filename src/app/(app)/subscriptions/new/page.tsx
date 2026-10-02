@@ -9,7 +9,7 @@ import { prisma } from "@/lib/prisma";
 export default async function NewSubscriptionPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "create", "subscription")) {
+  if (!canUserRole(session.user.permissions, "create", "subscription")) {
     throw new PermissionError("Je mag geen abonnementen aanmaken.");
   }
 

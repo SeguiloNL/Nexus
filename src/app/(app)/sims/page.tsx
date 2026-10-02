@@ -3,10 +3,15 @@ import { findManySims } from "@/server/services/sim.service";
 import { canUserRole } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { SimListWithImport } from "./_components/sim-list-with-import";
+import { PermissionError } from "@/lib/rbac";
 
 export default async function SimsPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
+
+  if (!canUserRole(session.user.permissions, "view", "sim")) {
+    throw new PermissionError("Je mag geen SIM-kaarten bekijken.");
+  }
 
   const [result] = await Promise.all([
     findManySims({
@@ -17,11 +22,11 @@ export default async function SimsPage() {
     }),
   ]);
 
-  const canCreate = canUserRole(session.user.role, "create", "sim");
-  const canEdit = canUserRole(session.user.role, "edit", "sim");
-  const canDelete = canUserRole(session.user.role, "delete", "sim");
-  const canImport = canUserRole(session.user.role, "import", "sim");
-  const canExport = canUserRole(session.user.role, "export", "sim");
+  const canCreate = canUserRole(session.user.permissions, "create", "sim");
+  const canEdit = canUserRole(session.user.permissions, "edit", "sim");
+  const canDelete = canUserRole(session.user.permissions, "delete", "sim");
+  const canImport = canUserRole(session.user.permissions, "import", "sim");
+  const canExport = canUserRole(session.user.permissions, "export", "sim");
 
   return (
     <SimListWithImport

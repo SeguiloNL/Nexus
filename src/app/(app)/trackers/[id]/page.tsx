@@ -14,7 +14,7 @@ export default async function TrackerDetailPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "tracker")) {
+  if (!canUserRole(session.user.permissions, "view", "tracker")) {
     throw new PermissionError("Je mag geen trackers bekijken.");
   }
 

@@ -9,7 +9,7 @@ import { prisma } from "@/lib/prisma";
 export default async function NewVehiclePage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "create", "vehicle")) {
+  if (!canUserRole(session.user.permissions, "create", "vehicle")) {
     throw new PermissionError("Je mag geen voertuigen aanmaken.");
   }
 

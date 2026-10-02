@@ -31,7 +31,7 @@ export default async function SubscriptionDetailPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "subscription")) {
+  if (!canUserRole(session.user.permissions, "view", "subscription")) {
     throw new PermissionError("Je mag geen abonnementen bekijken.");
   }
 
@@ -71,7 +71,7 @@ export default async function SubscriptionDetailPage({
       select: { id: true, iccid: true, imsi: true, msisdn: true, provider: true },
       orderBy: { iccid: "asc" },
     }),
-    canUserRole(session.user.role, "view", "invoice")
+    canUserRole(session.user.permissions, "view", "invoice")
       ? findInvoicesBySubscriptionId(params.id, {
           userId: session.user.id,
           userRole: session.user.role,

@@ -66,6 +66,7 @@ import { toast } from "sonner";
 import type { OrderActionState } from "../actions";
 import type { UserRole } from "@/types/enums";
 import { canUserRole } from "@/lib/auth/session";
+import { SIM_PROVIDER_REGISTRY } from "@/lib/providers/provider-registry";
 
 type CustomerOption = {
   id: string;
@@ -1159,7 +1160,7 @@ function StepSim({
         title="Stap 4 — SIM-kaart"
         description={
           isAdmin
-            ? "Kies een SIM (IN_STOCK of RESERVED). Indien nodig kun je de gekozen SIM direct activeren via de Simhuis API."
+            ? `Kies een SIM (IN_STOCK of RESERVED). Indien nodig kun je de gekozen SIM direct activeren via de ${SIM_PROVIDER_REGISTRY.simhuis.displayNameForAdmins} API.`
             : "Kies een SIM (IN_STOCK of RESERVED)."
         }
         columns={cols}

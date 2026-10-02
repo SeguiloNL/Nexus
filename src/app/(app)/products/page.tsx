@@ -8,7 +8,7 @@ import { PermissionError } from "@/lib/rbac";
 export default async function ProductsPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "product")) {
+  if (!canUserRole(session.user.permissions, "view", "product")) {
     throw new PermissionError("Je mag geen producten bekijken.");
   }
 
@@ -16,8 +16,8 @@ export default async function ProductsPage() {
     findManyProducts({ page: 1, perPage: 500 }),
   ]);
 
-  const canCreate = canUserRole(session.user.role, "create", "product");
-  const canEdit = canUserRole(session.user.role, "edit", "product");
+  const canCreate = canUserRole(session.user.permissions, "create", "product");
+  const canEdit = canUserRole(session.user.permissions, "edit", "product");
 
   return (
     <ProductList

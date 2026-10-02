@@ -22,7 +22,7 @@ export default async function SimDetailPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "sim")) {
+  if (!canUserRole(session.user.permissions, "view", "sim")) {
     throw new PermissionError("Je mag geen SIM-kaarten bekijken.");
   }
 

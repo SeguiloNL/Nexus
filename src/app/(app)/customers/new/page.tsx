@@ -9,7 +9,7 @@ import { canUserRole } from "@/lib/auth/session";
 export default async function NewCustomerPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "create", "customer")) {
+  if (!canUserRole(session.user.permissions, "create", "customer")) {
     throw new PermissionError("Je mag geen klanten aanmaken.");
   }
 

@@ -32,6 +32,7 @@ import {
 } from "@/server/services/simhuis-asset.service";
 import { hasMinRole } from "@/lib/rbac";
 import { UserRole, RoleScope } from "@/types/enums";
+import { assertNoProviderNameLeak } from "@/lib/providers/provider-leak-guard";
 
 export type SimActionState = {
   errors?: Partial<Record<keyof CreateSimInput, string[]>>;
@@ -398,11 +399,26 @@ export async function syncUsageSimsAction(
       `Usage-sync uitgevoerd. Bijgewerkt: ${result.updated}, ` +
       `overgeslagen: ${result.skipped}, gematcht: ${result.matched}, ` +
       `fouten: ${result.errors}. Duur: ${result.durationMs} ms.`;
+    assertNoProviderNameLeak([message], {
+      userId: user.id,
+      userRole: user.role,
+      roleScope: user.roleScope,
+      actionName: "syncUsageSimsAction",
+      source: "sims/actions.ts (bulk usage ok)",
+    });
     if (result.errors > 0) {
+      const errorMsg = `${result.errors} fout(en). ${message}`;
+      assertNoProviderNameLeak([errorMsg], {
+        userId: user.id,
+        userRole: user.role,
+        roleScope: user.roleScope,
+        actionName: "syncUsageSimsAction",
+        source: "sims/actions.ts (bulk usage partial error)",
+      });
       return {
         ok: false,
         count: result.updated,
-        error: `${result.errors} fout(en). ${message}`,
+        error: errorMsg,
       };
     }
     return {
@@ -412,7 +428,15 @@ export async function syncUsageSimsAction(
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, error: `Usage-sync mislukt: ${msg}` };
+    const wrappedMsg = `Usage-sync mislukt: ${msg}`;
+    assertNoProviderNameLeak([msg, wrappedMsg], {
+      userId: user.id,
+      userRole: user.role,
+      roleScope: user.roleScope,
+      actionName: "syncUsageSimsAction",
+      source: "sims/actions.ts (bulk usage catch)",
+    });
+    return { ok: false, error: wrappedMsg };
   }
 }
 
@@ -443,9 +467,17 @@ export async function syncUsageForSingleSimAction(
     revalidatePath("/sims");
     revalidatePath(`/sims/${simId}`);
     if (result.errorMessage && !result.hasAnyUsageData) {
+      const genericErr = `De SIM-provider kon geen verbruiksdata leveren: ${result.errorMessage}`;
+      assertNoProviderNameLeak([genericErr, result.errorMessage], {
+        userId: user.id,
+        userRole: user.role,
+        roleScope: user.roleScope,
+        actionName: "syncUsageForSingleSimAction",
+        source: "sims/actions.ts",
+      });
       return {
         ok: false,
-        error: `Simhuis kon geen verbruiksdata leveren: ${result.errorMessage}`,
+        error: genericErr,
         result,
       };
     }
@@ -474,7 +506,7 @@ export async function syncUsageForSingleSimAction(
       return `${Math.round(n)}`;
     }
     const sfLabel = sF
-      ? "\n\nSimhuis API-velden:\n" +
+      ? "\n\nProvider-velden (bron):\n" +
         `  dataUsedBytes: ${fmtBytes(sF.dataUsedBytes)}  dataLimitBytes: ${fmtBytes(sF.dataLimitBytes)}  lowestDataLimitBytes: ${fmtBytes(sF.lowestDataLimitBytes)}\n` +
         `  smsUsedCount: ${fmtCount(sF.smsUsedCount)}  smsLimitCount: ${fmtCount(sF.smsLimitCount)}  lowestSmsLimitCount: ${fmtCount(sF.lowestSmsLimitCount)}\n` +
         `  productName: ${sF.productName ?? "—"}  productType: ${sF.productType ?? "—"}  simName: ${sF.simName ?? "—"}  group: ${sF.groupName ?? "—"}`
@@ -484,6 +516,13 @@ export async function syncUsageForSingleSimAction(
       `Velden: ${fieldsLabel}. ` +
       `Duur: ${result.durationMs} ms.` +
       sfLabel;
+    assertNoProviderNameLeak([msg, sfLabel], {
+      userId: user.id,
+      userRole: user.role,
+      roleScope: user.roleScope,
+      actionName: "syncUsageForSingleSimAction",
+      source: "sims/actions.ts (success path)",
+    });
     return {
       ok: true,
       message: msg,
@@ -576,6 +615,13 @@ export async function suspendSimAction(
       revalidatePath("/sims");
       revalidatePath(`/sims/${simId}`);
     } catch {}
+    assertNoProviderNameLeak([result.message], {
+      userId: user.id,
+      userRole: user.role,
+      roleScope: user.roleScope,
+      actionName: "suspendSimAction",
+      source: "sims/actions.ts (suspend ok)",
+    });
     return {
       ok: true,
       confirmedStatus: result.confirmedStatus,
@@ -584,11 +630,19 @@ export async function suspendSimAction(
     };
   }
 
+  const friendlyErr = mapErrorToFriendlyMessage(result.error);
+  assertNoProviderNameLeak([friendlyErr, result.error?.detail], {
+    userId: user.id,
+    userRole: user.role,
+    roleScope: user.roleScope,
+    actionName: "suspendSimAction",
+    source: "sims/actions.ts (suspend error)",
+  });
   return {
     ok: false,
     confirmedStatus: null,
     pendingConfirmation: false,
-    message: mapErrorToFriendlyMessage(result.error),
+    message: friendlyErr,
     error: result.error,
   };
 }
@@ -634,6 +688,13 @@ export async function unsuspendSimAction(
       revalidatePath("/sims");
       revalidatePath(`/sims/${simId}`);
     } catch {}
+    assertNoProviderNameLeak([result.message], {
+      userId: user.id,
+      userRole: user.role,
+      roleScope: user.roleScope,
+      actionName: "unsuspendSimAction",
+      source: "sims/actions.ts (unsuspend ok)",
+    });
     return {
       ok: true,
       confirmedStatus: result.confirmedStatus,
@@ -642,11 +703,19 @@ export async function unsuspendSimAction(
     };
   }
 
+  const friendlyErrUnsuspend = mapErrorToFriendlyMessage(result.error);
+  assertNoProviderNameLeak([friendlyErrUnsuspend, result.error?.detail], {
+    userId: user.id,
+    userRole: user.role,
+    roleScope: user.roleScope,
+    actionName: "unsuspendSimAction",
+    source: "sims/actions.ts (unsuspend error)",
+  });
   return {
     ok: false,
     confirmedStatus: null,
     pendingConfirmation: false,
-    message: mapErrorToFriendlyMessage(result.error),
+    message: friendlyErrUnsuspend,
     error: result.error,
   };
 }
@@ -688,6 +757,13 @@ export async function refreshSimStatusAction(
       revalidatePath("/sims");
       revalidatePath(`/sims/${simId}`);
     } catch {}
+    assertNoProviderNameLeak([result.message], {
+      userId: user.id,
+      userRole: user.role,
+      roleScope: user.roleScope,
+      actionName: "refreshSimStatusAction",
+      source: "sims/actions.ts (refresh ok)",
+    });
     return {
       ok: true,
       message: result.message,
@@ -698,9 +774,17 @@ export async function refreshSimStatusAction(
     };
   }
 
+  const friendlyRefreshErr = mapErrorToFriendlyMessage(result.error);
+  assertNoProviderNameLeak([friendlyRefreshErr, result.error?.detail], {
+    userId: user.id,
+    userRole: user.role,
+    roleScope: user.roleScope,
+    actionName: "refreshSimStatusAction",
+    source: "sims/actions.ts (refresh error)",
+  });
   return {
     ok: false,
-    message: mapErrorToFriendlyMessage(result.error),
+    message: friendlyRefreshErr,
     error: result.error,
     previousStatus: result.previousStatus,
     refreshedStatus: result.refreshedStatus,

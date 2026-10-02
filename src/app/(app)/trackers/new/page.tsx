@@ -8,7 +8,7 @@ import { canUserRole } from "@/lib/auth/session";
 export default async function NewTrackerPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "create", "tracker")) {
+  if (!canUserRole(session.user.permissions, "create", "tracker")) {
     throw new PermissionError("Je mag geen trackers aanmaken.");
   }
 

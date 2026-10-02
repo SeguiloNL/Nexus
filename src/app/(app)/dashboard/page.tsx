@@ -30,7 +30,7 @@ import {
 export default async function DashboardPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!canUserRole(session.user.role, "view", "dashboard")) {
+  if (!canUserRole(session.user.permissions, "view", "dashboard")) {
     throw new PermissionError("Je hebt geen toegang tot het dashboard.");
   }
 
