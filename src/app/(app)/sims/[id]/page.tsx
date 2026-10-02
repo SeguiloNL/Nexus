@@ -4,12 +4,15 @@ import { findSimById } from "@/server/services/sim.service";
 import { findManyAuditLogs } from "@/server/services/audit.service";
 import { SimDetail } from "../_components/sim-detail";
 import { canUserRole } from "@/lib/auth/session";
-import { PermissionError } from "@/lib/rbac";
+import { PermissionError, hasMinRole } from "@/lib/rbac";
 import {
   deleteSimAction,
   updateSimAction,
   syncUsageForSingleSimAction,
+  suspendSimAction,
+  unsuspendSimAction,
 } from "../actions";
+import { RoleScope, UserRole } from "@/types/enums";
 
 export default async function SimDetailPage({
   params,
@@ -52,6 +55,10 @@ export default async function SimDetailPage({
   ]);
   if (!sim) notFound();
 
+  const isAdmin =
+    session.user.roleScope === RoleScope.INTERNAL &&
+    hasMinRole(session.user.role, UserRole.ADMIN);
+
   return (
     <SimDetail
       sim={sim as any}
@@ -61,6 +68,9 @@ export default async function SimDetailPage({
       simId={params.id}
       auditLogs={auditResult as any}
       syncUsageAction={syncUsageForSingleSimAction}
+      suspendAction={isAdmin ? suspendSimAction : undefined}
+      unsuspendAction={isAdmin ? unsuspendSimAction : undefined}
+      isAdmin={isAdmin}
     />
   );
 }

@@ -22,6 +22,14 @@ import {
 } from "@/server/services/sim.service";
 import { syncActiveSimsUsageFromSimhuis, syncUsageForSingleSim } from "@/server/services/simhuis-sim-sync.service";
 import type { PerSimUsageSyncResult } from "@/server/services/simhuis-sim-sync.service";
+import {
+  suspendSimById,
+  unsuspendSimById,
+  type SimSuspendResult,
+  type SimSuspendError,
+} from "@/server/services/simhuis-asset.service";
+import { hasMinRole } from "@/lib/rbac";
+import { UserRole, RoleScope } from "@/types/enums";
 
 export type SimActionState = {
   errors?: Partial<Record<keyof CreateSimInput, string[]>>;
@@ -483,4 +491,160 @@ export async function syncUsageForSingleSimAction(
     const msg = e instanceof Error ? e.message : String(e);
     return { ok: false, error: `Verbruik vernieuwen mislukt: ${msg}` };
   }
+}
+
+export type SimSuspendActionState = {
+  ok: boolean;
+  confirmedStatus: "ACTIVE" | "SUSPENDED" | null;
+  pendingConfirmation: boolean;
+  message: string;
+  error?: SimSuspendResult["error"];
+};
+
+function buildActionCtx(user: Awaited<ReturnType<typeof getCurrentUser>>) {
+  return {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
+}
+
+function mapErrorToFriendlyMessage(err: SimSuspendError | undefined): string {
+  if (!err) return "Onbekende fout.";
+  switch (err.kind) {
+    case "PERMISSION":
+      return "Je bent niet bevoegd deze SIM te (de)blokkeren.";
+    case "INVALID_STATUS_TRANSITION":
+      return err.detail;
+    case "PROVIDER":
+      return `Provider weigerde het verzoek: ${err.detail}. Probeer het later opnieuw of neem contact op met de beheerder.`;
+    case "TIMEOUT_OR_NETWORK":
+      return "Verzoek duurde te lang of mislukte. Controleer eerst de actuele SIM-status alvorens te herhalen.";
+    case "NOT_FOUND":
+      return "SIM is niet (meer) beschikbaar in dit account.";
+    default: {
+      const exhaustive: never = err;
+      void exhaustive;
+      return (err as any)?.detail || "Onbekende fout.";
+    }
+  }
+}
+
+export async function suspendSimAction(
+  simId: string,
+  _prev: SimSuspendActionState,
+  _form: FormData
+): Promise<SimSuspendActionState> {
+  const user = await getCurrentUser();
+
+  if (user.roleScope !== RoleScope.INTERNAL || !hasMinRole(user.role, UserRole.ADMIN)) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Je bent niet bevoegd deze SIM te blokkeren.",
+      error: {
+        kind: "PERMISSION",
+        detail: "Alleen interne beheerders (ADMIN) mogen deze actie uitvoeren.",
+      },
+    };
+  }
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "edit", "sim");
+
+  const ctx = buildActionCtx(user);
+  let result: SimSuspendResult;
+  try {
+    result = await suspendSimById(simId, ctx);
+  } catch (e: any) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Onverwachte fout tijdens blokkeren.",
+      error: { kind: "TIMEOUT_OR_NETWORK", detail: msg },
+    };
+  }
+
+  if (result.ok) {
+    try {
+      revalidatePath("/sims");
+      revalidatePath(`/sims/${simId}`);
+    } catch {}
+    return {
+      ok: true,
+      confirmedStatus: result.confirmedStatus,
+      pendingConfirmation: result.pendingConfirmation,
+      message: result.message,
+    };
+  }
+
+  return {
+    ok: false,
+    confirmedStatus: null,
+    pendingConfirmation: false,
+    message: mapErrorToFriendlyMessage(result.error),
+    error: result.error,
+  };
+}
+
+export async function unsuspendSimAction(
+  simId: string,
+  _prev: SimSuspendActionState,
+  _form: FormData
+): Promise<SimSuspendActionState> {
+  const user = await getCurrentUser();
+
+  if (user.roleScope !== RoleScope.INTERNAL || !hasMinRole(user.role, UserRole.ADMIN)) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Je bent niet bevoegd deze SIM te deblokkeren.",
+      error: {
+        kind: "PERMISSION",
+        detail: "Alleen interne beheerders (ADMIN) mogen deze actie uitvoeren.",
+      },
+    };
+  }
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "edit", "sim");
+
+  const ctx = buildActionCtx(user);
+  let result: SimSuspendResult;
+  try {
+    result = await unsuspendSimById(simId, ctx);
+  } catch (e: any) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Onverwachte fout tijdens deblokkeren.",
+      error: { kind: "TIMEOUT_OR_NETWORK", detail: msg },
+    };
+  }
+
+  if (result.ok) {
+    try {
+      revalidatePath("/sims");
+      revalidatePath(`/sims/${simId}`);
+    } catch {}
+    return {
+      ok: true,
+      confirmedStatus: result.confirmedStatus,
+      pendingConfirmation: result.pendingConfirmation,
+      message: result.message,
+    };
+  }
+
+  return {
+    ok: false,
+    confirmedStatus: null,
+    pendingConfirmation: false,
+    message: mapErrorToFriendlyMessage(result.error),
+    error: result.error,
+  };
 }

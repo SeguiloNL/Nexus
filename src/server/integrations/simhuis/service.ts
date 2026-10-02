@@ -5125,5 +5125,218 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
   return all;
 }
 
+// ============================================================
+// Simhuis Asset Actions: suspend / unsuspend
+// PUT /v3/assets/{iccid}/suspend   body: { accountId }
+// PUT /v3/assets/{iccid}/unsuspend body: { accountId }
+// ============================================================
+
+export type SimhuisAssetActionResult = {
+  ok: boolean;
+  rawPut: unknown;
+  rawGet: unknown;
+  confirmedSimhuisStatus: SimhuisSimStatus['status'] | null;
+  accountIdUsed: string | null;
+  httpStatusPut: number;
+  error?:
+    | { kind: 'NOT_CONFIGURED'; detail: string }
+    | { kind: 'AUTH_FAILED'; detail: string; httpStatus?: number }
+    | { kind: 'PROVIDER_REJECTED'; detail: string; httpStatus: number }
+    | { kind: 'TIMEOUT_OR_NETWORK'; detail: string }
+    | { kind: 'INVALID_ACCOUNTID'; detail: string };
+};
+
+async function _performSimhuisAssetAction(
+  action: 'suspend' | 'unsuspend',
+  iccid: string
+): Promise<SimhuisAssetActionResult> {
+  const t0 = Date.now();
+  const iccidSuffix = iccid.slice(-6);
+  const emptyResult: SimhuisAssetActionResult = {
+    ok: false,
+    rawPut: null,
+    rawGet: null,
+    confirmedSimhuisStatus: null,
+    accountIdUsed: null,
+    httpStatusPut: 0,
+  };
+
+  let creds: { baseUrl: string; username: string; password: string; resellerId?: string | null } | null = null;
+  try {
+    creds = await getSimhuisCreds();
+  } catch (e: any) {
+    return {
+      ...emptyResult,
+      error: { kind: 'NOT_CONFIGURED', detail: String(e?.message ?? e ?? 'Simhuis niet geconfigureerd.') },
+    };
+  }
+
+  const base = creds.baseUrl;
+  let token = await acquireBearerToken(creds);
+  if (!token) {
+    return {
+      ...emptyResult,
+      error: { kind: 'AUTH_FAILED', detail: 'Bearer-token kon niet worden verkregen (Simhuis login mislukt).' },
+    };
+  }
+
+  let accountId: string | null = getSimhuisAccountId();
+  if (!accountId) {
+    return {
+      ...emptyResult,
+      error: { kind: 'INVALID_ACCOUNTID', detail: 'accountId is niet beschikbaar in de Bearer-token cache.' },
+    };
+  }
+
+  const path = `/v3/assets/${encodeURIComponent(iccid)}/${action === 'suspend' ? 'suspend' : 'unsuspend'}`;
+
+  const doPut = async (bearer: string): Promise<PerSimAttemptResult> => {
+    const fullUrl = makePerSimFullUrl(base, path, null);
+    return doPerSimFetch({
+      fullUrl,
+      method: 'PUT',
+      contentType: 'json',
+      body: { accountId: accountId! },
+      auth: { tag: 'bearer-token', token: bearer },
+      timeoutMs: 15_000,
+    });
+  };
+
+  let put = await doPut(token);
+  let retried401 = false;
+  if ((put.tag === 'skip' || put.tag === 'error') && put.statusCode === 401) {
+    invalidateBearerTokenCache(base);
+    const fresh = await acquireBearerToken(creds);
+    if (fresh) {
+      token = fresh;
+      accountId = getSimhuisAccountId() ?? accountId;
+      if (!accountId) {
+        return {
+          ...emptyResult,
+          error: { kind: 'INVALID_ACCOUNTID', detail: 'accountId ontbreekt na bearer refresh.' },
+        };
+      }
+      put = await doPut(token);
+      retried401 = true;
+    }
+  }
+
+  const durPut = Date.now() - t0;
+
+  if (put.tag === 'ok') {
+    let getStatus: SimhuisSimStatus['status'] | null = null;
+    let rawGetBody: unknown = null;
+    try {
+      const getFullUrl = makePerSimFullUrl(base, `/v3/assets/${encodeURIComponent(iccid)}`, {
+        accountId: accountId!,
+      });
+      const getRes = await doPerSimFetch({
+        fullUrl: getFullUrl,
+        method: 'GET',
+        contentType: 'none',
+        body: null,
+        auth: { tag: 'bearer-token', token },
+        timeoutMs: 10_000,
+      });
+      if (getRes.tag === 'ok') {
+        rawGetBody = getRes.body;
+        try {
+          const parsed = toSimStatus(getRes.body, iccid);
+          const enriched = enrichSimhuisStatusWithDirectRawExtracts(parsed, getRes.body, iccid);
+          getStatus = enriched?.status ?? parsed?.status ?? null;
+        } catch {}
+      } else if (getRes.statusCode === 401 && !retried401) {
+        invalidateBearerTokenCache(base);
+        const fresh = await acquireBearerToken(creds);
+        if (fresh) {
+          const getRes2 = await doPerSimFetch({
+            fullUrl: getFullUrl,
+            method: 'GET',
+            contentType: 'none',
+            body: null,
+            auth: { tag: 'bearer-token', token: fresh },
+            timeoutMs: 10_000,
+          });
+          if (getRes2.tag === 'ok') {
+            rawGetBody = getRes2.body;
+            try {
+              const parsed = toSimStatus(getRes2.body, iccid);
+              const enriched = enrichSimhuisStatusWithDirectRawExtracts(parsed, getRes2.body, iccid);
+              getStatus = enriched?.status ?? parsed?.status ?? null;
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+
+    try {
+      console.info(
+        `[simhuis:assetAction] action=${action} iccidSuffix=${iccidSuffix} putStatus=${put.statusCode} getStatusIfAny=${String(getStatus ?? 'N/A')} durationMs=${durPut + (Date.now() - t0 - durPut)} retried401=${retried401}`
+      );
+    } catch {}
+
+    return {
+      ok: true,
+      rawPut: put.body,
+      rawGet: rawGetBody,
+      confirmedSimhuisStatus: getStatus,
+      accountIdUsed: accountId,
+      httpStatusPut: put.statusCode,
+    };
+  }
+
+  const snippet =
+    put.error ? String(put.error).slice(0, 250) : `HTTP ${put.statusCode}`;
+
+  if (put.statusCode === 0 || /timeout|network|abort|econn|fetch/i.test(snippet)) {
+    return {
+      ...emptyResult,
+      httpStatusPut: put.statusCode,
+      error: { kind: 'TIMEOUT_OR_NETWORK', detail: snippet || 'Netwerk- of time-out fout.' },
+    };
+  }
+
+  if (put.statusCode === 401 || put.statusCode === 403) {
+    return {
+      ...emptyResult,
+      httpStatusPut: put.statusCode,
+      error: {
+        kind: 'AUTH_FAILED',
+        detail: put.statusCode === 403 ? 'Onvoldoende rechten in Simhuis (HTTP 403).' : 'Authenticatie mislukt (HTTP 401).',
+        httpStatus: put.statusCode,
+      },
+    };
+  }
+
+  if (put.statusCode >= 400 && put.statusCode < 500) {
+    return {
+      ...emptyResult,
+      httpStatusPut: put.statusCode,
+      error: {
+        kind: 'PROVIDER_REJECTED',
+        detail: snippet || `Simhuis weigerde het verzoek (HTTP ${put.statusCode}).`,
+        httpStatus: put.statusCode,
+      },
+    };
+  }
+
+  return {
+    ...emptyResult,
+    httpStatusPut: put.statusCode,
+    error: {
+      kind: 'TIMEOUT_OR_NETWORK',
+      detail: snippet || `Onverwachte provider-fout (HTTP ${put.statusCode || 0}).`,
+    },
+  };
+}
+
+export async function suspendSimhuisAsset(iccid: string): Promise<SimhuisAssetActionResult> {
+  return _performSimhuisAssetAction('suspend', iccid);
+}
+
+export async function unsuspendSimhuisAsset(iccid: string): Promise<SimhuisAssetActionResult> {
+  return _performSimhuisAssetAction('unsuspend', iccid);
+}
+
 export { simhuisClient, SimhuisApiError };
 export type { SimhuisRequestOptions };

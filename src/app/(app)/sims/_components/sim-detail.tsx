@@ -21,6 +21,9 @@ import {
   Activity,
   AlertTriangle,
   RefreshCw,
+  PauseCircle,
+  PlayCircle,
+  CheckCircle2,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -31,6 +34,16 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  DialogClose,
+} from "@/components/ui/dialog";
 import { SimStatusBadge, AssignmentReasonLabel } from "@/components/ui/status-badges";
 import { SimForm } from "./sim-form";
 import {
@@ -44,7 +57,7 @@ import {
 import { canUserRole } from "@/lib/auth/session";
 import type { UserRole, AuditAction } from "@/types/enums";
 import type { SIM, SimStatus, AssignmentReason } from "@prisma/client";
-import type { SimUsageSyncState } from "../actions";
+import type { SimUsageSyncState, SimSuspendActionState } from "../actions";
 
 type DetailSim = SIM & {
   assignments: Array<{
@@ -91,7 +104,344 @@ type SimDetailProps = {
     prev: SimUsageSyncState,
     formData: FormData
   ) => Promise<SimUsageSyncState>;
+  suspendAction?: (
+    simId: string,
+    prev: SimSuspendActionState,
+    formData: FormData
+  ) => Promise<SimSuspendActionState>;
+  unsuspendAction?: (
+    simId: string,
+    prev: SimSuspendActionState,
+    formData: FormData
+  ) => Promise<SimSuspendActionState>;
+  isAdmin: boolean;
 };
+
+type SuspendSimDialogProps = {
+  sim: DetailSim;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  formAction: (payload: FormData) => void;
+  isPending: boolean;
+  hasResult: boolean;
+};
+
+function SuspendSimDialog({
+  sim,
+  open,
+  onOpenChange,
+  formAction,
+  isPending,
+  hasResult,
+}: SuspendSimDialogProps) {
+  const submittedRef = useRef(false);
+  const emergencyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isPendingClient, setIsPendingClient] = useState(false);
+  const [isTransitioning, startTransition] = useTransition();
+
+  const combinedPending = isPending || isPendingClient || isTransitioning;
+
+  useEffect(() => {
+    if ((open === false && hasResult) || (hasResult && !combinedPending)) {
+      submittedRef.current = false;
+      setIsPendingClient(false);
+      if (emergencyTimerRef.current) {
+        clearTimeout(emergencyTimerRef.current);
+        emergencyTimerRef.current = null;
+      }
+    }
+  }, [open, combinedPending, hasResult]);
+
+  useEffect(() => {
+    return () => {
+      if (emergencyTimerRef.current) {
+        clearTimeout(emergencyTimerRef.current);
+        emergencyTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    if (submittedRef.current || combinedPending) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    submittedRef.current = true;
+    setIsPendingClient(true);
+    if (emergencyTimerRef.current) clearTimeout(emergencyTimerRef.current);
+    emergencyTimerRef.current = setTimeout(() => {
+      console.warn("[sim-detail] ⏹️ Blokkeren noodstop na 60s timeout.");
+      submittedRef.current = false;
+      setIsPendingClient(false);
+      emergencyTimerRef.current = null;
+    }, 60_000);
+    startTransition(async () => {
+      try {
+        const fd = new FormData(e.currentTarget);
+        formAction(fd);
+      } finally {
+        setTimeout(() => {
+          setIsPendingClient(false);
+          submittedRef.current = false;
+          if (emergencyTimerRef.current) {
+            clearTimeout(emergencyTimerRef.current);
+            emergencyTimerRef.current = null;
+          }
+        }, 0);
+      }
+    });
+    e.preventDefault();
+  }
+
+  const simLabel = sim.simName && sim.simName.trim() ? sim.simName : formatIccid(sim.iccid);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="destructive"
+          disabled={combinedPending}
+          aria-busy={combinedPending}
+          aria-disabled={combinedPending}
+        >
+          {combinedPending ? (
+            <>
+              <RefreshCw className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+              Bezig met blokkeren…
+            </>
+          ) : (
+            <>
+              <PauseCircle className="mr-2 h-4 w-4" aria-hidden="true" />
+              Blokkeren
+            </>
+          )}
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Simkaart blokkeren?</DialogTitle>
+          <DialogDescription>
+            Je blokkeert simkaart <strong>{simLabel}</strong> tijdelijk. Wil je doorgaan?
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={onSubmit}>
+          <DialogFooter className="gap-2 sm:justify-end">
+            <DialogClose asChild>
+              <Button type="button" variant="outline" disabled={combinedPending}>
+                Annuleren
+              </Button>
+            </DialogClose>
+            <Button
+              type="submit"
+              variant="destructive"
+              disabled={combinedPending}
+              aria-busy={combinedPending}
+              aria-disabled={combinedPending}
+            >
+              {combinedPending ? (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                  Bezig met blokkeren…
+                </>
+              ) : (
+                <>Blokkeren</>
+              )}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+type UnsuspendSimButtonProps = {
+  formAction: (payload: FormData) => void;
+  isPending: boolean;
+  hasResult: boolean;
+};
+
+function UnsuspendSimButton({
+  formAction,
+  isPending,
+  hasResult,
+}: UnsuspendSimButtonProps) {
+  const submittedRef = useRef(false);
+  const emergencyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isPendingClient, setIsPendingClient] = useState(false);
+  const [isTransitioning, startTransition] = useTransition();
+
+  const combinedPending = isPending || isPendingClient || isTransitioning;
+
+  useEffect(() => {
+    if (hasResult && !combinedPending) {
+      submittedRef.current = false;
+      setIsPendingClient(false);
+      if (emergencyTimerRef.current) {
+        clearTimeout(emergencyTimerRef.current);
+        emergencyTimerRef.current = null;
+      }
+    }
+  }, [combinedPending, hasResult]);
+
+  useEffect(() => {
+    return () => {
+      if (emergencyTimerRef.current) {
+        clearTimeout(emergencyTimerRef.current);
+        emergencyTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    if (submittedRef.current || combinedPending) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    submittedRef.current = true;
+    setIsPendingClient(true);
+    if (emergencyTimerRef.current) clearTimeout(emergencyTimerRef.current);
+    emergencyTimerRef.current = setTimeout(() => {
+      console.warn("[sim-detail] ⏹️ Deblokkeren noodstop na 60s timeout.");
+      submittedRef.current = false;
+      setIsPendingClient(false);
+      emergencyTimerRef.current = null;
+    }, 60_000);
+    startTransition(async () => {
+      try {
+        const fd = new FormData(e.currentTarget);
+        formAction(fd);
+      } finally {
+        setTimeout(() => {
+          setIsPendingClient(false);
+          submittedRef.current = false;
+          if (emergencyTimerRef.current) {
+            clearTimeout(emergencyTimerRef.current);
+            emergencyTimerRef.current = null;
+          }
+        }, 0);
+      }
+    });
+    e.preventDefault();
+  }
+
+  return (
+    <form onSubmit={onSubmit}>
+      <Button
+        type="submit"
+        variant="outline"
+        disabled={combinedPending}
+        aria-busy={combinedPending}
+        aria-disabled={combinedPending}
+      >
+        {combinedPending ? (
+          <>
+            <RefreshCw className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+            Bezig met deblokkeren…
+          </>
+        ) : (
+          <>
+            <PlayCircle className="mr-2 h-4 w-4" aria-hidden="true" />
+            Deblokkeren
+          </>
+        )}
+      </Button>
+    </form>
+  );
+}
+
+function renderActionResult(s: SimSuspendActionState, action: "suspend" | "unsuspend"): React.ReactNode {
+  if (!s || (!s.message && !s.error)) return null;
+
+  if (s.ok && s.confirmedStatus === "SUSPENDED") {
+    return (
+      <div
+        role="status"
+        className="flex items-start gap-2.5 rounded-md border border-emerald-300 bg-emerald-50 px-3.5 py-2.5 text-sm text-emerald-800 shadow-sm w-full"
+        key="banner-suspend-success"
+      >
+        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+        <div className="flex-1 min-w-0">
+          <p className="font-medium text-emerald-900">Simkaart geblokkeerd</p>
+          {s.message ? <p className="whitespace-pre-wrap break-words text-emerald-800/90">{s.message}</p> : null}
+        </div>
+      </div>
+    );
+  }
+  if (s.ok && s.confirmedStatus === "ACTIVE") {
+    return (
+      <div
+        role="status"
+        className="flex items-start gap-2.5 rounded-md border border-emerald-300 bg-emerald-50 px-3.5 py-2.5 text-sm text-emerald-800 shadow-sm w-full"
+        key="banner-unsuspend-success"
+      >
+        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+        <div className="flex-1 min-w-0">
+          <p className="font-medium text-emerald-900">Simkaart gedeblokkeerd</p>
+          {s.message ? <p className="whitespace-pre-wrap break-words text-emerald-800/90">{s.message}</p> : null}
+        </div>
+      </div>
+    );
+  }
+  if (s.ok && s.pendingConfirmation) {
+    return (
+      <div
+        role="status"
+        className="flex items-start gap-2.5 rounded-md border border-sky-300 bg-sky-50 px-3.5 py-2.5 text-sm text-sky-800 shadow-sm w-full"
+        key={`banner-pending-${action}`}
+      >
+        <Info className="mt-0.5 h-4 w-4 shrink-0 text-sky-600" aria-hidden="true" />
+        <div className="flex-1 min-w-0">
+          <p className="font-medium text-sky-900">Statuswijziging in behandeling</p>
+          <p className="whitespace-pre-wrap break-words text-sky-800/90">
+            {s.message || "Het verzoek is verwerkt. De statuswijziging is nog niet bevestigd."}
+          </p>
+          <p className="mt-1 text-xs text-sky-700/80">
+            De provider kan enige tijd nodig hebben om de wijziging te verwerken. Ververs de pagina om de actuele status te controleren.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  if (s.error || (!s.ok && s.message)) {
+    const kind = s.error?.kind;
+    const isInvalid = kind === "INVALID_STATUS_TRANSITION";
+    const isPermission = kind === "PERMISSION";
+    const title = isPermission
+      ? "Onvoldoende rechten"
+      : isInvalid
+        ? "Actie niet mogelijk"
+        : kind === "TIMEOUT_OR_NETWORK"
+          ? "Verzoek mislukt"
+          : "Fout bij verzoek";
+    const border = isInvalid ? "border-amber-300 bg-amber-50 text-amber-800" : "border-red-300 bg-red-50 text-red-800";
+    const iconColor = isInvalid ? "text-amber-600" : "text-red-600";
+    const titleColor = isInvalid ? "text-amber-900" : "text-red-900";
+    return (
+      <div
+        role="alert"
+        className={`flex items-start gap-2.5 rounded-md border ${border} px-3.5 py-2.5 text-sm shadow-sm w-full`}
+        key={`banner-error-${action}`}
+      >
+        <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${iconColor}`} aria-hidden="true" />
+        <div className="flex-1 min-w-0">
+          <p className={`font-medium ${titleColor}`}>{title}</p>
+          <p className={`whitespace-pre-wrap break-words ${isInvalid ? "text-amber-800/90" : "text-red-800/90"}`}>
+            {s.message || s.error?.detail || "Onbekende fout."}
+          </p>
+          {kind === "TIMEOUT_OR_NETWORK" ? (
+            <p className={`mt-1 text-xs ${isInvalid ? "text-amber-700/80" : "text-red-700/80"}`}>
+              Herhaal het verzoek niet blind. Controleer eerst de actuele SIM-status alvorens opnieuw te proberen.
+            </p>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+  return null;
+}
 
 export function SimDetail({
   sim,
@@ -101,6 +451,9 @@ export function SimDetail({
   simId,
   auditLogs = [],
   syncUsageAction,
+  suspendAction,
+  unsuspendAction,
+  isAdmin,
 }: SimDetailProps) {
   const canEdit = canUserRole(role, "edit", "sim");
   const canDelete = canUserRole(role, "delete", "sim");
@@ -124,6 +477,38 @@ export function SimDetail({
   const usageSyncPending =
     isUsageSyncPendingClient || isUsageSyncTransitioning || usageSyncPendingNative;
 
+  const [suspendOpen, setSuspendOpen] = useState(false);
+  const [suspendState, suspendFormAction, suspendPendingNative] = useFormState(
+    suspendAction ? suspendAction.bind(null, simId) : async () => ({ ok: false, confirmedStatus: null, pendingConfirmation: false, message: "", error: undefined }) as SimSuspendActionState,
+    { ok: false, confirmedStatus: null, pendingConfirmation: false, message: "", error: undefined } satisfies SimSuspendActionState
+  );
+  const [unsuspendState, unsuspendFormAction, unsuspendPendingNative] = useFormState(
+    unsuspendAction ? unsuspendAction.bind(null, simId) : async () => ({ ok: false, confirmedStatus: null, pendingConfirmation: false, message: "", error: undefined }) as SimSuspendActionState,
+    { ok: false, confirmedStatus: null, pendingConfirmation: false, message: "", error: undefined } satisfies SimSuspendActionState
+  );
+  const prevSuspendStateRef = useRef(suspendState);
+  const prevUnsuspendStateRef = useRef(unsuspendState);
+
+  useEffect(() => {
+    const prev = prevSuspendStateRef.current;
+    const curr = suspendState;
+    const changed =
+      prev !== curr &&
+      ((prev?.ok !== curr?.ok) ||
+        (prev?.message !== curr?.message) ||
+        (prev?.confirmedStatus !== curr?.confirmedStatus) ||
+        (prev?.pendingConfirmation !== curr?.pendingConfirmation) ||
+        (prev?.error !== curr?.error));
+    if (changed && (curr?.ok || curr?.error) && !suspendPendingNative) {
+      setSuspendOpen(false);
+    }
+    prevSuspendStateRef.current = curr;
+  }, [suspendState, suspendPendingNative]);
+
+  useEffect(() => {
+    prevUnsuspendStateRef.current = unsuspendState;
+  }, [unsuspendState]);
+
   useEffect(() => {
     const prev = prevUsageSyncStateRef.current;
     const curr = usageSyncState;
@@ -141,7 +526,7 @@ export function SimDetail({
       }
     }
     prevUsageSyncStateRef.current = curr;
-  }, [usageSyncState, usageSyncPendingNative]); // ✅ FIX: GEEN isUsageSyncPendingClient (eigen-dep infinite loop!)
+  }, [usageSyncState, usageSyncPendingNative]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     return () => {
@@ -160,7 +545,6 @@ export function SimDetail({
     }
     usageSubmittedRef.current = true;
     setIsUsageSyncPendingClient(true);
-    // 🚨 NOOD-STOP: 60 seconden max. Als actie nooit terugkeert → reset spinner + verplichte foutmelding
     if (usageEmergencyTimerRef.current) clearTimeout(usageEmergencyTimerRef.current);
     usageEmergencyTimerRef.current = setTimeout(() => {
       console.warn('[sim-detail] ⏹️ Usage sync noodstop na 60s timeout.');
@@ -197,6 +581,16 @@ export function SimDetail({
     RESUME: "Hervat",
   };
 
+  const suspendBanner = isAdmin && suspendAction ? renderActionResult(suspendState, "suspend") : null;
+  const unsuspendBanner = isAdmin && unsuspendAction ? renderActionResult(unsuspendState, "unsuspend") : null;
+  const actionBanners =
+    suspendBanner || unsuspendBanner ? (
+      <div className="flex flex-col gap-3">
+        {suspendBanner}
+        {unsuspendBanner}
+      </div>
+    ) : null;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3 justify-between">
@@ -220,23 +614,42 @@ export function SimDetail({
             </div>
           </div>
         </div>
-        <div className="flex gap-2">
-          {canEdit ? (
-            <Button asChild>
-              <Link href="#edit">
-                <Edit className="h-4 w-4" /> Bewerken
-              </Link>
-            </Button>
+        <div className="flex gap-2 flex-wrap">
+          {isAdmin && suspendAction && sim.status === "ACTIVE" ? (
+            <SuspendSimDialog
+              sim={sim}
+              open={suspendOpen}
+              onOpenChange={setSuspendOpen}
+              formAction={suspendFormAction}
+              isPending={suspendPendingNative}
+              hasResult={Boolean(suspendState?.ok || suspendState?.error)}
+            />
           ) : null}
-          {canDelete ? (
-            <form action={deleteFormAction}>
-              <Button variant="destructive" type="submit">
-                <Trash2 className="h-4 w-4" /> Verwijderen
+          {isAdmin && unsuspendAction && sim.status === "SUSPENDED" ? (
+            <UnsuspendSimButton
+              formAction={unsuspendFormAction}
+              isPending={unsuspendPendingNative}
+              hasResult={Boolean(unsuspendState?.ok || unsuspendState?.error)}
+            />
+          ) : null}
+            {canEdit ? (
+              <Button asChild>
+                <Link href="#edit">
+                  <Edit className="h-4 w-4" /> Bewerken
+                </Link>
               </Button>
-            </form>
-          ) : null}
+            ) : null}
+            {canDelete ? (
+              <form action={deleteFormAction}>
+                <Button variant="destructive" type="submit">
+                  <Trash2 className="h-4 w-4" /> Verwijderen
+                </Button>
+              </form>
+            ) : null}
         </div>
       </div>
+
+      {actionBanners}
 
       <Tabs defaultValue="overview">
         <TabsList>
