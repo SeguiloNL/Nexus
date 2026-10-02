@@ -13,6 +13,7 @@ import {
   emptyPermissionBits,
   buildLegacyPermissionsForRole,
   collectUserCustomerIds,
+  permissionsMeaningful,
 } from "@/lib/rbac";
 
 type LegacyRoleName = "ADMIN" | "EMPLOYEE" | "VIEWER";
@@ -50,6 +51,7 @@ async function resolveRoleForUser(
             id: true,
             name: true,
             scope: true,
+            isSystem: true,
           },
         }),
         import("@/server/services/role.service").then(
@@ -58,12 +60,33 @@ async function resolveRoleForUser(
       ]);
 
       if (dbRole) {
-        const permissions = await permissionsService(user.roleId!);
+        const loadedPermissions = await permissionsService(user.roleId!);
+
+        const isLegacySystemRole =
+          dbRole.isSystem ||
+          legacyRoleValues.includes(dbRole.name);
+
+        const effectivePermissions =
+          isLegacySystemRole || !permissionsMeaningful(loadedPermissions)
+            ? buildLegacyPermissionsForRole(
+                legacyRole,
+                (dbRole.scope as RoleScope) ?? RoleScope.INTERNAL
+              )
+            : loadedPermissions;
+
+        const effectiveScope =
+          (dbRole.scope as RoleScope) ?? RoleScope.INTERNAL;
+
+        const effectiveRoleName =
+          isLegacySystemRole && legacyRoleValues.includes(dbRole.name)
+            ? dbRole.name
+            : dbRole.name || legacyRole;
+
         return {
           roleId: dbRole.id,
-          roleScope: dbRole.scope as RoleScope,
-          roleName: dbRole.name,
-          permissions,
+          roleScope: effectiveScope,
+          roleName: effectiveRoleName,
+          permissions: effectivePermissions,
         };
       }
     } catch (_e) {

@@ -8,6 +8,7 @@ import {
   isResellerScope,
   isPartnerScope,
   isPartnerOrResellerScope,
+  permissionsMeaningful,
 } from "@/lib/rbac";
 import type { PermissionBits } from "@/types/next-auth";
 import { UserRole, RoleScope, CustomerType, CUSTOMER_SCOPE_RESOURCES, RESELLER_SCOPE_RESOURCES, PARTNER_SCOPE_RESOURCES, ALL_RESOURCE_TYPES } from "@/types/enums";
@@ -403,7 +404,7 @@ describe("Sim-only restricted rol (klant@seguilo.nl bug): sim.read=true en legac
     expect(can(simOnlyBits, "view", "product")).toBe(false);
   });
 
-  it("Bewijs: legacy EMPLOYEE geeft WEL toegang tot dashboard/customer/tracker (te breed; mag dus niet gebruikt worden als roleId != null)", () => {
+  it("Bewijs: legacy EMPLOYEE geeft WEL toegang tot dashboard/customer/tracker (te breed; mag dus niet gebruikt worden als roleId != null en dynamische rol WEL meaningful permissions heeft)", () => {
     const legacyEmployeeBits = buildLegacyPermissionsForRole(UserRole.EMPLOYEE, RoleScope.RESELLER);
     expect(legacyEmployeeBits.dashboard.read).toBe(true);
     expect(legacyEmployeeBits.customer.read).toBe(true);
@@ -415,5 +416,76 @@ describe("Sim-only restricted rol (klant@seguilo.nl bug): sim.read=true en legac
     expect(legacyEmployeeBits.subscription.read).toBe(true);
     expect(legacyEmployeeBits.invoice.read).toBe(true);
     expect(legacyEmployeeBits.activation_order.read).toBe(true);
+  });
+});
+
+describe("Legacy ADMIN Beheerder safety-net (role.permissions leeg / isSystem → fallback legacy buildLegacyPermissionsForRole)", () => {
+  it("ADMIN (legacy UserRole) met geladen role.permissions = alles false (lege permission-rijen): fallback geeft volledige toegang", () => {
+    // Simuleert auth.ts fallback: loadedPermissions = alles false (geen permission rows in role)
+    // → dan permissionsMeaningful=false → buildLegacyPermissionsForRole(ADMIN, INTERNAL)
+    const loadedPermissions: PermissionBits = {
+      customer:       { read: false, write: false },
+      tracker:        { read: false, write: false },
+      sim:            { read: false, write: false },
+      vehicle:        { read: false, write: false },
+      subscription:   { read: false, write: false },
+      invoice:        { read: false, write: false },
+      activation_order: { read: false, write: false },
+      user:           { read: false, write: false },
+      role:           { read: false, write: false },
+      audit_log:      { read: false, write: false },
+      setting:        { read: false, write: false },
+      product:        { read: false, write: false },
+      dashboard:      { read: false, write: false },
+    };
+
+    // auth.ts logica:
+    const isLegacySystemRole = true; // of !permissionsMeaningful(loadedPermissions)
+    const legacyRole = UserRole.ADMIN;
+    const scope = RoleScope.INTERNAL;
+    const effectivePermissions: PermissionBits =
+      (isLegacySystemRole || !permissionsMeaningful(loadedPermissions))
+        ? buildLegacyPermissionsForRole(legacyRole, scope)
+        : loadedPermissions;
+
+    // Dashboard: moet nu toegang hebben
+    expect(can(effectivePermissions, "view", "dashboard")).toBe(true);
+    expect(can(effectivePermissions, "create", "customer")).toBe(true);
+    expect(can(effectivePermissions, "edit",   "tracker")).toBe(true);
+    expect(can(effectivePermissions, "delete", "user")).toBe(true);
+    expect(can(effectivePermissions, "edit",   "setting")).toBe(true);
+    expect(can(effectivePermissions, "view", "audit_log")).toBe(true);
+  });
+
+  it("Niet-legacy dynamic role (SIM-only) met meaningful permissions: fallback activeert NIET (handhaaft restrictie)", () => {
+    const loadedPermissions: PermissionBits = {
+      customer:       { read: false, write: false },
+      tracker:        { read: false, write: false },
+      sim:            { read: true,  write: false },
+      vehicle:        { read: false, write: false },
+      subscription:   { read: false, write: false },
+      invoice:        { read: false, write: false },
+      activation_order: { read: false, write: false },
+      user:           { read: false, write: false },
+      role:           { read: false, write: false },
+      audit_log:      { read: false, write: false },
+      setting:        { read: false, write: false },
+      product:        { read: false, write: false },
+      dashboard:      { read: false, write: false },
+    };
+
+    const isLegacySystemRole = false;
+    const legacyRole = UserRole.EMPLOYEE;
+    const scope = RoleScope.RESELLER;
+    const effectivePermissions: PermissionBits =
+      (isLegacySystemRole || !permissionsMeaningful(loadedPermissions))
+        ? buildLegacyPermissionsForRole(legacyRole, scope)
+        : loadedPermissions;
+
+    // Fallback niet geactiveerd → restrictie SIM-only blijft
+    expect(can(effectivePermissions, "view", "sim")).toBe(true);
+    expect(can(effectivePermissions, "view", "dashboard")).toBe(false);
+    expect(can(effectivePermissions, "view", "customer")).toBe(false);
+    expect(can(effectivePermissions, "view", "user")).toBe(false);
   });
 });
