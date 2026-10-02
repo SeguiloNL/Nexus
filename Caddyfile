@@ -43,17 +43,16 @@
 	import common_headers
 
 	reverse_proxy {$STM_APP_URL:{$NEXUS_APP_URL:stm-app:3000}} {
-		# X-Forwarded-* headers — AUTH_TRUST_HOST=true in Next.js
-		header_up X-Forwarded-For    {remote_host}
-		header_up X-Forwarded-Proto  {scheme}
-		header_up X-Forwarded-Host   {host}
+		# X-Real-IP header (X-Forwarded-* headers worden automatisch door reverse_proxy gezet)
 		header_up X-Real-IP          {remote_host}
 
 		# keep-alive met Next.js standalone server
+		# (Caddy 2.9+ compatibel: keepalive_idle_conns = aantal connecties, keepalive = idle timeout met time unit)
 		transport http {
-			keepalive   32
-			keepalive_interval 30s
-			timeout     120s
+			keepalive_idle_conns   32
+			keepalive_interval     30s
+			dial_timeout           10s
+			response_header_timeout 120s
 		}
 	}
 }
