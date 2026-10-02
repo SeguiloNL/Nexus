@@ -1,0 +1,33 @@
+# ============================================================
+# systemd: STM Cleanup service (wekelijks zondag 04:00)
+# Roept scripts/cleanup-stm.sh aan in /opt/stm.
+# ============================================================
+[Unit]
+Description=STM Wekelijkse Cleanup (audit logs, install logs, docker images)
+Documentation=https://github.com/SeguiloNL/Nexus/
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/stm
+Environment=TZ=Europe/Amsterdam
+ExecStart=/bin/bash -lc 'cd /opt/stm && ./scripts/cleanup-stm.sh'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stm-cleanup
+TimeoutStartSec=45min
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# Security hardening (minder streng: moet Docker socket aanroepen + schrijven naar logs)
+NoNewPrivileges=true
+ReadWritePaths=/opt/stm /var/log/stm-install
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

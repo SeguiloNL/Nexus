@@ -1,0 +1,17 @@
+# ============================================================
+# STM Simhuis SIM-voorraad Sync timer: 4x per dag
+# (03:00, 09:00, 15:00, 21:00 Europe/Amsterdam)
+# ============================================================
+[Unit]
+Description=4x-daagse Simhuis SIM-voorraad synchronisatie (03/09/15/21 uur NL)
+Documentation=https://github.com/SeguiloNL/Nexus/
+
+[Timer]
+OnCalendar=*-*-* 03,09,15,21:00:00 Europe/Amsterdam
+Persistent=true
+RandomizedDelaySec=120
+AccuracySec=1min
+Unit=stm-simhuis-sims-sync.service
+
+[Install]
+WantedBy=timers.target

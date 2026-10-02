@@ -1,0 +1,17 @@
+# ============================================================
+# STM Inserve Sync timer: elke 6 uur (02:00, 08:00, 14:00, 20:00)
+# Abonnementen + facturen synchroniseren naar Inserve
+# ============================================================
+[Unit]
+Description=Elke 6 uur: Inserve sync (abonnementen + facturen)
+Documentation=https://github.com/SeguiloNL/Nexus/
+
+[Timer]
+OnCalendar=*-*-* 02,08,14,20:00:00 Europe/Amsterdam
+Persistent=true
+RandomizedDelaySec=180
+AccuracySec=1min
+Unit=stm-inserve-sync.service
+
+[Install]
+WantedBy=timers.target

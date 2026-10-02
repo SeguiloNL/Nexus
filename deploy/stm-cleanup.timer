@@ -1,0 +1,17 @@
+# ============================================================
+# STM Cleanup timer: Wekelijks ZONDAG 04:00 Europe/Amsterdam
+# Audit logs, install logs, ongebruikte Docker images opruimen
+# ============================================================
+[Unit]
+Description=Wekelijkse STM cleanup (audit logs, logs, ongebruikte images)
+Documentation=https://github.com/SeguiloNL/Nexus/
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00 Europe/Amsterdam
+Persistent=true
+RandomizedDelaySec=300
+AccuracySec=1min
+Unit=stm-cleanup.service
+
+[Install]
+WantedBy=timers.target

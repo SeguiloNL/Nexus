@@ -1,0 +1,32 @@
+# ============================================================
+# systemd: STM Health Check (elke 5 minuten watchdog)
+# Roept scripts/health-check-stm.sh aan in /opt/stm.
+# Bij falen: OnFailure via journal/logwatch detecteren of
+# eigen notificatie-oplossing aanzetten.
+# ============================================================
+[Unit]
+Description=STM Health Check watchdog (elke 5 min: /api/health + containers + schijfruimte)
+Documentation=https://github.com/SeguiloNL/Nexus/
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/stm
+Environment=TZ=Europe/Amsterdam
+ExecStart=/bin/bash -lc 'cd /opt/stm && ./scripts/health-check-stm.sh'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stm-healthcheck
+TimeoutStartSec=3min
+Nice=5
+
+# Security (minder hard: Docker socket + network nodig)
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/stm /var/log/stm-install
+
+[Install]
+WantedBy=multi-user.target

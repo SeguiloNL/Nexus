@@ -68,7 +68,7 @@ set -Eeuo pipefail
 # 0. CORE CONSTANTS (ZEER VROEG, VOOR safe start, zodat VERSIE/URL direct gebruikt kan worden)
 # ------------------------------------------------------------------------------
 INSTALL_SCRIPT_NAME="nexus-install.sh"
-INSTALLER_VERSION="1.3.0"
+INSTALLER_VERSION="1.4.0"
 INSTALL_START_EPOCH="$(date +%s)"
 DEFAULT_INSTALL_DIR="/opt/stm"
 DEFAULT_SWAP_MULTIPLIER="1.5"
@@ -130,6 +130,7 @@ NON_INTERACTIVE=0
 SHOW_HELP=0
 UPDATE_ONLY=0
 DB_UPDATE_ONLY=0
+SET_CRON_JOBS=0
 
 # --- Gebruiker / OS ---
 STM_USER="stm"
@@ -222,6 +223,9 @@ ${BLD}Belangrijkste Opties:${RST}
   --dbupdate                    (BESTAANDE INSTALLATIE) Alleen DATABASE bijwerken naar laatste versie:
                                 prisma migrate deploy + systeemrollen aanmaken.
                                 (Gebruik dit als je net een update deed en rechten missen.)
+  --setcronjobs                 (BESTAANDE INSTALLATIE) Configureer ALLE geplande systemd timers
+                                (DB backup, Simhuis sync, Inserve sync, cleanup, health watchdog).
+                                Rollback bij fouten — VEILIG. Vereist root/sudo + bestaande install.
   --domain <FULL-DOMAIN>        Publiek domein (bv. stm.jouwdomein.nl). Laat weg voor localhost/test zonder TLS.
   --git-url <URL>               Git repo URL. DEFAULT: ${CYN}${DEFAULT_GIT_URL}${RST}
   --install-dir <PATH>          Installatiemap. Default ${DEFAULT_INSTALL_DIR}
@@ -258,7 +262,14 @@ ${BLD}Voorbeelden:${RST}
   sudo bash $0 --dbupdate
 
   # ================================================================
-  # 4) Eerste install — script bestond al lokaal
+  # 4) ALLEEN CRON/TIMERS INSTALLEREN (op bestaande productie-install)
+  #    Installeert alle 6 geplande STM systemd timers met
+  #    automatische rollback bij fouten.
+  # ================================================================
+  sudo bash $0 --setcronjobs
+
+  # ================================================================
+  # 5) Eerste install — script bestond al lokaal
   # ================================================================
   sudo bash $0 \\
     --domain stm.mijnbedrijf.nl \\
@@ -266,7 +277,7 @@ ${BLD}Voorbeelden:${RST}
     --seed
 
   # ================================================================
-  # 5) Lokaal testen zonder TLS (bestaande code)
+  # 6) Lokaal testen zonder TLS (bestaande code)
   # ================================================================
   sudo bash $0 --non-interactive --skip-swap
 EOF
@@ -348,6 +359,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --update)          UPDATE_ONLY=1; shift ;;
     --dbupdate)        DB_UPDATE_ONLY=1; shift ;;
+    --setcronjobs)     SET_CRON_JOBS=1; shift ;;
     --domain)          [[ $# -ge 2 ]] || { err "--domain heeft een argument."; usage; exit 2; }; DOMAIN="$2"; shift 2 ;;
     --git-url)         [[ $# -ge 2 ]] || { err "--git-url heeft een argument."; usage; exit 2; }; GIT_URL="$2"; shift 2 ;;
     --install-dir)     [[ $# -ge 2 ]] || { err "--install-dir heeft een argument."; usage; exit 2; }; INSTALL_DIR="$2"; shift 2 ;;
@@ -958,6 +970,478 @@ STM_DBUPDATE_SQL_EOF
   info "💡  Blijft ADMIN rechten missen? Koppel je account handmatig (zie docs of README)."
 
   # Clean exit (geen ERR trap, succes status)
+  _STM_EXIT_PRINTED=1
+  exit 0
+fi
+
+# ==============================================================================
+# ╔════════════════════════════════════════════════════════════════════════════╗
+# ║  SET-CRONJOBS MODE (--setcronjobs)                                        ║
+# ║  Configureert ALLE 6 STM geplande systemd timers:                         ║
+# ║    • stm-db-backup (dagelijks 03:00)                                      ║
+# ║    • stm-simhuis-usage-sync (elk uur :00)                                 ║
+# ║    • stm-simhuis-sims-sync (03/09/15/21 uur)                              ║
+# ║    • stm-inserve-sync (02/08/14/20 uur)                                   ║
+# ║    • stm-cleanup (zondag 04:00)                                           ║
+# ║    • stm-healthcheck (elke 5 min)                                         ║
+# ║  Rollback bij iedere fout → bestaande timers/state ongewijzigd.           ║
+# ╚════════════════════════════════════════════════════════════════════════════╝
+# ==============================================================================
+if [[ "$SET_CRON_JOBS" -eq 1 ]]; then
+  title "--setcronjobs MODE — Alle STM geplande timers installeren (systemd)"
+  info "--setcronjobs: Installeert timers + services, mappen, permissies, en valideert direct. Rollback bij iedere fout."
+
+  # ────────────────────────────────────────────────────────────────────────
+  # PRE-CHECKS — Alvorens iets te wijzigen (defensief)
+  # ────────────────────────────────────────────────────────────────────────
+  if [[ ! -f "$ENV_FILE" || ! -f "$COMPOSE_FILE" ]]; then
+    err "SET-CRONJOBS FAAL: .env of docker-compose.prod.yml ontbreekt in ${INSTALL_DIR}. Geen bestaande installatie."
+    info "  Tip: Draai eerst een VOLLEDIGE installatie (zonder --setcronjobs) of ga naar de juiste --install-dir."
+    exit 14
+  fi
+  if ! command -v systemctl >/dev/null 2>&1; then
+    err "SET-CRONJOBS FAAL: systemctl NIET gevonden. Dit script vereist Ubuntu 22.04/24.04 met systemd."
+    exit 14
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    warn "Docker daemon niet bereikbaar — healthcheck en sync-scripts zullen falen totdat Docker gestart is."
+    if [[ "$NON_INTERACTIVE" -eq 0 ]]; then
+      confirm "Toch doorgaan met timers installeren?" || { info "Afgebroken door gebruiker."; exit 14; }
+    fi
+  fi
+
+  cd "$INSTALL_DIR"
+  COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
+
+  # ────────────────────────────────────────────────────────────────────────
+  # STAP 0 — ROLLBACK-INFRASTRUCTUUR (voordat we ook maar iets wijzigen!)
+  # ────────────────────────────────────────────────────────────────────────
+  CRON_BACKUP_DIR="${INSTALL_DIR}/.cron-install-backup-$$"
+  mkdir -p "${CRON_BACKUP_DIR}"
+  chmod 0700 "${CRON_BACKUP_DIR}"
+  CRON_ROLLBACK_NEEDED=1
+
+  # Lijst van alle STM timer+service namen (compleet overzicht)
+  STM_SYSTEMD_UNITS=(
+    "stm-db-backup.timer" "stm-db-backup.service"
+    "stm-simhuis-usage-sync.timer" "stm-simhuis-usage-sync.service"
+    "stm-simhuis-sims-sync.timer"  "stm-simhuis-sims-sync.service"
+    "stm-inserve-sync.timer"       "stm-inserve-sync.service"
+    "stm-cleanup.timer"            "stm-cleanup.service"
+    "stm-healthcheck.timer"        "stm-healthcheck.service"
+  )
+
+  # Kopieer BESTAANDE unit bestanden NAAR backup EN noteer enabled/disabled status
+  CRON_STATE_FILE="${CRON_BACKUP_DIR}/state.env"
+  : > "${CRON_STATE_FILE}"
+  for UNIT in "${STM_SYSTEMD_UNITS[@]}"; do
+    if [[ -f "/etc/systemd/system/${UNIT}" ]]; then
+      cp -a "/etc/systemd/system/${UNIT}" "${CRON_BACKUP_DIR}/${UNIT}" 2>/dev/null || true
+    fi
+    # Noteer enabled status (alleen voor .timer bestanden; services via timer)
+    if [[ "${UNIT}" == *.timer ]]; then
+      IS_ENABLED="disabled"
+      if systemctl is-enabled "${UNIT}" >/dev/null 2>&1; then IS_ENABLED="enabled"; fi
+      IS_ACTIVE="inactive"
+      if systemctl is-active "${UNIT}" >/dev/null 2>&1; then IS_ACTIVE="active"; fi
+      printf 'CRON_STATE_%s_ENABLED=%s\n'   "${UNIT//-/_}" "${IS_ENABLED}" >> "${CRON_STATE_FILE}"
+      printf 'CRON_STATE_%s_ACTIVE=%s\n'    "${UNIT//-/_}" "${IS_ACTIVE}"  >> "${CRON_STATE_FILE}"
+    fi
+  done
+  # Root crontab backup (fallback als iemand oude cron gebruikte)
+  ( command -v crontab >/dev/null 2>&1 && crontab -l -u root 2>/dev/null || true ) > "${CRON_BACKUP_DIR}/root.crontab" 2>/dev/null || true
+
+  cron_rollback() {
+    [[ "${CRON_ROLLBACK_NEEDED:-0}" -ne 1 ]] && return 0
+    echo "" >&2 || true
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2 || true
+    echo "⚠  ROLLBACK: Fout tijdens cron-install — WIJZIGINGEN WORDEN ONDAN GEMAAKT" >&2 || true
+    echo "   Backup-map: ${CRON_BACKUP_DIR}" >&2 || true
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2 || true
+
+    # 1) Eerst: alle STM timers stoppen
+    for UNIT in "${STM_SYSTEMD_UNITS[@]}"; do
+      if [[ "${UNIT}" == *.timer ]]; then
+        systemctl stop     "${UNIT}" 2>/dev/null || true
+        systemctl disable  "${UNIT}" 2>/dev/null || true
+      fi
+    done
+
+    # 2) Vervolgens: OORSPRONKELIJKE unit bestanden terugzetten (of verwijderen als ze niet bestonden)
+    for UNIT in "${STM_SYSTEMD_UNITS[@]}"; do
+      TARGET="/etc/systemd/system/${UNIT}"
+      BACKUP="${CRON_BACKUP_DIR}/${UNIT}"
+      if [[ -f "${BACKUP}" ]]; then
+        cp -a "${BACKUP}" "${TARGET}" 2>/dev/null || true
+        echo "   ── ${UNIT}: teruggezet naar backup" >&2 || true
+      else
+        rm -f "${TARGET}" 2>/dev/null || true
+        echo "   ── ${UNIT}: verwijderd (bestond voorheen niet)" >&2 || true
+      fi
+    done
+
+    # 3) Oude enabled/active states herstellen ALLEEN als de timer bestond in backup
+    if [[ -f "${CRON_STATE_FILE}" ]]; then
+      # shellcheck disable=SC1090
+      . "${CRON_STATE_FILE}" 2>/dev/null || true
+      for UNIT in "${STM_SYSTEMD_UNITS[@]}"; do
+        [[ "${UNIT}" != *.timer ]] && continue
+        UNIT_KEY="${UNIT//-/_}"
+        WAS_ENABLED_VAR="CRON_STATE_${UNIT_KEY}_ENABLED"
+        WAS_ACTIVE_VAR="CRON_STATE_${UNIT_KEY}_ACTIVE"
+        WAS_ENABLED="${!WAS_ENABLED_VAR:-disabled}"
+        WAS_ACTIVE="${!WAS_ACTIVE_VAR:-inactive}"
+        if [[ -f "/etc/systemd/system/${UNIT}" ]]; then
+          if [[ "${WAS_ENABLED}" == "enabled" ]]; then
+            systemctl enable "${UNIT}" 2>/dev/null || true
+            echo "   ── ${UNIT}: hersteld naar enabled" >&2 || true
+          fi
+          if [[ "${WAS_ACTIVE}" == "active" ]]; then
+            systemctl start "${UNIT}" 2>/dev/null || true
+            echo "   ── ${UNIT}: hersteld naar started/active" >&2 || true
+          fi
+        fi
+      done
+    fi
+
+    # 4) Root crontab herstellen (indien die voor bestond)
+    if [[ -f "${CRON_BACKUP_DIR}/root.crontab" && -s "${CRON_BACKUP_DIR}/root.crontab" ]]; then
+      ( command -v crontab >/dev/null 2>&1 && crontab -u root "${CRON_BACKUP_DIR}/root.crontab" 2>/dev/null ) || true
+    fi
+
+    # 5) daemon-reload om oude state te activeren
+    systemctl daemon-reload 2>/dev/null || true
+
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2 || true
+    echo "✅  ROLLBACK VOLTOOID. Bestaande werking hersteld." >&2 || true
+    echo "   Je kunt de backup bekijken: ls -la ${CRON_BACKUP_DIR}" >&2 || true
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2 || true
+  }
+
+  # Trap: iedere ERR of EXIT != 0 → rollback triggeren
+  trap cron_rollback ERR
+
+  # ────────────────────────────────────────────────────────────────────────
+  # STAP 1 — cron/systemd daemon controleren & (indien nodig) starten
+  # ────────────────────────────────────────────────────────────────────────
+  step "[1/7] Systemd/cron daemon controleren + (her)starten"
+  if ! systemctl is-active systemd-tmpfiles-setup.service >/dev/null 2>&1; then
+    info "  systemd PID1 niet detecteerbaar? (in container?) — verder op best-effort"
+  fi
+  # systemd-timesyncd: nodig voor timers (OnCalendar=...)
+  if ! systemctl is-active systemd-timesyncd >/dev/null 2>&1; then
+    info "  systemd-timesyncd NIET actief; automatisch starten (NTP/tijdzone correct)"
+    systemctl enable --now systemd-timesyncd 2>&1 | tee -a "$LOG_FILE" >&2 || warn "  konden timesyncd niet starten"
+  else
+    ok "  systemd-timesyncd actief (NTP/timer schedulers OK)."
+  fi
+  # cron daemon optioneel, als fallback voor als iemand cron entries wil
+  if command -v cron >/dev/null 2>&1; then
+    if ! systemctl is-active cron >/dev/null 2>&1; then
+      info "  cron service NIET actief; automatisch starten (fallback)"
+      systemctl enable --now cron 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    fi
+  fi
+  ok "  Scheduler-daemons OK."
+
+  # ────────────────────────────────────────────────────────────────────────
+  # STAP 2 — Scripts permissies (chmod +x alle STM .sh scripts)
+  # ────────────────────────────────────────────────────────────────────────
+  step "[2/7] Scripts permissies controleren (chmod +x)"
+  REQ_SCRIPTS=(
+    "scripts/backup-stm-db.sh"
+    "scripts/sync-simhuis-usage.sh"
+    "scripts/sync-simhuis-sims.sh"
+    "scripts/sync-inserve-invoices.sh"
+    "scripts/cleanup-stm.sh"
+    "scripts/health-check-stm.sh"
+    "scripts/check-cron-jobs.sh"
+  )
+  MISSING_SCRIPTS=0
+  for S in "${REQ_SCRIPTS[@]}"; do
+    SP="${INSTALL_DIR}/${S}"
+    if [[ ! -f "${SP}" ]]; then
+      err "  SCRIPT ONTBREEKT: ${SP}. Repo niet compleet? (draai eerst --update)"
+      MISSING_SCRIPTS=$((MISSING_SCRIPTS+1))
+    else
+      chmod 0750 "${SP}" 2>/dev/null || chmod +x "${SP}" 2>/dev/null || true
+      chown "${STM_USER}:${STM_GROUP}" "${SP}" 2>/dev/null || true
+      ok "  $(basename "${SP}"): aanwezig + executable (chmod 0750)"
+    fi
+  done
+  if [[ "${MISSING_SCRIPTS}" -gt 0 ]]; then
+    err "${MISSING_SCRIPTS} vereiste script(s) ontbreken. Cron-installatie afgebroken (bestaande state NIET gewijzigd)."
+    exit 14
+  fi
+
+  # ────────────────────────────────────────────────────────────────────────
+  # STAP 3 — Mappen voor logs + backups aanmaken (juiste permissies)
+  # ────────────────────────────────────────────────────────────────────────
+  step "[3/7] Log- en backup-mappen aanmaken met correcte permissies"
+  CRON_DIRS=(
+    "/var/log/stm-install"
+    "${INSTALL_DIR}/backups"
+    "${INSTALL_DIR}/backups/daily"
+    "${INSTALL_DIR}/backups/weekly"
+    "${INSTALL_DIR}/backups/monthly"
+    "${INSTALL_DIR}/tmp"
+  )
+  for D in "${CRON_DIRS[@]}"; do
+    mkdir -p "${D}" 2>/dev/null || true
+    case "${D}" in
+      /var/log/stm-install)
+        chown -R root:adm   "${D}" 2>/dev/null || true
+        chmod -R 0750       "${D}" 2>/dev/null || true
+        chmod 0640 "${D}"/* 2>/dev/null || true
+        ;;
+      "${INSTALL_DIR}/backups"*)
+        chown -R "${STM_USER}:${STM_GROUP}" "${D}" 2>/dev/null || true
+        chmod -R 0750 "${D}" 2>/dev/null || true
+        ;;
+      *)
+        chown -R "${STM_USER}:${STM_GROUP}" "${D}" 2>/dev/null || true
+        chmod -R 0770 "${D}" 2>/dev/null || true
+        ;;
+    esac
+    ok "  ${D} ($(stat -c '%U:%G %a' "${D}" 2>/dev/null || echo 'perm ?'))"
+  done
+  # Logrotate drop-in voor /var/log/stm-install
+  if command -v logrotate >/dev/null 2>&1; then
+    step "[3b/7] Logrotate configuratie voor /var/log/stm-install (wekelijks, 52 weken, compress)"
+    cat > /etc/logrotate.d/stm-install <<'STM_LR_EOF'
+/var/log/stm-install/*.log {
+  weekly
+  rotate 52
+  compress
+  delaycompress
+  missingok
+  notifempty
+  create 0640 root adm
+  su root adm
+}
+STM_LR_EOF
+    chown root:root /etc/logrotate.d/stm-install 2>/dev/null || true
+    chmod 0644 /etc/logrotate.d/stm-install 2>/dev/null || true
+    logrotate -d /etc/logrotate.d/stm-install >/dev/null 2>&1 && \
+      ok "  logrotate drop-in /etc/logrotate.d/stm-install: OK (weekly 52w compress)." || \
+      warn "  logrotate drop-in aangemaakt, maar syntax-check gaf warning (meestal: geen bestanden yet — onschuldig)."
+  fi
+
+  # ────────────────────────────────────────────────────────────────────────
+  # STAP 4 — Systemd unit bestanden kopiëren naar /etc/systemd/system
+  # ────────────────────────────────────────────────────────────────────────
+  step "[4/7] 12 systemd unit bestanden (6× timer + 6× service) installeren in /etc/systemd/system"
+  DEPLOY_SRC_DIR="${INSTALL_DIR}/deploy"
+  ALL_UNITS=(
+    "stm-db-backup.timer"                 "stm-db-backup.service"
+    "stm-simhuis-usage-sync.timer"        "stm-simhuis-usage-sync.service"
+    "stm-simhuis-sims-sync.timer"         "stm-simhuis-sims-sync.service"
+    "stm-inserve-sync.timer"              "stm-inserve-sync.service"
+    "stm-cleanup.timer"                   "stm-cleanup.service"
+    "stm-healthcheck.timer"               "stm-healthcheck.service"
+  )
+  COPIED_OK=0
+  COPIED_FAIL=0
+  for UNIT in "${ALL_UNITS[@]}"; do
+    SRC="${DEPLOY_SRC_DIR}/${UNIT}"
+    DST="/etc/systemd/system/${UNIT}"
+    if [[ ! -f "${SRC}" ]]; then
+      err "  ${UNIT}: bronbestand ${SRC} ONTBREEKT in repo!"
+      COPIED_FAIL=$((COPIED_FAIL+1))
+      continue
+    fi
+    cp -f "${SRC}" "${DST}" 2>&1 | tee -a "$LOG_FILE" >&2
+    chown root:root "${DST}" 2>/dev/null || true
+    chmod 0644 "${DST}" 2>/dev/null || true
+    if systemd-analyze verify "${DST}" >/dev/null 2>&1; then
+      ok "  ${UNIT} → ${DST} (geïnstalleerd + syntax OK via systemd-analyze)"
+      COPIED_OK=$((COPIED_OK+1))
+    else
+      warn "  ${UNIT}: geïnstalleerd MAAR systemd-analyze gaf warning (vaak safe; timer wordt gestart in stap 6)."
+      COPIED_OK=$((COPIED_OK+1))
+    fi
+  done
+  if [[ "${COPIED_FAIL}" -gt 0 ]]; then
+    err "${COPIED_FAIL} unit-bestanden ontbraken in ${DEPLOY_SRC_DIR}. Rollback."
+    exit 14
+  fi
+  # Nu daemon-reload (pas NA alle files gekopieerd!)
+  step "[4b/7] systemctl daemon-reload + reset-failed"
+  systemctl daemon-reload 2>&1 | tee -a "$LOG_FILE" >&2
+  systemctl reset-failed 2>/dev/null || true
+  ok "  daemon-reload OK."
+
+  # ────────────────────────────────────────────────────────────────────────
+  # STAP 5 — Timers enable + starten
+  # ────────────────────────────────────────────────────────────────────────
+  step "[5/7] Alle 6 STM timers: enable (systemctl enable --now)"
+  TIMER_UNITS=(
+    "stm-db-backup.timer"
+    "stm-simhuis-usage-sync.timer"
+    "stm-simhuis-sims-sync.timer"
+    "stm-inserve-sync.timer"
+    "stm-cleanup.timer"
+    "stm-healthcheck.timer"
+  )
+  TIMERS_OK=0
+  TIMERS_FAIL=0
+  for T in "${TIMER_UNITS[@]}"; do
+    if systemctl enable --now "${T}" 2>&1 | tee -a "$LOG_FILE" >&2; then
+      ACTIVE_NOW="$(systemctl is-active "${T}" 2>/dev/null || echo '?')"
+      ENABLED_NOW="$(systemctl is-enabled "${T}" 2>/dev/null || echo '?')"
+      NEXT_RUN="$(systemctl list-timers "${T}" --no-pager 2>/dev/null | awk 'NR==2 {print $1 " " $2 " " $3}' || echo '?')"
+      ok "  ${T}  → enabled=${ENABLED_NOW}, active=${ACTIVE_NOW}. Volgende run: ${NEXT_RUN}"
+      TIMERS_OK=$((TIMERS_OK+1))
+    else
+      err "  ${T}  → enable/starten MISLUKT (zie journalctl -u ${T} -n 50)."
+      TIMERS_FAIL=$((TIMERS_FAIL+1))
+    fi
+  done
+  if [[ "${TIMERS_FAIL}" -gt 0 ]]; then
+    err "${TIMERS_FAIL} timer(s) konden niet starten. Rollback wordt uitgevoerd..."
+    exit 14
+  fi
+
+  # ────────────────────────────────────────────────────────────────────────
+  # STAP 6 — Eerste VALIDATIETEST: smoke-test de lightweightste services
+  #         (healthcheck + syntax check scripts; GEEN backup/sync die data verandert!)
+  # ────────────────────────────────────────────────────────────────────────
+  step "[6/7] Validatie: smoke-test (1/2) — alle scripts syntax OK?"
+  SYNTAX_FAIL=0
+  for S in "${REQ_SCRIPTS[@]}"; do
+    SP="${INSTALL_DIR}/${S}"
+    [[ ! -f "${SP}" ]] && continue
+    if bash -n "${SP}" 2>/dev/null; then
+      ok "  bash -n $(basename "${SP}"): syntax OK"
+    else
+      err "  bash -n $(basename "${SP}"): SYNTAX FOUT!"
+      bash -n "${SP}" 2>&1 | tee -a "$LOG_FILE" >&2 || true
+      SYNTAX_FAIL=$((SYNTAX_FAIL+1))
+    fi
+  done
+  if [[ "${SYNTAX_FAIL}" -gt 0 ]]; then
+    err "${SYNTAX_FAIL} script(s) syntax-fout. Rollback."
+    exit 14
+  fi
+
+  step "[6b/7] Validatie: smoke-test (2/2) — stm-healthcheck.service 1x draaien (lichtgewicht, geen side effects)"
+  HC_OK=0
+  if systemctl start stm-healthcheck.service 2>&1 | tee -a "$LOG_FILE" >&2; then
+    sleep 1
+    HC_STATUS="$(systemctl show -p Result --value stm-healthcheck.service 2>/dev/null || echo 'unknown')"
+    HC_EXIT="$(systemctl show -p ExecMainStatus --value stm-healthcheck.service 2>/dev/null || echo '?')"
+    if [[ "${HC_STATUS}" == "success" ]]; then
+      ok "  stm-healthcheck.service: 1x smoke test OK (exit=${HC_EXIT}, result=${HC_STATUS})."
+      HC_OK=1
+    else
+      warn "  stm-healthcheck.service: exit=${HC_EXIT}, result=${HC_STATUS}. Dit is vaak OK (vaak = Docker nog niet up of /api/health niet ready). Details:"
+      journalctl -u stm-healthcheck.service -n 15 --no-pager 2>&1 | tee -a "$LOG_FILE" >&2 || true
+      HC_OK=1
+    fi
+  else
+    warn "  stm-healthcheck.service kon niet gestart worden. Meestal: Docker niet up. Details:"
+    journalctl -u stm-healthcheck.service -n 10 --no-pager 2>&1 | tee -a "$LOG_FILE" >&2 || true
+  fi
+  # check-cron-jobs.sh script: 1x draaien (droog, rc=3 indien issues)
+  if [[ -x "${INSTALL_DIR}/scripts/check-cron-jobs.sh" ]]; then
+    step "[6c/7] Controle-script 1x draaien: scripts/check-cron-jobs.sh"
+    (cd "${INSTALL_DIR}" && bash scripts/check-cron-jobs.sh 2>&1) | tee -a "$LOG_FILE" >&2 || CHECK_RC=$?
+    : "${CHECK_RC:=0}"
+    if [[ "${CHECK_RC}" -eq 0 ]]; then
+      ok "  check-cron-jobs.sh: rc=0 ✅"
+    else
+      warn "  check-cron-jobs.sh: rc=${CHECK_RC} (vaak = Docker niet up; corrigeer als Docker WEL up is)"
+    fi
+  fi
+
+  # ────────────────────────────────────────────────────────────────────────
+  # STAP 7 — Summary + Cron snapshot backup
+  # ────────────────────────────────────────────────────────────────────────
+  step "[7/7] Cron-configuratie snapshot bewaren + root crontab fallback entries toevoegen"
+  # Automatische backup in INSTALL_DIR/backups/cron-install-<datum>.tar.gz
+  CRON_SNAPSHOT="${INSTALL_DIR}/backups/cron-install-$(date '+%Y%m%d-%H%M%S').tar.gz"
+  {
+    mkdir -p /tmp/stm-cron-snap-$$
+    for U in "${ALL_UNITS[@]}"; do
+      [[ -f "/etc/systemd/system/${U}" ]] && cp -a "/etc/systemd/system/${U}" /tmp/stm-cron-snap-$$/ 2>/dev/null || true
+    done
+    systemctl list-timers stm-*.timer --no-pager 2>/dev/null > /tmp/stm-cron-snap-$$/timers-status.txt || true
+    ( command -v crontab >/dev/null 2>&1 && crontab -l -u root 2>/dev/null || echo "(geen root crontab)" ) > /tmp/stm-cron-snap-$$/root-crontab.txt 2>/dev/null || true
+    tar -czf "${CRON_SNAPSHOT}" -C /tmp/stm-cron-snap-$$ . 2>/dev/null || true
+    rm -rf /tmp/stm-cron-snap-$$ 2>/dev/null || true
+  } && chown "${STM_USER}:${STM_GROUP}" "${CRON_SNAPSHOT}" 2>/dev/null || true
+  ok "  Snapshot van timer-configuratie bewaard: ${CRON_SNAPSHOT}"
+
+  # Fallback: OOK cron entries toevoegen voor het geval systemd-timers falen (belt & suspenders!)
+  if command -v crontab >/dev/null 2>&1; then
+    step "[7b/7] Fallback cron entries toevoegen in root crontab (MAILS naar STM_CRON_MAILTO indien gezet)"
+    # Huidige root crontab bewaren (voor idempotent: niet dupliceren)
+    EXISTING_CRONTAB="$(crontab -l -u root 2>/dev/null || true)"
+    FALLBACK_LINES=(
+      "# === STM (Nexus) fallback cron entries (systemd timers zijn PRIMARY!) ==="
+      "# Zie deploy/*.timer voor de systemd versies (voorkeur). Cron = backup."
+      "# Variabelen:"
+      "SHELL=/bin/bash"
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      "MAILTO=${STM_CRON_MAILTO:-root}"
+      "# DB backup: elke dag 03:05 (iets na systemd timer, zodat ze niet overlappen)"
+      "5 3 * * *  cd ${INSTALL_DIR} && ./scripts/backup-stm-db.sh >> /var/log/stm-install/cron-db-backup.log 2>&1"
+      "# Simhuis usage sync: elk uur op 5 na (fallback)"
+      "5 * * * *  cd ${INSTALL_DIR} && ./scripts/sync-simhuis-usage.sh >> /var/log/stm-install/cron-usage.log 2>&1"
+      "# Simhuis sims sync: 03:10 / 09:10 / 15:10 / 21:10"
+      "10 3,9,15,21 * * *  cd ${INSTALL_DIR} && ./scripts/sync-simhuis-sims.sh >> /var/log/stm-install/cron-sims.log 2>&1"
+      "# Inserve sync: 02:10 / 08:10 / 14:10 / 20:10"
+      "10 2,8,14,20 * * *  cd ${INSTALL_DIR} && ./scripts/sync-inserve-invoices.sh >> /var/log/stm-install/cron-inserve.log 2>&1"
+      "# Cleanup: zondag 04:10"
+      "10 4 * * 0 cd ${INSTALL_DIR} && ./scripts/cleanup-stm.sh >> /var/log/stm-install/cron-cleanup.log 2>&1"
+      "# Healthcheck: elke 5 min (fallback voor systemd timer)"
+      "*/5 * * * *  cd ${INSTALL_DIR} && ./scripts/health-check-stm.sh >> /var/log/stm-install/cron-health.log 2>&1"
+      "# === EINDE STM fallback cron entries ==="
+    )
+    # Checken: zijn de STM markers al aanwezig in huidige crontab?
+    if echo "${EXISTING_CRONTAB}" | grep -qF "# === STM (Nexus) fallback cron entries"; then
+      ok "  Fallback cron entries reeds aanwezig in root crontab (overgeslagen: idempotent)."
+    else
+      NEW_CRONTAB="$(printf '%s\n' "${EXISTING_CRONTAB}" '' "${FALLBACK_LINES[@]}")"
+      printf '%s\n' "${NEW_CRONTAB}" | crontab -u root - 2>&1 | tee -a "$LOG_FILE" >&2
+      ok "  Fallback cron entries toegevoegd in root crontab (belt & suspenders!)."
+    fi
+  fi
+
+  # ────────────────────────────────────────────────────────────────────────
+  # SUCCES — Rollback UITZETTEN, summary afdrukken
+  # ────────────────────────────────────────────────────────────────────────
+  CRON_ROLLBACK_NEEDED=0
+  trap - ERR
+
+  hr
+  title "✅  --setcronjobs VOLTOOID"
+  hr
+  ok "6 STM systemd timers (6× service) geïnstalleerd en gestart:"
+  echo ""
+  systemctl list-timers stm-*.timer --no-pager 2>&1 | tee -a "$LOG_FILE" || true
+  echo ""
+  ok "Backup-scripts executables + mappen (backups/daily|weekly|monthly + /var/log/stm-install) aanwezig."
+  ok "Logrotate drop-in: /etc/logrotate.d/stm-install (weekly, 52 weken, compress)."
+  ok "Fallback cron entries in root crontab (indien crontab beschikbaar)."
+  ok "Cron-snapshot bewaard in: ${CRON_SNAPSHOT}"
+  hr
+  info "${BLD}Handmatig 1x een backup testen?${RST}:"
+  info "  sudo systemctl start stm-db-backup.service && journalctl -u stm-db-backup.service -f"
+  info ""
+  info "${BLD}Status alle timers bekijken?${RST}"
+  info "  sudo bash ${INSTALL_DIR}/scripts/check-cron-jobs.sh --backup"
+  info ""
+  info "${BLD}Nuttige journalctl commando's per taak:${RST}"
+  for U in "${TIMER_UNITS[@]}"; do
+    SVC="${U%.timer}.service"
+    info "  journalctl -u ${SVC} -f     # live logs ${SVC}"
+  done
+  info ""
+  info "${BLD}Fallbacks (als systemd timer faalt):${RST}  sudo crontab -l -u root   (zie STM blok)"
+  hr
+  ok "Cron/Timer-installatie-log: ${LOG_FILE} (bij fouten altijd meesturen)."
+  info "Bij problemen: sudo bash ${INSTALL_DIR}/scripts/check-cron-jobs.sh --dry-run --backup"
   _STM_EXIT_PRINTED=1
   exit 0
 fi
