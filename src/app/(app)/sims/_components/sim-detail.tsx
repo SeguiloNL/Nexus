@@ -256,17 +256,23 @@ function SuspendSimDialog({
   );
 }
 
-type UnsuspendSimButtonProps = {
+type UnsuspendSimDialogProps = {
+  sim: DetailSim;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   formAction: (payload: FormData) => void;
   isPending: boolean;
   hasResult: boolean;
 };
 
-function UnsuspendSimButton({
+function UnsuspendSimDialog({
+  sim,
+  open,
+  onOpenChange,
   formAction,
   isPending,
   hasResult,
-}: UnsuspendSimButtonProps) {
+}: UnsuspendSimDialogProps) {
   const submittedRef = useRef(false);
   const emergencyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isPendingClient, setIsPendingClient] = useState(false);
@@ -275,7 +281,7 @@ function UnsuspendSimButton({
   const combinedPending = isPending || isPendingClient || isTransitioning;
 
   useEffect(() => {
-    if (hasResult && !combinedPending) {
+    if ((open === false && hasResult) || (hasResult && !combinedPending)) {
       submittedRef.current = false;
       setIsPendingClient(false);
       if (emergencyTimerRef.current) {
@@ -283,7 +289,7 @@ function UnsuspendSimButton({
         emergencyTimerRef.current = null;
       }
     }
-  }, [combinedPending, hasResult]);
+  }, [open, combinedPending, hasResult]);
 
   useEffect(() => {
     return () => {
@@ -327,28 +333,148 @@ function UnsuspendSimButton({
     e.preventDefault();
   }
 
+  const simLabel = sim.simName && sim.simName.trim() ? sim.simName : formatIccid(sim.iccid);
+
   return (
-    <form onSubmit={onSubmit}>
-      <Button
-        type="submit"
-        variant="outline"
-        disabled={combinedPending}
-        aria-busy={combinedPending}
-        aria-disabled={combinedPending}
-      >
-        {combinedPending ? (
-          <>
-            <RefreshCw className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-            Bezig met deblokkeren…
-          </>
-        ) : (
-          <>
-            <PlayCircle className="mr-2 h-4 w-4" aria-hidden="true" />
-            Deblokkeren
-          </>
-        )}
-      </Button>
-    </form>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={combinedPending}
+          aria-busy={combinedPending}
+          aria-disabled={combinedPending}
+        >
+          {combinedPending ? (
+            <>
+              <RefreshCw className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+              Bezig met deblokkeren…
+            </>
+          ) : (
+            <>
+              <PlayCircle className="mr-2 h-4 w-4" aria-hidden="true" />
+              Deblokkeren
+            </>
+          )}
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Simkaart deblokkeren?</DialogTitle>
+          <DialogDescription>
+            Je deblokkeert simkaart <strong>{simLabel}</strong> en maakt deze opnieuw
+            actief. Weet je zeker dat je wilt doorgaan?
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={onSubmit}>
+          <DialogFooter className="gap-2 sm:justify-end">
+            <DialogClose asChild>
+              <Button type="button" variant="outline" disabled={combinedPending}>
+                Annuleren
+              </Button>
+            </DialogClose>
+            <Button
+              type="submit"
+              variant="secondary"
+              disabled={combinedPending}
+              aria-busy={combinedPending}
+              aria-disabled={combinedPending}
+            >
+              {combinedPending ? (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                  Bezig met deblokkeren…
+                </>
+              ) : (
+                <>Deblokkeren</>
+              )}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+type DeleteSimDialogProps = {
+  sim: DetailSim;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+};
+
+function DeleteSimDialog({
+  sim,
+  open,
+  onOpenChange,
+  onConfirm,
+}: DeleteSimDialogProps) {
+  const [isPendingClient, setIsPendingClient] = useState(false);
+  const simLabel = sim.simName && sim.simName.trim() ? sim.simName : formatIccid(sim.iccid);
+
+  function handleConfirm() {
+    setIsPendingClient(true);
+    try {
+      onConfirm();
+    } finally {
+      setTimeout(() => {
+        setIsPendingClient(false);
+      }, 0);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="destructive"
+          disabled={isPendingClient}
+          aria-busy={isPendingClient}
+          aria-disabled={isPendingClient}
+        >
+          <Trash2 className="mr-2 h-4 w-4" aria-hidden="true" />
+          Verwijderen
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Simkaart definitief verwijderen?</DialogTitle>
+          <DialogDescription>
+            Je verwijdert simkaart <strong>{simLabel}</strong> definitief uit het
+            systeem. Deze actie is onomkeerbaar en kan niet ongedaan worden
+            gemaakt.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter className="gap-2 sm:justify-end">
+          <DialogClose asChild>
+            <Button type="button" variant="outline" disabled={isPendingClient}>
+              Annuleren
+            </Button>
+          </DialogClose>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={isPendingClient}
+            aria-busy={isPendingClient}
+            aria-disabled={isPendingClient}
+            onClick={handleConfirm}
+          >
+            {isPendingClient ? (
+              <>
+                <RefreshCw className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                Verwijderen…
+              </>
+            ) : (
+              <>
+                <Trash2 className="mr-2 h-4 w-4" aria-hidden="true" />
+                Definitief verwijderen
+              </>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -478,6 +604,8 @@ export function SimDetail({
     isUsageSyncPendingClient || isUsageSyncTransitioning || usageSyncPendingNative;
 
   const [suspendOpen, setSuspendOpen] = useState(false);
+  const [unsuspendOpen, setUnsuspendOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [suspendState, suspendFormAction, suspendPendingNative] = useFormState(
     suspendAction ? suspendAction.bind(null, simId) : async () => ({ ok: false, confirmedStatus: null, pendingConfirmation: false, message: "", error: undefined }) as SimSuspendActionState,
     { ok: false, confirmedStatus: null, pendingConfirmation: false, message: "", error: undefined } satisfies SimSuspendActionState
@@ -506,8 +634,20 @@ export function SimDetail({
   }, [suspendState, suspendPendingNative]);
 
   useEffect(() => {
-    prevUnsuspendStateRef.current = unsuspendState;
-  }, [unsuspendState]);
+    const prev = prevUnsuspendStateRef.current;
+    const curr = unsuspendState;
+    const changed =
+      prev !== curr &&
+      ((prev?.ok !== curr?.ok) ||
+        (prev?.message !== curr?.message) ||
+        (prev?.confirmedStatus !== curr?.confirmedStatus) ||
+        (prev?.pendingConfirmation !== curr?.pendingConfirmation) ||
+        (prev?.error !== curr?.error));
+    if (changed && (curr?.ok || curr?.error) && !unsuspendPendingNative) {
+      setUnsuspendOpen(false);
+    }
+    prevUnsuspendStateRef.current = curr;
+  }, [unsuspendState, unsuspendPendingNative]);
 
   useEffect(() => {
     const prev = prevUsageSyncStateRef.current;
@@ -614,38 +754,15 @@ export function SimDetail({
             </div>
           </div>
         </div>
-        <div className="flex gap-2 flex-wrap">
-          {isAdmin && suspendAction && sim.status === "ACTIVE" ? (
-            <SuspendSimDialog
+        <div className="flex gap-3 sm:gap-4 flex-wrap sm:justify-end ml-auto sm:ml-0">
+          {canDelete ? (
+            <DeleteSimDialog
               sim={sim}
-              open={suspendOpen}
-              onOpenChange={setSuspendOpen}
-              formAction={suspendFormAction}
-              isPending={suspendPendingNative}
-              hasResult={Boolean(suspendState?.ok || suspendState?.error)}
+              open={deleteOpen}
+              onOpenChange={setDeleteOpen}
+              onConfirm={() => deleteFormAction()}
             />
           ) : null}
-          {isAdmin && unsuspendAction && sim.status === "SUSPENDED" ? (
-            <UnsuspendSimButton
-              formAction={unsuspendFormAction}
-              isPending={unsuspendPendingNative}
-              hasResult={Boolean(unsuspendState?.ok || unsuspendState?.error)}
-            />
-          ) : null}
-            {canEdit ? (
-              <Button asChild>
-                <Link href="#edit">
-                  <Edit className="h-4 w-4" /> Bewerken
-                </Link>
-              </Button>
-            ) : null}
-            {canDelete ? (
-              <form action={deleteFormAction}>
-                <Button variant="destructive" type="submit">
-                  <Trash2 className="h-4 w-4" /> Verwijderen
-                </Button>
-              </form>
-            ) : null}
         </div>
       </div>
 
@@ -673,8 +790,17 @@ export function SimDetail({
         <TabsContent value="overview" className="mt-6 space-y-6">
           <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
             <Card className="md:col-span-2">
-              <CardHeader>
-                <CardTitle>Netwerk & Identificatie</CardTitle>
+              <CardHeader className="flex flex-row items-start justify-between gap-3">
+                <div>
+                  <CardTitle>Netwerk &amp; Identificatie</CardTitle>
+                </div>
+                {canEdit ? (
+                  <Button asChild size="sm" className="mt-0.5 shrink-0">
+                    <Link href="#edit">
+                      <Edit className="h-4 w-4" /> Bewerken
+                    </Link>
+                  </Button>
+                ) : null}
               </CardHeader>
               <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <InfoRow
@@ -778,9 +904,33 @@ export function SimDetail({
           <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Package className="h-4 w-4 text-slate-500" /> Product
-                </CardTitle>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Package className="h-4 w-4 text-slate-500" /> Product
+                  </CardTitle>
+                  <div className="flex flex-wrap gap-2 sm:gap-3 shrink-0">
+                    {isAdmin && suspendAction && sim.status === "ACTIVE" ? (
+                      <SuspendSimDialog
+                        sim={sim}
+                        open={suspendOpen}
+                        onOpenChange={setSuspendOpen}
+                        formAction={suspendFormAction}
+                        isPending={suspendPendingNative}
+                        hasResult={Boolean(suspendState?.ok || suspendState?.error)}
+                      />
+                    ) : null}
+                    {isAdmin && unsuspendAction && sim.status === "SUSPENDED" ? (
+                      <UnsuspendSimDialog
+                        sim={sim}
+                        open={unsuspendOpen}
+                        onOpenChange={setUnsuspendOpen}
+                        formAction={unsuspendFormAction}
+                        isPending={unsuspendPendingNative}
+                        hasResult={Boolean(unsuspendState?.ok || unsuspendState?.error)}
+                      />
+                    ) : null}
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <InfoRow
