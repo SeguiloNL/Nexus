@@ -59,6 +59,8 @@ export default async function SimDetailPage({
     hasMinRole(user.role, UserRole.ADMIN);
 
   const canEdit = canUserRole(user.permissions, "edit", "sim");
+  const canDelete = canUserRole(user.permissions, "delete", "sim");
+  const canSyncUsage = canUserRole(user.permissions, "view", "sim");
 
   return (
     <SimDetail
@@ -73,6 +75,9 @@ export default async function SimDetailPage({
       unsuspendAction={isAdmin ? unsuspendSimAction : undefined}
       refreshStatusAction={canEdit ? refreshSimStatusAction : undefined}
       isAdmin={isAdmin}
+      canEdit={canEdit}
+      canDelete={canDelete}
+      canSyncUsage={canSyncUsage}
     />
   );
 }

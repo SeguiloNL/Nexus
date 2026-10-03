@@ -54,7 +54,6 @@ import {
   formatBytes,
   formatCount,
 } from "@/lib/formatters";
-import { canUserRole } from "@/lib/auth/session";
 import { SIM_PROVIDER_UI_LABELS } from "@/lib/providers/provider-registry";
 import type { UserRole, AuditAction } from "@/types/enums";
 import type { SIM, SimStatus, AssignmentReason } from "@prisma/client";
@@ -121,6 +120,9 @@ type SimDetailProps = {
     formData: FormData
   ) => Promise<SimStatusRefreshActionState>;
   isAdmin: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
+  canSyncUsage: boolean;
 };
 
 type SuspendSimDialogProps = {
@@ -605,10 +607,10 @@ export function SimDetail({
   unsuspendAction,
   refreshStatusAction,
   isAdmin,
+  canEdit,
+  canDelete,
+  canSyncUsage,
 }: SimDetailProps) {
-  const canEdit = canUserRole(role, "edit", "sim");
-  const canDelete = canUserRole(role, "delete", "sim");
-  const canSyncUsage = canUserRole(role, "view", "sim");
 
   const [, deleteFormAction] = useFormState(
     async (_p: unknown) => deleteAction(simId),
