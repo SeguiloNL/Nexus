@@ -690,7 +690,15 @@ async function main() {
   // Simhuis Usage: elk uur (HH:00) (historische default: *:00)
   await prisma.syncJobConfig.upsert({
     where: { jobId: SyncJobId.SIMHUIS_USAGE },
-    update: {},
+    update: {
+      enabled: true,
+      frequency: SyncFrequency.HOURLY,
+      hour: 0,
+      minute: 0,
+      dayOfWeek: 1,
+      dayOfMonth: 1,
+      timezone: "Europe/Amsterdam",
+    },
     create: {
       jobId: SyncJobId.SIMHUIS_USAGE,
       enabled: true,
@@ -706,7 +714,15 @@ async function main() {
   // (app/service) staat toe op 03,09,15,21 wanneer config nooit handmatig gewijzigd.
   await prisma.syncJobConfig.upsert({
     where: { jobId: SyncJobId.SIMHUIS_SIMS },
-    update: {},
+    update: {
+      enabled: true,
+      frequency: SyncFrequency.DAILY,
+      hour: 3,
+      minute: 0,
+      dayOfWeek: 1,
+      dayOfMonth: 1,
+      timezone: "Europe/Amsterdam",
+    },
     create: {
       jobId: SyncJobId.SIMHUIS_SIMS,
       enabled: true,
@@ -721,7 +737,15 @@ async function main() {
   // Inserve: abonnementen + facturen sync — store als DAILY 02:00 (Guard = 02,08,14,20)
   await prisma.syncJobConfig.upsert({
     where: { jobId: SyncJobId.INSERVE },
-    update: {},
+    update: {
+      enabled: true,
+      frequency: SyncFrequency.DAILY,
+      hour: 2,
+      minute: 0,
+      dayOfWeek: 1,
+      dayOfMonth: 1,
+      timezone: "Europe/Amsterdam",
+    },
     create: {
       jobId: SyncJobId.INSERVE,
       enabled: true,
