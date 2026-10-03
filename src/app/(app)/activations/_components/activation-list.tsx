@@ -225,7 +225,7 @@ export function ActivationOrderList({ orders, canCreate, canEdit, canDelete }: P
         const rowBusy = busyOrderId === id;
         const canRetryRow = canEdit && st === "FAILED";
         const canCancelRow = canDelete && (st === "FAILED" || st === "DRAFT" || st === "READY");
-        const canDeleteRow = canDelete && (st === "CANCELLED" || st === "DRAFT");
+        const canDeleteRow = canDelete && (st === "CANCELLED" || st === "DRAFT" || st === "FAILED" || st === "READY");
         return (
           <div className="flex justify-end">
             <DropdownMenu>

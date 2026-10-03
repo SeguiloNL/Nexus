@@ -445,9 +445,10 @@ export async function deleteOrder(id: string, ctx: Ctx): Promise<void> {
       }
     }
 
-    if (existing.status !== "CANCELLED" && existing.status !== "DRAFT") {
+    const ALLOWED_DELETE_STATUS = ["CANCELLED", "DRAFT", "FAILED", "READY"] as const;
+    if (!ALLOWED_DELETE_STATUS.includes(existing.status as typeof ALLOWED_DELETE_STATUS[number])) {
       throw new Error(
-        `Alleen CANCELLED of DRAFT orders kunnen verwijderd worden (huidige status: ${existing.status}).`
+        `Alleen CANCELLED, DRAFT, FAILED of READY orders kunnen verwijderd worden (huidige status: ${existing.status}).`
       );
     }
     await logAudit(tx, {

@@ -230,23 +230,26 @@ export async function deleteProduct(
         id: true,
         name: true,
         productCode: true,
-        _count: {
-          select: {
-            subscriptions: true,
-            activationOrders: true,
-          },
-        },
       },
     });
 
-    if (existing._count.subscriptions > 0) {
+    const [subscriptionCount, activationOrderCount] = await Promise.all([
+      tx.subscription.count({
+        where: { productId: id, deletedAt: null },
+      }),
+      tx.activationOrder.count({
+        where: { productId: id },
+      }),
+    ]);
+
+    if (subscriptionCount > 0) {
       throw new Error(
-        `Kan product "${existing.name}" niet verwijderen: er zijn nog ${existing._count.subscriptions} abonnement(en) aan gekoppeld.`
+        `Kan product "${existing.name}" niet verwijderen: er zijn nog ${subscriptionCount} abonnement(en) aan gekoppeld.`
       );
     }
-    if (existing._count.activationOrders > 0) {
+    if (activationOrderCount > 0) {
       throw new Error(
-        `Kan product "${existing.name}" niet verwijderen: er zijn nog ${existing._count.activationOrders} activeringsorder(s) aan gekoppeld.`
+        `Kan product "${existing.name}" niet verwijderen: er zijn nog ${activationOrderCount} activeringsorder(s) aan gekoppeld.`
       );
     }
 
