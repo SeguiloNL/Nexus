@@ -1,11 +1,9 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { findManyUsers } from "@/server/services/user.service";
 import { findManyRoles } from "@/server/services/role.service";
 import { findManyCustomers } from "@/server/services/customer.service";
 import { UserList } from "./_components/user-list";
 import { UserRole, RoleScope, CustomerType, ResourceType, ResourceAction } from "@/types/enums";
-import { PermissionError } from "@/lib/rbac";
 
 function parseNumber(
   value: string | string[] | undefined | null,
@@ -75,7 +73,7 @@ export default async function UsersPage({
   const user = await requireUser();
 
   if (!userCan(user.permissions, "view", "user")) {
-    throw new PermissionError("Je mag geen gebruikers bekijken.");
+    redirectForbidden();
   }
 
   const canView = true;

@@ -1,12 +1,17 @@
 import NextAuth from "next-auth";
 import { authConfig } from "@/auth";
+import { NextResponse } from "next/server";
 
 const { auth: middleware } = NextAuth({
   ...authConfig,
 });
 
 export default middleware((req) => {
-  // Optionele extra middleware logica hier indien nodig
+  if (req.nextUrl.pathname === "/403") {
+    const res = NextResponse.next({ status: 403 });
+    res.headers.set("x-robots-tag", "noindex, nofollow");
+    return res;
+  }
 });
 
 export const config = {

@@ -1,6 +1,4 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { redirect } from "next/navigation";
-import { requirePermission } from "@/lib/rbac";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { SimImportClient } from "./_components/sim-import-client";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
@@ -8,7 +6,9 @@ import { Button } from "@/components/ui/button";
 
 export default async function SimsImportPage() {
   const user = await requireUser();
-  await requirePermission(user.permissions, "import", "sim");
+  if (!canUserRole(user.permissions, "import", "sim")) {
+    redirectForbidden();
+  }
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto">

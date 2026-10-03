@@ -1,5 +1,4 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { PermissionError } from "@/lib/rbac";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import GlobalSearchClient from "./_components/search-client";
 
 export default async function GlobalSearchPage() {
@@ -21,7 +20,7 @@ export default async function GlobalSearchPage() {
     can("dashboard");
 
   if (!hasAnyRight) {
-    throw new PermissionError("Je hebt geen toegang tot de zoekfunctie.");
+    redirectForbidden();
   }
 
   return <GlobalSearchClient />;

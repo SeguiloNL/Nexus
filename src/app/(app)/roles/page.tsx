@@ -1,8 +1,6 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { findManyRoles } from "@/server/services/role.service";
 import { RoleList } from "./_components/role-list";
-import { PermissionError } from "@/lib/rbac";
 import type { ResourceAction, ResourceType, RoleScope } from "@/types/enums";
 
 function permissionsMeaningfulLocal(bits: unknown): boolean {
@@ -53,7 +51,7 @@ export default async function RolesPage({
 }) {
   const user = await requireUser();
   if (!resolveCan(user as any, "view", "role")) {
-    throw new PermissionError("Je bent niet bevoegd rollen te bekijken.");
+    redirectForbidden();
   }
 
   const canCreate = resolveCan(user as any, "create", "role");

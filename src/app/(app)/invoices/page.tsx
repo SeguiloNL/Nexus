@@ -1,6 +1,4 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { redirect } from "next/navigation";
-import { requirePermission } from "@/lib/rbac";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { findManyInvoices } from "@/server/services/invoice.service";
 import type { InvoiceStatus } from "@/types/enums";
 import { InvoiceList } from "./_components/invoice-list";
@@ -18,7 +16,9 @@ export default async function InvoicesPage(props: {
   }>;
 }) {
   const user = await requireUser();
-  await requirePermission(user.permissions, "view", "invoice");
+  if (!canUserRole(user.permissions, "view", "invoice")) {
+    redirectForbidden();
+  }
 
   const sp = await props.searchParams;
   const ctx = {

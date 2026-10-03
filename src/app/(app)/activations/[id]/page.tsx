@@ -1,8 +1,7 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { notFound, redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
+import { notFound } from "next/navigation";
 import { findActivationOrderById } from "@/server/services/activation-order.service";
 import { ActivationOrderDetail } from "../_components/activation-detail";
-import { PermissionError } from "@/lib/rbac";
 import {
   markReadyAction,
   cancelOrderAction,
@@ -20,7 +19,7 @@ export default async function ActivationDetailPage({
 }) {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "view", "activation_order")) {
-    throw new PermissionError("Je mag geen activatie orders bekijken.");
+    redirectForbidden();
   }
 
   const raw = await findActivationOrderById(params.id);

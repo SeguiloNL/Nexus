@@ -1,14 +1,12 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { findManySubscriptions } from "@/server/services/subscription.service";
 import { SubscriptionList } from "./_components/subscription-list";
-import { redirect } from "next/navigation";
-import { PermissionError } from "@/lib/rbac";
 import { generateMonthlyInvoicesAction } from "./actions";
 
 export default async function SubscriptionsPage() {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "view", "subscription")) {
-    throw new PermissionError("Je mag geen abonnementen bekijken.");
+    redirectForbidden();
   }
 
   const result = await findManySubscriptions({

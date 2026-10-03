@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect } from "react";
+import { useEffect, useTransition, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   LogOut,
@@ -10,6 +10,7 @@ import {
   Search,
   User,
   Menu,
+  Loader2,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -77,6 +78,8 @@ export function Header({
   const router = useRouter();
   const navCtx = useMobileNav();
   const onMenuClick = onMenuClickProp ?? navCtx.toggleMobileNav;
+  const [isPending, startTransition] = useTransition();
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -96,6 +99,24 @@ export function Header({
         .slice(0, 2)
         .join("")
     : "??";
+
+  const handleLogout = () => {
+    setMenuOpen(false);
+    startTransition(async () => {
+      try {
+        await logoutAction();
+      } catch (err) {
+        const str = String(err);
+        if (
+          str.includes("NEXT_REDIRECT") ||
+          (err instanceof Error && "digest" in err)
+        ) {
+          return;
+        }
+        router.push("/login");
+      }
+    });
+  };
 
   return (
     <header className="sticky top-0 z-30 flex h-16 min-h-[64px] items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 sm:px-6 pt-[var(--safe-top)]">
@@ -148,11 +169,14 @@ export function Header({
           {resolveRoleDisplay(userRole, roleName)}
         </Badge>
 
-        <DropdownMenu>
+        <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
               className="h-9 gap-2 px-2 focus:ring-0"
+              aria-label="Profielmenu openen"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
             >
               <span
                 className={cn(
@@ -176,7 +200,7 @@ export function Header({
               </div>
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent className="w-56" align="end" forceMount>
+          <DropdownMenuContent className="w-56" align="end">
             <DropdownMenuLabel className="font-normal">
               <div className="flex flex-col space-y-1">
                 <p className="text-sm font-medium leading-none">
@@ -185,11 +209,11 @@ export function Header({
                 <p className="text-xs leading-none text-slate-500">
                   {userEmail}
                 </p>
-                <p className="mt-1 text-[11px] leading-none">
+                <div className="mt-1 text-[11px] leading-none">
                   <Badge variant={ROLE_VARIANT[userRole]}>
                     {resolveRoleDisplay(userRole, roleName)}
                   </Badge>
-                </p>
+                </div>
                 {customerIds && customerIds.length > 0 ? (
                   <p className="mt-1 text-[11px] leading-none text-slate-500">
                     {customerIds.length === 1
@@ -223,17 +247,20 @@ export function Header({
               ) : null}
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <form action={logoutAction}>
-              <DropdownMenuItem asChild>
-                <button
-                  type="submit"
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-red-600 hover:bg-red-50 hover:text-red-700 focus:bg-red-50"
-                >
-                  <LogOut className="h-4 w-4" />
-                  Uitloggen
-                </button>
-              </DropdownMenuItem>
-            </form>
+            <DropdownMenuItem
+              onClick={handleLogout}
+              disabled={isPending}
+              className="text-red-600 focus:bg-red-50 focus:text-red-700 cursor-pointer data-[disabled]:pointer-events-auto data-[disabled]:opacity-70"
+              role="menuitem"
+              aria-busy={isPending}
+            >
+              {isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <LogOut className="h-4 w-4" />
+              )}
+              {isPending ? "Uitloggen…" : "Uitloggen"}
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

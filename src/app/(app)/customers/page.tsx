@@ -1,15 +1,13 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { findManyCustomers, getCustomerHierarchyTree } from "@/server/services/customer.service";
 import { CustomerList } from "./_components/customer-list";
 import { CustomerHierarchyTreeCard } from "./_components/customer-hierarchy-tree";
-import { redirect } from "next/navigation";
-import { PermissionError } from "@/lib/rbac";
 
 export default async function CustomersPage() {
   const user = await requireUser();
 
   if (!canUserRole(user.permissions, "view", "customer")) {
-    throw new PermissionError("Je mag geen klanten bekijken.");
+    redirectForbidden();
   }
 
   const [result, hierarchy] = await Promise.all([

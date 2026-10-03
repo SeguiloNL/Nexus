@@ -1,6 +1,4 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { redirect } from "next/navigation";
-import { PermissionError } from "@/lib/rbac";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Settings as SettingsIcon, Info, Database, Shield, Globe } from "lucide-react";
@@ -17,7 +15,7 @@ export default async function SettingsPage() {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "view", "setting")) {
     if (!canUserRole(user.permissions, "edit", "setting")) {
-      throw new PermissionError("Je mag geen instellingen bekijken.");
+      redirectForbidden();
     }
   }
 

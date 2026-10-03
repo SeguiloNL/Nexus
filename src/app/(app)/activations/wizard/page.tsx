@@ -1,8 +1,6 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { Suspense } from "react";
 import { ActivationWizard } from "../_components/activation-wizard";
-import { PermissionError } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import {
   createOrderAction,
@@ -23,7 +21,7 @@ export default async function ActivationWizardPage({
   const user = await requireUser();
   if (!canUserRole(user.permissions, "create", "activation_order")) {
     if (!canUserRole(user.permissions, "edit", "activation_order")) {
-      throw new PermissionError("Je mag geen activatie orders aanmaken of bewerken.");
+      redirectForbidden();
     }
   }
 

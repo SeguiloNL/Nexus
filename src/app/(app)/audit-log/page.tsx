@@ -1,8 +1,6 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { findManyAuditLogs } from "@/server/services/audit.service";
 import { AuditLogList } from "./_components/audit-log-list";
-import { PermissionError } from "@/lib/rbac";
 import type { AuditAction } from "@/types/enums";
 
 export default async function AuditLogPage({
@@ -12,7 +10,7 @@ export default async function AuditLogPage({
 }) {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "view", "audit_log")) {
-    throw new PermissionError("Je mag geen auditlogs bekijken.");
+    redirectForbidden();
   }
 
   const page = Number(searchParams?.page ?? 1);

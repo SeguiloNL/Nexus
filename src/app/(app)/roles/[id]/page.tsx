@@ -1,8 +1,7 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { notFound, redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
+import { notFound } from "next/navigation";
 import { findRoleById } from "@/server/services/role.service";
 import { RoleEditForm } from "../_components/role-edit-form";
-import { PermissionError } from "@/lib/rbac";
 import type { ResourceAction, ResourceType } from "@/types/enums";
 
 function permissionsMeaningfulLocal(bits: unknown): boolean {
@@ -40,7 +39,7 @@ export default async function RoleEditPage({
 }) {
   const user = await requireUser();
   if (!resolveCan(user as any, "view", "role")) {
-    throw new PermissionError("Je bent niet bevoegd rollen te bewerken.");
+    redirectForbidden();
   }
 
   const role = await findRoleById(params.id);

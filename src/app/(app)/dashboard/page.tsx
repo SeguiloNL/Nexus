@@ -1,7 +1,6 @@
-import { requireUser, type SessionUser } from "@/lib/auth/session";
+import { requireUser, canUserRole, redirectForbidden, type SessionUser } from "@/lib/auth/session";
 import Link from "next/link";
-import { PermissionError, permissionsMeaningful as rbacPermissionsMeaningful } from "@/lib/rbac";
-import { canUserRole } from "@/lib/auth/session";
+import { permissionsMeaningful as rbacPermissionsMeaningful } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import type { ResourceType, RoleScope } from "@/types/enums";
 import {
@@ -319,7 +318,7 @@ function canViewResource(user: SessionUser, resource: ResourceType): boolean {
 export default async function DashboardPage() {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "view", "dashboard")) {
-    throw new PermissionError("Je mag het dashboard niet bekijken.");
+    redirectForbidden();
   }
 
   const customerIds = user.customerIds ?? [];

@@ -1,14 +1,12 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { VehicleForm } from "../_components/vehicle-form";
 import { createVehicleAction } from "../actions";
-import { PermissionError } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 
 export default async function NewVehiclePage() {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "create", "vehicle")) {
-    throw new PermissionError("Je mag geen voertuigen aanmaken.");
+    redirectForbidden();
   }
 
   const customerIds = user.customerIds ?? [];

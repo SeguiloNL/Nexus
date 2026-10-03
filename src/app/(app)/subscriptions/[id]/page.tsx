@@ -1,9 +1,8 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { notFound, redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
+import { notFound } from "next/navigation";
 import { findSubscriptionById } from "@/server/services/subscription.service";
 import { findInvoicesBySubscriptionId } from "@/server/services/invoice.service";
 import { SubscriptionDetail } from "../_components/subscription-detail";
-import { PermissionError } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import {
   suspendSubscriptionAction,
@@ -30,7 +29,7 @@ export default async function SubscriptionDetailPage({
 }) {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "view", "subscription")) {
-    throw new PermissionError("Je mag geen abonnementen bekijken.");
+    redirectForbidden();
   }
 
   const raw = await findSubscriptionById(params.id, user.customerIds);

@@ -1,14 +1,12 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { findManySims } from "@/server/services/sim.service";
-import { redirect } from "next/navigation";
 import { SimListWithImport } from "./_components/sim-list-with-import";
-import { PermissionError } from "@/lib/rbac";
 
 export default async function SimsPage() {
   const user = await requireUser();
 
   if (!canUserRole(user.permissions, "view", "sim")) {
-    throw new PermissionError("Je mag geen SIM-kaarten bekijken.");
+    redirectForbidden();
   }
 
   const [result] = await Promise.all([

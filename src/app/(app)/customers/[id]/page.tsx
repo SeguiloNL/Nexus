@@ -1,5 +1,5 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { notFound, redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
+import { notFound } from "next/navigation";
 import {
   findCustomerById,
   findUsersForCustomer,
@@ -7,7 +7,6 @@ import {
 } from "@/server/services/customer.service";
 import { findManyAuditLogs } from "@/server/services/audit.service";
 import { CustomerDetail } from "../_components/customer-detail";
-import { PermissionError } from "@/lib/rbac";
 import {
   deleteCustomerAction,
   updateCustomerAction,
@@ -20,7 +19,7 @@ export default async function CustomerDetailPage({
 }) {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "view", "customer")) {
-    throw new PermissionError("Je mag geen klanten bekijken.");
+    redirectForbidden();
   }
 
   const ctx = { customerScope: user.customerIds };

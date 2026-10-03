@@ -1,9 +1,9 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { notFound, redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
+import { notFound } from "next/navigation";
 import { findSimById } from "@/server/services/sim.service";
 import { findManyAuditLogs } from "@/server/services/audit.service";
 import { SimDetail } from "../_components/sim-detail";
-import { PermissionError, hasMinRole } from "@/lib/rbac";
+import { hasMinRole } from "@/lib/rbac";
 import {
   deleteSimAction,
   updateSimAction,
@@ -21,7 +21,7 @@ export default async function SimDetailPage({
 }) {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "view", "sim")) {
-    throw new PermissionError("Je mag geen SIM-kaarten bekijken.");
+    redirectForbidden();
   }
 
   const [sim, auditResult] = await Promise.all([

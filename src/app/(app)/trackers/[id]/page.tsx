@@ -1,9 +1,8 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { notFound, redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
+import { notFound } from "next/navigation";
 import { findTrackerById } from "@/server/services/tracker.service";
 import { findManyAuditLogs } from "@/server/services/audit.service";
 import { TrackerDetail } from "../_components/tracker-detail";
-import { PermissionError } from "@/lib/rbac";
 import { deleteTrackerAction, updateTrackerAction } from "../actions";
 
 export default async function TrackerDetailPage({
@@ -13,7 +12,7 @@ export default async function TrackerDetailPage({
 }) {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "view", "tracker")) {
-    throw new PermissionError("Je mag geen trackers bekijken.");
+    redirectForbidden();
   }
 
   const [tracker, auditResult] = await Promise.all([

@@ -104,6 +104,10 @@ export async function requireUser(): Promise<SessionUser> {
   }
 }
 
+export function redirectForbidden(): never {
+  redirect("/403");
+}
+
 export async function isAuthenticated(): Promise<boolean> {
   const s = await auth();
   return Boolean(s?.user);

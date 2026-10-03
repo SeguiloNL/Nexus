@@ -1,14 +1,12 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { SubscriptionForm } from "../_components/subscription-form";
 import { createSubscriptionAction } from "../actions";
-import { PermissionError } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 
 export default async function NewSubscriptionPage() {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "create", "subscription")) {
-    throw new PermissionError("Je mag geen abonnementen aanmaken.");
+    redirectForbidden();
   }
 
   const customerIds = user.customerIds ?? [];

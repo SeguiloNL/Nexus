@@ -1,11 +1,10 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { notFound, redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
+import { notFound } from "next/navigation";
 import { findUserDetailById } from "@/server/services/user.service";
 import { findManyCustomers } from "@/server/services/customer.service";
 import { findManyRoles } from "@/server/services/role.service";
 import { findManyAuditLogs } from "@/server/services/audit.service";
 import { UserDetailTabs } from "../_components/user-detail-tabs";
-import { PermissionError } from "@/lib/rbac";
 import { RoleScope } from "@/types/enums";
 import type { UserDetail, UserCustomerLink } from "@/types/domain";
 
@@ -16,7 +15,7 @@ export default async function UserDetailPage({
 }) {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "view", "user")) {
-    throw new PermissionError("Je mag geen gebruikers bekijken.");
+    redirectForbidden();
   }
 
   const ctx = {

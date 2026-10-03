@@ -1,8 +1,7 @@
-import { requireUser, canUserRole } from "@/lib/auth/session";
-import { notFound, redirect } from "next/navigation";
+import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
+import { notFound } from "next/navigation";
 import { findVehicleById } from "@/server/services/vehicle.service";
 import { VehicleDetail } from "../_components/vehicle-detail";
-import { PermissionError } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 
 export default async function VehicleDetailPage({
@@ -12,7 +11,7 @@ export default async function VehicleDetailPage({
 }) {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "view", "vehicle")) {
-    throw new PermissionError("Je mag geen voertuigen bekijken.");
+    redirectForbidden();
   }
 
   const vehicle = await findVehicleById(params.id, user.customerIds);
