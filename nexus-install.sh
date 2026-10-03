@@ -564,8 +564,24 @@ REQ_FILES=(
   ".env.production.example"
   "Caddyfile"
   "scripts/backup-stm-db.sh"
+  "scripts/sync-simhuis-usage.sh"
+  "scripts/sync-simhuis-sims.sh"
+  "scripts/sync-inserve-invoices.sh"
+  "scripts/cleanup-stm.sh"
+  "scripts/health-check-stm.sh"
+  "scripts/check-cron-jobs.sh"
   "deploy/stm-db-backup.service"
   "deploy/stm-db-backup.timer"
+  "deploy/stm-simhuis-usage-sync.service"
+  "deploy/stm-simhuis-usage-sync.timer"
+  "deploy/stm-simhuis-sims-sync.service"
+  "deploy/stm-simhuis-sims-sync.timer"
+  "deploy/stm-inserve-sync.service"
+  "deploy/stm-inserve-sync.timer"
+  "deploy/stm-cleanup.service"
+  "deploy/stm-cleanup.timer"
+  "deploy/stm-healthcheck.service"
+  "deploy/stm-healthcheck.timer"
 )
 
 repo_files_present_in() {
@@ -1253,6 +1269,10 @@ STM_LR_EOF
     cp -f "${SRC}" "${DST}" 2>&1 | tee -a "$LOG_FILE" >&2
     chown root:root "${DST}" 2>/dev/null || true
     chmod 0644 "${DST}" 2>/dev/null || true
+    # Pad-subsituutie: als INSTALL_DIR != /opt/stm, vervang alle hard-coded /opt/stm paden
+    if [[ "${INSTALL_DIR}" != "/opt/stm" ]]; then
+      sed -i "s|/opt/stm|${INSTALL_DIR}|g" "${DST}" 2>/dev/null || true
+    fi
     if systemd-analyze verify "${DST}" >/dev/null 2>&1; then
       ok "  ${UNIT} → ${DST} (geïnstalleerd + syntax OK via systemd-analyze)"
       COPIED_OK=$((COPIED_OK+1))
@@ -2185,19 +2205,93 @@ STM_NEXT_CONFIG_V2
     if docker exec -e PRISMA_CLIENT_ENGINE_TYPE=binary stm-app npx prisma db seed 2>&1 | tail -15 | tee -a "$LOG_FILE" >&2; then
       SEED_OK=1
     else
-      warn "Prisma seed (tier 1) FAILDE. Fallback: DIRECT SQL insert 3 users..."
+      warn "Prisma seed (tier 1) FAILDE. Fallback: DIRECT SQL — rollen + permissies + 3 users..."
     fi
     if [[ "$SEED_OK" -eq 0 ]]; then
-      step "DIRECT SQL insert 3 users (admin / medewerker / viewer) in stm-db..."
+      step "DIRECT SQL (tier 2): systeemrollen + permissies + demo-gebruikers (incl. roleId) in stm-db..."
       PGPASS_FROM_ENV="$(awk -F= '/^POSTGRES_PASSWORD=/ {print $2; exit}' "$ENV_FILE" 2>/dev/null || echo '')"
       docker exec -i stm-db psql -U stm -d stm <<STM_SEED_SQL
-INSERT INTO users (id, email, name, "passwordHash", role, "createdAt", "updatedAt") VALUES
+BEGIN;
+
+-- 1. Rollen (systeemrollen, idempotent)
+INSERT INTO roles (id, name, scope, "isSystem", "isDefault", description, "createdAt", "updatedAt")
+VALUES
+  ('rl_admin_sys',    'ADMIN',             'INTERNAL', true,  false, 'Volledige toegang tot alle functionaliteit (systeemrol).', NOW(), NOW()),
+  ('rl_emp_sys',      'EMPLOYEE',          'INTERNAL', true,  true,  'Medewerker: lezen + schrijven entiteiten, geen gebruikers/rollen/settings wijzigen.', NOW(), NOW()),
+  ('rl_view_sys',     'VIEWER',            'INTERNAL', true,  false, 'Alleen-lezen toegang (geen wijzigingen).', NOW(), NOW()),
+  ('rl_custview_sys', 'CUSTOMER_VIEWER',   'CUSTOMER', true,  true,  'Klant: alleen eigen entiteiten bekijken.', NOW(), NOW()),
+  ('rl_custedit_sys', 'CUSTOMER_EDITOR',   'CUSTOMER', true,  false, 'Klant: bekijken + voertuigen/notities bewerken.', NOW(), NOW())
+ON CONFLICT (name, scope) DO UPDATE SET
+  "isSystem" = true,
+  description = EXCLUDED.description,
+  "updatedAt" = NOW();
+
+-- 2. Permissies — ADMIN (alles read+write)
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || res, r.id, res, true, true
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),
+  ('product'),('activation_order'),('invoice'),('user'),
+  ('audit_log'),('setting'),('dashboard'),('role')
+) AS res(resource)
+WHERE  r.name IN ('ADMIN')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = true;
+
+-- 3. Permissies — EMPLOYEE (write op business resources, GEEN write op user/role/audit/setting)
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || s.resource, r.id, s.resource, true, s.write
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer', true),('tracker', true),('sim', true),('vehicle', true),
+  ('subscription', true),('product', true),('activation_order', true),('invoice', true),
+  ('audit_log', false),('setting', false),('dashboard', true)
+) AS s(resource, write)
+WHERE  r.name IN ('EMPLOYEE')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = EXCLUDED.write;
+
+-- 4. Permissies — VIEWER (read, behalve users/rollen)
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || res, r.id, res, true, false
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),
+  ('product'),('activation_order'),('invoice'),('audit_log'),
+  ('setting'),('dashboard')
+) AS res(resource)
+WHERE  r.name IN ('VIEWER')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = false;
+
+-- 5. Permissies — CUSTOMER_VIEWER (read op whitelist)
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || res, r.id, res, true, false
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),('invoice'),('dashboard')
+) AS res(resource)
+WHERE  r.name IN ('CUSTOMER_VIEWER')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = false;
+
+-- 6. Permissies — CUSTOMER_EDITOR (read whitelist + write op vehicle)
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || s.resource, r.id, s.resource, true, s.write
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer', false),('tracker', false),('sim', false),('vehicle', true),
+  ('subscription', false),('invoice', false),('dashboard', false)
+) AS s(resource, write)
+WHERE  r.name IN ('CUSTOMER_EDITOR')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = EXCLUDED.write;
+
+-- 7. Demo-gebruikers (met roleId via subquery!)
+INSERT INTO users (id, email, name, "passwordHash", role, "roleId", "createdAt", "updatedAt") VALUES
   (
     'cl-seed-admin-000000000000001',
     'admin@nexus.local',
     'Administrator',
     '${TEST_BCRYPT_HASH}',
     'ADMIN',
+    (SELECT r.id FROM roles r WHERE r.name = 'ADMIN' AND r.scope = 'INTERNAL' LIMIT 1),
     NOW(),
     NOW()
   ),
@@ -2207,6 +2301,7 @@ INSERT INTO users (id, email, name, "passwordHash", role, "createdAt", "updatedA
     'Medewerker Nexus',
     '${TEST_BCRYPT_HASH}',
     'EMPLOYEE',
+    (SELECT r.id FROM roles r WHERE r.name = 'EMPLOYEE' AND r.scope = 'INTERNAL' LIMIT 1),
     NOW(),
     NOW()
   ),
@@ -2216,10 +2311,19 @@ INSERT INTO users (id, email, name, "passwordHash", role, "createdAt", "updatedA
     'Viewer Account',
     '${TEST_BCRYPT_HASH}',
     'VIEWER',
+    (SELECT r.id FROM roles r WHERE r.name = 'VIEWER' AND r.scope = 'INTERNAL' LIMIT 1),
     NOW(),
     NOW()
   )
 ON CONFLICT (email) DO NOTHING;
+
+-- 8. Bestaande legacy users (zonder roleId) LINKEN aan juiste systeem-rol
+UPDATE users u
+SET    "roleId" = (SELECT r.id FROM roles r WHERE r.name = u.role::text AND r.scope = 'INTERNAL')
+WHERE  u."roleId" IS NULL
+AND    u.role IN ('ADMIN','EMPLOYEE','VIEWER');
+
+COMMIT;
 STM_SEED_SQL
       UC=$(docker exec -i stm-db psql -U stm -d stm -t -c "SELECT count(*) FROM users WHERE email IN ('admin@nexus.local','medewerker@nexus.local','viewer@nexus.local');" 2>/dev/null | tr -d ' \n' || echo 0)
       if [[ "$UC" -ge "3" ]]; then
@@ -2262,7 +2366,7 @@ ${BLD}  ✅ UPDATE SUCCESVOL — STM (voorheen Nexus)${RST}
     sudo bash ./nexus-install.sh --update                          # UPDATE (opnieuw)
     docker compose -f docker-compose.prod.yml logs -f --tail 50   # live logs alles
     docker compose -f docker-compose.prod.yml ps                    # status
-    sudo /opt/stm/scripts/backup-stm-db.sh                          # NU backup draaien
+    sudo ${INSTALL_DIR}/scripts/backup-stm-db.sh                          # NU backup draaien
 
   ${BLD}--- Rollback tip (indien nieuwe commit bug heeft): ---${RST}
     cd ${INSTALL_DIR}
@@ -3357,7 +3461,12 @@ if [[ "$NO_CADDY" -eq 0 ]]; then
     header_up X-Forwarded-Proto  {scheme}
     header_up X-Forwarded-Host   {host}
     header_up X-Real-IP          {remote_host}
-    transport http { keepalive 32 keepalive_interval 30s timeout 120s }
+    transport http {
+      keepalive_idle_conns 32
+      keepalive_interval 30s
+      dial_timeout 10s
+      response_header_timeout 120s
+    }
   }
 }
 CADDY_FALLBACK
@@ -3535,22 +3644,96 @@ if [[ "$SEED" -eq 1 ]]; then
   if docker exec -e PRISMA_CLIENT_ENGINE_TYPE=binary stm-app npx prisma db seed 2>&1 | tail -15 | tee -a "$LOG_FILE" >&2; then
     SEED_OK=1
   else
-    warn "Prisma seed (tier 1) FAILDE. Fallback: DIRECT SQL insert 3 users..."
+    warn "Prisma seed (tier 1) FAILDE. Fallback: DIRECT SQL — rollen + permissies + 3 users..."
   fi
 
-  # ---- Tier 2: SQL fallback — altijd werkt! ----
+  # ---- Tier 2: SQL fallback — altijd werkt! (rollen + permissies + demo-users met roleId) ----
   if [[ "$SEED_OK" -eq 0 ]]; then
-    step "DIRECT SQL insert 3 users (admin / medewerker / viewer) in stm-db..."
+    step "DIRECT SQL (tier 2): systeemrollen + permissies + demo-gebruikers (incl. roleId) in stm-db..."
     # Extract POSTGRES_PASSWORD uit .env (voor psql on the host, of via docker exec -i)
     PGPASS_FROM_ENV="$(awk -F= '/^POSTGRES_PASSWORD=/ {print $2; exit}' "$ENV_FILE" 2>/dev/null || echo '')"
     docker exec -i stm-db psql -U stm -d stm <<STM_SEED_SQL
-INSERT INTO users (id, email, name, "passwordHash", role, "createdAt", "updatedAt") VALUES
+BEGIN;
+
+-- 1. Rollen (systeemrollen, idempotent)
+INSERT INTO roles (id, name, scope, "isSystem", "isDefault", description, "createdAt", "updatedAt")
+VALUES
+  ('rl_admin_sys',    'ADMIN',             'INTERNAL', true,  false, 'Volledige toegang tot alle functionaliteit (systeemrol).', NOW(), NOW()),
+  ('rl_emp_sys',      'EMPLOYEE',          'INTERNAL', true,  true,  'Medewerker: lezen + schrijven entiteiten, geen gebruikers/rollen/settings wijzigen.', NOW(), NOW()),
+  ('rl_view_sys',     'VIEWER',            'INTERNAL', true,  false, 'Alleen-lezen toegang (geen wijzigingen).', NOW(), NOW()),
+  ('rl_custview_sys', 'CUSTOMER_VIEWER',   'CUSTOMER', true,  true,  'Klant: alleen eigen entiteiten bekijken.', NOW(), NOW()),
+  ('rl_custedit_sys', 'CUSTOMER_EDITOR',   'CUSTOMER', true,  false, 'Klant: bekijken + voertuigen/notities bewerken.', NOW(), NOW())
+ON CONFLICT (name, scope) DO UPDATE SET
+  "isSystem" = true,
+  description = EXCLUDED.description,
+  "updatedAt" = NOW();
+
+-- 2. Permissies — ADMIN (alles read+write)
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || res, r.id, res, true, true
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),
+  ('product'),('activation_order'),('invoice'),('user'),
+  ('audit_log'),('setting'),('dashboard'),('role')
+) AS res(resource)
+WHERE  r.name IN ('ADMIN')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = true;
+
+-- 3. Permissies — EMPLOYEE (write op business resources, GEEN write op user/role/audit/setting)
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || s.resource, r.id, s.resource, true, s.write
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer', true),('tracker', true),('sim', true),('vehicle', true),
+  ('subscription', true),('product', true),('activation_order', true),('invoice', true),
+  ('audit_log', false),('setting', false),('dashboard', true)
+) AS s(resource, write)
+WHERE  r.name IN ('EMPLOYEE')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = EXCLUDED.write;
+
+-- 4. Permissies — VIEWER (read, behalve users/rollen)
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || res, r.id, res, true, false
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),
+  ('product'),('activation_order'),('invoice'),('audit_log'),
+  ('setting'),('dashboard')
+) AS res(resource)
+WHERE  r.name IN ('VIEWER')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = false;
+
+-- 5. Permissies — CUSTOMER_VIEWER (read op whitelist)
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || res, r.id, res, true, false
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),('invoice'),('dashboard')
+) AS res(resource)
+WHERE  r.name IN ('CUSTOMER_VIEWER')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = false;
+
+-- 6. Permissies — CUSTOMER_EDITOR (read whitelist + write op vehicle)
+INSERT INTO role_permissions (id, "roleId", resource, read, write)
+SELECT 'perm_' || r.id || '_' || s.resource, r.id, s.resource, true, s.write
+FROM   roles r
+CROSS JOIN (VALUES
+  ('customer', false),('tracker', false),('sim', false),('vehicle', true),
+  ('subscription', false),('invoice', false),('dashboard', false)
+) AS s(resource, write)
+WHERE  r.name IN ('CUSTOMER_EDITOR')
+ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = EXCLUDED.write;
+
+-- 7. Demo-gebruikers (met roleId via subquery!)
+INSERT INTO users (id, email, name, "passwordHash", role, "roleId", "createdAt", "updatedAt") VALUES
   (
     'cl-seed-admin-000000000000001',
     'admin@nexus.local',
     'Administrator',
     '${TEST_BCRYPT_HASH}',
     'ADMIN',
+    (SELECT r.id FROM roles r WHERE r.name = 'ADMIN' AND r.scope = 'INTERNAL' LIMIT 1),
     NOW(),
     NOW()
   ),
@@ -3560,6 +3743,7 @@ INSERT INTO users (id, email, name, "passwordHash", role, "createdAt", "updatedA
     'Medewerker Nexus',
     '${TEST_BCRYPT_HASH}',
     'EMPLOYEE',
+    (SELECT r.id FROM roles r WHERE r.name = 'EMPLOYEE' AND r.scope = 'INTERNAL' LIMIT 1),
     NOW(),
     NOW()
   ),
@@ -3569,10 +3753,19 @@ INSERT INTO users (id, email, name, "passwordHash", role, "createdAt", "updatedA
     'Viewer Account',
     '${TEST_BCRYPT_HASH}',
     'VIEWER',
+    (SELECT r.id FROM roles r WHERE r.name = 'VIEWER' AND r.scope = 'INTERNAL' LIMIT 1),
     NOW(),
     NOW()
   )
 ON CONFLICT (email) DO NOTHING;
+
+-- 8. Bestaande legacy users (zonder roleId) LINKEN aan juiste systeem-rol
+UPDATE users u
+SET    "roleId" = (SELECT r.id FROM roles r WHERE r.name = u.role::text AND r.scope = 'INTERNAL')
+WHERE  u."roleId" IS NULL
+AND    u.role IN ('ADMIN','EMPLOYEE','VIEWER');
+
+COMMIT;
 STM_SEED_SQL
     # Check count = 3
     UC=$(docker exec -i stm-db psql -U stm -d stm -t -c "SELECT count(*) FROM users WHERE email IN ('admin@nexus.local','medewerker@nexus.local','viewer@nexus.local');" 2>/dev/null | tr -d ' \n' || echo 0)
@@ -3595,40 +3788,254 @@ STM_SEED_SQL
 fi
 
 # ==============================================================================
-# STAP 10 — Automatische backups (P2.1) systemd timer installeren
+# STAP 10 — ALLE 6 STM systemd timers installeren (backups + sync + cleanup + health)
+#   Idempotent: start met scripts permissies, mappen, logrotate, units, dan
+#   alle timers enable --now. Met INSTALL_DIR pad-subsituutie in unit bestanden.
+#   Fallback: indien sync/health-scripts ontbreken, wordt alleen backup-timer
+#   geïnstalleerd (backwards compatibiliteit met oude repo's).
 # ==============================================================================
-title "STAP 10 — Backups (P2.1): script + systemd timer (03:00 NL, rotatie 7d/4w/3m)"
+title "STAP 10 — Geplande taken (systemd timers): backup, sync, cleanup, healthcheck"
 
-BACKUP_DEST_SCRIPT="/opt/stm/scripts/backup-stm-db.sh"
+BACKUP_DEST_SCRIPT="${INSTALL_DIR}/scripts/backup-stm-db.sh"
 BACKUP_DEST_SERVICE="/etc/systemd/system/stm-db-backup.service"
 BACKUP_DEST_TIMER="/etc/systemd/system/stm-db-backup.timer"
 
-if [[ ! -f "$BACKUP_SCRIPT_SRC" || ! -f "$BACKUP_SERVICE_SRC" || ! -f "$BACKUP_TIMER_SRC" ]]; then
-  warn "Backup-bestanden ontbreken (${BACKUP_SCRIPT_SRC}, deploy/*). Overgeslaan."
-else
-  step "Installeren backups (idempotent)..."
-  as_root mkdir -p /opt/stm/scripts
-  as_root install -o root -g root -m 0750 "$BACKUP_SCRIPT_SRC"   "$BACKUP_DEST_SCRIPT"
-  as_root install -o root -g root -m 0644 "$BACKUP_SERVICE_SRC"  "$BACKUP_DEST_SERVICE"
-  as_root install -o root -g root -m 0644 "$BACKUP_TIMER_SRC"    "$BACKUP_DEST_TIMER"
+# Lijst met alle vereiste scripts (compleet overzicht)
+REQ_SCRIPTS_STAP10=(
+  "scripts/backup-stm-db.sh"
+  "scripts/sync-simhuis-usage.sh"
+  "scripts/sync-simhuis-sims.sh"
+  "scripts/sync-inserve-invoices.sh"
+  "scripts/cleanup-stm.sh"
+  "scripts/health-check-stm.sh"
+)
+ALL_UNITS_STAP10=(
+  "stm-db-backup.timer"                 "stm-db-backup.service"
+  "stm-simhuis-usage-sync.timer"        "stm-simhuis-usage-sync.service"
+  "stm-simhuis-sims-sync.timer"         "stm-simhuis-sims-sync.service"
+  "stm-inserve-sync.timer"              "stm-inserve-sync.service"
+  "stm-cleanup.timer"                   "stm-cleanup.service"
+  "stm-healthcheck.timer"               "stm-healthcheck.service"
+)
+TIMER_UNITS_STAP10=(
+  "stm-db-backup.timer"
+  "stm-simhuis-usage-sync.timer"
+  "stm-simhuis-sims-sync.timer"
+  "stm-inserve-sync.timer"
+  "stm-cleanup.timer"
+  "stm-healthcheck.timer"
+)
 
-  # Zorg dat /opt/stm ook naar STM_USER wijst (voor ./backups/)
-  as_root mkdir -p /opt/stm
-  as_root chown -R "${STM_USER}:${STM_GROUP}" /opt/stm || true
-
-  step "systemctl daemon-reload + enable --now stm-db-backup.timer"
-  as_root systemctl daemon-reload
-  as_root systemctl enable --now stm-db-backup.timer 2>&1 | tee -a "$LOG_FILE" >&2 || true
-  sleep 1
-  TIMER_ACTIVE="$(as_root systemctl is-active stm-db-backup.timer 2>/dev/null || echo "unknown")"
-  TIMER_NEXT="$(as_root systemctl list-timers stm-db-backup.timer --no-pager 2>/dev/null | tail -1 | awk '{print $1, $2, $3}' || echo '?')"
-  if [[ "$TIMER_ACTIVE" == "active" ]]; then
-    ok "Backup timer ACTIEF (${TIMER_ACTIVE}). Volgende geplande run: ${TIMER_NEXT}"
-    info "  Handmatig NU backup draaien: sudo ${BACKUP_DEST_SCRIPT}"
-    info "  Offsite sync (optioneel): voeg STM_BACKUP_RSYNC_TARGET='user@host:/data/stm-backups/' toe aan /opt/stm/.env"
-  else
-    warn "Backup timer NIET actief (${TIMER_ACTIVE}). Handmatig controleren: sudo systemctl list-timers stm-db-backup.timer"
+# Check of we de COMPLETE set hebben — zo niet: fallback naar enkel backup-timer
+FULL_SET_OK=1
+MISSING_FULL=()
+for S in "${REQ_SCRIPTS_STAP10[@]}"; do
+  if [[ ! -f "${INSTALL_DIR}/${S}" ]]; then
+    FULL_SET_OK=0
+    MISSING_FULL+=("${S}")
   fi
+done
+for U in "${ALL_UNITS_STAP10[@]}"; do
+  if [[ ! -f "${INSTALL_DIR}/deploy/${U}" ]]; then
+    FULL_SET_OK=0
+    MISSING_FULL+=("deploy/${U}")
+  fi
+done
+
+if [[ "$FULL_SET_OK" -ne 1 ]]; then
+  warn "Niet alle sync/health/timer bestanden aanwezig (${#MISSING_FULL[@]} missend). Fallback: alleen backup-timer installeren."
+  info "  Missend: ${MISSING_FULL[*]:0:200}"
+  info "  Later alle timers installeren: sudo bash ${INSTALL_DIR}/nexus-install.sh --setcronjobs"
+  # ── FALLBACK: enkel db-backup ──
+  if [[ ! -f "$BACKUP_SCRIPT_SRC" || ! -f "$BACKUP_SERVICE_SRC" || ! -f "$BACKUP_TIMER_SRC" ]]; then
+    warn "Backup-bestanden ontbreken (${BACKUP_SCRIPT_SRC}, deploy/*). Overgeslaan."
+  else
+    step "Installeren backup-timer (fallback, enkelvoudig)..."
+    as_root mkdir -p "${INSTALL_DIR}/scripts" "${INSTALL_DIR}/backups" "${INSTALL_DIR}/backups/daily" "${INSTALL_DIR}/backups/weekly" "${INSTALL_DIR}/backups/monthly" "${INSTALL_DIR}/tmp" /var/log/stm-install
+    as_root install -o root -g root -m 0750 "$BACKUP_SCRIPT_SRC"   "$BACKUP_DEST_SCRIPT"
+    as_root install -o root -g root -m 0644 "$BACKUP_SERVICE_SRC"  "$BACKUP_DEST_SERVICE"
+    as_root install -o root -g root -m 0644 "$BACKUP_TIMER_SRC"    "$BACKUP_DEST_TIMER"
+    # Pad-subsituutie in unit bestanden (voor afwijkende INSTALL_DIR)
+    if [[ "${INSTALL_DIR}" != "/opt/stm" ]]; then
+      as_root sed -i "s|/opt/stm|${INSTALL_DIR}|g" "$BACKUP_DEST_SERVICE" 2>/dev/null || true
+      as_root sed -i "s|/opt/stm|${INSTALL_DIR}|g" "$BACKUP_DEST_TIMER" 2>/dev/null || true
+    fi
+    # Zorg dat INSTALL_DIR ook naar STM_USER wijst (voor ./backups/)
+    as_root mkdir -p "${INSTALL_DIR}"
+    as_root chown -R "${STM_USER}:${STM_GROUP}" "${INSTALL_DIR}" 2>/dev/null || true
+    as_root chown -R root:adm /var/log/stm-install 2>/dev/null || true
+    as_root chmod -R 0750 /var/log/stm-install 2>/dev/null || true
+
+    step "systemctl daemon-reload + enable --now stm-db-backup.timer"
+    as_root systemctl daemon-reload
+    as_root systemctl enable --now stm-db-backup.timer 2>&1 | tee -a "$LOG_FILE" >&2 || true
+    sleep 1
+    TIMER_ACTIVE="$(as_root systemctl is-active stm-db-backup.timer 2>/dev/null || echo "unknown")"
+    TIMER_NEXT="$(as_root systemctl list-timers stm-db-backup.timer --no-pager 2>/dev/null | awk 'NR==2 {print $1, $2, $3}' || echo '?')"
+    if [[ "$TIMER_ACTIVE" == "active" ]]; then
+      ok "Backup timer ACTIEF (${TIMER_ACTIVE}). Volgende geplande run: ${TIMER_NEXT}"
+      info "  Handmatig NU backup draaien: sudo ${BACKUP_DEST_SCRIPT}"
+      info "  Offsite sync (optioneel): voeg STM_BACKUP_RSYNC_TARGET='user@host:/data/stm-backups/' toe aan ${INSTALL_DIR}/.env"
+    else
+      warn "Backup timer NIET actief (${TIMER_ACTIVE}). Handmatig controleren: sudo systemctl list-timers stm-db-backup.timer"
+    fi
+  fi
+else
+  # ── VOLLEDIGE SET: ALLE 6 timers (zelfde logica als --setcronjobs) ──
+  step "[1/6] Scripts executable maken (chmod +x) met juiste eigenaar..."
+  for S in "${REQ_SCRIPTS_STAP10[@]}"; do
+    SP="${INSTALL_DIR}/${S}"
+    chmod 0750 "${SP}" 2>/dev/null || chmod +x "${SP}" 2>/dev/null || true
+    chown "${STM_USER}:${STM_GROUP}" "${SP}" 2>/dev/null || true
+  done
+  ok "  ${#REQ_SCRIPTS_STAP10[@]} scripts: chmod 0750 + owner ${STM_USER}:${STM_GROUP}."
+
+  step "[2/6] Mappen voor logs, backups, tmp aanmaken met correcte permissies..."
+  STAP10_DIRS=(
+    "/var/log/stm-install"
+    "${INSTALL_DIR}/backups"
+    "${INSTALL_DIR}/backups/daily"
+    "${INSTALL_DIR}/backups/weekly"
+    "${INSTALL_DIR}/backups/monthly"
+    "${INSTALL_DIR}/tmp"
+  )
+  for D in "${STAP10_DIRS[@]}"; do
+    as_root mkdir -p "${D}" 2>/dev/null || true
+    case "${D}" in
+      /var/log/stm-install)
+        as_root chown -R root:adm   "${D}" 2>/dev/null || true
+        as_root chmod -R 0750       "${D}" 2>/dev/null || true
+        ;;
+      "${INSTALL_DIR}/backups"*)
+        as_root chown -R "${STM_USER}:${STM_GROUP}" "${D}" 2>/dev/null || true
+        as_root chmod -R 0750 "${D}" 2>/dev/null || true
+        ;;
+      *)
+        as_root chown -R "${STM_USER}:${STM_GROUP}" "${D}" 2>/dev/null || true
+        as_root chmod -R 0770 "${D}" 2>/dev/null || true
+        ;;
+    esac
+  done
+  as_root chown -R "${STM_USER}:${STM_GROUP}" "${INSTALL_DIR}" 2>/dev/null || true
+  ok "  ${#STAP10_DIRS[@]} mappen aangemaakt met correcte permissies."
+
+  # Logrotate drop-in
+  if command -v logrotate >/dev/null 2>&1; then
+    step "[2b/6] Logrotate drop-in voor /var/log/stm-install (weekly 52w compress)..."
+    cat > /etc/logrotate.d/stm-install <<'STM_LR_EOF'
+/var/log/stm-install/*.log {
+  weekly
+  rotate 52
+  compress
+  delaycompress
+  missingok
+  notifempty
+  create 0640 root adm
+  su root adm
+}
+STM_LR_EOF
+    as_root chown root:root /etc/logrotate.d/stm-install 2>/dev/null || true
+    as_root chmod 0644 /etc/logrotate.d/stm-install 2>/dev/null || true
+    logrotate -d /etc/logrotate.d/stm-install >/dev/null 2>&1 && \
+      ok "  logrotate drop-in /etc/logrotate.d/stm-install: OK." || \
+      warn "  logrotate drop-in aangemaakt (syntax-check waarschuwing: meestal geen bestanden — onschuldig)."
+  fi
+
+  step "[3/6] 12 systemd unit bestanden (6× service + 6× timer) installeren in /etc/systemd/system..."
+  DEPLOY_SRC_DIR="${INSTALL_DIR}/deploy"
+  UNITS_OK=0
+  UNITS_FAIL=0
+  for UNIT in "${ALL_UNITS_STAP10[@]}"; do
+    SRC="${DEPLOY_SRC_DIR}/${UNIT}"
+    DST="/etc/systemd/system/${UNIT}"
+    if [[ ! -f "${SRC}" ]]; then
+      err "  ${UNIT}: bronbestand ${SRC} ONTBREEKT!"
+      UNITS_FAIL=$((UNITS_FAIL+1))
+      continue
+    fi
+    as_root cp -f "${SRC}" "${DST}" 2>&1 | tee -a "$LOG_FILE" >&2
+    as_root chown root:root "${DST}" 2>/dev/null || true
+    as_root chmod 0644 "${DST}" 2>/dev/null || true
+    # ── Pad-subsituutie: indien INSTALL_DIR != /opt/stm, vervang alle hard-coded paden ──
+    if [[ "${INSTALL_DIR}" != "/opt/stm" ]]; then
+      as_root sed -i "s|/opt/stm|${INSTALL_DIR}|g" "${DST}" 2>/dev/null || true
+    fi
+    if systemd-analyze verify "${DST}" >/dev/null 2>&1; then
+      UNITS_OK=$((UNITS_OK+1))
+    else
+      warn "  ${UNIT}: systemd-analyze gaf warning (vaak safe). Doorgegaan..."
+      UNITS_OK=$((UNITS_OK+1))
+    fi
+  done
+  if [[ "${UNITS_FAIL}" -gt 0 ]]; then
+    warn "${UNITS_FAIL} unit(s) ontbraken. Desondanks doorgaan met de overige ${UNITS_OK} units."
+  fi
+  ok "  Geïnstalleerd: ${UNITS_OK} unit bestanden (${UNITS_FAIL} gemist)."
+
+  step "[4/6] systemctl daemon-reload + reset-failed..."
+  as_root systemctl daemon-reload 2>&1 | tee -a "$LOG_FILE" >&2
+  as_root systemctl reset-failed 2>/dev/null || true
+  ok "  daemon-reload OK."
+
+  step "[5/6] Alle 6 STM timers: enable --now..."
+  TIMERS_OK=0
+  TIMERS_FAIL=0
+  for T in "${TIMER_UNITS_STAP10[@]}"; do
+    if as_root systemctl enable --now "${T}" 2>&1 | tee -a "$LOG_FILE" >&2; then
+      ACTIVE_NOW="$(as_root systemctl is-active "${T}" 2>/dev/null || echo '?')"
+      ENABLED_NOW="$(as_root systemctl is-enabled "${T}" 2>/dev/null || echo '?')"
+      NEXT_RUN="$(as_root systemctl list-timers "${T}" --no-pager 2>/dev/null | awk 'NR==2 {print $1 " " $2 " " $3}' || echo '?')"
+      ok "  ${T}  → enabled=${ENABLED_NOW}, active=${ACTIVE_NOW}. Volgende: ${NEXT_RUN}"
+      TIMERS_OK=$((TIMERS_OK+1))
+    else
+      err "  ${T}  → enable/starten MISLUKT (zie journalctl -u ${T} -n 30)."
+      TIMERS_FAIL=$((TIMERS_FAIL+1))
+    fi
+  done
+  if [[ "${TIMERS_FAIL}" -gt 0 ]]; then
+    warn "${TIMERS_FAIL} timer(s) konden niet gestart worden (vaak: Docker nog niet volledig ready). Later controleren: sudo systemctl list-timers stm-*.timer"
+  fi
+
+  step "[6/6] Smoke test: bash syntax check van alle scripts + 1x healthcheck service..."
+  SYNTAX_FAIL=0
+  for S in "${REQ_SCRIPTS_STAP10[@]}"; do
+    SP="${INSTALL_DIR}/${S}"
+    [[ ! -f "${SP}" ]] && continue
+    if bash -n "${SP}" 2>/dev/null; then
+      :
+    else
+      err "  bash -n $(basename "${SP}"): SYNTAX FOUT!"
+      bash -n "${SP}" 2>&1 | tee -a "$LOG_FILE" >&2 || true
+      SYNTAX_FAIL=$((SYNTAX_FAIL+1))
+    fi
+  done
+  if [[ "${SYNTAX_FAIL}" -eq 0 ]]; then
+    ok "  Alle ${#REQ_SCRIPTS_STAP10[@]} scripts: bash syntax OK."
+  else
+    warn "${SYNTAX_FAIL} script(s) syntax-fout. Controleren alvorens timers draaien."
+  fi
+  # Optionele healthcheck smoke test (1x, zonder bij falen de installatie te breken — Docker moet opgestart zijn)
+  HC_OK=0
+  if as_root systemctl start stm-healthcheck.service 2>&1 | tee -a "$LOG_FILE" >&2; then
+    sleep 1
+    HC_STATUS="$(as_root systemctl show -p Result --value stm-healthcheck.service 2>/dev/null || echo 'unknown')"
+    HC_EXIT="$(as_root systemctl show -p ExecMainStatus --value stm-healthcheck.service 2>/dev/null || echo '?')"
+    if [[ "${HC_STATUS}" == "success" ]]; then
+      HC_OK=1
+      ok "  stm-healthcheck.service smoke test OK (exit=${HC_EXIT})."
+    else
+      warn "  stm-healthcheck.service: exit=${HC_EXIT}, result=${HC_STATUS}. Vaak OK (Docker pas gestart). Details: journalctl -u stm-healthcheck -n 15."
+    fi
+  else
+    warn "  stm-healthcheck.service kon niet gestart worden (Docker niet ready? Onschuldig)."
+  fi
+
+  hr
+  ok "STAP 10 VOLTOOID: ${TIMERS_OK}/6 timers actief (${TIMERS_FAIL} falend). ${UNITS_OK} units geïnstalleerd."
+  info "  Alle timers bekijken:  sudo systemctl list-timers stm-*.timer"
+  info "  Handmatig backup:       sudo systemctl start stm-db-backup.service && journalctl -u stm-db-backup -f"
+  info "  Logs per taak:          journalctl -u <naam>.service -f"
+  info "  Alles nalopen:          sudo bash ${INSTALL_DIR}/scripts/check-cron-jobs.sh  (indien aanwezig)"
 fi
 
 # ==============================================================================
@@ -3660,7 +4067,7 @@ ${BLD}  ✅ Installatie SUCCESVOL — STM (voorheen Nexus)${RST}
   ${CYN}Deploy-gebruiker  :${RST}  ${STM_USER} (sudo + docker-groep; home=${STM_HOME})
   ${CYN}Docker containers :${RST}  stm-app (Next.js standalone 127.0.0.1:3000) + stm-db (PostgreSQL 16)
   ${CYN}Caddy              :${RST}  $([[ "$NO_CADDY" -eq 1 ]] && echo "OVERSLAAN (--no-caddy)") || systemctl is-active --quiet caddy && echo "Actief (HTTPS via Let's Encrypt)" || echo "Geactiveerd; controleer: sudo systemctl status caddy")
-  ${CYN}Backups (timer)    :${RST}  sudo systemctl list-timers stm-db-backup.timer
+  ${CYN}Timers (6×)       :${RST}  sudo systemctl list-timers stm-*.timer
   ${CYN}.env (secrets)    :${RST}  ${ENV_FILE} (chmod 0600, owned ${STM_USER}:${STM_GROUP})
                            Postgres-password length: ${PG_PASS_LEN} chars.
                            AUTH_SECRET gegenereerd?  ${GEN_AUTH_SECRET:+Ja} ${GEN_AUTH_SECRET:-Nee (bestond reeds)}
@@ -3672,24 +4079,28 @@ ${BLD}  ✅ Installatie SUCCESVOL — STM (voorheen Nexus)${RST}
     admin@nexus.local        Test1234!      ADMIN       (alles, incl. Instellingen + Import/Export)
     medewerker@nexus.local   Test1234!      EMPLOYEE    (view/create/edit + import/export + Settings READONLY)
     viewer@nexus.local       Test1234!      VIEWER      (read-only bekijken, GEEN instellingen)
-  ${YLW}⚠  Verander direct alle wachtwoorden na eerste inlog!${RST}
+  ${YLW}⚠  Verander direct alle wachtwoorden na eerste inlog! Rollen + permissies worden nu via roleId afgehandeld (geen legacy role-string meer).${RST}
 
   ${BLD}--- Nuttige commando's: ---${RST}
     cd ${INSTALL_DIR}
     sudo bash ./nexus-install.sh --update                                 # ⭐ UPDATE naar nieuwste GitHub commit
+    sudo bash ./nexus-install.sh --setcronjobs                            # ⭐ Alle 6 systemd timers (her)installeren
+    sudo bash ./nexus-install.sh --dbupdate                               # ⭐ Alleen DB migraties + systeemrollen (veilig)
     docker compose -f docker-compose.prod.yml ps                       # status containers
     docker compose -f docker-compose.prod.yml logs -f stm-app            # live logs app
-    docker compose -f docker compose logs -f stm-db                      # live logs postgres
+    docker compose -f docker-compose.prod.yml logs -f stm-db             # live logs postgres
     docker compose -f docker-compose.prod.yml up -d --build              # rebuild + restart (na code-wijzigingen)
-    sudo ${BACKUP_DEST_SCRIPT:-/opt/stm/scripts/backup-stm-db.sh}        # NU backup draaien
-    sudo systemctl list-timers stm-db-backup.timer                       # wanneer volgende backup?
-    sudo ufw status verbose                                              # firewall regels tonen
+    sudo ${BACKUP_DEST_SCRIPT}                                            # NU backup draaien
+    sudo systemctl list-timers stm-*.timer                                # alle 6 geplande taken bekijken
+    sudo bash ${INSTALL_DIR}/scripts/check-cron-jobs.sh                   # timers/scripts nalopen (indien aanwezig)
+    sudo ufw status verbose                                               # firewall regels tonen
 
-  ${BLD}--- Troubleshooting (grote 4): ---${RST}
+  ${BLD}--- Troubleshooting (grote 5): ---${RST}
     1. Login mislukt (CallbackRouteError):  controleer .env → AUTH_TRUST_HOST=true  → docker restart stm-app
     2. 502 Bad Gateway (Caddy):            curl 127.0.0.1:3000/api/health  → 200?
     3. DB niet bereikbaar:                 docker ps -a | grep stm-db    → docker logs stm-db
     4. Kan /settings niet openen:          Log in als ADMIN. Employee = READONLY.
+    5. Geen sync-data (Simhuis/Inserve):   sudo systemctl start stm-simhuis-usage-sync.service  → journalctl -u stm-simhuis-usage-sync -f
 SUMMARY
 hr
 
