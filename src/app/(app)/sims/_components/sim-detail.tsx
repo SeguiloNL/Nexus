@@ -608,6 +608,7 @@ export function SimDetail({
 }: SimDetailProps) {
   const canEdit = canUserRole(role, "edit", "sim");
   const canDelete = canUserRole(role, "delete", "sim");
+  const canSyncUsage = canUserRole(role, "view", "sim");
 
   const [, deleteFormAction] = useFormState(
     async (_p: unknown) => deleteAction(simId),
@@ -1235,7 +1236,7 @@ export function SimDetail({
                   <CardTitle className="flex items-center gap-2 text-base">
                     <Database className="h-4 w-4 text-slate-500" /> Dataverbruik
                   </CardTitle>
-                  {canEdit ? (
+                  {canSyncUsage ? (
                     <form
                       action={usageSyncFormAction as any}
                       onSubmit={onUsageSyncSubmit}

@@ -1,13 +1,19 @@
-import { requireUser } from "@/lib/auth/session";
+import { requireUser, type SessionUser } from "@/lib/auth/session";
 import Link from "next/link";
-import { PermissionError } from "@/lib/rbac";
+import { PermissionError, permissionsMeaningful as rbacPermissionsMeaningful } from "@/lib/rbac";
 import { canUserRole } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
+import type { ResourceType, RoleScope } from "@/types/enums";
+import {
+  CUSTOMER_SCOPE_RESOURCES,
+  RESELLER_SCOPE_RESOURCES,
+  PARTNER_SCOPE_RESOURCES,
+  ALL_RESOURCE_TYPES,
+} from "@/types/enums";
 import {
   Activity,
   AlertTriangle,
   Boxes,
-  CheckCircle2,
   Cpu,
   CreditCard,
   LayoutDashboard,
@@ -17,6 +23,7 @@ import {
   ShieldAlert,
   Truck,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -25,6 +32,289 @@ import {
   formatIccid,
   formatImei,
 } from "@/lib/formatters";
+
+type StatTone = "emerald" | "amber" | "red" | "sky" | "slate";
+
+type ScopeContext = {
+  customerScopeCustomer: Record<string, unknown> | undefined;
+  customerScopeSubscription: Record<string, unknown> | undefined;
+  customerScopeVehicle: Record<string, unknown> | undefined;
+  customerScopeAssignment: Record<string, unknown> | undefined;
+  customerScopeActivation: Record<string, unknown> | undefined;
+};
+
+type DashboardTileExtra = (scope: ScopeContext) => Promise<React.ReactNode>;
+
+/**
+ * Declaratieve configuratie van alle Dashboard tegels.
+ *
+ * TEN ONDERHOUDE: Voor het toevoegen van een nieuwe tegel:
+ *   1. Voeg een entry toe aan DASHBOARD_TILES met een unieke `key`,
+ *      de `resource` waar `view`-rechten voor nodig zijn,
+ *      en een `countQuery` die de teller ophaalt (ontvangt ScopeContext).
+ *   2. De permissie-check en scope-whitelist gebeuren AUTOMATISCH op basis
+ *      van `resource` veld. Laat dit veld dus NIET ontbreken.
+ *   3. De `resource` moet overeenkomen met de pagina waar de tegel naar linkt,
+ *      zodat sidebar en dashboard consistent zijn.
+ *
+ * Tegel ↔ ResourceType mapping:
+ *   subscription   -> Actieve abonnementen, Pending activation
+ *   tracker        -> Trackers op voorraad, Actieve trackers, Defecte trackers
+ *   sim            -> SIMs op voorraad, Actieve SIMs
+ *   activation_order -> Openstaande activaties, Mislukte activaties vandaag
+ *   customer       -> Klanten
+ *   vehicle        -> Voertuigen
+ *   product        -> Actieve producten (alleen INTERNAL scope)
+ */
+type DashboardTile = {
+  key: string;
+  resource: ResourceType;
+  title: string;
+  icon: LucideIcon;
+  tone: StatTone;
+  href: string;
+  countQuery: (scope: ScopeContext) => Promise<number>;
+  extraQuery?: DashboardTileExtra;
+};
+
+const DASHBOARD_TILES: DashboardTile[] = [
+  {
+    key: "sub_active",
+    resource: "subscription",
+    title: "Actieve abonnementen",
+    icon: CreditCard,
+    tone: "emerald",
+    href: "/subscriptions?status=ACTIVE",
+    countQuery: (s) =>
+      prisma.subscription.count({
+        where: {
+          deletedAt: null,
+          status: "ACTIVE",
+          ...s.customerScopeSubscription,
+        },
+      }),
+    extraQuery: async (s) => {
+      const raw: any = await prisma.subscription.aggregate({
+        where: {
+          deletedAt: null,
+          status: "ACTIVE",
+          ...s.customerScopeSubscription,
+        },
+        _sum: { monthlyPrice: true },
+      });
+      const amount = raw._sum?.monthlyPrice ? Number(raw._sum.monthlyPrice) : 0;
+      return (
+        <div className="text-xs text-emerald-600">
+          {formatCurrency(String(amount))}/mnd
+        </div>
+      );
+    },
+  },
+  {
+    key: "sub_pending",
+    resource: "subscription",
+    title: "Pending activation",
+    icon: ShieldAlert,
+    tone: "amber",
+    href: "/subscriptions?status=PENDING_ACTIVATION",
+    countQuery: (s) =>
+      prisma.subscription.count({
+        where: {
+          deletedAt: null,
+          status: "PENDING_ACTIVATION",
+          ...s.customerScopeSubscription,
+        },
+      }),
+  },
+  {
+    key: "trk_stock",
+    resource: "tracker",
+    title: "Trackers op voorraad",
+    icon: PackageCheck,
+    tone: "sky",
+    href: "/trackers?status=IN_STOCK",
+    countQuery: (s) =>
+      prisma.tracker.count({
+        where: {
+          deletedAt: null,
+          status: "IN_STOCK",
+          ...s.customerScopeAssignment,
+        },
+      }),
+  },
+  {
+    key: "trk_active",
+    resource: "tracker",
+    title: "Actieve trackers",
+    icon: Cpu,
+    tone: "emerald",
+    href: "/trackers?status=ACTIVE",
+    countQuery: (s) =>
+      prisma.tracker.count({
+        where: {
+          deletedAt: null,
+          status: "ACTIVE",
+          ...s.customerScopeAssignment,
+        },
+      }),
+  },
+  {
+    key: "trk_defect",
+    resource: "tracker",
+    title: "Defecte trackers",
+    icon: AlertTriangle,
+    tone: "red",
+    href: "/trackers?status=DEFECTIVE",
+    countQuery: (s) =>
+      prisma.tracker.count({
+        where: {
+          deletedAt: null,
+          status: "DEFECTIVE",
+          ...s.customerScopeAssignment,
+        },
+      }),
+  },
+  {
+    key: "sim_stock",
+    resource: "sim",
+    title: "SIMs op voorraad",
+    icon: Boxes,
+    tone: "sky",
+    href: "/sims?status=IN_STOCK",
+    countQuery: (s) =>
+      prisma.sIM.count({
+        where: {
+          deletedAt: null,
+          status: "IN_STOCK",
+          ...s.customerScopeAssignment,
+        },
+      }),
+  },
+  {
+    key: "sim_active",
+    resource: "sim",
+    title: "Actieve SIMs",
+    icon: Server,
+    tone: "emerald",
+    href: "/sims?status=ACTIVE",
+    countQuery: (s) =>
+      prisma.sIM.count({
+        where: {
+          deletedAt: null,
+          status: "ACTIVE",
+          ...s.customerScopeAssignment,
+        },
+      }),
+  },
+  {
+    key: "act_open",
+    resource: "activation_order",
+    title: "Openstaande activaties",
+    icon: Activity,
+    tone: "amber",
+    href: "/activations?status=READY",
+    countQuery: (s) =>
+      prisma.activationOrder.count({
+        where: {
+          status: { in: ["READY", "PROCESSING"] as unknown as undefined },
+          ...s.customerScopeActivation,
+        },
+      }),
+  },
+  {
+    key: "act_failed_today",
+    resource: "activation_order",
+    title: "Mislukte activaties vandaag",
+    icon: AlertTriangle,
+    tone: "red",
+    href: "/activations?status=FAILED",
+    countQuery: (s) =>
+      prisma.activationOrder.count({
+        where: {
+          status: "FAILED" as unknown as undefined,
+          failedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
+          ...s.customerScopeActivation,
+        },
+      }),
+  },
+  {
+    key: "cust_count",
+    resource: "customer",
+    title: "Klanten",
+    icon: Truck,
+    tone: "slate",
+    href: "/customers",
+    countQuery: (s) =>
+      prisma.customer.count({
+        where: { deletedAt: null, ...s.customerScopeCustomer },
+      }),
+  },
+  {
+    key: "veh_count",
+    resource: "vehicle",
+    title: "Voertuigen",
+    icon: Truck,
+    tone: "slate",
+    href: "/vehicles",
+    countQuery: (s) =>
+      prisma.vehicle.count({
+        where: { deletedAt: null, ...s.customerScopeVehicle },
+      }),
+  },
+  {
+    key: "prod_active",
+    resource: "product",
+    title: "Actieve producten",
+    icon: PackageSearch,
+    tone: "slate",
+    href: "/products",
+    countQuery: () => prisma.product.count({ where: { isActive: true } }),
+  },
+];
+
+function allowedResourcesForScope(scope: RoleScope | null | undefined): readonly ResourceType[] {
+  switch (scope) {
+    case "RESELLER":
+      return RESELLER_SCOPE_RESOURCES;
+    case "PARTNER":
+      return PARTNER_SCOPE_RESOURCES;
+    case "CUSTOMER":
+      return CUSTOMER_SCOPE_RESOURCES;
+    case "INTERNAL":
+    default:
+      return ALL_RESOURCE_TYPES;
+  }
+}
+
+function localPermissionsMeaningful(bits: unknown): boolean {
+  return rbacPermissionsMeaningful(
+    bits as Parameters<typeof rbacPermissionsMeaningful>[0]
+  );
+}
+
+/**
+ * 3-traps permissie-resolutie voor view-toegang op een resource.
+ * Identieke logica als sidebar.tsx resolveCan + scope-whitelist filter.
+ *
+ * Volgorde:
+ *   1. PermissionBits (indien meaningful)
+ *   2. roleId (string fallback via canUserRole prefix-matching)
+ *   3. Legacy userRole (ADMIN/EMPLOYEE/VIEWER)
+ * Plus: resources buiten de scope-whitelist worden altijd verborgen.
+ */
+function canViewResource(user: SessionUser, resource: ResourceType): boolean {
+  const allowed = allowedResourcesForScope(user.roleScope);
+  if (!allowed.includes(resource)) return false;
+
+  const meaningful = localPermissionsMeaningful(user.permissions);
+  if (meaningful) {
+    return canUserRole(user.permissions, "view", resource);
+  }
+  if (user.roleId && canUserRole(user.roleId, "view", resource)) {
+    return true;
+  }
+  return canUserRole(user.role ?? null, "view", resource);
+}
 
 export default async function DashboardPage() {
   const user = await requireUser();
@@ -35,113 +325,80 @@ export default async function DashboardPage() {
   const customerIds = user.customerIds ?? [];
   const hasScope = customerIds.length > 0;
 
-  const customerScopeCustomer: any = hasScope
-    ? { id: { in: customerIds } }
-    : undefined;
-  const customerScopeSubscription: any = hasScope
-    ? { customerId: { in: customerIds } }
-    : undefined;
-  const customerScopeVehicle: any = hasScope
-    ? { customerId: { in: customerIds } }
-    : undefined;
-  const customerScopeAssignment: any = hasScope
-    ? {
-        assignments: {
-          some: { subscription: { customerId: { in: customerIds } } },
-        },
-      }
-    : undefined;
-  const customerScopeActivation: any = hasScope
-    ? {
-        OR: [
-          { customerId: { in: customerIds } },
-          { subCustomerId: { in: customerIds } },
-        ],
-      }
-    : undefined;
+  const scopeContext: ScopeContext = {
+    customerScopeCustomer: hasScope
+      ? { id: { in: customerIds } }
+      : undefined,
+    customerScopeSubscription: hasScope
+      ? { customerId: { in: customerIds } }
+      : undefined,
+    customerScopeVehicle: hasScope
+      ? { customerId: { in: customerIds } }
+      : undefined,
+    customerScopeAssignment: hasScope
+      ? {
+          assignments: {
+            some: { subscription: { customerId: { in: customerIds } } },
+          },
+        }
+      : undefined,
+    customerScopeActivation: hasScope
+      ? {
+          OR: [
+            { customerId: { in: customerIds } },
+            { subCustomerId: { in: customerIds } },
+          ],
+        }
+      : undefined,
+  };
 
-  const counts = await Promise.all([
-    prisma.subscription.count({
-      where: { deletedAt: null, status: "ACTIVE", ...customerScopeSubscription },
-    }),
-    prisma.subscription.count({
-      where: {
-        deletedAt: null,
-        status: "PENDING_ACTIVATION",
-        ...customerScopeSubscription,
-      },
-    }),
-    prisma.tracker.count({
-      where: { deletedAt: null, status: "IN_STOCK", ...customerScopeAssignment },
-    }),
-    prisma.tracker.count({
-      where: { deletedAt: null, status: "ACTIVE", ...customerScopeAssignment },
-    }),
-    prisma.tracker.count({
-      where: { deletedAt: null, status: "DEFECTIVE", ...customerScopeAssignment },
-    }),
-    prisma.sIM.count({
-      where: { deletedAt: null, status: "IN_STOCK", ...customerScopeAssignment },
-    }),
-    prisma.sIM.count({
-      where: { deletedAt: null, status: "ACTIVE", ...customerScopeAssignment },
-    }),
-    prisma.activationOrder.count({
-      where: {
-        status: { in: ["READY", "PROCESSING"] as any },
-        ...customerScopeActivation,
-      },
-    }),
-    prisma.activationOrder.count({
-      where: {
-        status: "FAILED" as any,
-        failedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-        ...customerScopeActivation,
-      },
-    }),
-    prisma.customer.count({
-      where: { deletedAt: null, ...customerScopeCustomer },
-    }),
-    prisma.vehicle.count({
-      where: { deletedAt: null, ...customerScopeVehicle },
-    }),
-    prisma.product.count({ where: { isActive: true } }),
+  const visibleTiles = DASHBOARD_TILES.filter((t) =>
+    canViewResource(user, t.resource)
+  );
+
+  type CountResults = Record<string, number>;
+  type ExtraResults = Record<string, React.ReactNode>;
+
+  const countEntries = visibleTiles.map(async (t) => {
+    const value = await t.countQuery(scopeContext);
+    return [t.key, value] as const;
+  });
+
+  const extraEntries = visibleTiles
+    .filter((t) => t.extraQuery)
+    .map(async (t) => {
+      const node = await (t.extraQuery as DashboardTileExtra)(scopeContext);
+      return [t.key, node] as const;
+    });
+
+  const [countPairs, extraPairs] = await Promise.all([
+    Promise.all(countEntries),
+    Promise.all(extraEntries),
   ]);
 
-  const recentActivations = await prisma.activationOrder.findMany({
-    where: { status: "COMPLETED" as any, ...customerScopeActivation },
-    orderBy: { completedAt: "desc" as any },
-    take: 10,
-    include: {
-      customer: { select: { id: true, companyName: true } },
-      tracker: { select: { id: true, imei: true, serialNumber: true } },
-      sim: { select: { id: true, iccid: true } },
-      subscription: { select: { id: true, subscriptionNumber: true } },
-    },
-  });
+  const counts: CountResults = Object.fromEntries(countPairs);
+  const extras: ExtraResults = Object.fromEntries(extraPairs);
 
-  const monthlyRevenueRaw: any = await prisma.subscription.aggregate({
-    where: { deletedAt: null, status: "ACTIVE", ...customerScopeSubscription },
-    _sum: { monthlyPrice: true },
-  });
-  const activeRevenue = monthlyRevenueRaw._sum.monthlyPrice
-    ? Number(monthlyRevenueRaw._sum.monthlyPrice)
-    : 0;
+  const canViewActivations = canViewResource(user, "activation_order");
 
-  const [
-    activeSubs,
-    pendingSubs,
-    trackersStock,
-    trackersActive,
-    trackersDefect,
-    simsStock,
-    simsActive,
-    openOrders,
-    failedToday,
-    customersCount,
-    vehiclesCount,
-    productsCount,
-  ] = counts;
+  const recentActivations = canViewActivations
+    ? await prisma.activationOrder.findMany({
+        where: {
+          status: "COMPLETED" as unknown as undefined,
+          ...scopeContext.customerScopeActivation,
+        },
+        orderBy: { completedAt: "desc" as unknown as undefined },
+        take: 10,
+        include: {
+          customer: { select: { id: true, companyName: true } },
+          tracker: { select: { id: true, imei: true, serialNumber: true } },
+          sim: { select: { id: true, iccid: true } },
+          subscription: { select: { id: true, subscriptionNumber: true } },
+        },
+      })
+    : [];
+
+  const hasAnyTiles = visibleTiles.length > 0;
 
   return (
     <div className="space-y-6">
@@ -156,221 +413,176 @@ export default async function DashboardPage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
-        <StatCard
-          title="Actieve abonnementen"
-          value={String(activeSubs)}
-          icon={<CreditCard className="h-5 w-5" />}
-          tone="emerald"
-          href="/subscriptions?status=ACTIVE"
-          extra={
-            <div className="text-xs text-emerald-600">
-              {formatCurrency(String(activeRevenue))}
-              /mnd
-            </div>
-          }
-        />
-        <StatCard
-          title="Pending activation"
-          value={String(pendingSubs)}
-          icon={<ShieldAlert className="h-5 w-5" />}
-          tone="amber"
-          href="/subscriptions?status=PENDING_ACTIVATION"
-        />
-        <StatCard
-          title="Trackers op voorraad"
-          value={String(trackersStock)}
-          icon={<PackageCheck className="h-5 w-5" />}
-          tone="sky"
-          href="/trackers?status=IN_STOCK"
-        />
-        <StatCard
-          title="Actieve trackers"
-          value={String(trackersActive)}
-          icon={<Cpu className="h-5 w-5" />}
-          tone="emerald"
-          href="/trackers?status=ACTIVE"
-        />
-        <StatCard
-          title="Defecte trackers"
-          value={String(trackersDefect)}
-          icon={<AlertTriangle className="h-5 w-5" />}
-          tone="red"
-          href="/trackers?status=DEFECTIVE"
-        />
-        <StatCard
-          title="SIMs op voorraad"
-          value={String(simsStock)}
-          icon={<Boxes className="h-5 w-5" />}
-          tone="sky"
-          href="/sims?status=IN_STOCK"
-        />
-        <StatCard
-          title="Actieve SIMs"
-          value={String(simsActive)}
-          icon={<Server className="h-5 w-5" />}
-          tone="emerald"
-          href="/sims?status=ACTIVE"
-        />
-        <StatCard
-          title="Openstaande activaties"
-          value={String(openOrders)}
-          icon={<Activity className="h-5 w-5" />}
-          tone="amber"
-          href="/activations?status=READY"
-        />
-        <StatCard
-          title="Mislukte activaties vandaag"
-          value={String(failedToday)}
-          icon={<AlertTriangle className="h-5 w-5" />}
-          tone="red"
-          href="/activations?status=FAILED"
-        />
-        <StatCard
-          title="Klanten"
-          value={String(customersCount)}
-          icon={<Truck className="h-5 w-5" />}
-          tone="slate"
-          href="/customers"
-        />
-        <StatCard
-          title="Voertuigen"
-          value={String(vehiclesCount)}
-          icon={<Truck className="h-5 w-5" />}
-          tone="slate"
-          href="/vehicles"
-        />
-        <StatCard
-          title="Actieve producten"
-          value={String(productsCount)}
-          icon={<PackageSearch className="h-5 w-5" />}
-          tone="slate"
-          href="/products"
-        />
-      </div>
-
-      <section>
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-lg font-semibold">Recente activaties</h2>
-          <Link
-            href="/activations"
-            className="text-sm text-slate-500 underline-offset-4 hover:underline"
-          >
-            Alle activaties →
-          </Link>
+      {hasAnyTiles ? (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+          {visibleTiles.map((t) => {
+            const Icon = t.icon;
+            const value = counts[t.key] ?? 0;
+            const extra = extras[t.key];
+            return (
+              <StatCard
+                key={t.key}
+                title={t.title}
+                value={String(value)}
+                icon={<Icon className="h-5 w-5" />}
+                tone={t.tone}
+                href={t.href}
+                extra={extra}
+              />
+            );
+          })}
         </div>
+      ) : (
         <Card>
-          <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-                  <tr>
-                    <th className="px-4 py-3">Order</th>
-                    <th className="px-4 py-3">Klant</th>
-                    <th className="px-4 py-3">Voltooid</th>
-                    <th className="px-4 py-3">Tracker</th>
-                    <th className="px-4 py-3">SIM</th>
-                    <th className="px-4 py-3"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentActivations.length ? (
-                    recentActivations.map((o) => (
-                      <tr key={o.id} className="border-t hover:bg-slate-50/60">
-                        <td className="px-4 py-3">
-                          <Link
-                            href={`/activations/${o.id}`}
-                            className="font-medium underline-offset-4 hover:underline"
-                          >
-                            {o.orderNumber}
-                          </Link>
-                          {o.subscription ? (
-                            <div className="text-xs text-slate-500 mt-0.5">
-                              <Badge variant="secondary">
-                                {o.subscription.subscriptionNumber}
-                              </Badge>
-                            </div>
-                          ) : null}
-                        </td>
-                        <td className="px-4 py-3">
-                          {o.customer ? (
-                            <Link
-                              href={`/customers/${o.customer.id}`}
-                              className="underline-offset-4 hover:underline"
-                            >
-                              {o.customer.companyName}
-                            </Link>
-                          ) : (
-                            <span className="text-slate-400">—</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-slate-600">
-                          {o.completedAt ? formatDate(o.completedAt) : "—"}
-                        </td>
-                        <td className="px-4 py-3">
-                          {o.tracker ? (
-                            <div>
-                              <Link
-                                href={`/trackers/${o.tracker.id}`}
-                                className="font-medium underline-offset-4 hover:underline"
-                              >
-                                {o.tracker.serialNumber}
-                              </Link>
-                              <div className="font-mono text-xs text-slate-500">
-                                {formatImei(o.tracker.imei)}
-                              </div>
-                            </div>
-                          ) : (
-                            <span className="text-slate-400">—</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {o.sim ? (
-                            <Link
-                              href={`/sims/${o.sim.id}`}
-                              className="font-mono text-xs underline-offset-4 hover:underline"
-                            >
-                              {formatIccid(o.sim.iccid)}
-                            </Link>
-                          ) : (
-                            <span className="text-slate-400">—</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          {o.subscription ? (
-                            <Link
-                              href={`/subscriptions/${o.subscription.id}`}
-                              className="text-xs text-slate-600 underline-offset-4 hover:underline"
-                            >
-                              Bekijk abonnement →
-                            </Link>
-                          ) : null}
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td
-                        colSpan={6}
-                        className="px-4 py-10 text-center text-sm text-slate-400"
-                      >
-                        Nog geen voltooide activaties. Start de{" "}
-                        <Link
-                          href="/activations/wizard"
-                          className="underline-offset-4 hover:underline"
-                        >
-                          wizard
-                        </Link>{" "}
-                        om de eerste te maken.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+          <CardContent className="p-8 text-center">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-slate-100">
+              <LayoutDashboard className="h-6 w-6 text-slate-400" />
             </div>
+            <h3 className="mt-4 text-base font-semibold text-slate-900">
+              Geen tegels beschikbaar
+            </h3>
+            <p className="mt-2 text-sm text-slate-500">
+              Je hebt toegang tot het Dashboard, maar er zijn nog geen
+              onderdelen toegewezen. Neem contact op met je beheerder voor
+              aanvullende rechten.
+            </p>
           </CardContent>
         </Card>
-      </section>
+      )}
+
+      {canViewActivations ? (
+        <section>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-lg font-semibold">Recente activaties</h2>
+            <Link
+              href="/activations"
+              className="text-sm text-slate-500 underline-offset-4 hover:underline"
+            >
+              Alle activaties →
+            </Link>
+          </div>
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="px-4 py-3">Order</th>
+                      <th className="px-4 py-3">Klant</th>
+                      <th className="px-4 py-3">Voltooid</th>
+                      <th className="px-4 py-3">Tracker</th>
+                      <th className="px-4 py-3">SIM</th>
+                      <th className="px-4 py-3"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recentActivations.length ? (
+                      recentActivations.map((o) => (
+                        <tr key={o.id} className="border-t hover:bg-slate-50/60">
+                          <td className="px-4 py-3">
+                            <Link
+                              href={`/activations/${o.id}`}
+                              className="font-medium underline-offset-4 hover:underline"
+                            >
+                              {(o as { orderNumber: string }).orderNumber}
+                            </Link>
+                            {o.subscription ? (
+                              <div className="text-xs text-slate-500 mt-0.5">
+                                <Badge variant="secondary">
+                                  {
+                                    (o.subscription as { subscriptionNumber: string })
+                                      .subscriptionNumber
+                                  }
+                                </Badge>
+                              </div>
+                            ) : null}
+                          </td>
+                          <td className="px-4 py-3">
+                            {o.customer ? (
+                              <Link
+                                href={`/customers/${(o.customer as { id: string }).id}`}
+                                className="underline-offset-4 hover:underline"
+                              >
+                                {(o.customer as { companyName: string }).companyName}
+                              </Link>
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">
+                            {(o as { completedAt: Date | null }).completedAt
+                              ? formatDate(
+                                  (o as { completedAt: Date }).completedAt
+                                )
+                              : "—"}
+                          </td>
+                          <td className="px-4 py-3">
+                            {o.tracker ? (
+                              <div>
+                                <Link
+                                  href={`/trackers/${(o.tracker as { id: string }).id}`}
+                                  className="font-medium underline-offset-4 hover:underline"
+                                >
+                                  {(o.tracker as { serialNumber: string }).serialNumber}
+                                </Link>
+                                <div className="font-mono text-xs text-slate-500">
+                                  {formatImei(
+                                    (o.tracker as { imei: string }).imei
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            {o.sim ? (
+                              <Link
+                                href={`/sims/${(o.sim as { id: string }).id}`}
+                                className="font-mono text-xs underline-offset-4 hover:underline"
+                              >
+                                {formatIccid((o.sim as { iccid: string }).iccid)}
+                              </Link>
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            {o.subscription ? (
+                              <Link
+                                href={`/subscriptions/${(o.subscription as { id: string }).id}`}
+                                className="text-xs text-slate-600 underline-offset-4 hover:underline"
+                              >
+                                Bekijk abonnement →
+                              </Link>
+                            ) : null}
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td
+                          colSpan={6}
+                          className="px-4 py-10 text-center text-sm text-slate-400"
+                        >
+                          Nog geen voltooide activaties. Start de{" "}
+                          <Link
+                            href="/activations/wizard"
+                            className="underline-offset-4 hover:underline"
+                          >
+                            wizard
+                          </Link>{" "}
+                          om de eerste te maken.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -386,7 +598,7 @@ function StatCard({
   title: string;
   value: string;
   icon: React.ReactNode;
-  tone: "emerald" | "amber" | "red" | "sky" | "slate";
+  tone: StatTone;
   href: string;
   extra?: React.ReactNode;
 }) {

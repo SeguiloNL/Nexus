@@ -41,6 +41,7 @@ interface SimListProps {
   canDelete: boolean;
   canImport: boolean;
   canExport: boolean;
+  canSyncUsage: boolean;
 }
 
 // ============================================================
@@ -145,6 +146,7 @@ export function SimList({
   canDelete,
   canImport,
   canExport,
+  canSyncUsage,
 }: SimListProps) {
   const [statusFilter, setStatusFilter] = useState<SimStatus | "__ALL__">("__ALL__");
   const [syncState, syncFormAction, syncPendingNative] = useFormState(syncUsageSimsAction, {
@@ -407,7 +409,7 @@ export function SimList({
               </Button>
             </form>
           ) : null}
-          {canEdit ? (
+          {canSyncUsage ? (
             <form
               action={syncFormAction as any}
               className="inline-flex"

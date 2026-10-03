@@ -421,8 +421,6 @@ describe("Sim-only restricted rol (klant@seguilo.nl bug): sim.read=true en legac
 
 describe("Legacy ADMIN Beheerder safety-net (role.permissions leeg / isSystem → fallback legacy buildLegacyPermissionsForRole)", () => {
   it("ADMIN (legacy UserRole) met geladen role.permissions = alles false (lege permission-rijen): fallback geeft volledige toegang", () => {
-    // Simuleert auth.ts fallback: loadedPermissions = alles false (geen permission rows in role)
-    // → dan permissionsMeaningful=false → buildLegacyPermissionsForRole(ADMIN, INTERNAL)
     const loadedPermissions: PermissionBits = {
       customer:       { read: false, write: false },
       tracker:        { read: false, write: false },
@@ -439,8 +437,7 @@ describe("Legacy ADMIN Beheerder safety-net (role.permissions leeg / isSystem �
       dashboard:      { read: false, write: false },
     };
 
-    // auth.ts logica:
-    const isLegacySystemRole = true; // of !permissionsMeaningful(loadedPermissions)
+    const isLegacySystemRole = true;
     const legacyRole = UserRole.ADMIN;
     const scope = RoleScope.INTERNAL;
     const effectivePermissions: PermissionBits =
@@ -448,7 +445,6 @@ describe("Legacy ADMIN Beheerder safety-net (role.permissions leeg / isSystem �
         ? buildLegacyPermissionsForRole(legacyRole, scope)
         : loadedPermissions;
 
-    // Dashboard: moet nu toegang hebben
     expect(can(effectivePermissions, "view", "dashboard")).toBe(true);
     expect(can(effectivePermissions, "create", "customer")).toBe(true);
     expect(can(effectivePermissions, "edit",   "tracker")).toBe(true);
@@ -482,10 +478,274 @@ describe("Legacy ADMIN Beheerder safety-net (role.permissions leeg / isSystem �
         ? buildLegacyPermissionsForRole(legacyRole, scope)
         : loadedPermissions;
 
-    // Fallback niet geactiveerd → restrictie SIM-only blijft
     expect(can(effectivePermissions, "view", "sim")).toBe(true);
     expect(can(effectivePermissions, "view", "dashboard")).toBe(false);
     expect(can(effectivePermissions, "view", "customer")).toBe(false);
     expect(can(effectivePermissions, "view", "user")).toBe(false);
+  });
+});
+
+type DashTileResource = ResourceType;
+
+const DASH_TILES_RESOURCES: DashTileResource[] = [
+  "subscription",
+  "subscription",
+  "tracker",
+  "tracker",
+  "tracker",
+  "sim",
+  "sim",
+  "activation_order",
+  "activation_order",
+  "customer",
+  "vehicle",
+  "product",
+];
+
+function dashboardAllowedResources(scope: RoleScope | null): readonly ResourceType[] {
+  switch (scope) {
+    case RoleScope.RESELLER:
+      return RESELLER_SCOPE_RESOURCES;
+    case RoleScope.PARTNER:
+      return PARTNER_SCOPE_RESOURCES;
+    case RoleScope.CUSTOMER:
+      return CUSTOMER_SCOPE_RESOURCES;
+    case RoleScope.INTERNAL:
+    default:
+      return ALL_RESOURCE_TYPES;
+  }
+}
+
+function canUserRoleStringSync(
+  roleOrRoleId: string,
+  action: ResourceAction,
+  resource: ResourceType
+): boolean {
+  switch (roleOrRoleId) {
+    case "ADMIN":
+      return true;
+    case "EMPLOYEE":
+      if (
+        resource === "user" ||
+        resource === "role" ||
+        resource === "audit_log" ||
+        resource === "setting"
+      ) {
+        return action === "view";
+      }
+      return true;
+    case "VIEWER":
+      return action === "view" && resource !== "audit_log";
+    default:
+      const s = roleOrRoleId;
+      if (s.startsWith("rl_admin")) return true;
+      if (s.startsWith("rl_emp")) {
+        if (
+          resource === "user" ||
+          resource === "role" ||
+          resource === "audit_log" ||
+          resource === "setting"
+        ) {
+          return action === "view";
+        }
+        return true;
+      }
+      if (s.startsWith("rl_view")) {
+        return action === "view" && resource !== "audit_log";
+      }
+      if (s.startsWith("rl_custedit")) {
+        const wr = ["vehicle"];
+        if (wr.includes(resource)) return true;
+        const vr = [
+          "customer",
+          "tracker",
+          "sim",
+          "vehicle",
+          "subscription",
+          "invoice",
+          "dashboard",
+        ];
+        return vr.includes(resource) && action === "view";
+      }
+      if (s.startsWith("rl_custview")) {
+        const vr = [
+          "customer",
+          "tracker",
+          "sim",
+          "vehicle",
+          "subscription",
+          "invoice",
+          "dashboard",
+        ];
+        return vr.includes(resource) && action === "view";
+      }
+      return false;
+  }
+}
+
+function dashboardCanView(
+  permissions: PermissionBits | null | undefined,
+  roleId: string | null,
+  userRole: UserRole | null,
+  scope: RoleScope | null,
+  resource: ResourceType
+): boolean {
+  const allowed = dashboardAllowedResources(scope);
+  if (!allowed.includes(resource)) return false;
+
+  const meaningful = permissionsMeaningful(permissions);
+  if (meaningful) {
+    return can(permissions as PermissionBits, "view", resource);
+  }
+  if (roleId && canUserRoleStringSync(roleId, "view", resource)) return true;
+  if (userRole) {
+    const bits = buildLegacyPermissionsForRole(userRole, scope ?? undefined);
+    return can(bits, "view", resource);
+  }
+  return false;
+}
+
+function countVisibleTiles(
+  permissions: PermissionBits | null,
+  roleId: string | null,
+  userRole: UserRole | null,
+  scope: RoleScope | null
+): number {
+  let n = 0;
+  for (const r of DASH_TILES_RESOURCES) {
+    if (dashboardCanView(permissions, roleId, userRole, scope, r)) n++;
+  }
+  return n;
+}
+
+describe("Dashboard Tegel-Permissie Matrix", () => {
+  it("1. ADMIN INTERNAL: alle 12 tegels zichtbaar + activation_order sectie", () => {
+    const bits = buildLegacyPermissionsForRole(UserRole.ADMIN, RoleScope.INTERNAL);
+    const visible = countVisibleTiles(bits, null, UserRole.ADMIN, RoleScope.INTERNAL);
+    expect(visible).toBe(12);
+    expect(dashboardCanView(bits, null, UserRole.ADMIN, RoleScope.INTERNAL, "activation_order")).toBe(true);
+    expect(dashboardCanView(bits, null, UserRole.ADMIN, RoleScope.INTERNAL, "product")).toBe(true);
+  });
+
+  it("2. EMPLOYEE INTERNAL: alle 12 tegels zichtbaar (heeft view op ALL_RESOURCE_TYPES)", () => {
+    const bits = buildLegacyPermissionsForRole(UserRole.EMPLOYEE, RoleScope.INTERNAL);
+    const visible = countVisibleTiles(bits, null, UserRole.EMPLOYEE, RoleScope.INTERNAL);
+    expect(visible).toBe(12);
+    expect(dashboardCanView(bits, null, UserRole.EMPLOYEE, RoleScope.INTERNAL, "product")).toBe(true);
+    expect(dashboardCanView(bits, null, UserRole.EMPLOYEE, RoleScope.INTERNAL, "activation_order")).toBe(true);
+  });
+
+  it("3. VIEWER INTERNAL: alle 12 tegels zichtbaar (heeft read op alle resources behalve audit_log; audit_log heeft geen tegel)", () => {
+    const bits = buildLegacyPermissionsForRole(UserRole.VIEWER, RoleScope.INTERNAL);
+    const visible = countVisibleTiles(bits, null, UserRole.VIEWER, RoleScope.INTERNAL);
+    expect(visible).toBe(12);
+    expect(dashboardCanView(bits, null, UserRole.VIEWER, RoleScope.INTERNAL, "product")).toBe(true);
+    expect(dashboardCanView(bits, null, UserRole.VIEWER, RoleScope.INTERNAL, "activation_order")).toBe(true);
+  });
+
+  it("4. ADMIN RESELLER scope: 11 tegels (GEEN product, WEL 2x activation_order)", () => {
+    const bits = buildLegacyPermissionsForRole(UserRole.ADMIN, RoleScope.RESELLER);
+    const visible = countVisibleTiles(bits, null, UserRole.ADMIN, RoleScope.RESELLER);
+    expect(visible).toBe(11);
+    expect(dashboardCanView(bits, null, UserRole.ADMIN, RoleScope.RESELLER, "product")).toBe(false);
+    expect(dashboardCanView(bits, null, UserRole.ADMIN, RoleScope.RESELLER, "activation_order")).toBe(true);
+    const activationTiles = DASH_TILES_RESOURCES.filter(r => r === "activation_order").length;
+    expect(activationTiles).toBe(2);
+  });
+
+  it("5. ADMIN PARTNER scope: 11 tegels (zelfde als RESELLER: geen product, wel activation_order)", () => {
+    const bits = buildLegacyPermissionsForRole(UserRole.ADMIN, RoleScope.PARTNER);
+    const visible = countVisibleTiles(bits, null, UserRole.ADMIN, RoleScope.PARTNER);
+    expect(visible).toBe(11);
+    expect(dashboardCanView(bits, null, UserRole.ADMIN, RoleScope.PARTNER, "product")).toBe(false);
+    expect(dashboardCanView(bits, null, UserRole.ADMIN, RoleScope.PARTNER, "activation_order")).toBe(true);
+  });
+
+  it("6. ADMIN CUSTOMER scope: 9 tegels (GEEN product, GEEN 2x activation_order)", () => {
+    const bits = buildLegacyPermissionsForRole(UserRole.ADMIN, RoleScope.CUSTOMER);
+    const visible = countVisibleTiles(bits, null, UserRole.ADMIN, RoleScope.CUSTOMER);
+    expect(visible).toBe(9);
+    expect(dashboardCanView(bits, null, UserRole.ADMIN, RoleScope.CUSTOMER, "product")).toBe(false);
+    expect(dashboardCanView(bits, null, UserRole.ADMIN, RoleScope.CUSTOMER, "activation_order")).toBe(false);
+
+    const subs = DASH_TILES_RESOURCES.filter(r => r === "subscription").length;
+    const trk = DASH_TILES_RESOURCES.filter(r => r === "tracker").length;
+    const sims = DASH_TILES_RESOURCES.filter(r => r === "sim").length;
+    const cust = DASH_TILES_RESOURCES.filter(r => r === "customer").length;
+    const veh = DASH_TILES_RESOURCES.filter(r => r === "vehicle").length;
+    expect(subs + trk + sims + cust + veh).toBe(9);
+  });
+
+  it("7. Custom role: alleen SIM + TRACKER view (5 tegels: 3 tracker + 2 sim), rest onzichtbaar", () => {
+    const simTrackerBits: PermissionBits = {
+      customer:         { read: false, write: false },
+      tracker:          { read: true,  write: false },
+      sim:              { read: true,  write: false },
+      vehicle:          { read: false, write: false },
+      subscription:     { read: false, write: false },
+      invoice:          { read: false, write: false },
+      activation_order: { read: false, write: false },
+      user:             { read: false, write: false },
+      role:             { read: false, write: false },
+      audit_log:        { read: false, write: false },
+      setting:          { read: false, write: false },
+      product:          { read: false, write: false },
+      dashboard:        { read: true,  write: false },
+    };
+    const visible = countVisibleTiles(simTrackerBits, null, null, RoleScope.INTERNAL);
+    expect(visible).toBe(5);
+    expect(dashboardCanView(simTrackerBits, null, null, RoleScope.INTERNAL, "tracker")).toBe(true);
+    expect(dashboardCanView(simTrackerBits, null, null, RoleScope.INTERNAL, "sim")).toBe(true);
+    expect(dashboardCanView(simTrackerBits, null, null, RoleScope.INTERNAL, "subscription")).toBe(false);
+    expect(dashboardCanView(simTrackerBits, null, null, RoleScope.INTERNAL, "product")).toBe(false);
+  });
+
+  it("8. Custom role: ALLEEN dashboard.view (geen enkele andere resource) → 0 tegels zichtbaar", () => {
+    const dashOnlyBits: PermissionBits = {
+      customer:         { read: false, write: false },
+      tracker:          { read: false, write: false },
+      sim:              { read: false, write: false },
+      vehicle:          { read: false, write: false },
+      subscription:     { read: false, write: false },
+      invoice:          { read: false, write: false },
+      activation_order: { read: false, write: false },
+      user:             { read: false, write: false },
+      role:             { read: false, write: false },
+      audit_log:        { read: false, write: false },
+      setting:          { read: false, write: false },
+      product:          { read: false, write: false },
+      dashboard:        { read: true,  write: false },
+    };
+    const visible = countVisibleTiles(dashOnlyBits, null, null, RoleScope.INTERNAL);
+    expect(visible).toBe(0);
+  });
+
+  it("9. Scope-whitelist overtreft permissie bits: CUSTOMER scope met product.read=true → toch product tegel VERBORGEN", () => {
+    const productBits: PermissionBits = buildLegacyPermissionsForRole(UserRole.ADMIN, RoleScope.CUSTOMER);
+    productBits.product = { read: true, write: true };
+    expect(can(productBits, "view", "product")).toBe(true);
+    expect(dashboardCanView(productBits, null, null, RoleScope.CUSTOMER, "product")).toBe(false);
+  });
+
+  it("10. 3-traps fallback: GEEN permissions (leeg), WEL roleId=r1_admin → alle 12 tegels (INTERNAL)", () => {
+    const empty: PermissionBits | null = null;
+    const visible = countVisibleTiles(empty, "rl_admin_x1", null, RoleScope.INTERNAL);
+    expect(visible).toBe(12);
+  });
+
+  it("11. 3-traps fallback: GEEN permissions, WEL userRole=VIEWER (INTERNAL) → 12 tegels zichtbaar", () => {
+    const visible = countVisibleTiles(null, null, UserRole.VIEWER, RoleScope.INTERNAL);
+    expect(visible).toBe(12);
+  });
+
+  it("12. Recente activaties sectie zichtbaarheid: CUSTOMER = onzichtbaar; RESELLER/PARTNER/INTERNAL = zichtbaar", () => {
+    const adminCust = buildLegacyPermissionsForRole(UserRole.ADMIN, RoleScope.CUSTOMER);
+    const adminRes = buildLegacyPermissionsForRole(UserRole.ADMIN, RoleScope.RESELLER);
+    const adminInt = buildLegacyPermissionsForRole(UserRole.ADMIN, RoleScope.INTERNAL);
+    const adminPart = buildLegacyPermissionsForRole(UserRole.ADMIN, RoleScope.PARTNER);
+    expect(dashboardCanView(adminCust, null, UserRole.ADMIN, RoleScope.CUSTOMER, "activation_order")).toBe(false);
+    expect(dashboardCanView(adminRes, null, UserRole.ADMIN, RoleScope.RESELLER, "activation_order")).toBe(true);
+    expect(dashboardCanView(adminPart, null, UserRole.ADMIN, RoleScope.PARTNER, "activation_order")).toBe(true);
+    expect(dashboardCanView(adminInt, null, UserRole.ADMIN, RoleScope.INTERNAL, "activation_order")).toBe(true);
   });
 });

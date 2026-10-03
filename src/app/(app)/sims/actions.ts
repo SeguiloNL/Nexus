@@ -383,7 +383,7 @@ export async function syncUsageSimsAction(
   _formData: FormData
 ): Promise<BulkActionState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "edit", "sim");
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "view", "sim");
   const ctx = {
     userId: user.id,
     userRole: user.role,
@@ -453,7 +453,7 @@ export async function syncUsageForSingleSimAction(
   _formData: FormData
 ): Promise<SimUsageSyncState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "edit", "sim");
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "view", "sim");
   const ctx = {
     userId: user.id,
     userRole: user.role,
