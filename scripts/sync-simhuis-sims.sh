@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================
-# STM — Simhuis SIM-voorraad Sync trigger (4x per dag via cron/systemd)
+# STM — Simhuis SIM-voorraad Sync trigger (every 15 min via systemd)
 #
 # Roept de Next.js API route /api/integrations/simhuis/sync-sims
-# aan met Bearer auth. Leest de API-token en app URL in van
-# /opt/stm/.env (.env.production).
+# aan met Bearer auth + X-Sync-Triggered-By header.
+# Ververkt Schedule Guard (skipped=true => exit 0, geen fout).
 #
 # Handmatig testen:
 #   cd /opt/stm && bash scripts/sync-simhuis-sims.sh
@@ -51,6 +51,7 @@ RESPONSE_FILE="$(mktemp)"
 HTTP_CODE=$(curl -sS -o "${RESPONSE_FILE}" -w "%{http_code}" \
   -X POST \
   -H "Authorization: Bearer ${API_TOKEN}" \
+  -H "X-Sync-Triggered-By: systemd-timer" \
   -H "Content-Type: application/json" \
   --max-time 900 \
   "${SYNC_URL}" || true)
@@ -67,7 +68,12 @@ if [ "${HTTP_CODE}" != "200" ]; then
 fi
 
 if echo "${BODY}" | grep -q '"ok"\s*:\s*true'; then
-  echo "[ok] Sims-sync voltooid."
+  if echo "${BODY}" | grep -q '"skipped"\s*:\s*true'; then
+    REASON="$(echo "${BODY}" | grep -o '"reason"\s*:\s*"[^"]*"' | head -n1 || true)"
+    echo "[skip] Sims-sync overgeslagen door Schedule Guard: ${REASON}"
+  else
+    echo "[ok] Sims-sync voltooid."
+  fi
   exit 0
 else
   echo "[fout] Sims-sync retourneerde ok=false."

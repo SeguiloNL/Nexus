@@ -154,6 +154,37 @@ export type ResourceType =
   | "dashboard"
   | "role";
 
+/* ========================= Sync-Schedule enums (mirror Prisma) ========================= */
+
+export enum SyncFrequency {
+  HOURLY = "HOURLY",
+  DAILY = "DAILY",
+  WEEKLY = "WEEKLY",
+  MONTHLY = "MONTHLY",
+}
+
+export enum SyncJobStatus {
+  QUEUED = "QUEUED",
+  RUNNING = "RUNNING",
+  SUCCESS = "SUCCESS",
+  FAILED = "FAILED",
+  SKIPPED = "SKIPPED",
+  TIMEOUT = "TIMEOUT",
+}
+
+export enum SyncJobTrigger {
+  MANUAL_ADMIN = "MANUAL_ADMIN",
+  SYSTEMD_TIMER = "SYSTEMD_TIMER",
+  FALLBACK_POLLING = "FALLBACK_POLLING",
+  API_TOKEN = "API_TOKEN",
+}
+
+export enum SyncJobId {
+  SIMHUIS_USAGE = "SIMHUIS_USAGE",
+  SIMHUIS_SIMS = "SIMHUIS_SIMS",
+  INSERVE = "INSERVE",
+}
+
 export const ALL_RESOURCE_TYPES: ResourceType[] = [
   "customer",
   "tracker",

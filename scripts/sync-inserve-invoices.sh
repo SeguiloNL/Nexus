@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================
-# STM — Inserve Invoices & Subscriptions Sync trigger (elke 6 uur)
+# STM — Inserve Subscriptions + Invoices Sync trigger (every 15 min via systemd)
 #
-# Roept interne sync via docker exec in de stm-app container.
-# Voert op zijn beurt de inserve-sync services aan voor alle
-# pendente abonnementen en facturen.
+# Roept de Next.js API route /api/integrations/inserve/sync
+# aan met Bearer auth + X-Sync-Triggered-By header.
+# Ververkt Schedule Guard (skipped=true => exit 0, geen fout).
 #
 # Handmatig testen:
 #   cd /opt/stm && bash scripts/sync-inserve-invoices.sh
@@ -12,111 +12,70 @@
 set -euo pipefail
 
 WORKDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE_FILE="${WORKDIR}/docker-compose.prod.yml"
+ENV_FILE="${WORKDIR}/.env"
 
-cd "${WORKDIR}"
+APP_URL="http://127.0.0.1:3000"
+API_TOKEN=""
 
-echo "[info] Start Inserve sync (abonnementen + facturen)"
+if [ -f "${ENV_FILE}" ]; then
+  while IFS='= ' read -r key value; do
+    [[ -z "${key}" || "${key}" == \#* ]] && continue
+    value="${value%\"}"
+    value="${value#\"}"
+    value="${value%\'}"
+    value="${value#\'}"
+    case "${key}" in
+      NEXT_PUBLIC_APP_URL|STM_APP_URL)
+        if [ -n "${value}" ]; then APP_URL="${value}"; fi
+        ;;
+      SIMHUIS_SYNC_API_TOKEN)
+        API_TOKEN="${value}"
+        ;;
+    esac
+  done < "${ENV_FILE}"
+else
+  echo "[warn] Geen .env bestand gevonden in ${WORKDIR}. STM_APP_URL en SIMHUIS_SYNC_API_TOKEN worden uit environment gehaald."
+  APP_URL="${STM_APP_URL:-${APP_URL}}"
+  API_TOKEN="${SIMHUIS_SYNC_API_TOKEN:-}"
+fi
 
-if ! docker info >/dev/null 2>&1; then
-  echo "[fout] Docker daemon niet bereikbaar. Kan sync niet uitvoeren."
+if [ -z "${API_TOKEN}" ]; then
+  echo "[fout] SIMHUIS_SYNC_API_TOKEN is niet gezet in .env of environment. Kan Inserve-sync niet uitvoeren."
   exit 2
 fi
 
-APP_RUNNING=$(docker ps --format '{{.Names}}' -f name='^stm-app$' 2>/dev/null || true)
-if [ -z "${APP_RUNNING}" ]; then
-  echo "[fout] stm-app container draait niet. Start eerst de stack."
-  exit 2
-fi
+SYNC_URL="${APP_URL%/}/api/integrations/inserve/sync"
 
-SYNC_SCRIPT="/tmp/inserve-sync-batch-$$.mjs"
+echo "[info] Aanroepen inserve-sync: POST ${SYNC_URL}"
+RESPONSE_FILE="$(mktemp)"
+HTTP_CODE=$(curl -sS -o "${RESPONSE_FILE}" -w "%{http_code}" \
+  -X POST \
+  -H "Authorization: Bearer ${API_TOKEN}" \
+  -H "X-Sync-Triggered-By: systemd-timer" \
+  -H "Content-Type: application/json" \
+  --max-time 1800 \
+  "${SYNC_URL}" || true)
 
-cat > "${SYNC_SCRIPT}" <<'SYNC_JS_EOF'
-import { PrismaClient } from '@prisma/client';
-import { syncSubscriptionToInserve } from './src/server/services/inserve-sync.service';
-import { syncInvoiceToInserve } from './src/server/services/inserve-invoice-sync.service';
+BODY="$(cat "${RESPONSE_FILE}" 2>/dev/null || echo "")"
+rm -f "${RESPONSE_FILE}"
 
-const prisma = new PrismaClient();
-const CTX = { userId: 'cron_inserve_sync', userRole: 'ADMIN' };
+echo "[info] HTTP ${HTTP_CODE}. Response:"
+echo "${BODY}"
 
-async function main() {
-  console.log(`[${new Date().toISOString()}] Start Inserve batch sync...`);
-
-  // 1) Abonnementen die nog nooit of faalde sync
-  const subs = await prisma.subscription.findMany({
-    where: {
-      deletedAt: null,
-      status: { in: ['ACTIVE', 'CANCELLED', 'TERMINATED', 'SUSPENDED'] },
-      OR: [
-        { inserveSyncStatus: null },
-        { inserveSyncStatus: 'FAILED' },
-        { inserveSyncStatus: 'SKIPPED' },
-      ],
-    },
-    select: { id: true, subscriptionNumber: true, status: true, inserveSyncStatus: true },
-    take: 200,
-  });
-
-  console.log(`  ${subs.length} abonnementen te synchroniseren.`);
-  let subOk = 0, subFail = 0, subSkip = 0;
-  for (const s of subs) {
-    try {
-      const r = await syncSubscriptionToInserve(s.id, CTX);
-      if (r.status === 'SYNCED') subOk++;
-      else if (r.status === 'SKIPPED') subSkip++;
-      else { subFail++; console.error(`    FAIL sub ${s.subscriptionNumber}: ${r.error ?? r.details}`); }
-    } catch (e) { subFail++; console.error(`    EXC sub ${s.subscriptionNumber}:`, e); }
-  }
-
-  // 2) Facturen
-  const invs = await prisma.invoice.findMany({
-    where: {
-      status: { in: ['DRAFT', 'SENT', 'OVERDUE'] },
-      OR: [
-        { inserveSyncStatus: null },
-        { inserveSyncStatus: 'FAILED' },
-        { inserveSyncStatus: 'SKIPPED' },
-      ],
-    },
-    select: { id: true, invoiceNumber: true, status: true, inserveSyncStatus: true },
-    take: 200,
-  });
-
-  console.log(`  ${invs.length} facturen te synchroniseren.`);
-  let invOk = 0, invFail = 0, invSkip = 0;
-  for (const iv of invs) {
-    try {
-      const r = await syncInvoiceToInserve(iv.id, CTX);
-      if (r.status === 'SYNCED') invOk++;
-      else if (r.status === 'SKIPPED') invSkip++;
-      else { invFail++; console.error(`    FAIL inv ${iv.invoiceNumber}: ${r.error ?? r.details}`); }
-    } catch (e) { invFail++; console.error(`    EXC inv ${iv.invoiceNumber}:`, e); }
-  }
-
-  console.log(`[${new Date().toISOString()}] KLAAR. Sub: ok=${subOk} skip=${subSkip} fail=${subFail} | Inv: ok=${invOk} skip=${invSkip} fail=${invFail}`);
-  process.exit((subFail + invFail) > 0 ? 3 : 0);
-}
-main().catch((e) => { console.error('FATAL:', e); process.exit(1); }).finally(() => prisma.$disconnect());
-SYNC_JS_EOF
-
-trap 'rm -f "${SYNC_SCRIPT}"' EXIT
-
-if ! docker cp "${SYNC_SCRIPT}" "stm-app:/app/.cron-inserve-sync.mjs" 2>&1; then
-  echo "[fout] Kon sync script niet kopiëren naar container."
+if [ "${HTTP_CODE}" != "200" ]; then
+  echo "[fout] Inserve-sync mislukt (HTTP ${HTTP_CODE})."
   exit 1
 fi
 
-RC=0
-docker exec -T stm-app sh -lc 'cd /app && node .cron-inserve-sync.mjs' 2>&1 || RC=$?
-
-docker exec -T stm-app rm -f "/app/.cron-inserve-sync.mjs" 2>/dev/null || true
-
-if [ "${RC}" -eq 0 ]; then
-  echo "[ok] Inserve sync voltooid (rc=0)."
-elif [ "${RC}" -eq 3 ]; then
-  echo "[warn] Inserve sync deel-succes (rc=3: enkele items gefaald)."
+if echo "${BODY}" | grep -q '"ok"\s*:\s*true'; then
+  if echo "${BODY}" | grep -q '"skipped"\s*:\s*true'; then
+    REASON="$(echo "${BODY}" | grep -o '"reason"\s*:\s*"[^"]*"' | head -n1 || true)"
+    echo "[skip] Inserve-sync overgeslagen door Schedule Guard: ${REASON}"
+  else
+    echo "[ok] Inserve-sync voltooid."
+  fi
   exit 0
 else
-  echo "[fout] Inserve sync mislukt (rc=${RC})."
+  echo "[fout] Inserve-sync retourneerde ok=false."
   exit 1
 fi

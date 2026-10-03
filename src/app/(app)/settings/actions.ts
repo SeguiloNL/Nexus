@@ -43,11 +43,40 @@ import {
   NavixySettingsSchema,
   type NavixySettingsInput,
 } from "@/server/validators/setting";
+import {
+  SaveSyncScheduleSchema,
+  ResetSyncScheduleSchema,
+  TriggerSyncJobSchema,
+  type SaveSyncScheduleInput,
+} from "@/server/validators/schedule";
 import type {
   InserveSettingsMasked,
   SimhuisSettingsMasked,
   NavixySettingsMasked,
 } from "@/server/validators/setting";
+import { prisma } from "@/lib/prisma";
+import {
+  completeSyncJobRun,
+  createSyncJobRun,
+  getSchedulerHealth,
+  getSyncJobConfig,
+  listRecentSyncJobRuns,
+  listSyncJobConfigs,
+  resetSyncJobConfig,
+  saveSyncJobConfig,
+} from "@/server/services/sync-schedule.service";
+import {
+  syncActiveSimsUsageFromSimhuis,
+} from "@/server/services/simhuis-sim-sync.service";
+import {
+  syncAllPendingToInserve,
+} from "@/server/services/inserve-batch-sync.service";
+import {
+  SyncJobId,
+  SyncJobStatus,
+  SyncJobTrigger,
+} from "@/types/enums";
+import type { RoleScope } from "@/types/enums";
 
 export type InserveSettingsActionState = {
   errors?: Partial<Record<keyof InserveSettingsInput, string[]>>;
@@ -416,13 +445,312 @@ export async function syncSimhuisSimsAction(): Promise<SimSyncActionResult> {
         // ignore
       }
     }
+/* ========================= Sync Schedule beheer (ADMIN / INTERNAL) ========================= */
+
+export interface SyncScheduleSaveState {
+  errors?: Partial<Record<keyof SaveSyncScheduleInput | "_global", string[]>>;
+  message?: string | null;
+  success?: boolean;
+  config?: ReturnType<typeof listSyncJobConfigs> extends Promise<infer T> ? T extends (infer R)[] ? R : never : never;
+}
+
+export interface SyncScheduleResetState {
+  errors?: { jobId?: string[]; _global?: string[] };
+  message?: string | null;
+  success?: boolean;
+}
+
+export interface SyncScheduleTriggerState {
+  errors?: { jobId?: string[]; _global?: string[] };
+  message?: string | null;
+  success?: boolean;
+  skipped?: boolean;
+  summary?: string | null;
+  runId?: string | null;
+}
+
+export interface SchedulerFullState {
+  configs: Awaited<ReturnType<typeof listSyncJobConfigs>>;
+  health: Awaited<ReturnType<typeof getSchedulerHealth>>;
+  runs: Awaited<ReturnType<typeof listRecentSyncJobRuns>>;
+  canEdit: boolean;
+  viewerIsInternal: boolean;
+}
+
+function requireInternalWriteGuard() {
+  // Handled per action for read/write distinction; helper kept for clarity.
+}
+
+export async function getSyncSchedulesAction(): Promise<SchedulerFullState | null> {
+  const user = await getCurrentUser();
+  if (!user || !canUserRole(user.role, "view", "setting")) {
+    return null;
+  }
+  const canEdit = Boolean(
+    canUserRole(user.role, "edit", "setting") && (user.roleScope as RoleScope) === "INTERNAL"
+  );
+  const [configs, health, runs] = await Promise.all([
+    listSyncJobConfigs(),
+    getSchedulerHealth(),
+    listRecentSyncJobRuns({ limit: 50 }),
+  ]);
+  return {
+    configs,
+    health,
+    runs,
+    canEdit,
+    viewerIsInternal: (user.roleScope as RoleScope) === "INTERNAL",
+  };
+}
+
+export async function saveSyncScheduleAction(
+  _prev: SyncScheduleSaveState | undefined,
+  formData: FormData
+): Promise<SyncScheduleSaveState> {
+  const user = await getCurrentUser();
+  await requirePermission(user.role, "edit", "setting");
+  if ((user.roleScope as RoleScope) !== "INTERNAL") {
     return {
-      ok: false,
-      message:
-        err instanceof Error
-          ? err.message
-          : "Er is een fout opgetreden tijdens het synchroniseren van de Simhuis SIM-voorraad.",
-      debugContext,
+      success: false,
+      errors: { _global: ["Alleen interne medewerkers (INTERNAL) mogen schedules wijzigen."] },
     };
   }
+
+  const parseNum = (k: string) => {
+    const raw = formData.get(k);
+    if (raw == null || raw === "") return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : NaN;
+  };
+  const parseBool = (k: string) => {
+    const raw = formData.get(k);
+    return raw === "1" || raw === "true" || raw === "on";
+  };
+
+  const data: SaveSyncScheduleInput = {
+    jobId: formStr(formData.get("jobId")) as SyncJobId,
+    enabled: parseBool("enabled"),
+    frequency: formStr(formData.get("frequency")) as SaveSyncScheduleInput["frequency"],
+    hour: parseNum("hour") ?? 0,
+    minute: parseNum("minute") ?? 0,
+    dayOfWeek: parseNum("dayOfWeek") ?? null,
+    dayOfMonth: parseNum("dayOfMonth") ?? null,
+    timezone: formStr(formData.get("timezone")) || "Europe/Amsterdam",
+    comment: formStr(formData.get("comment")) || null,
+  };
+
+  const validated = SaveSyncScheduleSchema.safeParse(data);
+  if (!validated.success) {
+    const errors = validated.error.flatten().fieldErrors as SyncScheduleSaveState["errors"];
+    return { success: false, errors, message: "Corrigeer de gemarkeerde velden." };
+  }
+
+  try {
+    const saved = await prisma.$transaction(async (tx) =>
+      saveSyncJobConfig(tx, validated.data, user)
+    );
+    revalidatePath("/settings");
+    return {
+      success: true,
+      message: `Schedule voor ${saved.jobId} succesvol opgeslagen.`,
+      config: saved as SyncScheduleSaveState["config"],
+    };
+  } catch (e: any) {
+    const msg = e?.message ?? "Onverwachte fout bij opslaan schedule.";
+    if (/conflict|overlap|dezelfde/i.test(msg)) {
+      return { success: false, errors: { hour: [msg] }, message: msg };
+    }
+    return { success: false, errors: { _global: [msg] }, message: msg };
+  }
+}
+
+export async function resetSyncScheduleAction(
+  _prev: SyncScheduleResetState | undefined,
+  formData: FormData
+): Promise<SyncScheduleResetState> {
+  const user = await getCurrentUser();
+  await requirePermission(user.role, "edit", "setting");
+  if ((user.roleScope as RoleScope) !== "INTERNAL") {
+    return {
+      success: false,
+      errors: { _global: ["Alleen interne medewerkers mogen schedules resetten."] },
+    };
+  }
+
+  const validated = ResetSyncScheduleSchema.safeParse({
+    jobId: formStr(formData.get("jobId")) as SyncJobId,
+  });
+  if (!validated.success) {
+    return { success: false, errors: validated.error.flatten().fieldErrors as any };
+  }
+
+  try {
+    await prisma.$transaction(async (tx) =>
+      resetSyncJobConfig(tx, validated.data.jobId, user)
+    );
+    revalidatePath("/settings");
+    return {
+      success: true,
+      message: `Schedule ${validated.data.jobId} is teruggezet naar de standaardwaarden.`,
+    };
+  } catch (e: any) {
+    return { success: false, errors: { _global: [e?.message ?? String(e)] } };
+  }
+}
+
+export async function triggerSyncJobAction(
+  _prev: SyncScheduleTriggerState | undefined,
+  formData: FormData
+): Promise<SyncScheduleTriggerState> {
+  const user = await getCurrentUser();
+  await requirePermission(user.role, "edit", "setting");
+  if ((user.roleScope as RoleScope) !== "INTERNAL") {
+    return {
+      success: false,
+      errors: { _global: ["Alleen interne medewerkers mogen handmatig runs starten."] },
+    };
+  }
+
+  const validated = TriggerSyncJobSchema.safeParse({
+    jobId: formStr(formData.get("jobId")) as SyncJobId,
+    force: formStr(formData.get("force")) === "1" || formStr(formData.get("force")) === "true",
+  });
+  if (!validated.success) {
+    return { success: false, errors: validated.error.flatten().fieldErrors as any };
+  }
+
+  const config = await getSyncJobConfig(validated.data.jobId);
+  const run = await prisma.$transaction(async (tx) =>
+    createSyncJobRun(tx, {
+      configId: config.id,
+      jobId: validated.data.jobId,
+      triggeredBy: SyncJobTrigger.MANUAL_ADMIN,
+      userId: user.id,
+    })
+  );
+  const startedAt = run.startedAt;
+
+  try {
+    let summary: string;
+    let finalStatus: SyncJobStatus = SyncJobStatus.SUCCESS;
+    let recordsAffected: any = null;
+    let errorMessage: string | null = null;
+
+    if (validated.data.jobId === SyncJobId.SIMHUIS_USAGE) {
+      const r = await syncActiveSimsUsageFromSimhuis({
+        userId: user.id,
+        userRole: user.role as any,
+      });
+      recordsAffected = {
+        totalActiveInDb: r.totalActiveInDb,
+        totalInSimhuis: r.totalInSimhuis,
+        matched: r.matched,
+        updated: r.updated,
+        skipped: r.skipped,
+        errors: r.errors,
+      };
+      summary =
+        `Usage-sync Simhuis handmatig afgerond. Targets in DB: ${r.totalActiveInDb}. ` +
+        `Simhuis totaal: ${r.totalInSimhuis}. Gematcht: ${r.matched}. Bijgewerkt: ${r.updated}. ` +
+        `Overgeslagen: ${r.skipped}. Fouten: ${r.errors}. Duur: ${r.durationMs}ms.`;
+      if ((r.errors ?? 0) > 0) {
+        finalStatus = SyncJobStatus.FAILED;
+        errorMessage = `${r.errors} SIMs gaven een fout.`;
+      }
+    } else if (validated.data.jobId === SyncJobId.SIMHUIS_SIMS) {
+      const r = await syncAvailableSimsFromSimhuis({
+        userId: user.id,
+        userRole: user.role as any,
+      });
+      recordsAffected = {
+        totalInSimhuis: r.totalInSimhuis,
+        eligibleInSimhuis: r.eligibleInSimhuis,
+        created: r.created,
+        updated: r.updated,
+        skipped: r.skipped,
+        errors: r.errors,
+      };
+      summary =
+        `SIM-voorraad handmatig bijgewerkt. Aangemaakt: ${r.created}, bijgewerkt: ${r.updated}, overgeslagen: ${r.skipped}. ` +
+        `Totaal in Simhuis: ${r.totalInSimhuis}, in aanmerking: ${r.eligibleInSimhuis}. Fouten: ${r.errors}. Duur: ${r.durationMs}ms.`;
+      if ((r.errors ?? 0) > 0) {
+        finalStatus = SyncJobStatus.FAILED;
+        errorMessage = `${r.errors} rijen gaven een fout bij sim-sync.`;
+      }
+    } else if (validated.data.jobId === SyncJobId.INSERVE) {
+      const r = await syncAllPendingToInserve({
+        userId: user.id,
+        userRole: user.role as any,
+      });
+      recordsAffected = {
+        subscriptions: {
+          total: r.subscriptions.total,
+          synced: r.subscriptions.synced,
+          skipped: r.subscriptions.skipped,
+          failed: r.subscriptions.failed,
+        },
+        invoices: {
+          total: r.invoices.total,
+          synced: r.invoices.synced,
+          skipped: r.invoices.skipped,
+          failed: r.invoices.failed,
+        },
+      };
+      summary =
+        `Inserve handmatig gesynchroniseerd. Sub: ok=${r.subscriptions.synced} skip=${r.subscriptions.skipped} fail=${r.subscriptions.failed}. ` +
+        `Inv: ok=${r.invoices.synced} skip=${r.invoices.skipped} fail=${r.invoices.failed}. Duur: ${r.durationMs}ms.`;
+      const totalFailed = r.subscriptions.failed + r.invoices.failed;
+      if (totalFailed > 0) {
+        finalStatus = SyncJobStatus.FAILED;
+        errorMessage = `${totalFailed} Inserve-items gaven een fout.`;
+      }
+    } else {
+      throw new Error(`Onbekende jobId: ${validated.data.jobId}`);
+    }
+
+    await prisma.$transaction(async (tx) =>
+      completeSyncJobRun(tx, {
+        id: run.id,
+        status: finalStatus,
+        startedAt,
+        recordsAffected,
+        errorMessage,
+        errorDetail: null,
+      })
+    );
+
+    revalidatePath("/settings");
+    return {
+      success: finalStatus === SyncJobStatus.SUCCESS,
+      message: summary,
+      summary,
+      runId: run.id,
+    };
+  } catch (e: any) {
+    await prisma.$transaction(async (tx) =>
+      completeSyncJobRun(tx, {
+        id: run.id,
+        status: SyncJobStatus.FAILED,
+        startedAt,
+        errorMessage: e?.message ?? "Onverwachte fout tijdens handmatige run.",
+        errorDetail: { stack: e?.stack ?? null, name: e?.name ?? null },
+      })
+    );
+    revalidatePath("/settings");
+    const msg = e?.message ?? String(e);
+    return {
+      success: false,
+      errors: { _global: [msg] },
+      message: msg,
+      runId: run.id,
+    };
+  }
+}
+
+export async function getSchedulerHealthAction() {
+  const user = await getCurrentUser();
+  if (!user || !canUserRole(user.role, "view", "setting")) {
+    return null;
+  }
+  return getSchedulerHealth();
 }

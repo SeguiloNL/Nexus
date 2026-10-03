@@ -137,6 +137,35 @@ enum InserveSyncStatus {
   SKIPPED
 }
 
+enum SyncFrequency {
+  HOURLY
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum SyncJobStatus {
+  QUEUED
+  RUNNING
+  SUCCESS
+  FAILED
+  SKIPPED
+  TIMEOUT
+}
+
+enum SyncJobTrigger {
+  MANUAL_ADMIN
+  SYSTEMD_TIMER
+  FALLBACK_POLLING
+  API_TOKEN
+}
+
+enum SyncJobId {
+  SIMHUIS_USAGE
+  SIMHUIS_SIMS
+  INSERVE
+}
+
 enum InvoiceStatus {
   DRAFT
   SENT
@@ -202,6 +231,8 @@ model User {
   createdActivationOrders ActivationOrder[] @relation("CreatedOrders")
   createdTrackerAssignments TrackerAssignment[] @relation("CreatedTrackers")
   createdSimAssignments     SimAssignment[]     @relation("CreatedSims")
+  updatedSyncConfigs       SyncJobConfig[]     @relation("SyncJobConfigUpdatedBy")
+  syncJobRuns              SyncJobRun[]        @relation("SyncJobRunTriggeredBy")
 
   @@index([roleId])
   @@index([customerId])
@@ -525,6 +556,51 @@ model AppSetting {
   createdAt DateTime @default(now())
 
   @@map("app_settings")
+}
+
+model SyncJobConfig {
+  id             String        @id @default(cuid())
+  jobId          SyncJobId     @unique
+  enabled        Boolean       @default(true)
+  frequency      SyncFrequency @default(DAILY)
+  hour           Int           @default(3)
+  minute         Int           @default(0)
+  dayOfWeek      Int?          @default(1)
+  dayOfMonth     Int?          @default(1)
+  timezone       String        @default("Europe/Amsterdam")
+  updatedById    String?
+  updatedBy      User?         @relation("SyncJobConfigUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  lastAppliedAt  DateTime?     @db.Timestamptz
+  updatedAt      DateTime      @updatedAt
+  createdAt      DateTime      @default(now())
+
+  runs           SyncJobRun[]
+
+  @@index([enabled])
+  @@map("sync_job_configs")
+}
+
+model SyncJobRun {
+  id                String         @id @default(cuid())
+  configId          String
+  config            SyncJobConfig  @relation(fields: [configId], references: [id], onDelete: Cascade)
+  jobId             SyncJobId
+  triggeredBy       SyncJobTrigger
+  startedAt         DateTime       @default(now()) @db.Timestamptz
+  endedAt           DateTime?      @db.Timestamptz
+  status            SyncJobStatus  @default(QUEUED)
+  durationMs        Int?
+  recordsAffected   Json?
+  errorMessage      String?        @db.Text
+  errorDetail       Json?
+  userId            String?
+  user              User?          @relation("SyncJobRunTriggeredBy", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([jobId, startedAt(sort: Desc)])
+  @@index([configId, startedAt(sort: Desc)])
+  @@index([status])
+  @@index([triggeredBy])
+  @@map("sync_job_runs")
 }
 
 model AuditLog {

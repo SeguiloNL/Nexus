@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================
-# STM — Simhuis Usage Sync trigger (hourly via systemd)
+# STM — Simhuis Usage Sync trigger (every 15 min via systemd)
 #
 # Roept de Next.js API route /api/integrations/simhuis/sync-usage
-# aan met Bearer auth. Leest de API-token en app URL in van
-# /opt/stm/.env (.env.production).
+# aan met Bearer auth + X-Sync-Triggered-By header.
+# Ververkt Schedule Guard (skipped=true => exit 0, geen fout).
 #
 # Handmatig testen:
 #   cd /opt/stm && bash scripts/sync-simhuis-usage.sh
@@ -19,9 +19,7 @@ API_TOKEN=""
 
 if [ -f "${ENV_FILE}" ]; then
   while IFS='= ' read -r key value; do
-    # Lege regels en comments overslaan
     [[ -z "${key}" || "${key}" == \#* ]] && continue
-    # Strip leading/trailing quotes
     value="${value%\"}"
     value="${value#\"}"
     value="${value%\'}"
@@ -53,6 +51,7 @@ RESPONSE_FILE="$(mktemp)"
 HTTP_CODE=$(curl -sS -o "${RESPONSE_FILE}" -w "%{http_code}" \
   -X POST \
   -H "Authorization: Bearer ${API_TOKEN}" \
+  -H "X-Sync-Triggered-By: systemd-timer" \
   -H "Content-Type: application/json" \
   --max-time 600 \
   "${SYNC_URL}" || true)
@@ -68,9 +67,14 @@ if [ "${HTTP_CODE}" != "200" ]; then
   exit 1
 fi
 
-# Controleer of "ok": true in de JSON body zit
+# Schedule Guard: taak wordt geskipt indien buiten window => NIET als fout behandelen.
 if echo "${BODY}" | grep -q '"ok"\s*:\s*true'; then
-  echo "[ok] Usage-sync voltooid."
+  if echo "${BODY}" | grep -q '"skipped"\s*:\s*true'; then
+    REASON="$(echo "${BODY}" | grep -o '"reason"\s*:\s*"[^"]*"' | head -n1 || true)"
+    echo "[skip] Usage-sync overgeslagen door Schedule Guard: ${REASON}"
+  else
+    echo "[ok] Usage-sync voltooid."
+  fi
   exit 0
 else
   echo "[fout] Usage-sync retourneerde ok=false."

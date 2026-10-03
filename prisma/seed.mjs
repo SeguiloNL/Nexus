@@ -12,6 +12,8 @@ const {
   BillingCycle,
   ActivationOrderStatus,
   AssignmentReason,
+  SyncJobId,
+  SyncFrequency,
 } = pkg;
 
 const prisma = new PrismaClient();
@@ -681,6 +683,57 @@ async function main() {
   console.log(
     `     Koppeling: tracker ${trackerSusp.serialNumber} + SIM …${simSusp.iccid.slice(-3)} (beide SUSPENDED, assignments endDate = ${suspendedAt.toISOString()})`
   );
+
+  // =================================================================
+  // DEFAULT SYNC-SCHEDULES (3 leveranciers-taken, back-compat met huidige timers)
+  // =================================================================
+  // Simhuis Usage: elk uur (HH:00) (historische default: *:00)
+  await prisma.syncJobConfig.upsert({
+    where: { jobId: SyncJobId.SIMHUIS_USAGE },
+    update: {},
+    create: {
+      jobId: SyncJobId.SIMHUIS_USAGE,
+      enabled: true,
+      frequency: SyncFrequency.HOURLY,
+      hour: 0,
+      minute: 0,
+      dayOfWeek: 1,
+      dayOfMonth: 1,
+      timezone: "Europe/Amsterdam",
+    },
+  });
+  // Simhuis Sims (voorraad): 4x per dag — store als DAILY 03:00; de Guard
+  // (app/service) staat toe op 03,09,15,21 wanneer config nooit handmatig gewijzigd.
+  await prisma.syncJobConfig.upsert({
+    where: { jobId: SyncJobId.SIMHUIS_SIMS },
+    update: {},
+    create: {
+      jobId: SyncJobId.SIMHUIS_SIMS,
+      enabled: true,
+      frequency: SyncFrequency.DAILY,
+      hour: 3,
+      minute: 0,
+      dayOfWeek: 1,
+      dayOfMonth: 1,
+      timezone: "Europe/Amsterdam",
+    },
+  });
+  // Inserve: abonnementen + facturen sync — store als DAILY 02:00 (Guard = 02,08,14,20)
+  await prisma.syncJobConfig.upsert({
+    where: { jobId: SyncJobId.INSERVE },
+    update: {},
+    create: {
+      jobId: SyncJobId.INSERVE,
+      enabled: true,
+      frequency: SyncFrequency.DAILY,
+      hour: 2,
+      minute: 0,
+      dayOfWeek: 1,
+      dayOfMonth: 1,
+      timezone: "Europe/Amsterdam",
+    },
+  });
+  console.log("  ✅ DEFAULT SYNC SCHEDULES: usage (HOURLY:00), sims (DAILY 03:00), inserve (DAILY 02:00)");
 
   console.log("🌱 Seeding klaar (incl. uitgebreide demo data voor Dashboard).");
 }

@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { getCurrentUser, canUserRole } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import {
-  syncAvailableSimsFromSimhuis,
-  type SimhuisSyncResult,
-} from "@/server/services/simhuis-sim-sync.service";
+  syncAllPendingToInserve,
+  type InserveBatchSyncResult,
+} from "@/server/services/inserve-batch-sync.service";
 import {
   completeSyncJobRun,
   createSyncJobRun,
@@ -21,7 +21,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 const REQ_TOKEN_VAR = "SIMHUIS_SYNC_API_TOKEN";
-const JOB_ID = SyncJobId.SIMHUIS_SIMS;
+const JOB_ID = SyncJobId.INSERVE;
 
 function bearerTokenFromHeader(authHeader: string | null | undefined): string | null {
   if (!authHeader) return null;
@@ -58,12 +58,12 @@ export async function POST(req: Request) {
     } | null = null;
 
     const user = await getCurrentUser();
-    if (user && canUserRole(user.role, "edit", "sim")) {
+    if (user && canUserRole(user.role, "edit", "setting")) {
       principal = { userId: user.id, userRole: user.role, via: "session", canForce: true };
     } else if (envToken && bearer && bearer === envToken) {
       principal = { via: "api_token", canForce: false };
     } else {
-      const msg = "Onvoldoende rechten (sim/edit) of ongeldige API-token.";
+      const msg = "Onvoldoende rechten (setting/edit) of ongeldige API-token.";
       return NextResponse.json(
         { ok: false, error: msg },
         { status: 403 }
@@ -103,11 +103,11 @@ export async function POST(req: Request) {
     );
     const startedAt = run.startedAt;
 
-    let result: SimhuisSyncResult;
+    let result: InserveBatchSyncResult;
     try {
-      result = await syncAvailableSimsFromSimhuis({
-        userId: principal.userId,
-        userRole: principal.userRole,
+      result = await syncAllPendingToInserve({
+        userId: principal.userId ?? "inserve_sync_job",
+        userRole: principal.userRole ?? "ADMIN",
       });
     } catch (e: any) {
       await prisma.$transaction(async (tx) =>
@@ -115,7 +115,7 @@ export async function POST(req: Request) {
           id: run.id,
           status: SyncJobStatus.FAILED,
           startedAt,
-          errorMessage: e?.message ?? "Onverwachte fout in sim-sync.",
+          errorMessage: e?.message ?? "Onverwachte fout in Inserve batch sync.",
           errorDetail: { stack: e?.stack ?? null, name: e?.name ?? null },
         })
       );
@@ -123,12 +123,12 @@ export async function POST(req: Request) {
     }
 
     const summary =
-      `SIM-voorraad bijgewerkt. Aangemaakt: ${result.created}, bijgewerkt: ${result.updated}, overgeslagen: ${result.skipped}. ` +
-      `Totaal in Simhuis: ${result.totalInSimhuis}, in aanmerking: ${result.eligibleInSimhuis}. Fouten: ${result.errors}. ` +
+      `Inserve sync afgerond. Sub: ok=${result.subscriptions.synced} skip=${result.subscriptions.skipped} fail=${result.subscriptions.failed}. ` +
+      `Inv: ok=${result.invoices.synced} skip=${result.invoices.skipped} fail=${result.invoices.failed}. ` +
       `Duur: ${result.durationMs}ms.`;
 
-    const finalStatus =
-      (result.errors ?? 0) > 0 ? SyncJobStatus.FAILED : SyncJobStatus.SUCCESS;
+    const totalFailed = result.subscriptions.failed + result.invoices.failed;
+    const finalStatus = totalFailed > 0 ? SyncJobStatus.FAILED : SyncJobStatus.SUCCESS;
 
     await prisma.$transaction(async (tx) =>
       completeSyncJobRun(tx, {
@@ -136,18 +136,30 @@ export async function POST(req: Request) {
         status: finalStatus,
         startedAt,
         recordsAffected: {
-          created: result.created,
-          updated: result.updated,
-          skipped: result.skipped,
-          totalInSimhuis: result.totalInSimhuis,
-          eligibleInSimhuis: result.eligibleInSimhuis,
-          errors: result.errors,
+          subscriptions: {
+            total: result.subscriptions.total,
+            synced: result.subscriptions.synced,
+            skipped: result.subscriptions.skipped,
+            failed: result.subscriptions.failed,
+          },
+          invoices: {
+            total: result.invoices.total,
+            synced: result.invoices.synced,
+            skipped: result.invoices.skipped,
+            failed: result.invoices.failed,
+          },
         },
         errorMessage:
-          (result.errors ?? 0) > 0
-            ? `${result.errors} rijen gaven een fout bij sim-sync.`
+          totalFailed > 0
+            ? `${totalFailed} Inserve-items gaven een fout (zie errorDetail voor IDs).`
             : null,
-        errorDetail: null,
+        errorDetail:
+          totalFailed > 0
+            ? {
+                subscriptionsFailed: result.subscriptions.failedDetails,
+                invoicesFailed: result.invoices.failedDetails,
+              }
+            : null,
       })
     );
 
@@ -160,11 +172,11 @@ export async function POST(req: Request) {
       ...result,
     });
   } catch (e: any) {
-    console.error("[api/simhuis-sync] POST failed:", e);
+    console.error("[api/inserve-sync] POST failed:", e);
     return NextResponse.json(
       {
         ok: false,
-        error: e?.message ?? "Onverwachte fout tijdens synchronisatie.",
+        error: e?.message ?? "Onverwachte fout tijdens Inserve-sync.",
       },
       { status: 500 }
     );
@@ -176,7 +188,7 @@ export async function GET() {
     {
       ok: false,
       error:
-        "Alleen POST toegestaan. Authenticeer via sessie (sim/edit recht) of via Bearer token (SIMHUIS_SYNC_API_TOKEN). " +
+        "Alleen POST toegestaan. Authenticeer via sessie (setting/edit recht) of via Bearer token (SIMHUIS_SYNC_API_TOKEN). " +
         "Query-parameter ?force=1 is alleen toegestaan voor ingelogde gebruikers.",
     },
     { status: 405 }

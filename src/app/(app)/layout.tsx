@@ -4,6 +4,9 @@ import { requireUser, canUserRole } from "@/lib/auth/session";
 import { AppShell } from "@/components/layout/app-shell";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
+import { ensureFallbackPollingStarted } from "@/server/sync-fallback-polling";
+
+ensureFallbackPollingStarted();
 
 export default async function AppLayout({
   children,
