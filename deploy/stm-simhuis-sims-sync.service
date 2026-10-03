@@ -7,7 +7,6 @@ Description=STM Simhuis SIM-voorraad Sync (4x per dag: nieuwe/bijgewerkte SIMs i
 Documentation=https://github.com/SeguiloNL/Nexus/
 Wants=network-online.target
 After=network-online.target docker.service
-Requires=docker.service
 
 [Service]
 Type=oneshot
@@ -15,7 +14,8 @@ User=root
 Group=root
 WorkingDirectory=/opt/stm
 Environment=TZ=Europe/Amsterdam
-ExecStart=/bin/bash -lc 'cd /opt/stm && ./scripts/sync-simhuis-sims.sh'
+EnvironmentFile=-/opt/stm/.env
+ExecStart=/bin/bash -c './scripts/sync-simhuis-sims.sh'
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=stm-simhuis-sims-sync
@@ -27,15 +27,14 @@ IOSchedulingPriority=7
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/stm
-ProtectHome=true
+ReadWritePaths=/opt/stm /var/log/stm-install /tmp
+ProtectHome=tmpfs
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictNamespaces=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 RemoveIPC=true

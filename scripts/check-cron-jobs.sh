@@ -105,13 +105,29 @@ hdr "STAP 3/5 — Journalctl: fouten in de laatste 24 uur per service?"
 if command -v journalctl >/dev/null 2>&1; then
   for T in "${STM_TIMERS[@]}"; do
     SVC="${T%.timer}.service"
-    FAILED_LINES=$(journalctl -u "${SVC}" --since "24 hours ago" -p err --no-pager 2>/dev/null | wc -l | tr -d ' ')
-    LAST_STATUS=$(journalctl -u "${SVC}" -o short-iso -n 3 --no-pager 2>/dev/null | tail -1 || echo "")
+    RAW_ERR=$(journalctl -u "${SVC}" --since "24 hours ago" -p warning --no-pager 2>/dev/null || true)
+    # Filter false positives:
+    #   - Regels die eindigen op: "[ OK ] ..." (healthcheck script progress op stderr)
+    #   - "Warning: some journal files were not opened due to insufficient permissions"
+    #   - "-- No entries --"
+    #   - "systemd[1]: Starting STM ..."
+    #   - "systemd[1]: Finished STM ..."
+    #   - "systemd[1]: stm-*.service: Deactivated successfully."
+    # Alleen echte fouten tellen: Failed/ERROR/Exception/Panic/failed/mislukt/Error/exit-code 1/2/HTTP 5/HTTP 40/401/403/Can't/No such
+    FILTERED_ERR=$(printf '%s\n' "${RAW_ERR}" | grep -vE '^\s*$|^\s*--.*--\s*$|journal files were not opened|\[ OK \]|systemd\[1\]: (Starting|Finished|Consumed)|Deactivated successfully' || true)
+    FAILED_LINES=0
+    if [[ -n "${FILTERED_ERR}" ]]; then
+      FAILED_LINES=$(printf '%s\n' "${FILTERED_ERR}" | grep -cE 'Fail|fail|mislukt|Error|ERROR|Exception|panic|exit[- ]?code|HTTP [45][0-9]{2}|Can'\''t|No such|unreachable|not found|timed?[ -]?out' || true)
+    fi
+    LAST_STATUS=$(journalctl -u "${SVC}" -o short-iso -n 10 --no-pager 2>/dev/null \
+      | grep -vE '^\s*$|journal files were not opened' \
+      | tail -1 || echo "")
     if [[ "${FAILED_LINES}" -eq 0 ]]; then
-      ok "SERVICE ${SVC}: geen fouten de laatste 24 uur"
+      ok "SERVICE ${SVC}: geen echte fouten de laatste 24 uur"
     else
-      warn "SERVICE ${SVC}: ${FAILED_LINES} fout-regels in journal de laatste 24 uur"
-      echo "         laatste regel: ${LAST_STATUS}"
+      warn "SERVICE ${SVC}: ${FAILED_LINES} echte fout-regels in journal de laatste 24 uur"
+      echo "         laatste status-regel: ${LAST_STATUS}"
+      echo "         (Tip: debug met: sudo journalctl -u ${SVC} -n 100 --no-pager)"
     fi
   done
 else
@@ -127,17 +143,25 @@ REQUIRED_DIRS=(
   "${INSTALL_DIR}/backups/weekly"
   "${INSTALL_DIR}/backups/monthly"
 )
+CREATED_ANY=0
 for D in "${REQUIRED_DIRS[@]}"; do
+  if [[ ! -d "${D}" ]]; then
+    if mkdir -p "${D}" 2>/dev/null; then
+      CREATED_ANY=1
+      ok "MAP ${D} AANGEMAAKT (ontbrak en is nu hersteld)."
+    else
+      warn "MAP ${D} ONTBREEKT en kon NIET aangemaakt worden (sudo nodig?)."
+    fi
+  fi
   if [[ -d "${D}" ]]; then
     if [[ -w "${D}" ]]; then
       ok "MAP ${D} aanwezig en schrijfbaar"
     else
-      warn "MAP ${D} aanwezig MAAR NIET schrijfbaar voor huidige gebruiker ($(id -un))"
+      warn "MAP ${D} aanwezig maar NIET schrijfbaar voor $(whoami)."
     fi
-  else
-    warn "MAP ${D} ONTBREEKT"
   fi
 done
+[[ "${CREATED_ANY}" -eq 1 ]] && echo "         (Backups-structuur was leeg; nu aangelegd.)"
 
 # 5) Optioneel Dry-run (elke script --help of exit 0 call, GEEN echte sync)
 if [[ "${DRY_RUN}" -eq 1 ]]; then

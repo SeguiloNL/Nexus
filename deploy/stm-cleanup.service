@@ -5,8 +5,8 @@
 [Unit]
 Description=STM Wekelijkse Cleanup (audit logs, install logs, docker images)
 Documentation=https://github.com/SeguiloNL/Nexus/
-After=docker.service
-Requires=docker.service
+After=network-online.target docker.service
+Wants=network-online.target docker.service
 
 [Service]
 Type=oneshot
@@ -14,7 +14,8 @@ User=root
 Group=root
 WorkingDirectory=/opt/stm
 Environment=TZ=Europe/Amsterdam
-ExecStart=/bin/bash -lc 'cd /opt/stm && ./scripts/cleanup-stm.sh'
+EnvironmentFile=-/opt/stm/.env
+ExecStart=/bin/bash -c './scripts/cleanup-stm.sh'
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=stm-cleanup
@@ -23,11 +24,14 @@ Nice=15
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 
-# Security hardening (minder streng: moet Docker socket aanroepen + schrijven naar logs)
+# Security hardening (minder streng: moet Docker socket aanroepen)
 NoNewPrivileges=true
-ReadWritePaths=/opt/stm /var/log/stm-install
-ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/stm /var/log/stm-install /var/run/docker.sock /tmp
+ProtectHome=tmpfs
 PrivateTmp=true
+RestrictSUIDSGID=true
+RemoveIPC=true
 
 [Install]
 WantedBy=multi-user.target
