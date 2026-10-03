@@ -5,6 +5,16 @@ import { RoleList } from "./_components/role-list";
 import { PermissionError } from "@/lib/rbac";
 import type { ResourceAction, ResourceType, RoleScope } from "@/types/enums";
 
+function permissionsMeaningfulLocal(bits: unknown): boolean {
+  if (!bits || typeof bits !== "object") return false;
+  const obj = bits as Record<string, { read?: boolean; write?: boolean }>;
+  for (const k of Object.keys(obj)) {
+    const e = obj[k];
+    if (e && (e.read || e.write)) return true;
+  }
+  return false;
+}
+
 function resolveCan(
   user: {
     role?: string | null;
@@ -14,11 +24,8 @@ function resolveCan(
   action: ResourceAction,
   resource: ResourceType
 ): boolean {
-  if (
-    user.permissions &&
-    canUserRole(user.permissions as any, action, resource)
-  ) {
-    return true;
+  if (permissionsMeaningfulLocal(user.permissions)) {
+    return canUserRole(user.permissions as any, action, resource);
   }
   if (user.roleId && canUserRole(user.roleId, action, resource)) {
     return true;

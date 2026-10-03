@@ -153,14 +153,35 @@ export function Sidebar({
 }: SidebarProps) {
   const pathname = usePathname();
 
-  function resolveCan(action: "view", resource: ResourceType): boolean {
-    if (permissions && canUserRole(permissions, action, resource)) {
-      return true;
+  function permissionsMeaningfulLocal(bits: PermissionBits | null): boolean {
+    if (!bits) return false;
+    for (const k of Object.keys(bits) as ResourceType[]) {
+      const e = bits[k];
+      if (e && (e.read || e.write)) return true;
     }
+    return false;
+  }
+
+  function resolveCan(action: "view", resource: ResourceType): boolean {
+    const meaningful = permissionsMeaningfulLocal(permissions);
+
+    if (meaningful) {
+      return canUserRole(permissions, action, resource);
+    }
+
     if (roleId && canUserRole(roleId, action, resource)) {
       return true;
     }
     return canUserRole(userRole ?? null, action, resource);
+  }
+
+  function canAccessDashboard(): boolean {
+    const meaningful = permissionsMeaningfulLocal(permissions);
+    if (meaningful) {
+      return canUserRole(permissions, "view", "dashboard");
+    }
+    if (roleId && canUserRole(roleId, "view", "dashboard")) return true;
+    return canUserRole(userRole ?? null, "view", "dashboard");
   }
 
   const visibleItems = NAV_ITEMS.filter((item) => {
@@ -177,7 +198,7 @@ export function Sidebar({
         return false;
       }
     }
-    if (item.resource === "dashboard") return true;
+    if (item.resource === "dashboard") return canAccessDashboard();
     return resolveCan(item.action, item.resource as ResourceType);
   });
 

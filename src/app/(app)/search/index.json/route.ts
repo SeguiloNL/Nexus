@@ -1,16 +1,38 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { getCurrentUser, canUserRole } from "@/lib/auth/session";
+import { PermissionError } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const session = await auth();
-  if (!session?.user) {
+  let user;
+  try {
+    user = await getCurrentUser();
+  } catch (_e) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const customerIds = session.user.customerIds ?? [];
+  const perms = user.permissions;
+
+  const can = (resource: string) => canUserRole(perms, "view", resource as any);
+
+  const hasAnyRight =
+    can("customer") ||
+    can("tracker") ||
+    can("sim") ||
+    can("vehicle") ||
+    can("product") ||
+    can("subscription") ||
+    can("activation_order") ||
+    can("user") ||
+    can("dashboard");
+
+  if (!hasAnyRight) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  const customerIds = user.customerIds ?? [];
   const hasScope = customerIds.length > 0;
 
   const customerScopeCustomer: any = hasScope
@@ -39,52 +61,70 @@ export async function GET() {
     : undefined;
   const customerScopeUser: any = hasScope
     ? { customerId: { in: customerIds } }
-    : session.user.roleScope === "CUSTOMER"
+    : user.roleScope === "CUSTOMER"
       ? { customerId: "" }
       : undefined;
 
+  const emptyArray: any[] = [];
+
   const [customers, trackers, sims, vehicles, products, subscriptions, orders, users] =
     await Promise.all([
-      prisma.customer.findMany({
-        where: { deletedAt: null, ...customerScopeCustomer },
-        select: {
-          id: true,
-          customerNumber: true,
-          companyName: true,
-          status: true,
-        },
-      }),
-      prisma.tracker.findMany({
-        where: { deletedAt: null, ...customerScopeAssignment },
-        select: { id: true, serialNumber: true, imei: true, status: true },
-      }),
-      prisma.sIM.findMany({
-        where: { deletedAt: null, ...customerScopeAssignment },
-        select: { id: true, iccid: true, msisdn: true, imsi: true, status: true },
-      }),
-      prisma.vehicle.findMany({
-        where: { deletedAt: null, ...customerScopeVehicle },
-        select: { id: true, licensePlate: true, vin: true },
-      }),
-      prisma.product.findMany({
-        where: { isActive: true },
-        select: { id: true, productCode: true, name: true },
-      }),
-      prisma.subscription.findMany({
-        where: { deletedAt: null, ...customerScopeSubscription },
-        select: { id: true, subscriptionNumber: true, status: true },
-        take: 500,
-      }),
-      prisma.activationOrder.findMany({
-        select: { id: true, orderNumber: true, status: true },
-        take: 500,
-        orderBy: { createdAt: "desc" },
-        where: customerScopeActivation ?? undefined,
-      }),
-      prisma.user.findMany({
-        select: { id: true, name: true, email: true },
-        where: customerScopeUser ?? undefined,
-      }),
+      can("customer")
+        ? prisma.customer.findMany({
+            where: { deletedAt: null, ...customerScopeCustomer },
+            select: {
+              id: true,
+              customerNumber: true,
+              companyName: true,
+              status: true,
+            },
+          })
+        : Promise.resolve(emptyArray),
+      can("tracker")
+        ? prisma.tracker.findMany({
+            where: { deletedAt: null, ...customerScopeAssignment },
+            select: { id: true, serialNumber: true, imei: true, status: true },
+          })
+        : Promise.resolve(emptyArray),
+      can("sim")
+        ? prisma.sIM.findMany({
+            where: { deletedAt: null, ...customerScopeAssignment },
+            select: { id: true, iccid: true, msisdn: true, imsi: true, status: true },
+          })
+        : Promise.resolve(emptyArray),
+      can("vehicle")
+        ? prisma.vehicle.findMany({
+            where: { deletedAt: null, ...customerScopeVehicle },
+            select: { id: true, licensePlate: true, vin: true },
+          })
+        : Promise.resolve(emptyArray),
+      can("product")
+        ? prisma.product.findMany({
+            where: { isActive: true },
+            select: { id: true, productCode: true, name: true },
+          })
+        : Promise.resolve(emptyArray),
+      can("subscription")
+        ? prisma.subscription.findMany({
+            where: { deletedAt: null, ...customerScopeSubscription },
+            select: { id: true, subscriptionNumber: true, status: true },
+            take: 500,
+          })
+        : Promise.resolve(emptyArray),
+      can("activation_order")
+        ? prisma.activationOrder.findMany({
+            select: { id: true, orderNumber: true, status: true },
+            take: 500,
+            orderBy: { createdAt: "desc" },
+            where: customerScopeActivation ?? undefined,
+          })
+        : Promise.resolve(emptyArray),
+      can("user")
+        ? prisma.user.findMany({
+            select: { id: true, name: true, email: true },
+            where: customerScopeUser ?? undefined,
+          })
+        : Promise.resolve(emptyArray),
     ]);
 
   const index = {
