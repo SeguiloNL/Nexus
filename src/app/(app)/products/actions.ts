@@ -13,6 +13,8 @@ import {
   createProduct,
   updateProduct,
   bulkSetActiveProducts,
+  deleteProduct,
+  bulkDeleteProducts,
 } from "@/server/services/product.service";
 
 export type ProductActionState = {
@@ -163,6 +165,49 @@ export async function bulkDeactivateProductsAction(
       count: result.count,
       message: `${result.count} product(en) gedeactiveerd.`,
     };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
+}
+
+export async function deleteProductAction(productId: string): Promise<BulkActionState> {
+  const user = await getCurrentUser();
+  await requirePermission(user.role, "delete", "product");
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    await deleteProduct(productId, ctx);
+    revalidatePath("/products");
+    return { ok: true, count: 1, message: "Product is verwijderd." };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
+}
+
+export async function bulkDeleteProductsAction(
+  _prev: BulkActionState,
+  formData: FormData
+): Promise<BulkActionState> {
+  const user = await getCurrentUser();
+  await requirePermission(user.role, "delete", "product");
+  const ids = parseIdsFormData(formData);
+  if (!ids.length) return { ok: false, error: "Geen producten geselecteerd." };
+  const ctx = { userId: user.id, userRole: user.role };
+  try {
+    const result = await bulkDeleteProducts(ids, ctx);
+    revalidatePath("/products");
+    if (result.count === 0 && result.skipped.length > 0) {
+      return {
+        ok: false,
+        error: `Geen producten verwijderd. ${result.skipped[0].reason}`,
+      };
+    }
+    const base = `${result.count} product(en) verwijderd.`;
+    const extra = result.skipped.length
+      ? ` ${result.skipped.length} overgeslagen: ${result.skipped.map((s) => s.reason).join(" | ")}`
+      : "";
+    return { ok: true, count: result.count, message: base + extra };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return { ok: false, error: msg };

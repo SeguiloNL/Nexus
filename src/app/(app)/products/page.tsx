@@ -14,12 +14,14 @@ export default async function ProductsPage() {
 
   const canCreate = canUserRole(user.permissions, "create", "product");
   const canEdit = canUserRole(user.permissions, "edit", "product");
+  const canDelete = canUserRole(user.permissions, "delete", "product");
 
   return (
     <ProductList
       products={result.data as any}
       canCreate={canCreate}
       canEdit={canEdit}
+      canDelete={canDelete}
     />
   );
 }

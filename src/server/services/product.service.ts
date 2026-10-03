@@ -217,3 +217,70 @@ export async function bulkSetActiveProducts(
     return { count: targets.length, ids: targets };
   });
 }
+
+export async function deleteProduct(
+  id: string,
+  ctx: Ctx
+): Promise<void> {
+  requirePermission(ctx.userRole, "delete", "product");
+  await prisma.$transaction(async (tx) => {
+    const existing = await tx.product.findUniqueOrThrow({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        productCode: true,
+        _count: {
+          select: {
+            subscriptions: true,
+            activationOrders: true,
+          },
+        },
+      },
+    });
+
+    if (existing._count.subscriptions > 0) {
+      throw new Error(
+        `Kan product "${existing.name}" niet verwijderen: er zijn nog ${existing._count.subscriptions} abonnement(en) aan gekoppeld.`
+      );
+    }
+    if (existing._count.activationOrders > 0) {
+      throw new Error(
+        `Kan product "${existing.name}" niet verwijderen: er zijn nog ${existing._count.activationOrders} activeringsorder(s) aan gekoppeld.`
+      );
+    }
+
+    await logAudit(tx, {
+      entityType: "product",
+      entityId: existing.id,
+      action: "DELETE",
+      userId: ctx.userId,
+      oldValues: existing as unknown as Record<string, unknown>,
+    });
+
+    await tx.product.delete({ where: { id } });
+  });
+}
+
+export async function bulkDeleteProducts(
+  ids: string[],
+  ctx: Ctx
+): Promise<{ count: number; skipped: { id: string; reason: string }[] }> {
+  requirePermission(ctx.userRole, "delete", "product");
+  if (!ids.length) return { count: 0, skipped: [] };
+
+  const skipped: { id: string; reason: string }[] = [];
+  let count = 0;
+
+  for (const id of ids) {
+    try {
+      await deleteProduct(id, ctx);
+      count++;
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      skipped.push({ id, reason });
+    }
+  }
+
+  return { count, skipped };
+}
