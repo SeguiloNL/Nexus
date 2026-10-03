@@ -101,31 +101,49 @@ for T in "${STM_TIMERS[@]}"; do
 done
 
 # 3) Recente fouten in journal
-hdr "STAP 3/5 — Journalctl: fouten in de laatste 24 uur per service?"
+hdr "STAP 3/5 — Journalctl: fouten per service (laatste 2 uur, enkel recente runs)?"
 if command -v journalctl >/dev/null 2>&1; then
   for T in "${STM_TIMERS[@]}"; do
     SVC="${T%.timer}.service"
-    RAW_ERR=$(journalctl -u "${SVC}" --since "24 hours ago" -p warning --no-pager 2>/dev/null || true)
+    # Gebruik alleen laatste 2 uur in plaats van 24h, zodat eenmalige oude
+    # fouten (bv. ontbrekende token van voor de hotfix) niet tot onnodige
+    # WAARN in de UI-banner leiden.
+    RAW_ERR=$(journalctl -u "${SVC}" --since "-2 hours" -p warning --no-pager 2>/dev/null || true)
     # Filter false positives:
-    #   - Regels die eindigen op: "[ OK ] ..." (healthcheck script progress op stderr)
-    #   - "Warning: some journal files were not opened due to insufficient permissions"
-    #   - "-- No entries --"
-    #   - "systemd[1]: Starting STM ..."
-    #   - "systemd[1]: Finished STM ..."
-    #   - "systemd[1]: stm-*.service: Deactivated successfully."
-    # Alleen echte fouten tellen: Failed/ERROR/Exception/Panic/failed/mislukt/Error/exit-code 1/2/HTTP 5/HTTP 40/401/403/Can't/No such
-    FILTERED_ERR=$(printf '%s\n' "${RAW_ERR}" | grep -vE '^\s*$|^\s*--.*--\s*$|journal files were not opened|\[ OK \]|systemd\[1\]: (Starting|Finished|Consumed)|Deactivated successfully' || true)
+    #   - "[ OK ] Container x running" / "/api/health" progress op stderr
+    #   - "Warning: some journal files were not opened due to permissions"
+    #   - "-- No entries --" of "-- Reboot --"
+    #   - "systemd[1]: Starting / Finished / Consumed / Succeeded / Main process exited, code=exited, status=0/SUCCESS"
+    #   - "stm-*.service: Deactivated successfully."
+    FILTERED_ERR=$(printf '%s\n' "${RAW_ERR}" \
+      | grep -vE '^\s*$' \
+      | grep -vE '^\s*-- .* --\s*$' \
+      | grep -vE 'journal files were not opened' \
+      | grep -vE '\[ OK \]' \
+      | grep -vE '/api/health|healthcheck.*watchdog' \
+      | grep -vE 'systemd\[1\]: (Starting|Finished|Consumed|Succeeded|Reloaded)' \
+      | grep -vE 'code=exited, status=0(SUCCESS)?/|Deactivated successfully' \
+      || true)
     FAILED_LINES=0
     if [[ -n "${FILTERED_ERR}" ]]; then
-      FAILED_LINES=$(printf '%s\n' "${FILTERED_ERR}" | grep -cE 'Fail|fail|mislukt|Error|ERROR|Exception|panic|exit[- ]?code|HTTP [45][0-9]{2}|Can'\''t|No such|unreachable|not found|timed?[ -]?out' || true)
+      # Enkel echte fouten tellen — met woordgrens via (^|[^A-Za-z]) zodat
+      # "Finished" niet per ongeluk op substring "hed" of "hed" matcht, en
+      # "Healthcheck" niet op "h..." geeft.
+      # Fail* is case-insensitive bereikt via Fail / fail / FAILED — Failed
+      # (met hoofdletter F + kleine letters) heeft geen aparte variant maar
+      # wordt *voor* deze grep al weggefilterd als het "systemd[1]: Finished"
+      # is. Blijft over: "Failed to start ..." (die NIET "Finished ..." is) =>
+      # daarom hieronder ook F[aA][iI][lL] aliaspatronen en "Failed" woord.
+      FAIL_REGEX='(^|[^A-Za-z])(Failed|Fail|failed|Failing|FAILED|mislukt|Mislukt|\[fout\])([^A-Za-z]|$)|(^|[^A-Za-z])(Error|ERROR|Exception|PANIC|Panic|panic)([^A-Za-z]|$)|exit[- ]?code[ =:]+[1-9]|HTTP [45][0-9]{2}([^0-9]|$)|(^|[^A-Za-z])(Can|cannot|No such|unreachable|not found|[Tt]imed?[ -]?out)([^A-Za-z]|$)'
+      FAILED_LINES=$(printf '%s\n' "${FILTERED_ERR}" | grep -cE "${FAIL_REGEX}" || true)
     fi
-    LAST_STATUS=$(journalctl -u "${SVC}" -o short-iso -n 10 --no-pager 2>/dev/null \
-      | grep -vE '^\s*$|journal files were not opened' \
+    LAST_STATUS=$(journalctl -u "${SVC}" -o short-iso -n 20 --no-pager 2>/dev/null \
+      | grep -vE '^\s*$|journal files were not opened|^\s*-- .* --\s*$' \
       | tail -1 || echo "")
     if [[ "${FAILED_LINES}" -eq 0 ]]; then
-      ok "SERVICE ${SVC}: geen echte fouten de laatste 24 uur"
+      ok "SERVICE ${SVC}: geen echte fouten de laatste 2 uur"
     else
-      warn "SERVICE ${SVC}: ${FAILED_LINES} echte fout-regels in journal de laatste 24 uur"
+      warn "SERVICE ${SVC}: ${FAILED_LINES} echte fout-regels in journal de laatste 2 uur"
       echo "         laatste status-regel: ${LAST_STATUS}"
       echo "         (Tip: debug met: sudo journalctl -u ${SVC} -n 100 --no-pager)"
     fi
