@@ -2,7 +2,7 @@
 # ==============================================================================
 # nexus-install.sh — ONE-CLICK STM (voorheen Nexus) Installer + UPDATER voor Ubuntu
 # Repository: https://github.com/SeguiloNL/Nexus
-# Versie:     1.2.1 (HOTFIX: root-escalatie SUDO_USER-bug + defensieve Caddyfile-copy)
+# Versie:     1.5.0 (SIMHUIS_SYNC_API_TOKEN auto-gen + masked; Caddy v2.11 tokens; units ProtectHome=tmpfs; After=docker.service)
 # Idempotent: meerdere keren draaien is VEILIG.
 # Strict:    set -Eeuo pipefail + ERR-trap (iedere fout stopt METEEN, met duidelijke melding).
 #
@@ -68,7 +68,7 @@ set -Eeuo pipefail
 # 0. CORE CONSTANTS (ZEER VROEG, VOOR safe start, zodat VERSIE/URL direct gebruikt kan worden)
 # ------------------------------------------------------------------------------
 INSTALL_SCRIPT_NAME="nexus-install.sh"
-INSTALLER_VERSION="1.4.0"
+INSTALLER_VERSION="1.5.0"
 INSTALL_START_EPOCH="$(date +%s)"
 DEFAULT_INSTALL_DIR="/opt/stm"
 DEFAULT_SWAP_MULTIPLIER="1.5"
@@ -2089,6 +2089,7 @@ STM_NEXT_CONFIG_V2
   env_upsert_update "POSTGRES_DB" "stm"
   env_upsert_update "POSTGRES_USER" "stm"
   env_upsert_update "STM_APP_URL" "127.0.0.1:3000"
+  env_upsert_update "SIMHUIS_SYNC_API_TOKEN" ""
   chmod 0600 "$ENV_FILE"
   chown "${STM_USER}:${STM_GROUP}" "$ENV_FILE"
   ok ".env geüpgraded (alleen NIEUWE vars aangevuld; secrets & bestaande waarden ongewijzigd)."
@@ -3450,9 +3451,11 @@ env_set() {
 # Genereer secrets
 GEN_AUTH_SECRET=""
 GEN_PG_PASS=""
+GEN_SYNC_TOKEN=""
 if [[ "$ENV_EXISTED_BEFORE" -eq 0 ]]; then
   GEN_AUTH_SECRET="$(openssl rand -hex 32 2>/dev/null || echo "GENERATE_ME_openssl_rand_hex_32_PLEASE")"
   GEN_PG_PASS="$(openssl rand -base64 24 2>/dev/null | tr -d '\n' | tr -d '=+/' | cut -c1-28 || echo "GENERATE_ME_STRONG_PASSWORD_PLEASE")"
+  GEN_SYNC_TOKEN="$(openssl rand -base64 32 2>/dev/null | tr -d '\n' | tr -d '\r' || echo "GENERATE_ME_SYNC_TOKEN_PLEASE")"
 fi
 
 # --domain param → NEXT_PUBLIC_APP_URL + STM_DOMAIN
@@ -3482,6 +3485,10 @@ env_upsert "POSTGRES_DB" "stm"
 env_upsert "POSTGRES_USER" "stm"
 [[ -n "${GEN_AUTH_SECRET:-}" ]] && env_upsert "AUTH_SECRET" "${GEN_AUTH_SECRET}"
 [[ -n "${GEN_PG_PASS:-}"     ]] && env_upsert "POSTGRES_PASSWORD" "${GEN_PG_PASS}"
+# Sync bearer-token tussen host-systemd timers en Next.js (Simhuis + Inserve sync API routes)
+[[ -n "${GEN_SYNC_TOKEN:-}" ]] && env_upsert "SIMHUIS_SYNC_API_TOKEN" "${GEN_SYNC_TOKEN}"
+# Indien GEN_SYNC_TOKEN leeg (bestaande install upgrade): vul SIMHUIS_SYNC_API_TOKEN ALLEEN aan als LEEG / ontbreekt
+env_upsert "SIMHUIS_SYNC_API_TOKEN" ""
 # Caddy on host: app zit op 127.0.0.1:3000
 env_upsert "STM_APP_URL" "127.0.0.1:3000"
 
@@ -3493,7 +3500,7 @@ chown "${STM_USER}:${STM_GROUP}" "$ENV_FILE"
 info ".env (${ENV_FILE}):"
 # Print values MET maskering (laatste 4 tekens alleen van secrets)
 awk -F= '
-BEGIN { mask_keys_re = "(AUTH_SECRET|POSTGRES_PASSWORD|INSERVE_API_KEY|SIMHUIS_PASSWORD|NAVIXY_PANEL_PASSWORD|NAVIXY_USER_PASSWORD|NAVIXY_SESSION_HASH)" }
+BEGIN { mask_keys_re = "(AUTH_SECRET|POSTGRES_PASSWORD|INSERVE_API_KEY|SIMHUIS_PASSWORD|SIMHUIS_SYNC_API_TOKEN|NAVIXY_PANEL_PASSWORD|NAVIXY_USER_PASSWORD|NAVIXY_SESSION_HASH)" }
 {
   key=$1
   if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
