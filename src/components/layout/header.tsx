@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useTransition, useState } from "react";
+import { useEffect, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   LogOut,
@@ -79,7 +79,6 @@ export function Header({
   const navCtx = useMobileNav();
   const onMenuClick = onMenuClickProp ?? navCtx.toggleMobileNav;
   const [isPending, startTransition] = useTransition();
-  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -101,7 +100,6 @@ export function Header({
     : "??";
 
   const handleLogout = () => {
-    setMenuOpen(false);
     startTransition(async () => {
       try {
         await logoutAction();
@@ -169,14 +167,14 @@ export function Header({
           {resolveRoleDisplay(userRole, roleName)}
         </Badge>
 
-        <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+        <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
+              type="button"
               variant="ghost"
               className="h-9 gap-2 px-2 focus:ring-0"
               aria-label="Profielmenu openen"
               aria-haspopup="menu"
-              aria-expanded={menuOpen}
             >
               <span
                 className={cn(

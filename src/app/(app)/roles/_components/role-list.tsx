@@ -563,29 +563,28 @@ function CloneDialog({ sourceRole, canClone }: { sourceRole: RoleListItem; canCl
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        setOpen(o);
-        if (!o && state?.roleId) {
-          toast.success(`Rol is gekloond naar "${sourceRole.name}".`);
-          setTimeout(() => router.push(`/roles/${state.roleId}`), 200);
-        }
-      }}
-    >
-      <DialogTrigger asChild>
-        <DropdownMenuItem
-          disabled={!canClone}
-          onSelect={(e) => {
-            e.preventDefault();
-            setOpen(true);
-          }}
-        >
-          <Copy className="mr-2 h-4 w-4" />
-          Klonen
-        </DropdownMenuItem>
-      </DialogTrigger>
-      <DialogContent className="max-w-xl">
+    <>
+      <DropdownMenuItem
+        disabled={!canClone}
+        onSelect={(e) => {
+          e.preventDefault();
+          setOpen(true);
+        }}
+      >
+        <Copy className="mr-2 h-4 w-4" />
+        Klonen
+      </DropdownMenuItem>
+      <Dialog
+        open={open}
+        onOpenChange={(o) => {
+          setOpen(o);
+          if (!o && state?.roleId) {
+            toast.success(`Rol is gekloond naar "${sourceRole.name}".`);
+            setTimeout(() => router.push(`/roles/${state.roleId}`), 200);
+          }
+        }}
+      >
+        <DialogContent className="max-w-xl">
         <form action={formAction}>
           <DialogHeader>
             <DialogTitle>Rol klonen</DialogTitle>
@@ -670,7 +669,8 @@ function CloneDialog({ sourceRole, canClone }: { sourceRole: RoleListItem; canCl
             <Button type="submit">Rol klonen</Button>
           </DialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

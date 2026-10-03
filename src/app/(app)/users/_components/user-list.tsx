@@ -435,25 +435,24 @@ function EditDialog({
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        setOpen(o);
-        if (o === false) router.refresh();
-      }}
-    >
-      <DialogTrigger asChild>
-        <DropdownMenuItem
-          disabled={!canEdit}
-          onSelect={(e) => {
-            e.preventDefault();
-            setOpen(true);
-          }}
-        >
-          <Edit className="mr-2 h-4 w-4" /> Bewerken
-        </DropdownMenuItem>
-      </DialogTrigger>
-      <DialogContent className="max-w-xl">
+    <>
+      <DropdownMenuItem
+        disabled={!canEdit}
+        onSelect={(e) => {
+          e.preventDefault();
+          setOpen(true);
+        }}
+      >
+        <Edit className="mr-2 h-4 w-4" /> Bewerken
+      </DropdownMenuItem>
+      <Dialog
+        open={open}
+        onOpenChange={(o) => {
+          setOpen(o);
+          if (o === false) router.refresh();
+        }}
+      >
+        <DialogContent className="max-w-xl">
         <form action={formAction}>
           <DialogHeader>
             <DialogTitle>Gebruiker bewerken: {user.name}</DialogTitle>
@@ -606,8 +605,9 @@ function EditDialog({
             </Button>
           </DialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
