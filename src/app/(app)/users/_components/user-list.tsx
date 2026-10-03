@@ -782,9 +782,8 @@ export function UserList({
           <div className="flex justify-end">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                  <span className="sr-only">Open menu</span>
-                  <MoreHorizontal className="h-4 w-4" />
+                <Button variant="ghost" size="icon-sm" aria-label="Open menu">
+                  <MoreHorizontal className="h-5 w-5 md:h-4 md:w-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-44">

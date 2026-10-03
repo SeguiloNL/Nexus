@@ -3,6 +3,9 @@
 import Image from "next/image";
 import { authenticate, type State } from "../actions";
 import { useFormState } from "react-dom";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
 
 const initialState: State = { message: null, errors: {} };
 
@@ -12,40 +15,28 @@ function LoginForm() {
   return (
     <form action={formAction} className="space-y-6">
       <div className="space-y-2">
-        <label
-          htmlFor="email"
-          className="block text-sm font-medium text-gray-700"
-        >
-          E-mailadres
-        </label>
-        <input
+        <Label htmlFor="email">E-mailadres</Label>
+        <Input
           id="email"
           name="email"
           type="email"
           autoComplete="email"
           required
           placeholder="naam@voorbeeld.nl"
-          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
         />
         {state?.errors?.email ? (
           <p className="text-sm text-red-600">{state.errors.email[0]}</p>
         ) : null}
       </div>
       <div className="space-y-2">
-        <label
-          htmlFor="password"
-          className="block text-sm font-medium text-gray-700"
-        >
-          Wachtwoord
-        </label>
-        <input
+        <Label htmlFor="password">Wachtwoord</Label>
+        <Input
           id="password"
           name="password"
           type="password"
           autoComplete="current-password"
           required
           placeholder="••••••••"
-          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
         />
         {state?.errors?.password ? (
           <p className="text-sm text-red-600">{state.errors.password[0]}</p>
@@ -55,42 +46,42 @@ function LoginForm() {
       {state?.message ? (
         <div
           role="alert"
-          className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          className="rounded-md border border-red-200 bg-red-50 px-3 py-3 text-base text-red-700 md:text-sm md:py-2"
         >
           {state.message}
         </div>
       ) : null}
 
-      <button
+      <Button
         type="submit"
-        className="flex w-full justify-center rounded-md bg-sky-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600 disabled:opacity-50"
+        className="w-full"
       >
         Inloggen
-      </button>
+      </Button>
     </form>
   );
 }
 
 export default function LoginPage() {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-gray-50 px-4 py-12 sm:px-6 lg:px-8">
+    <div className="flex min-h-screen min-h-[100dvh] flex-col items-center justify-center bg-gray-50 px-4 py-10 sm:px-6 sm:py-12 lg:px-8 pt-[calc(2.5rem+var(--safe-top))] pb-[calc(2.5rem+var(--safe-bottom))]">
       <div className="w-full max-w-md">
-        <div className="mb-8 flex flex-col items-center">
+        <div className="mb-6 flex flex-col items-center sm:mb-8">
           <Image
             src="/nexus-logo-full.png"
             alt="STM logo"
             width={2172}
             height={724}
             priority
-            className="h-20 w-auto object-contain"
+            className="h-14 w-auto object-contain sm:h-20"
           />
-          <h1 className="mt-4 text-2xl font-bold tracking-tight text-gray-900">
+          <h1 className="mt-4 text-xl font-bold tracking-tight text-gray-900 sm:text-2xl">
             STM
           </h1>
         </div>
 
-        <div className="rounded-xl bg-white px-6 py-8 shadow-sm ring-1 ring-gray-200">
-          <h2 className="mb-6 text-xl font-semibold text-gray-900">
+        <div className="rounded-xl bg-white px-5 py-6 shadow-sm ring-1 ring-gray-200 sm:px-6 sm:py-8">
+          <h2 className="mb-5 text-lg font-semibold text-gray-900 sm:mb-6 sm:text-xl">
             Inloggen
           </h2>
           <LoginForm />

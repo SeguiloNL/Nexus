@@ -478,12 +478,12 @@ function EditDialog({
               </div>
             ) : null}
           </div>
-          <DialogFooter className="mt-6 gap-2">
-            <Button type="button" variant="ghost" onClick={close}>
+          <DialogFooter className="mt-6 flex-col items-stretch gap-2 sm:flex-row sm:justify-end sm:items-center">
+            <Button type="button" variant="ghost" onClick={close} className="w-full sm:w-auto">
               Sluiten
             </Button>
-            <Button type="submit">
-              <Save className="mr-2 h-4 w-4" /> Opslaan
+            <Button type="submit" className="w-full sm:w-auto">
+              <Save className="mr-2 h-5 w-5 md:h-4 md:w-4" /> Opslaan
             </Button>
           </DialogFooter>
         </form>
@@ -723,7 +723,7 @@ function PermissionsTab({ user }: { user: Props["user"] }) {
             {writeCount} schrijfrechten
           </Badge>
         </div>
-        <div className="rounded-lg border">
+        <div className="rounded-lg border hidden sm:block">
           <div className="grid grid-cols-12 gap-2 px-4 py-2 bg-slate-50 text-xs font-medium text-slate-600 border-b">
             <div className="col-span-6">Functionaliteit</div>
             <div className="col-span-3 text-center">Alleen lezen</div>
@@ -770,6 +770,65 @@ function PermissionsTab({ user }: { user: Props["user"] }) {
                   ) : (
                     <span className="text-slate-400">—</span>
                   )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="space-y-2 sm:hidden">
+          {availableResources.map((resource) => {
+            const meta = RESOURCE_LABELS[resource] ?? {
+              label: resource,
+              icon: Shield,
+            };
+            const Icon = meta.icon;
+            const p = perms[resource as ResourceType];
+            const hasRead = p?.read || p?.write;
+            const hasWrite = !!p?.write;
+            return (
+              <div
+                key={resource}
+                className="rounded-md border p-3 space-y-2"
+              >
+                <div className="flex items-center gap-2 font-medium text-base">
+                  <Icon className="h-5 w-5 text-slate-500 shrink-0" />
+                  <span>{meta.label}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div className="rounded-md bg-slate-50 p-2">
+                    <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">
+                      Alleen lezen
+                    </div>
+                    <div>
+                      {hasRead ? (
+                        <Badge
+                          variant="outline"
+                          className="bg-blue-50 text-blue-700 border-blue-200"
+                        >
+                          Ja
+                        </Badge>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="rounded-md bg-slate-50 p-2">
+                    <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">
+                      Volledig
+                    </div>
+                    <div>
+                      {hasWrite ? (
+                        <Badge
+                          variant="outline"
+                          className="bg-purple-50 text-purple-700 border-purple-200"
+                        >
+                          Ja
+                        </Badge>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
             );
@@ -823,7 +882,6 @@ function AuditLogTab({ auditLogs }: { auditLogs: AuditLogEntry[] }) {
                           type="button"
                           variant="ghost"
                           size="sm"
-                          className="h-7 text-xs px-2"
                           onClick={() => setExpanded(isOpen ? null : log.id)}
                         >
                           {isOpen ? "Verbergen" : "Details"}

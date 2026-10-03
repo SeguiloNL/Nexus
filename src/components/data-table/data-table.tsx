@@ -95,18 +95,20 @@ export function DataTable<TData, TValue>({
         const some = table.getIsSomePageRowsSelected();
         return (
           <div className="flex items-center justify-center">
-            <input
-              type="checkbox"
-              className="h-4 w-4 cursor-pointer rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-              aria-label="Selecteer alle rijen op deze pagina"
-              checked={checked}
-              ref={(el) => {
-                if (el) el.indeterminate = !checked && some;
-              }}
-              onChange={(e) =>
-                table.toggleAllPageRowsSelected(!!e.target.checked)
-              }
-            />
+            <label className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-md transition-colors hover:bg-slate-100 active:bg-slate-100 md:h-9 md:w-9">
+              <input
+                type="checkbox"
+                className="h-5 w-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 md:h-4 md:w-4"
+                aria-label="Selecteer alle rijen op deze pagina"
+                checked={checked}
+                ref={(el) => {
+                  if (el) el.indeterminate = !checked && some;
+                }}
+                onChange={(e) =>
+                  table.toggleAllPageRowsSelected(!!e.target.checked)
+                }
+              />
+            </label>
           </div>
         );
       },
@@ -114,21 +116,23 @@ export function DataTable<TData, TValue>({
         if (!enableRowSelection) return null;
         return (
           <div className="flex items-center justify-center">
-            <input
-              type="checkbox"
-              className="h-4 w-4 cursor-pointer rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-              aria-label="Selecteer rij"
-              checked={row.getIsSelected()}
-              disabled={!row.getCanSelect()}
-              onChange={(e) => row.toggleSelected(!!e.target.checked)}
-              onClick={(e) => e.stopPropagation()}
-            />
+            <label className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-md transition-colors hover:bg-slate-100 active:bg-slate-100 md:h-9 md:w-9">
+              <input
+                type="checkbox"
+                className="h-5 w-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 md:h-4 md:w-4"
+                aria-label="Selecteer rij"
+                checked={row.getIsSelected()}
+                disabled={!row.getCanSelect()}
+                onChange={(e) => row.toggleSelected(!!e.target.checked)}
+                onClick={(e) => e.stopPropagation()}
+              />
+            </label>
           </div>
         );
       },
       enableSorting: false,
       enableHiding: false,
-      size: 40,
+      size: 48,
     }),
     [enableRowSelection]
   );
@@ -334,8 +338,8 @@ export function DataTable<TData, TValue>({
         </Table>
       </div>
 
-      <div className="flex flex-col items-center justify-between gap-3 md:flex-row">
-        <div className="text-sm text-slate-500">
+      <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center">
+        <div className="text-center text-sm text-slate-500 sm:text-left">
           {displayedTotal > 0 ? (
             <>
               {pageIndex * pageSize + 1}–
@@ -347,11 +351,11 @@ export function DataTable<TData, TValue>({
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-2 text-sm text-slate-500">
+        <div className="flex flex-col items-stretch gap-4 sm:flex-row sm:flex-wrap sm:items-center">
+          <label className="flex items-center justify-between gap-2 text-sm text-slate-500 sm:justify-start">
             Per pagina
             <select
-              className="rounded-md border border-slate-200 bg-white px-2 py-1 text-sm"
+              className="h-11 min-w-[96px] rounded-md border border-slate-200 bg-white px-3 py-2 text-base md:h-10 md:text-sm"
               value={pageSize}
               onChange={(e) => {
                 setPagination({
@@ -368,16 +372,17 @@ export function DataTable<TData, TValue>({
             </select>
           </label>
 
-          <div className="flex items-center gap-1">
+          <div className="flex items-center justify-between gap-2 sm:justify-start sm:gap-1">
             <Button
               variant="outline"
               size="sm"
               onClick={() => table.previousPage()}
               disabled={!table.getCanPreviousPage()}
+              aria-label="Vorige pagina"
             >
-              <ChevronLeft className="h-4 w-4" />
+              <ChevronLeft className="h-5 w-5 md:h-4 md:w-4" />
             </Button>
-            <div className="min-w-[90px] px-2 text-center text-sm text-slate-600">
+            <div className="flex-1 px-2 text-center text-sm text-slate-600 sm:flex-none sm:min-w-[90px]">
               Pagina {pageIndex + 1}
               {pageCount > 0 ? ` / ${pageCount}` : ""}
             </div>
@@ -386,8 +391,9 @@ export function DataTable<TData, TValue>({
               size="sm"
               onClick={() => table.nextPage()}
               disabled={!table.getCanNextPage()}
+              aria-label="Volgende pagina"
             >
-              <ChevronRight className="h-4 w-4" />
+              <ChevronRight className="h-5 w-5 md:h-4 md:w-4" />
             </Button>
           </div>
         </div>

@@ -36,6 +36,24 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
     },
+    {
+      name: "Mobile Chrome (Pixel 7)",
+      use: {
+        ...devices["Pixel 7"],
+      },
+    },
+    {
+      name: "Mobile Safari (iPhone 14)",
+      use: {
+        ...devices["iPhone 14"],
+      },
+    },
+    {
+      name: "Tablet Safari (iPad 7)",
+      use: {
+        ...devices["iPad (gen 7)"],
+      },
+    },
   ],
 
   outputDir: path.resolve(process.cwd(), "test-results"),

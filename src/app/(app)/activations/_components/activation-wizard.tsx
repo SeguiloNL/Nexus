@@ -324,15 +324,15 @@ export function ActivationWizard({
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <Button asChild variant="ghost" size="sm">
+      <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="flex flex-col items-start gap-3">
+          <Button asChild variant="ghost" size="sm" className="self-start">
             <Link href="/activations">
-              <ArrowLeft className="h-4 w-4" /> Terug
+              <ArrowLeft className="h-5 w-5 md:h-4 md:w-4" /> Terug
             </Link>
           </Button>
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">
+            <h1 className="text-xl font-bold tracking-tight sm:text-2xl">
               {openOrderId
                 ? `Activatie ${initialOrder?.orderNumber ?? ""} bewerken`
                 : "Nieuwe activatie"}
@@ -351,17 +351,18 @@ export function ActivationWizard({
             </p>
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
           <Button
             variant="outline"
             type="button"
+            className="w-full sm:w-auto"
             onClick={async () => {
               await persistAsDraft();
               toast.success("Opgeslagen als DRAFT.");
               router.push("/activations");
             }}
           >
-            <RotateCcw className="h-4 w-4 mr-2" /> Opslaan als concept
+            <RotateCcw className="h-5 w-5 mr-2 md:h-4 md:w-4" /> Opslaan als concept
           </Button>
         </div>
       </div>
@@ -426,29 +427,32 @@ export function ActivationWizard({
         )}
       </div>
 
-      <div className="flex items-center justify-between border-t border-slate-200 pt-4">
+      <div className="flex flex-col items-stretch justify-between gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:items-center">
         <Button
           variant="outline"
           disabled={step <= 1}
           onClick={() => setStep((s) => Math.max(1, s - 1))}
+          className="w-full sm:w-auto order-2 sm:order-1"
         >
           Vorige
         </Button>
-        <div className="text-xs text-slate-500">
+        <div className="text-center text-xs text-slate-500 order-1 sm:order-2">
           Stap {step} van {STEP_NAMES.length}
         </div>
         {step < 6 ? (
           <Button
             onClick={() => setStep((s) => Math.min(STEP_NAMES.length, s + 1))}
+            className="w-full sm:w-auto order-3"
           >
-            Volgende <ArrowRight className="ml-2 h-4 w-4" />
+            Volgende <ArrowRight className="ml-2 h-5 w-5 md:h-4 md:w-4" />
           </Button>
         ) : (
           <Button
             disabled={isReadyErrors.length > 0 || busy}
             onClick={async () => markReadyAndActivate(true)}
+            className="w-full sm:w-auto order-3"
           >
-            <Play className="h-4 w-4 mr-2" /> Activeer bevestigen
+            <Play className="h-5 w-5 mr-2 md:h-4 md:w-4" /> Activeer bevestigen
           </Button>
         )}
       </div>
@@ -469,7 +473,7 @@ function Stepper({
 }) {
   return (
     <nav aria-label="Stappen">
-      <ol className="flex flex-wrap items-center gap-2">
+      <ol className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
         {STEP_NAMES.map((s, i) => {
           const n = i + 1;
           const completed = step > n;
@@ -483,26 +487,26 @@ function Stepper({
                 disabled={disabled}
                 onClick={() => setStep(n)}
                 className={[
-                  "flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors",
+                  "flex w-full min-h-[48px] items-center justify-start gap-2 rounded-md border px-3 py-2 text-base transition-colors active:bg-slate-100 md:text-sm md:min-h-[44px] sm:w-auto",
                   active
                     ? "border-slate-900 bg-slate-900 text-white"
                     : completed
-                      ? "border-emerald-300 bg-emerald-50 text-emerald-700"
-                      : "border-slate-200 text-slate-600 hover:bg-slate-50",
+                      ? "border-emerald-300 bg-emerald-50 text-emerald-700 active:bg-emerald-100"
+                      : "border-slate-200 text-slate-600 hover:bg-slate-50 active:bg-slate-100",
                   errors[n]?.length ? "border-red-300 bg-red-50 text-red-700" : "",
                   disabled ? "opacity-60 cursor-not-allowed" : "",
                 ].join(" ")}
               >
-                <span className="flex items-center justify-center">
+                <span className="flex shrink-0 items-center justify-center h-6 w-6">
                   {completed ? (
-                    <CheckCircle2 className="h-4 w-4" />
+                    <CheckCircle2 className="h-5 w-5 md:h-4 md:w-4" />
                   ) : errors[n]?.length ? (
-                    <Circle className="h-4 w-4" />
+                    <Circle className="h-5 w-5 md:h-4 md:w-4" />
                   ) : (
-                    <Icon className="h-4 w-4" />
+                    <Icon className="h-5 w-5 md:h-4 md:w-4" />
                   )}
                 </span>
-                <span>
+                <span className="truncate">
                   <span className="sr-only">Stap {n}:</span> {s.label}
                 </span>
                 {errors[n]?.length ? (
@@ -1199,22 +1203,24 @@ function StepSim({
               </div>
             </div>
           </CardContent>
-          <CardFooter className="flex flex-col sm:flex-row sm:justify-end gap-2">
+          <CardFooter className="flex flex-col items-stretch sm:flex-row sm:justify-end gap-2">
             {canActivateThisSim ? (
               selectedSim ? (
-                <ActivateSimDialog
-                  sim={selectedSim}
-                  open={activateOpen}
-                  onOpenChange={(o) => {
-                    if (!activateBusy) {
-                      setActivateOpen(o);
-                    }
-                  }}
-                  onConfirm={handleActivateConfirm}
-                  isPending={activateBusy}
-                  resultMessage={activateResult.message}
-                  resultOk={activateResult.ok}
-                />
+                <div className="w-full sm:w-auto">
+                  <ActivateSimDialog
+                    sim={selectedSim}
+                    open={activateOpen}
+                    onOpenChange={(o) => {
+                      if (!activateBusy) {
+                        setActivateOpen(o);
+                      }
+                    }}
+                    onConfirm={handleActivateConfirm}
+                    isPending={activateBusy}
+                    resultMessage={activateResult.message}
+                    resultOk={activateResult.ok}
+                  />
+                </div>
               ) : null
             ) : (
               <div className="text-xs text-slate-500 italic" aria-live="polite">
@@ -1430,16 +1436,20 @@ function StepReview({
       ) : null}
 
       <Card className="border-slate-300">
-        <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
-          <div>
+        <CardHeader className="flex flex-col items-stretch justify-between gap-4 space-y-0 sm:flex-row sm:items-start">
+          <div className="flex-1">
             <CardTitle>Bevestig activatie</CardTitle>
             <CardDescription>
               Bij klikken wordt eerst het order READY gemaakt, daarna direct de
               6-staps transactionele activatie uitgevoerd.
             </CardDescription>
           </div>
-          <Button disabled={isReadyErrors.length > 0 || busy} onClick={onActivate}>
-            <Play className="h-4 w-4 mr-2" /> Activeer nu
+          <Button
+            disabled={isReadyErrors.length > 0 || busy}
+            onClick={onActivate}
+            className="w-full sm:w-auto"
+          >
+            <Play className="h-5 w-5 mr-2 md:h-4 md:w-4" /> Activeer nu
           </Button>
         </CardHeader>
       </Card>

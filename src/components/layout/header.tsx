@@ -9,6 +9,7 @@ import {
   Shield,
   Search,
   User,
+  Menu,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -21,6 +22,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { useMobileNav } from "@/components/layout/app-shell";
 import { cn } from "@/lib/utils";
 import type { UserRole } from "@/types/enums";
 import { logoutAction } from "@/app/(app)/actions";
@@ -31,6 +33,7 @@ type HeaderProps = {
   userRole: UserRole;
   roleName?: string | null;
   customerIds?: string[];
+  onMenuClick?: () => void;
 };
 
 const ROLE_LABELS: Record<UserRole, string> = {
@@ -69,8 +72,11 @@ export function Header({
   userRole,
   roleName,
   customerIds,
+  onMenuClick: onMenuClickProp,
 }: HeaderProps) {
   const router = useRouter();
+  const navCtx = useMobileNav();
+  const onMenuClick = onMenuClickProp ?? navCtx.toggleMobileNav;
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -92,12 +98,35 @@ export function Header({
     : "??";
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 sm:px-6">
-      <div className="flex items-center gap-2">
+    <header className="sticky top-0 z-30 flex h-16 min-h-[64px] items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 sm:px-6 pt-[var(--safe-top)]">
+      <div className="flex items-center gap-2 min-w-0">
+        {onMenuClick ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            onClick={onMenuClick}
+            aria-label="Menu openen"
+            aria-controls="primary-navigation"
+            className="md:hidden shrink-0"
+          >
+            <Menu className="h-5 w-5" />
+          </Button>
+        ) : null}
         <Button
           variant="outline"
           size="sm"
-          className="hidden md:flex"
+          asChild
+          className="md:hidden shrink-0"
+        >
+          <Link href="/search" aria-label="Zoeken">
+            <Search className="h-5 w-5" />
+          </Link>
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="hidden md:flex shrink-0"
           asChild
         >
           <Link href="/search">

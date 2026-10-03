@@ -1004,7 +1004,6 @@ export function SimDetail({
                       type="button"
                       variant="ghost"
                       size="sm"
-                      className="h-7 px-2 text-xs text-slate-500 hover:text-slate-700 gap-1"
                       onClick={triggerManualStatusRefresh}
                       disabled={isStatusRefreshPending}
                       aria-disabled={isStatusRefreshPending}

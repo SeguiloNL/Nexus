@@ -232,14 +232,14 @@ export function ActivationOrderList({ orders, canCreate, canEdit, canDelete }: P
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
-                  size="sm"
-                  className="h-8 w-8 p-0"
+                  size="icon-sm"
+                  aria-label="Open menu"
                   disabled={rowBusy}
                 >
                   {rowBusy ? (
-                    <Play className="h-4 w-4 animate-spin text-slate-400" />
+                    <Play className="h-5 w-5 md:h-4 md:w-4 animate-spin text-slate-400" />
                   ) : (
-                    <MoreHorizontal className="h-4 w-4" />
+                    <MoreHorizontal className="h-5 w-5 md:h-4 md:w-4" />
                   )}
                 </Button>
               </DropdownMenuTrigger>

@@ -134,25 +134,25 @@ function TreeNode({
   return (
     <div>
       <div
-        className="group flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 hover:bg-slate-50"
+        className="group flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-2 min-h-[48px] hover:bg-slate-50 active:bg-slate-100 md:min-h-0 md:px-3 md:py-2"
         style={{ paddingLeft }}
       >
         {hasChildren ? (
           <Button
             variant="ghost"
-            size="sm"
-            className="h-7 w-7 p-0 text-slate-500 hover:text-slate-700"
+            size="icon-sm"
+            aria-label={isExpanded ? "Inklappen" : "Uitklappen"}
             onClick={() => onToggle(node.id)}
             title={isExpanded ? "Inklappen" : "Uitklappen"}
           >
             {isExpanded ? (
-              <ChevronDown className="h-4 w-4" />
+              <ChevronDown className="h-5 w-5 md:h-4 md:w-4" />
             ) : (
-              <ChevronRight className="h-4 w-4" />
+              <ChevronRight className="h-5 w-5 md:h-4 md:w-4" />
             )}
           </Button>
         ) : (
-          <span className="inline-block h-7 w-7" />
+          <span className="inline-block h-11 w-11 shrink-0 md:h-7 md:w-7" />
         )}
         <Link
           href={`/customers/${node.id}`}

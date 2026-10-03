@@ -10,7 +10,12 @@ const config: Config = {
   theme: {
     container: {
       center: true,
-      padding: "1rem",
+      padding: {
+        DEFAULT: "1rem",
+        sm: "1.25rem",
+        md: "1.5rem",
+        lg: "2rem",
+      },
       screens: {
         "2xl": "1400px",
       },
@@ -55,6 +60,9 @@ const config: Config = {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+      },
+      fontSize: {
+        base: ["1rem", { lineHeight: "1.5rem" }],
       },
       keyframes: {
         "accordion-down": {
