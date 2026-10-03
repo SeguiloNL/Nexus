@@ -228,23 +228,51 @@ export function SimList({
     return sims.filter((s) => s.status === statusFilter);
   }, [sims, statusFilter]);
 
-  function getUsageScore(sim: ListSim): { hasData: boolean; ratio: number; usedAbs: bigint } {
+  function getUsageScore(sim: ListSim): {
+    hasData: boolean;
+    tier: number;
+    ratio: number;
+    usedAbs: bigint;
+  } {
     const used = sim.dataUsedBytes;
     const limitRaw = sim.dataLimitBytes;
     const threshold = sim.lowestDataLimitBytes;
     const limit: bigint | null = limitRaw ?? threshold;
 
     if (used === null || used === undefined) {
-      return { hasData: false, ratio: -1, usedAbs: 0n };
+      return { hasData: false, tier: 0, ratio: -1, usedAbs: 0n };
     }
+
     const usedNum = Number(used);
-    if (limit !== null && limit !== undefined && limit > 0n) {
-      const limitNum = Number(limit);
-      if (limitNum === 0) return { hasData: true, ratio: usedNum, usedAbs: used };
-      const ratio = usedNum / limitNum;
-      return { hasData: true, ratio, usedAbs: used };
+    const usedAbs = used;
+
+    if (limit === null || limit === undefined || limit <= 0n) {
+      return { hasData: true, tier: 1, ratio: 0, usedAbs };
     }
-    return { hasData: true, ratio: usedNum, usedAbs: used };
+
+    const limitNum = Number(limit);
+    if (limitNum === 0) {
+      return { hasData: true, tier: 1, ratio: 0, usedAbs };
+    }
+
+    const ratio = usedNum / limitNum;
+    const overschreden = used > limit;
+    const nearFull = ratio >= 0.9;
+    const reachedThreshold =
+      threshold !== null && threshold !== undefined && threshold > 0n && used >= threshold;
+
+    let tier: number;
+    if (overschreden) {
+      tier = 5;
+    } else if (nearFull) {
+      tier = 4;
+    } else if (reachedThreshold) {
+      tier = 3;
+    } else {
+      tier = 2;
+    }
+
+    return { hasData: true, tier, ratio, usedAbs };
   }
 
   const usageSortFn: SortingFn<ListSim> = (rowA, rowB) => {
@@ -257,8 +285,12 @@ export function SimList({
     }
     if (!b.hasData) return -1;
 
+    if (a.tier < b.tier) return -1;
+    if (a.tier > b.tier) return 1;
+
     if (a.ratio < b.ratio) return -1;
     if (a.ratio > b.ratio) return 1;
+
     if (a.usedAbs < b.usedAbs) return -1;
     if (a.usedAbs > b.usedAbs) return 1;
     return 0;
