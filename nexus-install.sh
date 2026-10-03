@@ -759,7 +759,16 @@ if [[ "$DB_UPDATE_ONLY" -eq 1 ]]; then
   fi
 
   cd "$INSTALL_DIR"
-  COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
+  COMPOSE_BASE=(docker compose -f "$COMPOSE_FILE")
+  COMPOSE_CMD=("${COMPOSE_BASE[@]}")
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    if ! docker ps --format '{{.Names}}' >/dev/null 2>&1; then
+      COMPOSE_CMD=(sudo -E "${COMPOSE_BASE[@]}")
+      info "  Non-root user en GEEN docker-socket toegang. COMPOSE_CMD prefixen met sudo -E (tip: voeg jezelf toe aan docker-groep: sudo usermod -aG docker \$USER && newgrp docker)."
+    else
+      info "  Non-root user, maar WEL toegang tot Docker socket (docker-groep). Geen sudo nodig."
+    fi
+  fi
 
   # ── SHELL SAFETY ──
   set +H 2>/dev/null || true
@@ -1545,7 +1554,16 @@ if [[ "$UPDATE_ONLY" -eq 1 ]]; then
   fi
 
   cd "$INSTALL_DIR"
-  COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
+  COMPOSE_BASE=(docker compose -f "$COMPOSE_FILE")
+  COMPOSE_CMD=("${COMPOSE_BASE[@]}")
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    if ! docker ps --format '{{.Names}}' >/dev/null 2>&1; then
+      COMPOSE_CMD=(sudo -E "${COMPOSE_BASE[@]}")
+      info "  Non-root user en GEEN docker-socket toegang. COMPOSE_CMD prefixen met sudo -E (tip: sudo usermod -aG docker \$USER && newgrp docker)."
+    else
+      info "  Non-root user, maar WEL toegang tot Docker socket (docker-groep). Geen sudo nodig."
+    fi
+  fi
 
   # ── AUTO-REPAIR: indien .git ontbreekt OF ongeldige repo (geen HEAD), ──
   #    herbouw dan de .git map AUTOMATISCH (zodat de gebruiker niet handmatig
@@ -2080,30 +2098,64 @@ STM_NEXT_CONFIG_V2
   # ==============================================================================
   if [[ "$NO_CADDY" -eq 0 ]] && command -v caddy >/dev/null 2>&1 && systemctl list-unit-files caddy.service >/dev/null 2>&1; then
     title "UPDATE STAP — Caddy: config sync + reload (geen herinstallatie!)"
-    # ---- Defensive copy Caddyfile uit repo ----
+    # ── ST7-UPD.1: ROOT-RECHT extractie STM_DOMAIN / STM_APP_URL ──
+    _UP7_STRIP=$'\015\012\042\047\140'
+    _UP7_DOMAIN="$( as_root awk -F= '/^STM_DOMAIN=/           {print $2; exit}' "$ENV_FILE" 2>/dev/null | tr -d "${_UP7_STRIP}"  2>/dev/null || true )"
+    [[ -z "${_UP7_DOMAIN:-}" ]] && _UP7_DOMAIN="$( as_root awk -F= '/^NEXUS_DOMAIN=/        {print $2; exit}' "$ENV_FILE" 2>/dev/null | tr -d "${_UP7_STRIP}"  2>/dev/null || true )"
+    [[ -z "${_UP7_DOMAIN:-}" ]] && _UP7_DOMAIN="$( as_root awk -F= '/^NEXT_PUBLIC_APP_URL=/ {print $2; exit}' "$ENV_FILE" 2>/dev/null | sed -E 's#^https?://##; s#[:/].*$##' | tr -d "${_UP7_STRIP}" 2>/dev/null || true )"
+    _UP7_APPURL="$( as_root awk -F= '/^STM_APP_URL=/           {print $2; exit}' "$ENV_FILE" 2>/dev/null | tr -d "${_UP7_STRIP}"  2>/dev/null || true )"
+    [[ -z "${_UP7_APPURL:-}" ]] && _UP7_APPURL="127.0.0.1:3000"
+    _UP7_DOMAIN="${_UP7_DOMAIN:-localhost}"
+    info "  .env (root-recht) → STM_DOMAIN=[${_UP7_DOMAIN}] STM_APP_URL=[${_UP7_APPURL}]"
+
+    # ── ST7-UPD.2: Nieuwe Caddyfile uit repo kopiëren + SED tokens ──
+    _UP7_COPIED_REPO=0
+    as_root mkdir -p /etc/caddy
     if [[ -n "${CUSTOM_CADDYFILE_SRC:-}" && -f "$CUSTOM_CADDYFILE_SRC" ]]; then
-      step "Nieuwe Caddyfile uit repo kopiëren → /etc/caddy/Caddyfile"
-      as_root mkdir -p /etc/caddy
+      step "Nieuwe Caddyfile uit repo kopiëren → SED tokens → /etc/caddy/Caddyfile"
       as_root cp -f "$CUSTOM_CADDYFILE_SRC" /etc/caddy/Caddyfile
       as_root chown root:root /etc/caddy/Caddyfile
       as_root chmod 0644 /etc/caddy/Caddyfile
+      _UP7_COPIED_REPO=1
     else
       if [[ -z "${CUSTOM_CADDYFILE_SRC:-}" ]]; then
         warn "CUSTOM_CADDYFILE_SRC variabele was leeg; /etc/caddy/Caddyfile NIET overschreven (verwachte file: ${INSTALL_DIR}/Caddyfile)."
       else
-        info "Geen custom Caddyfile in repo (${CUSTOM_CADDYFILE_SRC}); bestaande /etc/caddy/Caddyfile blijft ongewijzigd."
+        info "Geen custom Caddyfile in repo (${CUSTOM_CADDYFILE_SRC}); bestaande /etc/caddy/Caddyfile blijft ongewijzigd (GEEN token-sed omdat we bron niet vertrouwen)."
       fi
     fi
-    # ---- /etc/caddy/.env bijwerken ----
-    as_root mkdir -p /etc/caddy
-    grep -E '^(STM_DOMAIN|NEXT_PUBLIC_APP_URL|STM_APP_URL)=' "$ENV_FILE" 2>/dev/null | as_root tee /etc/caddy/.env >/dev/null || true
-    if ! as_root grep -qE '^STM_APP_URL=' /etc/caddy/.env 2>/dev/null; then
-      printf 'STM_APP_URL=127.0.0.1:3000\n' | as_root tee -a /etc/caddy/.env >/dev/null || true
+    # ── ST7-UPD.3: SED token vervanging (ALTIJD, ook voor bestaande Caddyfile!) ──
+    if [[ "${_UP7_COPIED_REPO}" -eq 1 ]] || as_root grep -qE '__STM_(DOMAIN|APP_URL)__' /etc/caddy/Caddyfile 2>/dev/null; then
+      info "  SED vervangen in /etc/caddy/Caddyfile: __STM_DOMAIN__ → '${_UP7_DOMAIN}'  __STM_APP_URL__ → '${_UP7_APPURL}'"
+      as_root sed -i "s|__STM_DOMAIN__|${_UP7_DOMAIN}|g" /etc/caddy/Caddyfile 2>/dev/null || true
+      as_root sed -i "s|__STM_APP_URL__|${_UP7_APPURL}|g"   /etc/caddy/Caddyfile 2>/dev/null || true
     fi
+    # ── ST7-UPD.4: /etc/caddy/.env herschrijven (opgeschoond!) ──
+    as_root tee /etc/caddy/.env >/dev/null <<UP7_ENV_EOF || true
+STM_DOMAIN=${_UP7_DOMAIN}
+STM_APP_URL=${_UP7_APPURL}
+UP7_ENV_EOF
     as_root chown root:root /etc/caddy/.env || true
     as_root chmod 0600 /etc/caddy/.env || true
-    # ---- Validate & reload ----
+    # ── ST7-UPD.5: GLOBAL EMAIL (als --email meegegeven) ──
+    if [[ -n "${EMAIL:-}" ]] && [[ "${_UP7_COPIED_REPO}" -eq 1 ]] \
+      && ! as_root grep -qF "\"${EMAIL}\"" /etc/caddy/Caddyfile 2>/dev/null; then
+      _UP7_TMP="$(mktemp 2>/dev/null || echo /tmp/stm-up7caddy-$$.tmp)"
+      printf '{
+  email %s
+  acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
+' "${EMAIL}" > "$_UP7_TMP"
+      as_root cat /etc/caddy/Caddyfile >> "$_UP7_TMP" || true
+      as_root cp -f "$_UP7_TMP" /etc/caddy/Caddyfile
+      as_root chmod 0644 /etc/caddy/Caddyfile
+      rm -f "$_UP7_TMP"
+    fi
+    caddy fmt --overwrite /etc/caddy/Caddyfile >/dev/null 2>&1 || true
+    # ── ST7-UPD.6: VALIDEER & RELOAD ──
     step "caddy validate + reload"
+    _UP7_VALRC=0
     if caddy validate --config /etc/caddy/Caddyfile 2>&1 | tee -a "$LOG_FILE" >&2; then
       as_root systemctl reload caddy 2>&1 | tee -a "$LOG_FILE" >&2 || \
         as_root systemctl restart caddy 2>&1 | tee -a "$LOG_FILE" >&2 || true
@@ -2111,6 +2163,7 @@ STM_NEXT_CONFIG_V2
     else
       warn "Nieuwe Caddyfile valideert NIET. Huidige Caddy NIET herladen (downtime voorkomen!)."
       info "  Handmatig nakijken: sudo caddy adapt --config /etc/caddy/Caddyfile"
+      info "  OF: forceren naar minimal fallback met: sudo cp ${CUSTOM_CADDYFILE_SRC:-/nonexistent} /etc/caddy/Caddyfile.bak-repo && echo en dan minimal fallback."
     fi
   elif [[ "$NO_CADDY" -eq 0 ]]; then
     info "Caddy niet aanwezig op systeem; Caddy update stap overgeslagen."
@@ -3432,31 +3485,69 @@ if [[ "$NO_CADDY" -eq 0 ]]; then
     apt-get install -y --no-install-recommends caddy 2>&1 | tail -2 | tee -a "$LOG_FILE" >&2
   fi
 
-  # Caddyfile kopiëren naar /etc/caddy + env file
+  # ──────────────────────────────────────────────────────────────────────
+  # ST7.1: 🔥 ROOT-RECHT LEZEN VAN WAARDES UIT /etc/stm/.env
+  #        (user-volger en quotes/backticks strippen. Dit voorkomt dat we bijv.
+  #         non-root user als “Permission denied” op /opt/stm/.env chmod 0600.)
+  # ──────────────────────────────────────────────────────────────────────
   step "Caddy configureren: /etc/caddy/Caddyfile + /etc/caddy/.env"
+  # Gebruik octale codes in tr -d om quoting/backtick bugs te vermijden:
+  #   \015 = CR \r    \012 = LF \n    \042 = "    \047 = '    \140 = backtick `
+  _STRIP_CHARS=$'\015\012\042\047\140'
+  _ST7_ENV_DOMAIN="$( as_root awk -F= '/^STM_DOMAIN=/            {print $2; exit}' "$ENV_FILE" 2>/dev/null | tr -d "${_STRIP_CHARS}"  2>/dev/null || true )"
+  if [[ -z "${_ST7_ENV_DOMAIN:-}" ]]; then
+    _ST7_ENV_DOMAIN="$( as_root awk -F= '/^NEXUS_DOMAIN=/         {print $2; exit}' "$ENV_FILE" 2>/dev/null | tr -d "${_STRIP_CHARS}"  2>/dev/null || true )"
+  fi
+  if [[ -z "${_ST7_ENV_DOMAIN:-}" ]]; then
+    _ST7_ENV_DOMAIN="$( as_root awk -F= '/^NEXT_PUBLIC_APP_URL=/  {print $2; exit}' "$ENV_FILE" 2>/dev/null \
+      | sed -E 's#^https?://##; s#[:/].*$##' | tr -d "${_STRIP_CHARS}" 2>/dev/null || true )"
+  fi
+  _ST7_ENV_APPURL="$( as_root awk -F= '/^STM_APP_URL=/            {print $2; exit}' "$ENV_FILE" 2>/dev/null | tr -d "${_STRIP_CHARS}"  2>/dev/null || true )"
+  [[ -z "${_ST7_ENV_APPURL:-}" ]] && _ST7_ENV_APPURL="127.0.0.1:3000"
+  _ST7_ENV_DOMAIN="${_ST7_ENV_DOMAIN:-localhost}"
+  info "  Gevonden via root-recht .env → STM_DOMAIN=[${_ST7_ENV_DOMAIN}] STM_APP_URL=[${_ST7_ENV_APPURL}]"
+
   as_root mkdir -p /etc/caddy
   _TMP_CADDYFILE=""
   _TMP_CADDYFILE="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/stm-caddy-$$.conf")"
   trap 'rm -f "$_TMP_CADDYFILE"' RETURN
+  # ──────────────────────────────────────────────────────────────────────
+  # ST7.2: Caddyfile (uit repo of fallback) — VERVOLGENS: SED PLAATSVERVANGERS
+  #         __STM_DOMAIN__  → echte _ST7_ENV_DOMAIN
+  #         __STM_APP_URL__ → echte _ST7_ENV_APPURL
+  # ──────────────────────────────────────────────────────────────────────
+  _ST7_USED_FALLBACK=0
   if [[ -n "${CUSTOM_CADDYFILE_SRC:-}" && -f "$CUSTOM_CADDYFILE_SRC" ]]; then
+    info "  Caddyfile in repo (${CUSTOM_CADDYFILE_SRC}) kopiëren → SED tokens → /etc/caddy/Caddyfile"
     as_root cp -f "$CUSTOM_CADDYFILE_SRC" /etc/caddy/Caddyfile
-    as_root chown root:root /etc/caddy/Caddyfile
-    as_root chmod 0644 /etc/caddy/Caddyfile
   else
     if [[ -z "${CUSTOM_CADDYFILE_SRC:-}" ]]; then
       warn "CUSTOM_CADDYFILE_SRC variabele was leeg; fallback minimal reverse proxy."
     else
       warn "Geen Caddyfile in project (${CUSTOM_CADDYFILE_SRC}). Fallback: minimal reverse proxy."
     fi
+    _ST7_USED_FALLBACK=1
     cat > "$_TMP_CADDYFILE" <<'CADDY_FALLBACK'
-{$STM_DOMAIN:localhost} {
-  header Strict-Transport-Security "max-age=31536000; includeSubDomains"
-  header X-Content-Type-Options    "nosniff"
-  header X-Frame-Options           "SAMEORIGIN"
-  header Referrer-Policy           "strict-origin-when-cross-origin"
-  header Permissions-Policy        "camera=(), microphone=(), geolocation=()"
+# ==============================================================
+# STM – Caddyfile FALLBACK (gegenereerd door nexus-install.sh
+# (Caddy v2.9+ compat: PLAATSVERVANGERS in plaats van placeholders
+# ==============================================================
+(common_headers) {
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options    "nosniff"
+    X-Frame-Options           "SAMEORIGIN"
+    Referrer-Policy           "strict-origin-when-cross-origin"
+    Permissions-Policy        "camera=(), microphone=(), geolocation=()"
+    Cache-Control "public, max-age=0, must-revalidate"
+    -Server
+  }
   encode gzip zstd
-  reverse_proxy 127.0.0.1:3000 {
+}
+
+__STM_DOMAIN__ {
+  import common_headers
+  reverse_proxy __STM_APP_URL__ {
     header_up X-Forwarded-For    {remote_host}
     header_up X-Forwarded-Proto  {scheme}
     header_up X-Forwarded-Host   {host}
@@ -3471,23 +3562,40 @@ if [[ "$NO_CADDY" -eq 0 ]]; then
 }
 CADDY_FALLBACK
     as_root cp -f "$_TMP_CADDYFILE" /etc/caddy/Caddyfile
-    as_root chown root:root /etc/caddy/Caddyfile
-    as_root chmod 0644 /etc/caddy/Caddyfile
   fi
-  # Caddy env: alleen STM_DOMAIN + STM_APP_URL (volgt direct uit .env)
-  # shellcheck disable=SC2063
-  grep -E '^(STM_DOMAIN|NEXT_PUBLIC_APP_URL|STM_APP_URL)=' "$ENV_FILE" 2>/dev/null | as_root tee /etc/caddy/.env >/dev/null || true
-  # Als STM_APP_URL nog niet in ENV stond: vul hier met localhost:3000
-  if ! as_root grep -qE '^STM_APP_URL=' /etc/caddy/.env 2>/dev/null; then
-    printf 'STM_APP_URL=127.0.0.1:3000\n' | as_root tee -a /etc/caddy/.env >/dev/null || true
+  as_root chown root:root /etc/caddy/Caddyfile
+  as_root chmod 0644 /etc/caddy/Caddyfile
+  # ──────────────────────────────────────────────────────────────────
+  # ST7.3: SED — VERVANG DE PLAATSVERVANGERS __STM_DOMAIN__ en __STM_APP_URL__
+  # ──────────────────────────────────────────────────────────────────
+  info "  SED vervangen: __STM_DOMAIN__ → '${_ST7_ENV_DOMAIN}'  __STM_APP_URL__ → '${_ST7_ENV_APPURL}'"
+  as_root sed -i "s|__STM_DOMAIN__|${_ST7_ENV_DOMAIN}|g" /etc/caddy/Caddyfile 2>/dev/null || as_root perl -i -pe "s|__STM_DOMAIN__|${_ST7_ENV_DOMAIN}|g" /etc/caddy/Caddyfile 2>/dev/null || true
+  as_root sed -i "s|__STM_APP_URL__|${_ST7_ENV_APPURL}|g"   /etc/caddy/Caddyfile 2>/dev/null || as_root perl -i -pe "s|__STM_APP_URL__|${_ST7_ENV_APPURL}|g"   /etc/caddy/Caddyfile 2>/dev/null || true
+  # ──────────────────────────────────────────────────────────────────
+  # ST7.4: SANITY CHECK — onvervangen tokens detecteren
+  # ──────────────────────────────────────────────────────────────────
+  if as_root grep -qE '__STM_(DOMAIN|APP_URL)__|\$\{?STM_' /etc/caddy/Caddyfile 2>/dev/null; then
+    _tokens="$(as_root grep -oE '__STM_(DOMAIN|APP_URL)__|\$\{?STM_[A-Z_]*\}?' /etc/caddy/Caddyfile 2>/dev/null | sort -u | tr '\n' ' ' 2>/dev/null || echo '(onbekend)')"
+    warn "  Caddyfile bevat NOG onvervangen tokens: ${_tokens} (bron: ${_ST7_USED_FALLBACK:+fallback-heredoc}${_ST7_USED_FALLBACK:-repo-Caddyfile})."
+    info "  Dit kan OK zijn als Caddy deze placeholders zelf ondersteunt; anders: valideer handmatig."
   fi
+  # ──────────────────────────────────────────────────────────────────
+  # ST7.5: /etc/caddy/.env OOK ALLEEN STM_DOMAIN + STM_APP_URL (opgeschoond!)
+  #         (GEEN NEXT_PUBLIC_APP_URL met backtick-quotes, GEEN rare characters.)
+  # ──────────────────────────────────────────────────────────────────
+  as_root tee /etc/caddy/.env >/dev/null <<ST7_ENV_EOF || true
+STM_DOMAIN=${_ST7_ENV_DOMAIN}
+STM_APP_URL=${_ST7_ENV_APPURL}
+ST7_ENV_EOF
   as_root chown root:root /etc/caddy/.env || true
   as_root chmod 0600 /etc/caddy/.env || true
-  # E-mailadres (Let's Encrypt)
+  info "  /etc/caddy/.env herschreven (2 regels: STM_DOMAIN + STM_APP_URL, mode 0600)."
+  # ──────────────────────────────────────────────────────────────────
+  # ST7.6: GLOBAL EMAIL (Let's Encrypt) als --email meegegeven
+  # ──────────────────────────────────────────────────────────────────
   if [[ -n "${EMAIL:-}" ]]; then
     step "Caddy global e-mail (Let's Encrypt): ${EMAIL} → /etc/caddy/Caddyfile"
-    # Zet aan het begin, voor de site-block
-    if ! as_root grep -qF "{\"${EMAIL}\"}" /etc/caddy/Caddyfile 2>/dev/null; then
+    if ! as_root grep -qF "\"${EMAIL}\"" /etc/caddy/Caddyfile 2>/dev/null; then
       : > "$_TMP_CADDYFILE"
       printf '{
   email %s
@@ -3500,14 +3608,50 @@ CADDY_FALLBACK
       as_root chmod 0644 /etc/caddy/Caddyfile
     fi
   fi
+  caddy fmt --overwrite /etc/caddy/Caddyfile >/dev/null 2>&1 || true
   rm -f "$_TMP_CADDYFILE"
   trap - RETURN
-  # Caddyfile droog testen
+  # ──────────────────────────────────────────────────────────────────
+  # ST7.7: CADDYFILE VALIDEREN (als dit NOG FAILT → VERPLICHTE FALLBACK HERHALEN
+  # ──────────────────────────────────────────────────────────────────
   step "caddy validate /etc/caddy/Caddyfile"
-  if ! caddy validate --config /etc/caddy/Caddyfile 2>&1 | tee -a "$LOG_FILE" >&2; then
-    warn "Caddyfile valideert NIET. Controleer /etc/caddy/Caddyfile na install."
+  _st7_validate_rc=0
+  caddy validate --config /etc/caddy/Caddyfile 2>&1 | tee -a "$LOG_FILE" >&2 || _st7_validate_rc=$?
+  if [[ "${_st7_validate_rc}" -ne 0 ]]; then
+    warn "Caddyfile (uit repo of eerste fallback) VALIDEERT NIET. NÓG EEN KEER: Dwing de MINIMALE FALLBACK (ZONDER TOKENS!)."
+    cat > "$_TMP_CADDYFILE" <<ST7_FORCE_FALLBACK
+(common_headers) {
+  header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+  header X-Content-Type-Options    "nosniff"
+  header X-Frame-Options           "SAMEORIGIN"
+  header Referrer-Policy           "strict-origin-when-cross-origin"
+  header Permissions-Policy        "camera=(), microphone=(), geolocation=()"
+  encode gzip zstd
+}
+
+${_ST7_ENV_DOMAIN} {
+  import common_headers
+  reverse_proxy ${_ST7_ENV_APPURL} {
+    header_up X-Forwarded-For    {remote_host}
+    header_up X-Forwarded-Proto  {scheme}
+    header_up X-Forwarded-Host   {host}
+    header_up X-Real-IP          {remote_host}
+    transport http { keepalive_idle_conns 32 keepalive_interval 30s dial_timeout 10s response_header_timeout 120s }
+  }
+}
+ST7_FORCE_FALLBACK
+    as_root cp -f "$_TMP_CADDYFILE" /etc/caddy/Caddyfile
+    as_root chmod 0644 /etc/caddy/Caddyfile
+    rm -f "$_TMP_CADDYFILE"
+    _st7_validate_rc=0
+    caddy validate --config /etc/caddy/Caddyfile 2>&1 | tee -a "$LOG_FILE" >&2 || _st7_validate_rc=$?
+    if [[ "${_st7_validate_rc}" -eq 0 ]]; then
+      ok "Caddyfile (2e FORCE fallback) gevalideerd OK (oorsprong repo-Caddyfile had een incompatibele placeholders/tokens; doorheen STAP7 gerepareerd)."
+    else
+      warn "Ook 2e fallback Caddyfile valideert NIET. Controleer /etc/caddy/Caddyfile handmatig na install."
+    fi
   else
-    ok "Caddyfile gevalideerd."
+    ok "Caddyfile gevalideerd (met SED tokens vervangen door echte waarden)."
   fi
 
   # ============================================================
@@ -3551,7 +3695,16 @@ fi
 title "STAP 8 — Containers bouwen, starten, migrations + wachten tot healthy"
 
 cd "$INSTALL_DIR"
-COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
+COMPOSE_BASE=(docker compose -f "$COMPOSE_FILE")
+COMPOSE_CMD=("${COMPOSE_BASE[@]}")
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+  if ! docker ps --format '{{.Names}}' >/dev/null 2>&1; then
+    COMPOSE_CMD=(sudo -E "${COMPOSE_BASE[@]}")
+    info "  Non-root user en GEEN docker-socket toegang. COMPOSE_CMD prefixen met sudo -E (tip: sudo usermod -aG docker \$USER && newgrp docker)."
+  else
+    info "  Non-root user, maar WEL toegang tot Docker socket (docker-groep). Geen sudo nodig."
+  fi
+fi
 
 # 8.1 Validatie compose
 step "docker compose config valideren..."

@@ -2,52 +2,59 @@
 # STM – Caddyfile (voorheen Nexus; compatibel met beide namen)
 # Wordt gebruikt voor HTTPS (Let's Encrypt) + reverse proxy naar Next.js.
 # ==============================================================
-# Configuratie gebeurt via ENVIRONMENT VARIABLES (geen hard-coded domein):
-#   STM_DOMAIN    = Je publieke domein (bijv. stm.jouwdomein.nl)
-#   NEXUS_DOMAIN  = (Compat) zelfde als STM_DOMAIN — voor oude omgevingen.
-#                   Laat leeg of "localhost" voor lokale test zonder TLS.
-#   STM_APP_URL   = Interne host:port van de Next.js app.
-#                     · docker-compose.prod.yml :  stm-app:3000
-#                     · Caddy direct op HOST    :  127.0.0.1:3000
-#   NEXUS_APP_URL = (Compat) zelfde als STM_APP_URL.
+# CONFIGURATIE (BELANGRIJK! Lees dit vóór gebruik):
 #
-# Caddy laadt dit bestand:
-#   · Container: ./Caddyfile  ->  /etc/caddy/Caddyfile (read-only)
-#   · Host (dpkg): /etc/caddy/Caddyfile
+#   ⚠  Caddy v2.9+ heeft een BUG met GENESTE placeholders zoals
+#      {$STM_DOMAIN:{$NEXUS_DOMAIN:localhost}} — dit CRASHT de parser met
+#      "invalid port 'localhost}'" (2026-10-03, Caddy v2.11.7).
 #
-# HTTPS (Let's Encrypt / ZeroSSL):
-#   · STM_DOMAIN = ECHT domein + A/AAAA-record naar VPS → automatisch TLS.
-#   · STM_DOMAIN = localhost / IP → plain HTTP (geen fouten).
+#   Daarom gebruikt dit bestand PLAATSVERVANGERS (tokens) die het
+#   installatiescript nexus-install.sh (STAP 7) via sed vervangt VOOR
+#   Caddy de config inlaadt. Je kan de tokens ook handmatig vervangen.
+#
+#   ┌─────────────────────────────────────────────────────────────────┐
+#   │ TOKEN               │ VERVANGEN DOOR (voorbeeld)                │
+#   ├─────────────────────────────────────────────────────────────────┤
+#   │ __STM_DOMAIN__      │ Je publieke domein  (nexus.seguilo.nl)    │
+#   │                     │  → "localhost" of een IP-adres = GEEN TLS │
+#   │ __STM_APP_URL__     │ Interne Next.js host:port                 │
+#   │                     │  · Docker:  127.0.0.1:3000 (default)     │
+#   │                     │  · Swarm:   stm-app:3000                  │
+#   └─────────────────────────────────────────────────────────────────┘
+#
+#   Handmatig aanpassen (na installatie):
+#     sudo sed -i 's/__STM_DOMAIN__/stm.nieuweklant.nl/' /etc/caddy/Caddyfile
+#     sudo sed -i 's/__STM_APP_URL__/127.0.0.1:3000/'        /etc/caddy/Caddyfile
+#     sudo caddy validate --config /etc/caddy/Caddyfile
+#     sudo systemctl reload caddy
 # ==============================================================
 
 (common_headers) {
 	header {
-		# Security headers
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options    "nosniff"
 		X-Frame-Options           "SAMEORIGIN"
 		Referrer-Policy           "strict-origin-when-cross-origin"
 		Permissions-Policy        "camera=(), microphone=(), geolocation=()"
-
-		# Belangrijk voor Next.js Image optimization / caching
 		Cache-Control "public, max-age=0, must-revalidate"
-
-		# Verberg Caddy Server header
 		-Server
 	}
 	encode gzip zstd
 }
 
 # -------------------- PROD / LOKAAL DOMEIN --------------------
-{$STM_DOMAIN:{$NEXUS_DOMAIN:localhost}} {
+# ⚠ De regel hieronder wordt door nexus-install.sh STAP 7 vervangen.
+#   Handmatig: vervang __STM_DOMAIN__ door je domein.
+__STM_DOMAIN__ {
 	import common_headers
 
-	reverse_proxy {$STM_APP_URL:{$NEXUS_APP_URL:stm-app:3000}} {
-		# X-Real-IP header (X-Forwarded-* headers worden automatisch door reverse_proxy gezet)
-		header_up X-Real-IP          {remote_host}
+	# ⚠ Deze token wordt eveneens door nexus-install.sh STAP 7 vervangen.
+	#   Handmatig: vervang __STM_APP_URL__ door 127.0.0.1:3000 of stm-app:3000
+	reverse_proxy __STM_APP_URL__ {
+		header_up X-Real-IP              {remote_host}
 
 		# keep-alive met Next.js standalone server
-		# (Caddy 2.9+ compatibel: keepalive_idle_conns = aantal connecties, keepalive = idle timeout met time unit)
+		# (Caddy 2.9+ named transport options: keepalive_idle_conns = idle aantal, keepalive_interval = duur)
 		transport http {
 			keepalive_idle_conns   32
 			keepalive_interval     30s
@@ -58,6 +65,7 @@
 }
 
 # ---------- OPTIONEEL: www -> non-www 301 redirect ----------
-# www.{$NEXUS_DOMAIN:localhost} {
-# 	redir https://{$NEXUS_DOMAIN:localhost}{uri} permanent
+# www.__STM_DOMAIN__ {
+# 	redir https://__STM_DOMAIN__{uri} permanent
 # }
+
