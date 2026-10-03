@@ -69,9 +69,13 @@ services:
       - NAVIXY_DEFAULT_USER_ID=${NAVIXY_DEFAULT_USER_ID:-}
       - NAVIXY_DEFAULT_TARIFF_ID=${NAVIXY_DEFAULT_TARIFF_ID:-}
       - NAVIXY_ENDPOINT_PANEL_AUTH=${NAVIXY_ENDPOINT_PANEL_AUTH:-/panel/account/auth}
-      - NAVIXY_ENDPOINT_USER_AUTH=${NAVIXY_ENDPOINT_USER_AUTH:-/user/session/auth}
       - NAVIXY_ENDPOINT_PANEL_TRACKER=${NAVIXY_ENDPOINT_PANEL_TRACKER:-/panel/tracker}
+      - NAVIXY_ENDPOINT_USER_AUTH=${NAVIXY_ENDPOINT_USER_AUTH:-/user/session/auth}
       - NAVIXY_ENDPOINT_USER_TRACKER=${NAVIXY_ENDPOINT_USER_TRACKER:-/user/tracker}
+      # Sync / Automatisch Ophalen (Bearer auth tussen host-systemd timers en Next.js)
+      # Wordt ingesteld in /opt/stm/.env en moet overeenkomen met wat host-scripts meesturen.
+      - SIMHUIS_SYNC_API_TOKEN=${SIMHUIS_SYNC_API_TOKEN:-}
+      - STM_APP_URL=${STM_APP_URL:-${NEXT_PUBLIC_APP_URL:-http://127.0.0.1:3000}}
     ports:
       # Alleen 127.0.0.1: nooit direct vanaf internet. Caddy (op host of container) proxy't naar deze port.
       - "127.0.0.1:3000:3000"
