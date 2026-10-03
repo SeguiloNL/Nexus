@@ -2125,11 +2125,60 @@ STM_NEXT_CONFIG_V2
       fi
     fi
     # ── ST7-UPD.3: SED token vervanging (ALTIJD, ook voor bestaande Caddyfile!) ──
+    _UP7_TMP=""
+    _UP7_TMP="$(mktemp 2>/dev/null || echo "/tmp/stm-up7caddy-$$.2.tmp")"
     if [[ "${_UP7_COPIED_REPO}" -eq 1 ]] || as_root grep -qE '__STM_(DOMAIN|APP_URL)__' /etc/caddy/Caddyfile 2>/dev/null; then
       info "  SED vervangen in /etc/caddy/Caddyfile: __STM_DOMAIN__ → '${_UP7_DOMAIN}'  __STM_APP_URL__ → '${_UP7_APPURL}'"
-      as_root sed -i "s|__STM_DOMAIN__|${_UP7_DOMAIN}|g" /etc/caddy/Caddyfile 2>/dev/null || true
-      as_root sed -i "s|__STM_APP_URL__|${_UP7_APPURL}|g"   /etc/caddy/Caddyfile 2>/dev/null || true
+      as_root sed -i -e "s|__STM_DOMAIN__|${_UP7_DOMAIN}|g" \
+                     -e "s|__STM_APP_URL__|${_UP7_APPURL}|g" /etc/caddy/Caddyfile 2>/dev/null \
+      || as_root perl -i -pe "s|__STM_DOMAIN__|${_UP7_DOMAIN}|g; s|__STM_APP_URL__|${_UP7_APPURL}|g" /etc/caddy/Caddyfile 2>/dev/null \
+      || true
     fi
+    # ── ST7-UPD.3b: SANITY CHECK + FORCE OVERRIDE ALS NOG __STM_*__ TOKENS ──
+    if as_root grep -qE '__STM_(DOMAIN|APP_URL)__' /etc/caddy/Caddyfile 2>/dev/null; then
+      _up7_tokens="$(as_root grep -oE '__STM_(DOMAIN|APP_URL)__' /etc/caddy/Caddyfile 2>/dev/null | sort -u | tr '\n' ' ' || echo 'onbekend')"
+      warn "  ⚠ SED liet onvervangen tokens achter (${_up7_tokens}). FORCE override → Caddyfile direct met echte waarden."
+      cat > "${_UP7_TMP}" <<UP7_TOKEN_FORCE
+# ==============================================================
+# STM – Caddyfile (FORCE override na --update: SED tokens faalden)
+# ==============================================================
+(common_headers) {
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options    "nosniff"
+    X-Frame-Options           "SAMEORIGIN"
+    Referrer-Policy           "strict-origin-when-cross-origin"
+    Permissions-Policy        "camera=(), microphone=(), geolocation=()"
+    Cache-Control "public, max-age=0, must-revalidate"
+    -Server
+  }
+  encode gzip zstd
+}
+
+${_UP7_DOMAIN} {
+  import common_headers
+  reverse_proxy ${_UP7_APPURL} {
+    header_up X-Forwarded-For    {remote_host}
+    header_up X-Forwarded-Proto  {scheme}
+    header_up X-Forwarded-Host   {host}
+    header_up X-Real-IP          {remote_host}
+    transport http {
+      keepalive_idle_conns   32
+      keepalive_interval     30s
+      dial_timeout           10s
+      response_header_timeout 120s
+    }
+  }
+}
+UP7_TOKEN_FORCE
+      as_root cp -f "${_UP7_TMP}" /etc/caddy/Caddyfile
+      as_root chown root:root /etc/caddy/Caddyfile
+      as_root chmod 0644 /etc/caddy/Caddyfile
+      ok "  FORCE override OK: Caddyfile nu zonder tokens → ${_UP7_DOMAIN} → reverse_proxy ${_UP7_APPURL}."
+    else
+      info "  ✅ SANITY: Alle __STM_*__ placeholders vervangen."
+    fi
+    rm -f "${_UP7_TMP}"
     # ── ST7-UPD.4: /etc/caddy/.env herschrijven (opgeschoond!) ──
     as_root tee /etc/caddy/.env >/dev/null <<UP7_ENV_EOF || true
 STM_DOMAIN=${_UP7_DOMAIN}
@@ -3567,17 +3616,65 @@ CADDY_FALLBACK
   as_root chmod 0644 /etc/caddy/Caddyfile
   # ──────────────────────────────────────────────────────────────────
   # ST7.3: SED — VERVANG DE PLAATSVERVANGERS __STM_DOMAIN__ en __STM_APP_URL__
+  #         (met fallback perl als sed faalt; daarna SANITY + FORCE override
+  #          als __STM_*__ tokens NOG aanwezig zijn! Zodat dit soort bugs
+  #          (onvervangen tokens → ongeldig domein → ERR_SSL_PROTOCOL_ERROR)
+  #          100% van de weg zijn!)
   # ──────────────────────────────────────────────────────────────────
   info "  SED vervangen: __STM_DOMAIN__ → '${_ST7_ENV_DOMAIN}'  __STM_APP_URL__ → '${_ST7_ENV_APPURL}'"
-  as_root sed -i "s|__STM_DOMAIN__|${_ST7_ENV_DOMAIN}|g" /etc/caddy/Caddyfile 2>/dev/null || as_root perl -i -pe "s|__STM_DOMAIN__|${_ST7_ENV_DOMAIN}|g" /etc/caddy/Caddyfile 2>/dev/null || true
-  as_root sed -i "s|__STM_APP_URL__|${_ST7_ENV_APPURL}|g"   /etc/caddy/Caddyfile 2>/dev/null || as_root perl -i -pe "s|__STM_APP_URL__|${_ST7_ENV_APPURL}|g"   /etc/caddy/Caddyfile 2>/dev/null || true
+  as_root sed -i -e "s|__STM_DOMAIN__|${_ST7_ENV_DOMAIN}|g" \
+                 -e "s|__STM_APP_URL__|${_ST7_ENV_APPURL}|g" /etc/caddy/Caddyfile 2>/dev/null \
+  || as_root perl -i -pe "s|__STM_DOMAIN__|${_ST7_ENV_DOMAIN}|g; s|__STM_APP_URL__|${_ST7_ENV_APPURL}|g" /etc/caddy/Caddyfile 2>/dev/null \
+  || true
+
   # ──────────────────────────────────────────────────────────────────
-  # ST7.4: SANITY CHECK — onvervangen tokens detecteren
+  # ST7.4: SANITY CHECK + FORCE OVERRIDE ALS NOG TOKENS AANWEZIG!
+  #        🔥 Direct na SED checken of er nog __STM_*__ in zit. Zo ja:
+  #           schijf Caddyfile ONMIDDELLIJK opnieuw met echte waarden
+  #           (geen tokens meer → ERR_SSL_PROTOCOL_ERROR onmogelijk!)
   # ──────────────────────────────────────────────────────────────────
-  if as_root grep -qE '__STM_(DOMAIN|APP_URL)__|\$\{?STM_' /etc/caddy/Caddyfile 2>/dev/null; then
-    _tokens="$(as_root grep -oE '__STM_(DOMAIN|APP_URL)__|\$\{?STM_[A-Z_]*\}?' /etc/caddy/Caddyfile 2>/dev/null | sort -u | tr '\n' ' ' 2>/dev/null || echo '(onbekend)')"
-    warn "  Caddyfile bevat NOG onvervangen tokens: ${_tokens} (bron: ${_ST7_USED_FALLBACK:+fallback-heredoc}${_ST7_USED_FALLBACK:-repo-Caddyfile})."
-    info "  Dit kan OK zijn als Caddy deze placeholders zelf ondersteunt; anders: valideer handmatig."
+  if as_root grep -qE '__STM_(DOMAIN|APP_URL)__' /etc/caddy/Caddyfile 2>/dev/null; then
+    _st7_tokens="$(as_root grep -oE '__STM_(DOMAIN|APP_URL)__' /etc/caddy/Caddyfile 2>/dev/null | sort -u | tr '\n' ' ' || echo 'onbekend')"
+    warn "  ⚠ SED liet onvervangen tokens achter: ${_st7_tokens}. FORCE override: schrijf Caddyfile direct met echte waarden."
+    cat > "$_TMP_CADDYFILE" <<ST7_TOKEN_FORCE
+# ==============================================================
+# STM – Caddyfile (gegenereerd FORCE override: SED-tokens faalden)
+# ==============================================================
+(common_headers) {
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options    "nosniff"
+    X-Frame-Options           "SAMEORIGIN"
+    Referrer-Policy           "strict-origin-when-cross-origin"
+    Permissions-Policy        "camera=(), microphone=(), geolocation=()"
+    Cache-Control "public, max-age=0, must-revalidate"
+    -Server
+  }
+  encode gzip zstd
+}
+
+${_ST7_ENV_DOMAIN} {
+  import common_headers
+  reverse_proxy ${_ST7_ENV_APPURL} {
+    header_up X-Forwarded-For    {remote_host}
+    header_up X-Forwarded-Proto  {scheme}
+    header_up X-Forwarded-Host   {host}
+    header_up X-Real-IP          {remote_host}
+    transport http {
+      keepalive_idle_conns   32
+      keepalive_interval     30s
+      dial_timeout           10s
+      response_header_timeout 120s
+    }
+  }
+}
+ST7_TOKEN_FORCE
+    as_root cp -f "$_TMP_CADDYFILE" /etc/caddy/Caddyfile
+    as_root chown root:root /etc/caddy/Caddyfile
+    as_root chmod 0644 /etc/caddy/Caddyfile
+    ok "  FORCE override OK: Caddyfile nu direct zonder tokens → ${_ST7_ENV_DOMAIN} → reverse_proxy ${_ST7_ENV_APPURL}."
+  else
+    info "  ✅ SANITY: Alle __STM_*__ placeholders vervangen. Geen tokens meer in /etc/caddy/Caddyfile."
   fi
   # ──────────────────────────────────────────────────────────────────
   # ST7.5: /etc/caddy/.env OOK ALLEEN STM_DOMAIN + STM_APP_URL (opgeschoond!)
