@@ -148,8 +148,8 @@ export async function POST(req: Request) {
           (result.errors ?? 0) > 0
             ? `${result.errors} SIMs gaven een fout bij usage-sync.`
             : null,
-        errorDetail: (result.failedRows?.length ?? 0) > 0
-          ? { failedRows: result.failedRows ?? [] }
+        errorDetail: ((result as any).failedRows?.length ?? 0) > 0
+          ? { failedRows: (result as any).failedRows ?? [] }
           : null,
       })
     );

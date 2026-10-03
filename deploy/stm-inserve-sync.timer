@@ -1,13 +1,15 @@
 # ============================================================
-# STM Inserve Sync timer: elke 6 uur (02:00, 08:00, 14:00, 20:00)
-# Abonnementen + facturen synchroniseren naar Inserve
+# STM Inserve Sync timer: ELKE 15 MINUTEN
+# (Schedule Guard in de app bepaalt of de run WERKELIJK mag
+# plaatsvinden op basis van de ADMIN-configuratie; Persistent=true
+# zodat gemiste runs alsnog uitgevoerd worden zodra de VPS online komt.)
 # ============================================================
 [Unit]
-Description=Elke 6 uur: Inserve sync (abonnementen + facturen)
+Description=Elke 15 minuten Inserve sync (abonnementen + facturen; Schedule Guard in app)
 Documentation=https://github.com/SeguiloNL/Nexus/
 
 [Timer]
-OnCalendar=*-*-* 02,08,14,20:00:00 Europe/Amsterdam
+OnCalendar=*-*-* *:00,15,30,45:00 Europe/Amsterdam
 Persistent=true
 RandomizedDelaySec=180
 AccuracySec=1min

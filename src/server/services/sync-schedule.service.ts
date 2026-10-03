@@ -4,7 +4,7 @@ import {
   SyncJobId,
   SyncJobStatus,
   SyncJobTrigger,
-  type User,
+  type RoleScope,
 } from "@/types/enums";
 import type {
   SyncJobConfig as PrismaSyncConfig,
@@ -18,6 +18,14 @@ import {
 } from "../validators/schedule";
 
 type TxAware = PrismaClient.TransactionClient | typeof prisma;
+
+export type AuditUser = {
+  id: string;
+  email?: string | null;
+  role?: any;
+  roleScope?: RoleScope;
+  permissions?: unknown;
+};
 
 /* =============================== CONFIG DEFAULTS =============================== */
 
@@ -127,7 +135,7 @@ export async function listSyncJobConfigs(): Promise<PrismaSyncConfig[]> {
 export async function saveSyncJobConfig(
   db: TxAware,
   input: SaveSyncScheduleInput,
-  user: Pick<User, "id" | "email" | "role" | "roleScope">
+  user: AuditUser
 ): Promise<PrismaSyncConfig> {
   const validated = SaveSyncScheduleSchema.parse(input);
 
@@ -234,7 +242,7 @@ export async function saveSyncJobConfig(
 export async function resetSyncJobConfig(
   db: TxAware,
   jobId: SyncJobId,
-  user: Pick<User, "id">
+  user: { id: string }
 ): Promise<PrismaSyncConfig> {
   const defaults = getDefaultSyncJobConfig(jobId);
   const existing = await (db as typeof prisma).syncJobConfig.findUnique({
@@ -331,7 +339,8 @@ export function shouldRunNow(
   const nowTz = inTZ(now, tz);
   const hour = nowTz.getHours();
   const minute = nowTz.getMinutes();
-  const dow = nowTz.getDay();
+  const dowRaw = nowTz.getDay();
+  const dow = dowRaw === 0 ? 7 : dowRaw;
   const dom = nowTz.getDate();
   const lastOfMonth = new Date(nowTz.getFullYear(), nowTz.getMonth() + 1, 0).getDate();
 
@@ -423,6 +432,11 @@ export function shouldRunNow(
             reason: `buiten maandelijks window.`,
           };
     }
+    default:
+      return {
+        shouldRun: false,
+        reason: `Onbekende frequentie: ${config.frequency as string}.`,
+      };
   }
 }
 
@@ -489,7 +503,7 @@ export interface CompleteRunInput {
   id: string;
   status: SyncJobStatus;
   startedAt: Date;
-  recordsAffected?: Record<string, number> | null;
+  recordsAffected?: unknown;
   errorMessage?: string | null;
   errorDetail?: unknown;
 }

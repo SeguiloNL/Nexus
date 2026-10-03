@@ -5,11 +5,13 @@ import { Settings as SettingsIcon, Info, Database, Shield, Globe } from "lucide-
 import { InserveSettingsForm } from "./_components/inserve-settings-client";
 import { SimhuisSettingsForm } from "./_components/simhuis-settings-client";
 import { NavixySettingsForm } from "./_components/navixy-settings-client";
+import { SyncScheduleCard } from "./_components/sync-schedule-client";
 import {
   getInserveSettingsMasked,
   getSimhuisSettingsMasked,
   getNavixySettingsMasked,
 } from "@/server/services/app-setting.service";
+import { getSyncSchedulesAction } from "./actions";
 
 export default async function SettingsPage() {
   const user = await requireUser();
@@ -20,10 +22,11 @@ export default async function SettingsPage() {
   }
 
   const canEdit = canUserRole(user.permissions, "edit", "setting");
-  const [inserveSettings, simhuisSettings, navixySettings] = await Promise.all([
+  const [inserveSettings, simhuisSettings, navixySettings, syncState] = await Promise.all([
     getInserveSettingsMasked(),
     getSimhuisSettingsMasked(),
     getNavixySettingsMasked(),
+    getSyncSchedulesAction(),
   ]);
 
   return (
@@ -38,6 +41,8 @@ export default async function SettingsPage() {
       <InserveSettingsForm initial={inserveSettings} readOnly={!canEdit} />
       <SimhuisSettingsForm initial={simhuisSettings} readOnly={!canEdit} />
       <NavixySettingsForm initial={navixySettings} readOnly={!canEdit} />
+
+      <SyncScheduleCard initialState={syncState} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card>

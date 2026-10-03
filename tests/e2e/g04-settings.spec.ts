@@ -48,7 +48,35 @@ test.describe("G.2.4 — Instellingen (Settings) smoke", () => {
       }
     });
 
-    test("ADMIN → /settings: Source-badges + 3× verbinding-testen + 3× opslaan", async ({
+    test("ADMIN → /settings: SyncScheduleCard (planning) + 3 sync jobs + run-log", async ({
+      page,
+    }) => {
+      await page.goto("/settings", { waitUntil: "domcontentloaded" });
+
+      // 1. Sync Schedule card titel
+      await expect(
+        page.getByText(/^automatische synchronisatie/i).first()
+      ).toBeVisible({ timeout: 15_000 });
+
+      // 2. 3 sync job titels
+      for (const jobName of ["Simhuis Verbruiksdata", "Simhuis SIM-voorraad", "Inserve Abonnementen + Facturen"]) {
+        const loc = page.getByText(new RegExp(`^${jobName}$`, "i")).first();
+        await expect(loc).toBeVisible({ timeout: 10_000 });
+      }
+
+      // 3. Sync Schedule card bevat 3× Opslaan (naast 3 API opslaan)
+      const saveButtons = page.getByRole("button", { name: /^opslaan$/i });
+      await expect(saveButtons).toHaveCount(6, { timeout: 10_000 });
+
+      // 4. Sync Schedule card bevat 3× "Handmatig nu synchroniseren" (ADMIN-only)
+      const manualButtons = page.getByRole("button", { name: /handmatig nu synchroniseren/i });
+      await expect(manualButtons).toHaveCount(3, { timeout: 5_000 });
+
+      // 5. Recente runs tabel titel
+      await expect(page.getByText(/recente synchronisatieruns/i).first()).toBeVisible();
+    });
+
+    test("ADMIN → /settings: Source-badges + 3× verbinding-testen + 3× api-opslaan", async ({
       page,
     }) => {
       await page.goto("/settings", { waitUntil: "domcontentloaded" });
@@ -66,11 +94,7 @@ test.describe("G.2.4 — Instellingen (Settings) smoke", () => {
       });
       await expect(testButtons).toHaveCount(3, { timeout: 12_000 });
 
-      // 3. "Opslaan" knoppen: 3 stuks
-      const saveButtons = page.getByRole("button", { name: /^opslaan$/i });
-      await expect(saveButtons).toHaveCount(3);
-
-      // 4. Systeem info: Applicatie en Versie velden bestaan
+      // 3. Systeem info: Applicatie en Versie velden bestaan
       await expect(page.getByText(/^applicatie$/i).first()).toBeVisible();
       await expect(page.getByText(/^versie$/i).first()).toBeVisible();
     });
@@ -81,7 +105,7 @@ test.describe("G.2.4 — Instellingen (Settings) smoke", () => {
       await loginAs(page, "employee");
     });
 
-    test("EMPLOYEE → /settings: 3× readOnly-melding + 0× Opslaan + 3× Verbinding-testen", async ({
+    test("EMPLOYEE → /settings: 3× API readOnly-melding + 0× API Opslaan + 0× sync-opslaan + sync card readOnly", async ({
       page,
     }) => {
       await page.goto("/settings", { waitUntil: "domcontentloaded" });
@@ -91,9 +115,22 @@ test.describe("G.2.4 — Instellingen (Settings) smoke", () => {
         .getByText(/alleen .*beheerders.* kunnen .* api-instellingen wijzigen/i);
       await expect(readOnlyMeldingen).toHaveCount(3, { timeout: 12_000 });
 
-      // Geen "Opslaan" knoppen
+      // Sync schedule card MOET wel zichtbaar zijn (viewer right), maar readOnly melding
+      const syncCard = page.getByText(/^automatische synchronisatie/i).first();
+      await expect(syncCard).toBeVisible({ timeout: 12_000 });
+
+      const syncReadOnly = page.getByText(
+        /Alleen interne ADMINs kunnen/
+      );
+      await expect(syncReadOnly.first()).toBeVisible({ timeout: 8_000 });
+
+      // Geen "Opslaan" knoppen (0 API + 0 sync)
       const saveButtons = page.getByRole("button", { name: /^opslaan$/i });
-      await expect(saveButtons).toHaveCount(0);
+      await expect(saveButtons).toHaveCount(0, { timeout: 3_000 });
+
+      // Geen "Handmatig nu synchroniseren" knoppen (ADMIN-only)
+      const manualButtons = page.getByRole("button", { name: /handmatig nu synchroniseren/i });
+      await expect(manualButtons).toHaveCount(0, { timeout: 3_000 });
 
       // Wel "Verbinding testen" knoppen (view:setting is voldoende)
       const testButtons = page.getByRole("button", { name: /verbinding testen/i });

@@ -75,8 +75,8 @@ import {
   SyncJobId,
   SyncJobStatus,
   SyncJobTrigger,
+  type RoleScope,
 } from "@/types/enums";
-import type { RoleScope } from "@/types/enums";
 
 export type InserveSettingsActionState = {
   errors?: Partial<Record<keyof InserveSettingsInput, string[]>>;
@@ -445,6 +445,16 @@ export async function syncSimhuisSimsAction(): Promise<SimSyncActionResult> {
         // ignore
       }
     }
+    return {
+      ok: false,
+      message:
+        err instanceof Error
+          ? err.message
+          : "Er is een fout opgetreden tijdens het synchroniseren van de Simhuis SIM-voorraad.",
+      debugContext,
+    };
+  }
+}
 /* ========================= Sync Schedule beheer (ADMIN / INTERNAL) ========================= */
 
 export interface SyncScheduleSaveState {

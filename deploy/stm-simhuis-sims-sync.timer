@@ -1,13 +1,15 @@
 # ============================================================
-# STM Simhuis SIM-voorraad Sync timer: 4x per dag
-# (03:00, 09:00, 15:00, 21:00 Europe/Amsterdam)
+# STM Simhuis SIM-voorraad Sync timer: ELKE 15 MINUTEN
+# (Schedule Guard in de app bepaalt of de run WERKELIJK mag
+# plaatsvinden op basis van de ADMIN-configuratie; Persistent=true
+# zodat gemiste runs alsnog uitgevoerd worden zodra de VPS online komt.)
 # ============================================================
 [Unit]
-Description=4x-daagse Simhuis SIM-voorraad synchronisatie (03/09/15/21 uur NL)
+Description=Elke 15 minuten Simhuis SIM-voorraad synchronisatie (Schedule Guard in app)
 Documentation=https://github.com/SeguiloNL/Nexus/
 
 [Timer]
-OnCalendar=*-*-* 03,09,15,21:00:00 Europe/Amsterdam
+OnCalendar=*-*-* *:00,15,30,45:00 Europe/Amsterdam
 Persistent=true
 RandomizedDelaySec=120
 AccuracySec=1min

@@ -148,7 +148,9 @@ export async function POST(req: Request) {
             skipped: result.invoices.skipped,
             failed: result.invoices.failed,
           },
-        },
+          subscriptionErrors: result.subscriptions.failedDetails,
+          invoiceErrors: result.invoices.failedDetails,
+        } as any,
         errorMessage:
           totalFailed > 0
             ? `${totalFailed} Inserve-items gaven een fout (zie errorDetail voor IDs).`

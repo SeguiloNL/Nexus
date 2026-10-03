@@ -35,7 +35,7 @@ export async function syncAllPendingToInserve(
       deletedAt: null,
       status: { in: ["ACTIVE", "CANCELLED", "TERMINATED", "SUSPENDED"] },
       OR: [
-        { inserveSyncStatus: null },
+        { inserveSyncStatus: null as any },
         { inserveSyncStatus: "FAILED" },
         { inserveSyncStatus: "SKIPPED" },
       ],
@@ -81,7 +81,7 @@ export async function syncAllPendingToInserve(
     where: {
       status: { in: ["DRAFT", "SENT", "OVERDUE"] },
       OR: [
-        { inserveSyncStatus: null },
+        { inserveSyncStatus: null as any },
         { inserveSyncStatus: "FAILED" },
         { inserveSyncStatus: "SKIPPED" },
       ],
