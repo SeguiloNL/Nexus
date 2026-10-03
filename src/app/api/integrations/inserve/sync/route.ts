@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser, canUserRole } from "@/lib/auth/session";
+import {
+  bearerTokenFromHeader,
+  getCurrentUserOrNull,
+  canUserRole,
+  tokensEqual,
+} from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import {
   syncAllPendingToInserve,
@@ -23,14 +28,6 @@ export const revalidate = 0;
 const REQ_TOKEN_VAR = "SIMHUIS_SYNC_API_TOKEN";
 const JOB_ID = SyncJobId.INSERVE;
 
-function bearerTokenFromHeader(authHeader: string | null | undefined): string | null {
-  if (!authHeader) return null;
-  const [scheme, token] = authHeader.split(" ");
-  if (scheme?.toLowerCase() === "bearer" && token) return token;
-  if (scheme?.toLowerCase() === "basic" && token) return token;
-  return null;
-}
-
 function determineTriggeredBy(req: Request, via: "session" | "api_token"): SyncJobTrigger {
   if (via === "session") return SyncJobTrigger.MANUAL_ADMIN;
   const hdr = (req.headers.get("x-sync-triggered-by") ?? "").toLowerCase();
@@ -46,7 +43,8 @@ export async function POST(req: Request) {
     forceRaw === "1" || forceRaw === "true" || forceRaw === "on";
 
   try {
-    const authHeader = req.headers.get("authorization") ?? req.headers.get("Authorization");
+    const authHeader =
+      req.headers.get("authorization") ?? req.headers.get("Authorization");
     const envToken = (process.env[REQ_TOKEN_VAR] ?? "").trim();
     const bearer = bearerTokenFromHeader(authHeader);
 
@@ -57,22 +55,43 @@ export async function POST(req: Request) {
       canForce: boolean;
     } | null = null;
 
-    const user = await getCurrentUser();
-    if (user && canUserRole(user.role, "edit", "setting")) {
-      principal = { userId: user.id, userRole: user.role, via: "session", canForce: true };
-    } else if (envToken && bearer && bearer === envToken) {
-      principal = { via: "api_token", canForce: false };
-    } else {
-      const msg = "Onvoldoende rechten (setting/edit) of ongeldige API-token.";
+    if (bearer && envToken) {
+      if (tokensEqual(bearer, envToken)) {
+        principal = { via: "api_token", canForce: false };
+      }
+    }
+
+    if (!principal) {
+      const user = await getCurrentUserOrNull();
+      if (user && canUserRole(user.role, "edit", "setting")) {
+        principal = {
+          userId: user.id,
+          userRole: user.role,
+          via: "session",
+          canForce: true,
+        };
+      }
+    }
+
+    if (!principal) {
       return NextResponse.json(
-        { ok: false, error: msg },
+        {
+          ok: false,
+          error: bearer
+            ? "Ongeldige Bearer-token (SIMHUIS_SYNC_API_TOKEN komt niet overeen)."
+            : "Niet geauthenticeerd: log in (setting/edit) of stuur een geldige Bearer-token (SIMHUIS_SYNC_API_TOKEN) mee.",
+        },
         { status: 403 }
       );
     }
 
     if (force && !principal.canForce) {
       return NextResponse.json(
-        { ok: false, error: "Forceren is enkel toegestaan voor ingelogde ADMIN/Medewerker." },
+        {
+          ok: false,
+          error:
+            "Forceren is enkel toegestaan voor ingelogde ADMIN/Medewerker.",
+        },
         { status: 403 }
       );
     }
@@ -81,7 +100,10 @@ export async function POST(req: Request) {
     const config = await getSyncJobConfig(JOB_ID);
 
     if (!force) {
-      const guard = shouldRunNow(config, new Date(), { force: false, triggeredBy });
+      const guard = shouldRunNow(config, new Date(), {
+        force: false,
+        triggeredBy,
+      });
       if (!guard.shouldRun) {
         return NextResponse.json({
           ok: true,
@@ -115,8 +137,12 @@ export async function POST(req: Request) {
           id: run.id,
           status: SyncJobStatus.FAILED,
           startedAt,
-          errorMessage: e?.message ?? "Onverwachte fout in Inserve batch sync.",
-          errorDetail: { stack: e?.stack ?? null, name: e?.name ?? null },
+          errorMessage:
+            e?.message ?? "Onverwachte fout in Inserve batch sync.",
+          errorDetail: {
+            stack: e?.stack ?? null,
+            name: e?.name ?? null,
+          },
         })
       );
       throw e;
@@ -127,8 +153,10 @@ export async function POST(req: Request) {
       `Inv: ok=${result.invoices.synced} skip=${result.invoices.skipped} fail=${result.invoices.failed}. ` +
       `Duur: ${result.durationMs}ms.`;
 
-    const totalFailed = result.subscriptions.failed + result.invoices.failed;
-    const finalStatus = totalFailed > 0 ? SyncJobStatus.FAILED : SyncJobStatus.SUCCESS;
+    const totalFailed =
+      result.subscriptions.failed + result.invoices.failed;
+    const finalStatus =
+      totalFailed > 0 ? SyncJobStatus.FAILED : SyncJobStatus.SUCCESS;
 
     await prisma.$transaction(async (tx) =>
       completeSyncJobRun(tx, {
@@ -178,7 +206,8 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         ok: false,
-        error: e?.message ?? "Onverwachte fout tijdens Inserve-sync.",
+        error:
+          e?.message ?? "Onverwachte fout tijdens Inserve-sync.",
       },
       { status: 500 }
     );

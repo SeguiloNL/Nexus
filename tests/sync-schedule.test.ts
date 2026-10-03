@@ -3,7 +3,7 @@ import type { SyncJobConfig as PrismaSyncConfig } from "@prisma/client";
 import {
   SyncFrequency,
   SyncJobId,
-  type RoleScope,
+  RoleScope,
 } from "@/types/enums";
 import type { SaveSyncScheduleInput } from "@/server/validators/schedule";
 
@@ -110,7 +110,7 @@ const ADMIN: TestUser = {
   id: "admin-1",
   email: "admin@example.com",
   role: "ADMIN",
-  roleScope: "INTERNAL",
+  roleScope: RoleScope.INTERNAL,
 };
 
 describe("SaveSyncScheduleSchema (§AC-1 validatie)", () => {

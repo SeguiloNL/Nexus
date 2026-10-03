@@ -9,6 +9,7 @@ import {
   emptyPermissionBits,
   buildLegacyPermissionsForRole,
 } from "@/lib/rbac";
+import { timingSafeEqual as _timingSafeEqual } from "crypto";
 import type {
   ResourceAction,
   ResourceType,
@@ -39,8 +40,23 @@ function permissionsMeaningful(bits: PermissionBits | null | undefined): boolean
 }
 
 export async function getCurrentUser(): Promise<SessionUser> {
+  const u = await getCurrentUserOrNull();
+  if (!u) throw new PermissionError("Je bent niet ingelogd.");
+  return u;
+}
+
+/**
+ * Zoals getCurrentUser(), maar geeft `null` terug als er geen (geldige)
+ * sessie is in plaats van een PermissionError te gooien.
+ *
+ * Gebruikt in API-routes die *ook* authenticatie via Bearer-token
+ * ondersteunen (b.v. de 3 sync-routes): daar wil je dat een ontbrekende
+ * sessie niet meteen een 500/"Je bent niet ingelogd." oplevert, maar dat
+ * er eerst op Bearer-token gecontroleerd wordt.
+ */
+export async function getCurrentUserOrNull(): Promise<SessionUser | null> {
   const session = await auth();
-  if (!session?.user) throw new PermissionError("Je bent niet ingelogd.");
+  if (!session?.user) return null;
   const u = session.user as unknown as Partial<SessionUser>;
 
   const basePerms = u.permissions ?? ({} as PermissionBits);
@@ -264,4 +280,47 @@ export async function canUserRoleAsync(
     return canWithRoleId(roleIdOrPerms, action, resource);
   }
   return canWithBits(roleIdOrPerms as PermissionBits | null | undefined, action, resource);
+}
+
+/**
+ * Timing-safe (konstant-tijd) string-vergelijking voor Bearer-tokens.
+ *
+ * Voorkomt zijpaden via responsetijd waardoor een aanvaller de token per
+ * karakter iteratief zou kunnen raden.
+ *
+ * Beide strings worden eerst omgezet naar UTF-8 bytes en moeten *exact*
+ * dezelfde lengte hebben (anders sowieso false).
+ */
+export function tokensEqual(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  if (a.length !== b.length) return false;
+  const enc = new TextEncoder();
+  try {
+    return _timingSafeEqual(enc.encode(a), enc.encode(b));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Parse de Authorization-header naar een Bearer (of Basic) token.
+ *
+ * Accepteert: "Bearer <token>", "bearer <token>", "Basic <token>",
+ * "basic <token>" en zelfs "<token>" zonder scheme (voor backward compat).
+ * Geeft `null` terug als de header leeg is of geen token bevat.
+ */
+export function bearerTokenFromHeader(authHeader: string | null | undefined): string | null {
+  if (!authHeader) return null;
+  const trimmed = authHeader.trim();
+  if (!trimmed) return null;
+  const idx = trimmed.indexOf(" ");
+  if (idx === -1) {
+    // Geen scheme — hele inhoud als token beschouwen.
+    return trimmed;
+  }
+  const scheme = trimmed.slice(0, idx).toLowerCase();
+  const token = trimmed.slice(idx + 1).trim();
+  if (!token) return null;
+  if (scheme === "bearer" || scheme === "basic") return token;
+  return null;
 }
