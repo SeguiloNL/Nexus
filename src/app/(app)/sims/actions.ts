@@ -737,7 +737,7 @@ export async function refreshSimStatusAction(
 ): Promise<SimStatusRefreshActionState> {
   const user = await getCurrentUser();
 
-  await requirePermission(user.permissions ?? user.roleId ?? user.role, "view", "sim");
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "edit", "sim");
 
   const ctx = buildActionCtx(user);
   let result: SimStatusRefreshResult;

@@ -115,7 +115,7 @@ type SimDetailProps = {
     prev: SimSuspendActionState,
     formData: FormData
   ) => Promise<SimSuspendActionState>;
-  refreshStatusAction: (
+  refreshStatusAction?: (
     simId: string,
     prev: SimStatusRefreshActionState,
     formData: FormData
@@ -650,7 +650,18 @@ export function SimDetail({
   );
 
   const [refreshState, refreshFormAction, refreshPendingNative] = useFormState(
-    refreshStatusAction.bind(null, simId),
+    (refreshStatusAction
+      ? refreshStatusAction.bind(null, simId)
+      : async (
+          _prev: SimStatusRefreshActionState,
+          _form: FormData
+        ): Promise<SimStatusRefreshActionState> => ({
+          ok: false,
+          message: "",
+        })) as unknown as (
+      prev: SimStatusRefreshActionState,
+      formData: FormData
+    ) => Promise<SimStatusRefreshActionState>,
     { ok: false, message: "" } satisfies SimStatusRefreshActionState
   );
   const [isStatusRefreshPendingClient, setIsStatusRefreshPendingClient] = useState(false);
@@ -936,22 +947,24 @@ export function SimDetail({
               </p>
             ) : null}
             <div className="mt-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={isStatusRefreshPending}
-                aria-disabled={isStatusRefreshPending}
-                aria-busy={isStatusRefreshPending}
-                onClick={triggerManualStatusRefresh}
-                className="gap-1.5"
-              >
-                <RefreshCw
-                  className={"h-3.5 w-3.5 " + (isStatusRefreshPending ? "animate-spin" : "")}
-                  aria-hidden="true"
-                />
-                {isWarning ? "Status opnieuw verversen" : "Opnieuw proberen"}
-              </Button>
+              {refreshStatusAction ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={isStatusRefreshPending}
+                  aria-disabled={isStatusRefreshPending}
+                  aria-busy={isStatusRefreshPending}
+                  onClick={triggerManualStatusRefresh}
+                  className="gap-1.5"
+                >
+                  <RefreshCw
+                    className={"h-3.5 w-3.5 " + (isStatusRefreshPending ? "animate-spin" : "")}
+                    aria-hidden="true"
+                  />
+                  {isWarning ? "Status opnieuw verversen" : "Opnieuw proberen"}
+                </Button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -985,41 +998,43 @@ export function SimDetail({
               </h1>
               <div className="flex items-center gap-2">
                 <SimStatusBadge status={effectiveSimStatus as SimStatus} />
-                <div
-                  className="inline-flex items-center gap-1.5 text-xs text-slate-500"
-                  aria-live="polite"
-                  aria-atomic="true"
-                >
-                  {isStatusRefreshPending ? (
-                    <>
-                      <RefreshCw
-                        className="h-3.5 w-3.5 animate-spin text-slate-500"
-                        aria-hidden="true"
-                      />
-                      <span>
-                        {SIM_PROVIDER_UI_LABELS.providerStatusLoading()}
-                      </span>
-                    </>
-                  ) : (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={triggerManualStatusRefresh}
-                      disabled={isStatusRefreshPending}
-                      aria-disabled={isStatusRefreshPending}
-                      aria-busy={isStatusRefreshPending}
-                      title={SIM_PROVIDER_UI_LABELS.providerStatusRefreshButtonAria()}
-                      aria-label={SIM_PROVIDER_UI_LABELS.providerStatusRefreshButtonAria()}
-                    >
-                      <RefreshCw
-                        className="h-3.5 w-3.5"
-                        aria-hidden="true"
-                      />
-                      Ververs
-                    </Button>
-                  )}
-                </div>
+                {refreshStatusAction ? (
+                  <div
+                    className="inline-flex items-center gap-1.5 text-xs text-slate-500"
+                    aria-live="polite"
+                    aria-atomic="true"
+                  >
+                    {isStatusRefreshPending ? (
+                      <>
+                        <RefreshCw
+                          className="h-3.5 w-3.5 animate-spin text-slate-500"
+                          aria-hidden="true"
+                        />
+                        <span>
+                          {SIM_PROVIDER_UI_LABELS.providerStatusLoading()}
+                        </span>
+                      </>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={triggerManualStatusRefresh}
+                        disabled={isStatusRefreshPending}
+                        aria-disabled={isStatusRefreshPending}
+                        aria-busy={isStatusRefreshPending}
+                        title={SIM_PROVIDER_UI_LABELS.providerStatusRefreshButtonAria()}
+                        aria-label={SIM_PROVIDER_UI_LABELS.providerStatusRefreshButtonAria()}
+                      >
+                        <RefreshCw
+                          className="h-3.5 w-3.5"
+                          aria-hidden="true"
+                        />
+                        Ververs
+                      </Button>
+                    )}
+                  </div>
+                ) : null}
               </div>
             </div>
             <div className="text-sm text-slate-500 font-mono">
@@ -1303,7 +1318,7 @@ export function SimDetail({
                   <CardTitle className="flex items-center gap-2 text-base">
                     <MessageSquare className="h-4 w-4 text-slate-500" /> SMS
                   </CardTitle>
-                  {canEdit ? (
+                  {canSyncUsage ? (
                     <form
                       action={usageSyncFormAction as any}
                       onSubmit={onUsageSyncSubmit}

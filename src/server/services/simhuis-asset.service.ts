@@ -1136,7 +1136,7 @@ export async function refreshSimStatusById(
   ctx: AuthContext
 ): Promise<SimStatusRefreshResult> {
   try {
-    await requirePermission(pickAuth(ctx), "view", "sim");
+    await requirePermission(pickAuth(ctx), "edit", "sim");
   } catch (e: any) {
     return {
       ok: false,
