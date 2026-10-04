@@ -228,36 +228,7 @@ export function SimList({
     return sims.filter((s) => s.status === statusFilter);
   }, [sims, statusFilter]);
 
-  const usageSortFn: SortingFn<ListSim> = (rowA, rowB) => {
-    const rawA = rowA.original.dataUsedBytes;
-    const rawB = rowB.original.dataUsedBytes;
-
-    const aEmpty = rawA === null || rawA === undefined || rawA === "";
-    const bEmpty = rawB === null || rawB === undefined || rawB === "";
-
-    if (aEmpty && bEmpty) return 0;
-    if (aEmpty) return 1;
-    if (bEmpty) return -1;
-
-    let a: bigint;
-    let b: bigint;
-    try {
-      a = typeof rawA === "bigint" ? rawA : BigInt(String(rawA));
-    } catch {
-      a = 0n;
-    }
-    try {
-      b = typeof rawB === "bigint" ? rawB : BigInt(String(rawB));
-    } catch {
-      b = 0n;
-    }
-
-    if (a < b) return -1;
-    if (a > b) return 1;
-    return 0;
-  };
-
-  const columns: ColumnDef<ListSim>[] = [
+  const columns: ColumnDef<ListSim>[] = useMemo(() => [
     {
       accessorKey: "iccid",
       header: "ICCID",
@@ -335,7 +306,23 @@ export function SimList({
       accessorFn: (row) => row.dataUsedBytes,
       header: "Verbruik",
       enableSorting: true,
-      sortingFn: usageSortFn,
+      sortDescFirst: true,
+      sortingFn: (rowA, rowB) => {
+        const rA = rowA.original.dataUsedBytes as unknown as bigint | string | null | undefined;
+        const rB = rowB.original.dataUsedBytes as unknown as bigint | string | null | undefined;
+        const aLeeg = rA === null || rA === undefined || rA === "";
+        const bLeeg = rB === null || rB === undefined || rB === "";
+        if (aLeeg && bLeeg) return 0;
+        if (aLeeg) return 1;
+        if (bLeeg) return -1;
+        let a: bigint;
+        let b: bigint;
+        try { a = typeof rA === "bigint" ? rA : BigInt(String(rA)); } catch { a = 0n; }
+        try { b = typeof rB === "bigint" ? rB : BigInt(String(rB)); } catch { b = 0n; }
+        if (a < b) return -1;
+        if (a > b) return 1;
+        return 0;
+      },
       cell: ({ row }) => <MiniUsageCell sim={row.original} />,
     },
     {
@@ -383,7 +370,7 @@ export function SimList({
         );
       },
     },
-  ];
+  ], [canEdit, canDelete]);
 
   return (
     <div className="space-y-4">
