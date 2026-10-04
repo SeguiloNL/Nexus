@@ -228,71 +228,19 @@ export function SimList({
     return sims.filter((s) => s.status === statusFilter);
   }, [sims, statusFilter]);
 
-  function getUsageScore(sim: ListSim): {
-    hasData: boolean;
-    tier: number;
-    ratio: number;
-    usedAbs: bigint;
-  } {
-    const used = sim.dataUsedBytes;
-    const limitRaw = sim.dataLimitBytes;
-    const threshold = sim.lowestDataLimitBytes;
-    const limit: bigint | null = limitRaw ?? threshold;
-
-    if (used === null || used === undefined) {
-      return { hasData: false, tier: 0, ratio: -1, usedAbs: 0n };
-    }
-
-    const usedNum = Number(used);
-    const usedAbs = used;
-
-    if (limit === null || limit === undefined || limit <= 0n) {
-      return { hasData: true, tier: 1, ratio: 0, usedAbs };
-    }
-
-    const limitNum = Number(limit);
-    if (limitNum === 0) {
-      return { hasData: true, tier: 1, ratio: 0, usedAbs };
-    }
-
-    const ratio = usedNum / limitNum;
-    const overschreden = used > limit;
-    const nearFull = ratio >= 0.9;
-    const reachedThreshold =
-      threshold !== null && threshold !== undefined && threshold > 0n && used >= threshold;
-
-    let tier: number;
-    if (overschreden) {
-      tier = 5;
-    } else if (nearFull) {
-      tier = 4;
-    } else if (reachedThreshold) {
-      tier = 3;
-    } else {
-      tier = 2;
-    }
-
-    return { hasData: true, tier, ratio, usedAbs };
-  }
-
   const usageSortFn: SortingFn<ListSim> = (rowA, rowB) => {
-    const a = getUsageScore(rowA.original);
-    const b = getUsageScore(rowB.original);
+    const a = rowA.original.dataUsedBytes;
+    const b = rowB.original.dataUsedBytes;
 
-    if (!a.hasData) {
-      if (!b.hasData) return 0;
-      return 1;
-    }
-    if (!b.hasData) return -1;
+    const aEmpty = a === null || a === undefined;
+    const bEmpty = b === null || b === undefined;
 
-    if (a.tier < b.tier) return -1;
-    if (a.tier > b.tier) return 1;
+    if (aEmpty && bEmpty) return 0;
+    if (aEmpty) return 1;
+    if (bEmpty) return -1;
 
-    if (a.ratio < b.ratio) return -1;
-    if (a.ratio > b.ratio) return 1;
-
-    if (a.usedAbs < b.usedAbs) return -1;
-    if (a.usedAbs > b.usedAbs) return 1;
+    if (a < b) return -1;
+    if (a > b) return 1;
     return 0;
   };
 
