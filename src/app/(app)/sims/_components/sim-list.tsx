@@ -229,15 +229,28 @@ export function SimList({
   }, [sims, statusFilter]);
 
   const usageSortFn: SortingFn<ListSim> = (rowA, rowB) => {
-    const a = rowA.original.dataUsedBytes;
-    const b = rowB.original.dataUsedBytes;
+    const rawA = rowA.original.dataUsedBytes;
+    const rawB = rowB.original.dataUsedBytes;
 
-    const aEmpty = a === null || a === undefined;
-    const bEmpty = b === null || b === undefined;
+    const aEmpty = rawA === null || rawA === undefined || rawA === "";
+    const bEmpty = rawB === null || rawB === undefined || rawB === "";
 
     if (aEmpty && bEmpty) return 0;
     if (aEmpty) return 1;
     if (bEmpty) return -1;
+
+    let a: bigint;
+    let b: bigint;
+    try {
+      a = typeof rawA === "bigint" ? rawA : BigInt(String(rawA));
+    } catch {
+      a = 0n;
+    }
+    try {
+      b = typeof rawB === "bigint" ? rawB : BigInt(String(rawB));
+    } catch {
+      b = 0n;
+    }
 
     if (a < b) return -1;
     if (a > b) return 1;
