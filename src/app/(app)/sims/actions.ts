@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/session";
-import { requirePermission } from "@/lib/rbac";
+import { requirePermission, PermissionError } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import { buildCsv, csvDownloadResponse, filenameTimestamp } from "@/lib/csv";
 import {
@@ -383,7 +383,14 @@ export async function syncUsageSimsAction(
   _formData: FormData
 ): Promise<BulkActionState> {
   const user = await getCurrentUser();
-  await requirePermission(user.permissions ?? user.roleId ?? user.role, "view", "sim");
+  if (
+    user.roleScope !== RoleScope.INTERNAL ||
+    !hasMinRole(user.role, UserRole.ADMIN)
+  ) {
+    throw new PermissionError(
+      "Onvoldoende rechten: alleen interne beheerders (ADMIN) mogen een verbruikssync uitvoeren."
+    );
+  }
   const ctx = {
     userId: user.id,
     userRole: user.role,
@@ -453,7 +460,14 @@ export async function syncUsageForSingleSimAction(
   _formData: FormData
 ): Promise<SimUsageSyncState> {
   const user = await getCurrentUser();
-  await requirePermission(user.permissions ?? user.roleId ?? user.role, "view", "sim");
+  if (
+    user.roleScope !== RoleScope.INTERNAL ||
+    !hasMinRole(user.role, UserRole.ADMIN)
+  ) {
+    throw new PermissionError(
+      "Onvoldoende rechten: alleen interne beheerders (ADMIN) mogen een verbruikssync uitvoeren."
+    );
+  }
   const ctx = {
     userId: user.id,
     userRole: user.role,

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { useFormState } from "react-dom";
-import type { ColumnDef, Row, SortingFn } from "@tanstack/react-table";
+import type { ColumnDef, Row } from "@tanstack/react-table";
 import { MoreHorizontal, Plus, Trash2, Edit, Upload, Download, Filter, RefreshCw, AlertTriangle } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { BulkActionForm } from "@/components/data-table/bulk-action-form";
@@ -148,7 +148,7 @@ export function SimList({
   canExport,
   canSyncUsage,
 }: SimListProps) {
-  const [statusFilter, setStatusFilter] = useState<SimStatus | "__ALL__">("__ALL__");
+  const [statusFilter, setStatusFilter] = useState<SimStatus | "__ALL__">("ACTIVE");
   const [syncState, syncFormAction, syncPendingNative] = useFormState(syncUsageSimsAction, {
     ok: false,
   } as BulkActionState);
@@ -308,19 +308,45 @@ export function SimList({
       enableSorting: true,
       sortDescFirst: true,
       sortingFn: (rowA, rowB) => {
-        const rA = rowA.original.dataUsedBytes as unknown as bigint | string | null | undefined;
-        const rB = rowB.original.dataUsedBytes as unknown as bigint | string | null | undefined;
-        const aLeeg = rA === null || rA === undefined || rA === "";
-        const bLeeg = rB === null || rB === undefined || rB === "";
-        if (aLeeg && bLeeg) return 0;
-        if (aLeeg) return 1;
-        if (bLeeg) return -1;
-        let a: bigint;
-        let b: bigint;
-        try { a = typeof rA === "bigint" ? rA : BigInt(String(rA)); } catch { a = 0n; }
-        try { b = typeof rB === "bigint" ? rB : BigInt(String(rB)); } catch { b = 0n; }
-        if (a < b) return -1;
-        if (a > b) return 1;
+        type ByteLike = bigint | string | null | undefined;
+        const toNum = (v: ByteLike): number => {
+          if (v === null || v === undefined || v === "") return -1;
+          try {
+            const n = typeof v === "bigint" ? v : BigInt(String(v));
+            return Number(n);
+          } catch {
+            return -1;
+          }
+        };
+
+        const usedA = toNum(rowA.original.dataUsedBytes as ByteLike);
+        const usedB = toNum(rowB.original.dataUsedBytes as ByteLike);
+        const limitRawA = toNum(rowA.original.dataLimitBytes as ByteLike);
+        const limitRawB = toNum(rowB.original.dataLimitBytes as ByteLike);
+        const thresholdA = toNum(rowA.original.lowestDataLimitBytes as ByteLike);
+        const thresholdB = toNum(rowB.original.lowestDataLimitBytes as ByteLike);
+
+        const limitA = limitRawA > 0 ? limitRawA : thresholdA;
+        const limitB = limitRawB > 0 ? limitRawB : thresholdB;
+
+        const hasRatioA = usedA >= 0 && limitA > 0;
+        const hasRatioB = usedB >= 0 && limitB > 0;
+
+        if (!hasRatioA && !hasRatioB) {
+          if (usedA === usedB) return 0;
+          return usedA < usedB ? 1 : -1;
+        }
+        if (!hasRatioA) return 1;
+        if (!hasRatioB) return -1;
+
+        const ratioA = (usedA / limitA) * 100;
+        const ratioB = (usedB / limitB) * 100;
+
+        if (ratioA < ratioB) return -1;
+        if (ratioA > ratioB) return 1;
+
+        if (usedA < usedB) return -1;
+        if (usedA > usedB) return 1;
         return 0;
       },
       cell: ({ row }) => <MiniUsageCell sim={row.original} />,
