@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { SIM, SimStatus } from "@prisma/client";
-import { formatBytes, formatIccid } from "@/lib/formatters";
+import { formatBytes, formatDateRangeLong, formatIccid } from "@/lib/formatters";
 import { SIM_PROVIDER_UI_LABELS } from "@/lib/providers/provider-registry";
 import {
   exportSimsCsvAction,
@@ -98,8 +98,26 @@ function MiniUsageCell({ sim }: { sim: ListSim }) {
   const fmtUsed = formatBytes(used ?? null, 1);
   const fmtLimit = hasLimit ? formatBytes(limit, 1) : "Onbeperkt";
 
+  const s: any = sim;
+  const periodLabel = formatDateRangeLong(s.usagePeriodStart, s.usagePeriodEnd);
+  const sourceLabel =
+    s.usageSource === "BUNDLE_COUNTER"
+      ? "Bundelteller (live)"
+      : s.usageSource === "CDR_STATS"
+        ? "Geregistreerd verbruik (CDR)"
+        : s.usageSource ?? "";
+  const productLabel = (s.usageLocalProductName ?? sim.product ?? "") as string;
+  const tooltipParts: string[] = [];
+  if (productLabel) tooltipParts.push(`Product: ${productLabel}`);
+  if (periodLabel) tooltipParts.push(periodLabel);
+  if (sourceLabel) tooltipParts.push(`Bron: ${sourceLabel}`);
+  const tooltip = tooltipParts.join(" | ");
+
   return (
-    <div className="flex w-full min-w-[180px] flex-col gap-1.5 py-1">
+    <div
+      className="flex w-full min-w-[180px] flex-col gap-1.5 py-1"
+      title={tooltip || undefined}
+    >
       <div className="flex items-baseline justify-between gap-2">
         <div className="min-w-0 flex-1 truncate text-[11px] leading-tight">
           <span className="font-semibold text-slate-900">{fmtUsed}</span>

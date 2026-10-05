@@ -49,6 +49,9 @@ import { SimForm } from "./sim-form";
 import {
   formatDate,
   formatDateTime,
+  formatDateLong,
+  formatDateTimeLong,
+  formatDateRangeLong,
   formatIccid,
   formatMsisdn,
   formatBytes,
@@ -1310,7 +1313,52 @@ export function SimDetail({
                         : "—"
                     }
                   />
+                  <InfoRowInline
+                    label="Bundelperiode"
+                    value={formatDateRangeLong(
+                      (sim as any).usagePeriodStart,
+                      (sim as any).usagePeriodEnd
+                    )}
+                  />
+                  <InfoRowInline
+                    label="Product / bundel"
+                    value={(sim as any).usageLocalProductName ?? sim.product ?? "—"}
+                  />
+                  <InfoRowInline
+                    label="Bron"
+                    value={
+                      (sim as any).usageSource === "BUNDLE_COUNTER"
+                        ? "Bundelteller (live)"
+                        : (sim as any).usageSource === "CDR_STATS"
+                          ? "Geregistreerd verbruik (CDR)"
+                          : (sim as any).usageSource ?? "Onbekend"
+                    }
+                  />
+                  <InfoRowInline
+                    label="Ophaaltijdstip"
+                    value={formatDateTimeLong((sim as any).usageRetrievedAt ?? sim.lastUsageSyncAt)}
+                  />
+                  {(sim as any).usageSource === "CDR_STATS" && (
+                    <InfoRowInline
+                      label="CDR query-periode"
+                      value={formatDateRangeLong(
+                        (sim as any).usageCdrQueryStart,
+                        (sim as any).usageCdrQueryEnd
+                      )}
+                    />
+                  )}
+                  {(sim as any).usageBundleId && (
+                    <InfoRowInline
+                      label="Bundel-ID"
+                      value={String((sim as any).usageBundleId)}
+                    />
+                  )}
                 </div>
+                {(sim as any).usageSelectionNote && (
+                  <p className="pt-1 text-xs text-amber-700 dark:text-amber-400" role="note">
+                    ℹ️ {(sim as any).usageSelectionNote}
+                  </p>
+                )}
               </CardContent>
             </Card>
 
@@ -1375,7 +1423,37 @@ export function SimDetail({
                         : "—"
                     }
                   />
+                  <InfoRowInline
+                    label="Bundelperiode"
+                    value={formatDateRangeLong(
+                      (sim as any).usagePeriodStart,
+                      (sim as any).usagePeriodEnd
+                    )}
+                  />
+                  <InfoRowInline
+                    label="Product / bundel"
+                    value={(sim as any).usageLocalProductName ?? sim.product ?? "—"}
+                  />
+                  <InfoRowInline
+                    label="Bron"
+                    value={
+                      (sim as any).usageSource === "BUNDLE_COUNTER"
+                        ? "Bundelteller (live)"
+                        : (sim as any).usageSource === "CDR_STATS"
+                          ? "Geregistreerd verbruik (CDR)"
+                          : (sim as any).usageSource ?? "Onbekend"
+                    }
+                  />
+                  <InfoRowInline
+                    label="Ophaaltijdstip"
+                    value={formatDateTimeLong((sim as any).usageRetrievedAt ?? sim.lastUsageSyncAt)}
+                  />
                 </div>
+                {(sim as any).usageSelectionNote && (
+                  <p className="pt-1 text-xs text-amber-700 dark:text-amber-400" role="note">
+                    ℹ️ {(sim as any).usageSelectionNote}
+                  </p>
+                )}
               </CardContent>
             </Card>
           </div>

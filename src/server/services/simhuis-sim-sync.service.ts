@@ -14,7 +14,41 @@ type UsageFields = {
   smsLimitCount: number | null;
   lowestSmsLimitCount: number | null;
   lastUsageSyncAt: Date | null;
+  usageSource: string | null;
+  usageBundleId: string | null;
+  usageLocalProductId: string | null;
+  usageLocalProductName: string | null;
+  usagePeriodStart: Date | null;
+  usagePeriodEnd: Date | null;
+  usageRetrievedAt: Date | null;
+  usageCdrQueryStart: Date | null;
+  usageCdrQueryEnd: Date | null;
+  usageBundleUsages: any;
+  usageSelectionNote: string | null;
 };
+
+function toDateOrNull(raw: unknown): Date | null {
+  if (raw === null || raw === undefined) return null;
+  try {
+    const d = raw instanceof Date ? raw : new Date(String(raw));
+    return Number.isFinite(d.getTime()) ? d : null;
+  } catch {
+    return null;
+  }
+}
+
+function jsonSafeEq(a: unknown, b: unknown): boolean {
+  if (a === null && b === null) return true;
+  if (a === undefined && b === undefined) return true;
+  if (a === null && b === undefined) return true;
+  if (a === undefined && b === null) return true;
+  if (a === null || b === null || a === undefined || b === undefined) return false;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
 
 type ProductSimFields = {
   product: string | null;
@@ -64,6 +98,17 @@ function buildUsageFieldsFromSimhuis(simhuis: SimhuisSimStatus): Omit<UsageField
     smsUsedCount: smsUsedCountVal,
     smsLimitCount: effSmsLimitCountVal,
     lowestSmsLimitCount: effLowestSmsLimitCountVal,
+    usageSource: truncate((simhuis as any).usageSource ?? null, 30),
+    usageBundleId: truncate((simhuis as any).usageBundleId ?? null, 200),
+    usageLocalProductId: truncate((simhuis as any).usageLocalProductId ?? null, 200),
+    usageLocalProductName: truncate((simhuis as any).usageLocalProductName ?? null, 300),
+    usagePeriodStart: toDateOrNull((simhuis as any).usagePeriodStart),
+    usagePeriodEnd: toDateOrNull((simhuis as any).usagePeriodEnd),
+    usageRetrievedAt: toDateOrNull((simhuis as any).usageRetrievedAt),
+    usageCdrQueryStart: toDateOrNull((simhuis as any).usageCdrQueryStart),
+    usageCdrQueryEnd: toDateOrNull((simhuis as any).usageCdrQueryEnd),
+    usageBundleUsages: (simhuis as any).usageBundleUsages ?? null,
+    usageSelectionNote: truncate((simhuis as any).usageSelectionNote ?? null, 10000),
   };
 }
 
@@ -79,6 +124,17 @@ function applyUsageFieldsFromSimhuis(
     smsLimitCount: existing.smsLimitCount,
     lowestSmsLimitCount: existing.lowestSmsLimitCount,
     lastUsageSyncAt: existing.lastUsageSyncAt,
+    usageSource: existing.usageSource,
+    usageBundleId: existing.usageBundleId,
+    usageLocalProductId: existing.usageLocalProductId,
+    usageLocalProductName: existing.usageLocalProductName,
+    usagePeriodStart: existing.usagePeriodStart,
+    usagePeriodEnd: existing.usagePeriodEnd,
+    usageRetrievedAt: existing.usageRetrievedAt,
+    usageCdrQueryStart: existing.usageCdrQueryStart,
+    usageCdrQueryEnd: existing.usageCdrQueryEnd,
+    usageBundleUsages: existing.usageBundleUsages,
+    usageSelectionNote: existing.usageSelectionNote,
   };
   const parsed = buildUsageFieldsFromSimhuis(simhuis);
   const newData: UsageFields = {
@@ -94,6 +150,30 @@ function applyUsageFieldsFromSimhuis(
   if (oldData.smsUsedCount !== newData.smsUsedCount) { changedFields.push("smsUsedCount"); changed = true; }
   if (oldData.smsLimitCount !== newData.smsLimitCount) { changedFields.push("smsLimitCount"); changed = true; }
   if (oldData.lowestSmsLimitCount !== newData.lowestSmsLimitCount) { changedFields.push("lowestSmsLimitCount"); changed = true; }
+  // 🆕 usage* velden: verander alleen als nieuwe waarde niet-null is (geen ongedaanmaakt met null)
+  const nonNullUsageKeys: Array<keyof UsageFields> = [
+    "usageSource", "usageBundleId", "usageLocalProductId", "usageLocalProductName",
+    "usagePeriodStart", "usagePeriodEnd", "usageRetrievedAt",
+    "usageCdrQueryStart", "usageCdrQueryEnd", "usageSelectionNote",
+  ];
+  for (const k of nonNullUsageKeys) {
+    const nv = (newData as any)[k];
+    if (nv !== null && nv !== undefined && !jsonSafeEq((oldData as any)[k], nv)) {
+      changedFields.push(k);
+      changed = true;
+    } else {
+      // Houd oude waarde als nieuwe null is
+      (newData as any)[k] = (oldData as any)[k];
+    }
+  }
+  // usageBundleUsages apart: als nieuw niet-null EN ANDERS → overnemen
+  if (newData.usageBundleUsages !== null && newData.usageBundleUsages !== undefined &&
+      !jsonSafeEq(oldData.usageBundleUsages, newData.usageBundleUsages)) {
+    changedFields.push("usageBundleUsages");
+    changed = true;
+  } else {
+    newData.usageBundleUsages = oldData.usageBundleUsages;
+  }
 
   const hasAnyUsageData =
     newData.dataUsedBytes !== null ||
@@ -747,6 +827,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
         dataUsedBytesVal !== null || dataLimitBytesVal !== null || lowestDataLimitBytesVal !== null ||
         smsUsedCountVal !== null || smsLimitCountVal !== null || lowestSmsLimitCountVal !== null;
       const lastUsageSyncAtVal = hasAnyUsage ? new Date() : null;
+      const usageFields = buildUsageFieldsFromSimhuis(simhuis);
 
       if (existing) {
         const wasSoftDeleted = !!existing.deletedAt;
@@ -755,7 +836,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           h.skippedReasonLocked++;
           continue;
         }
-        const oldData = {
+        const oldData: any = {
           status: existing.status,
           msisdn: existing.msisdn,
           imsi: existing.imsi,
@@ -776,9 +857,20 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           lastUsageSyncAt: existing.lastUsageSyncAt,
           notes: existing.notes,
           deletedAt: existing.deletedAt,
+          usageSource: existing.usageSource ?? null,
+          usageBundleId: existing.usageBundleId ?? null,
+          usageLocalProductId: existing.usageLocalProductId ?? null,
+          usageLocalProductName: existing.usageLocalProductName ?? null,
+          usagePeriodStart: existing.usagePeriodStart ?? null,
+          usagePeriodEnd: existing.usagePeriodEnd ?? null,
+          usageRetrievedAt: existing.usageRetrievedAt ?? null,
+          usageCdrQueryStart: existing.usageCdrQueryStart ?? null,
+          usageCdrQueryEnd: existing.usageCdrQueryEnd ?? null,
+          usageBundleUsages: (existing as any).usageBundleUsages ?? null,
+          usageSelectionNote: (existing as any).usageSelectionNote ?? null,
         };
         const newData: Record<string, any> = { ...oldData };
-        let changed = wasSoftDeleted; // altijd "changed" als we zojuist hebben gerestaureerd
+        let changed = wasSoftDeleted;
         if (wasSoftDeleted) {
           newData.deletedAt = null;
         }
@@ -801,6 +893,35 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
         if (existing.smsLimitCount !== smsLimitCountVal) { newData.smsLimitCount = smsLimitCountVal; changed = true; }
         if (existing.lowestSmsLimitCount !== lowestSmsLimitCountVal) { newData.lowestSmsLimitCount = lowestSmsLimitCountVal; changed = true; }
         if (lastUsageSyncAtVal) { newData.lastUsageSyncAt = lastUsageSyncAtVal; changed = true; }
+
+        const usageKeys = [
+          'usageSource','usageBundleId','usageLocalProductId','usageLocalProductName',
+          'usagePeriodStart','usagePeriodEnd','usageRetrievedAt','usageCdrQueryStart','usageCdrQueryEnd',
+          'usageSelectionNote',
+        ] as const;
+        for (const k of usageKeys) {
+          const nv = (usageFields as any)[k];
+          if (nv !== null && nv !== undefined) {
+            const ov = oldData[k];
+            let fieldChanged = false;
+            if (nv instanceof Date && ov instanceof Date) {
+              fieldChanged = nv.getTime() !== ov.getTime();
+            } else {
+              fieldChanged = nv !== ov;
+            }
+            if (fieldChanged) {
+              newData[k] = nv;
+              changed = true;
+            }
+          }
+        }
+        if (usageFields.usageBundleUsages !== null && usageFields.usageBundleUsages !== undefined) {
+          if (!jsonSafeEq(oldData.usageBundleUsages, usageFields.usageBundleUsages)) {
+            newData.usageBundleUsages = usageFields.usageBundleUsages;
+            changed = true;
+          }
+        }
+
         const providerTag = "Simhuis";
         if (!existing.provider?.toLowerCase().includes("simhuis")) {
           newData.provider = existing.provider ? truncate(`${existing.provider} + ${providerTag}`, 150) ?? providerTag : providerTag;
@@ -839,6 +960,17 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
               lastUsageSyncAt: newData.lastUsageSyncAt,
               notes: newData.notes,
               deletedAt: wasSoftDeleted ? null : undefined,
+              usageSource: newData.usageSource,
+              usageBundleId: newData.usageBundleId,
+              usageLocalProductId: newData.usageLocalProductId,
+              usageLocalProductName: newData.usageLocalProductName,
+              usagePeriodStart: newData.usagePeriodStart,
+              usagePeriodEnd: newData.usagePeriodEnd,
+              usageRetrievedAt: newData.usageRetrievedAt,
+              usageCdrQueryStart: newData.usageCdrQueryStart,
+              usageCdrQueryEnd: newData.usageCdrQueryEnd,
+              usageBundleUsages: newData.usageBundleUsages,
+              usageSelectionNote: newData.usageSelectionNote,
             },
           })
           .then(() => {
@@ -885,6 +1017,17 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
               lowestSmsLimitCount: lowestSmsLimitCountVal,
               lastUsageSyncAt: lastUsageSyncAtVal,
               notes: notesVal,
+              usageSource: usageFields.usageSource,
+              usageBundleId: usageFields.usageBundleId,
+              usageLocalProductId: usageFields.usageLocalProductId,
+              usageLocalProductName: usageFields.usageLocalProductName,
+              usagePeriodStart: usageFields.usagePeriodStart,
+              usagePeriodEnd: usageFields.usagePeriodEnd,
+              usageRetrievedAt: usageFields.usageRetrievedAt,
+              usageCdrQueryStart: usageFields.usageCdrQueryStart,
+              usageCdrQueryEnd: usageFields.usageCdrQueryEnd,
+              usageBundleUsages: usageFields.usageBundleUsages,
+              usageSelectionNote: usageFields.usageSelectionNote,
             },
           })
           .then(() => {
@@ -1201,11 +1344,15 @@ export async function syncActiveSimsUsageFromSimhuis(
           //  ✅ Bundles extractie + enrich!
           const detailed = await getSimStatus(iccid);
           if (detailed) {
-            // Merge: alleen velden die in base SIM WEL NIET hadden!
-            // (dus: detailed.dataUsedBytes WEL → overnemen! Als base WEL al had → niet!)
             const merged: SimhuisSimStatus = { ...baseSimhuis };
             let hasMergeImprovement = false;
-            for (const f of ['dataUsedBytes','smsUsedCount','dataLimitBytes','lowestDataLimitBytes','smsLimitCount','lowestSmsLimitCount','productName','productType','simName','groupName','groupId','status','msisdn','eid'] as const) {
+            for (const f of [
+              'dataUsedBytes','smsUsedCount','dataLimitBytes','lowestDataLimitBytes','smsLimitCount','lowestSmsLimitCount',
+              'productName','productType','simName','groupName','groupId','status','msisdn','eid',
+              'usageSource','usageBundleId','usageLocalProductId','usageLocalProductName',
+              'usagePeriodStart','usagePeriodEnd','usageRetrievedAt','usageCdrQueryStart','usageCdrQueryEnd',
+              'usageBundleUsages','usageSelectionNote',
+            ] as const) {
               const detailVal = (detailed as any)[f];
               const baseVal = (baseSimhuis as any)[f];
               const improve =
@@ -1288,7 +1435,9 @@ export async function syncActiveSimsUsageFromSimhuis(
           ? Math.round(simhuis.lowestSmsLimitCount)
           : null;
 
-      const oldData = {
+      const usageFields = buildUsageFieldsFromSimhuis(simhuis);
+
+      const oldData: any = {
         dataUsedBytes: existing.dataUsedBytes,
         dataLimitBytes: existing.dataLimitBytes,
         lowestDataLimitBytes: existing.lowestDataLimitBytes,
@@ -1296,10 +1445,21 @@ export async function syncActiveSimsUsageFromSimhuis(
         smsLimitCount: existing.smsLimitCount,
         lowestSmsLimitCount: existing.lowestSmsLimitCount,
         lastUsageSyncAt: existing.lastUsageSyncAt,
+        usageSource: existing.usageSource ?? null,
+        usageBundleId: existing.usageBundleId ?? null,
+        usageLocalProductId: existing.usageLocalProductId ?? null,
+        usageLocalProductName: existing.usageLocalProductName ?? null,
+        usagePeriodStart: existing.usagePeriodStart ?? null,
+        usagePeriodEnd: existing.usagePeriodEnd ?? null,
+        usageRetrievedAt: existing.usageRetrievedAt ?? null,
+        usageCdrQueryStart: existing.usageCdrQueryStart ?? null,
+        usageCdrQueryEnd: existing.usageCdrQueryEnd ?? null,
+        usageBundleUsages: (existing as any).usageBundleUsages ?? null,
+        usageSelectionNote: (existing as any).usageSelectionNote ?? null,
       };
 
       let changed = false;
-      const newData: typeof oldData = { ...oldData };
+      const newData: any = { ...oldData };
       if (!bigIntEq(existing.dataUsedBytes, dataUsedBytesVal)) {
         newData.dataUsedBytes = dataUsedBytesVal;
         changed = true;
@@ -1323,6 +1483,34 @@ export async function syncActiveSimsUsageFromSimhuis(
       if (existing.lowestSmsLimitCount !== lowestSmsLimitCountVal) {
         newData.lowestSmsLimitCount = lowestSmsLimitCountVal;
         changed = true;
+      }
+
+      const usageKeys = [
+        'usageSource','usageBundleId','usageLocalProductId','usageLocalProductName',
+        'usagePeriodStart','usagePeriodEnd','usageRetrievedAt','usageCdrQueryStart','usageCdrQueryEnd',
+        'usageSelectionNote',
+      ] as const;
+      for (const k of usageKeys) {
+        const nv = (usageFields as any)[k];
+        if (nv !== null && nv !== undefined) {
+          const ov = oldData[k];
+          let fieldChanged = false;
+          if (nv instanceof Date && ov instanceof Date) {
+            fieldChanged = nv.getTime() !== ov.getTime();
+          } else {
+            fieldChanged = nv !== ov;
+          }
+          if (fieldChanged) {
+            newData[k] = nv;
+            changed = true;
+          }
+        }
+      }
+      if (usageFields.usageBundleUsages !== null && usageFields.usageBundleUsages !== undefined) {
+        if (!jsonSafeEq(oldData.usageBundleUsages, usageFields.usageBundleUsages)) {
+          newData.usageBundleUsages = usageFields.usageBundleUsages;
+          changed = true;
+        }
       }
 
       const hasAnyUsageData =
@@ -1353,6 +1541,17 @@ export async function syncActiveSimsUsageFromSimhuis(
             smsLimitCount: newData.smsLimitCount,
             lowestSmsLimitCount: newData.lowestSmsLimitCount,
             lastUsageSyncAt: newData.lastUsageSyncAt,
+            usageSource: newData.usageSource,
+            usageBundleId: newData.usageBundleId,
+            usageLocalProductId: newData.usageLocalProductId,
+            usageLocalProductName: newData.usageLocalProductName,
+            usagePeriodStart: newData.usagePeriodStart,
+            usagePeriodEnd: newData.usagePeriodEnd,
+            usageRetrievedAt: newData.usageRetrievedAt,
+            usageCdrQueryStart: newData.usageCdrQueryStart,
+            usageCdrQueryEnd: newData.usageCdrQueryEnd,
+            usageBundleUsages: newData.usageBundleUsages,
+            usageSelectionNote: newData.usageSelectionNote,
           },
         })
         .then(() => {
@@ -1464,6 +1663,17 @@ export type PerSimUsageSyncResult = {
     productType: string | null;
     simName: string | null;
     groupName: string | null;
+    usageSource: string | null;
+    usageBundleId: string | null;
+    usageLocalProductId: string | null;
+    usageLocalProductName: string | null;
+    usagePeriodStart: Date | null;
+    usagePeriodEnd: Date | null;
+    usageRetrievedAt: Date | null;
+    usageCdrQueryStart: Date | null;
+    usageCdrQueryEnd: Date | null;
+    usageBundleUsages: unknown | null;
+    usageSelectionNote: string | null;
   };
 };
 
@@ -1507,6 +1717,17 @@ export async function syncUsageForSingleSim(
       productType: true,
       simName: true,
       simGroup: true,
+      usageSource: true,
+      usageBundleId: true,
+      usageLocalProductId: true,
+      usageLocalProductName: true,
+      usagePeriodStart: true,
+      usagePeriodEnd: true,
+      usageRetrievedAt: true,
+      usageCdrQueryStart: true,
+      usageCdrQueryEnd: true,
+      usageBundleUsages: true,
+      usageSelectionNote: true,
     },
   });
   if (!sim) {
@@ -1599,6 +1820,17 @@ export async function syncUsageForSingleSim(
         productType: applyProduct.newData.productType,
         simName: applyProduct.newData.simName,
         simGroup: applyProduct.newData.simGroup,
+        usageSource: (applyUsage.newData as any).usageSource,
+        usageBundleId: (applyUsage.newData as any).usageBundleId,
+        usageLocalProductId: (applyUsage.newData as any).usageLocalProductId,
+        usageLocalProductName: (applyUsage.newData as any).usageLocalProductName,
+        usagePeriodStart: (applyUsage.newData as any).usagePeriodStart,
+        usagePeriodEnd: (applyUsage.newData as any).usagePeriodEnd,
+        usageRetrievedAt: (applyUsage.newData as any).usageRetrievedAt,
+        usageCdrQueryStart: (applyUsage.newData as any).usageCdrQueryStart,
+        usageCdrQueryEnd: (applyUsage.newData as any).usageCdrQueryEnd,
+        usageBundleUsages: (applyUsage.newData as any).usageBundleUsages,
+        usageSelectionNote: (applyUsage.newData as any).usageSelectionNote,
       },
     });
     try {
@@ -1617,6 +1849,7 @@ export async function syncUsageForSingleSim(
     }
   }
 
+  const sf = (simhuisStatus as any);
   const simhuisFields: PerSimUsageSyncResult["simhuisFields"] = {
     dataUsedBytes: simhuisStatus.dataUsedBytes ?? null,
     dataLimitBytes: simhuisStatus.dataLimitBytes ?? null,
@@ -1628,6 +1861,17 @@ export async function syncUsageForSingleSim(
     productType: simhuisStatus.productType ?? null,
     simName: simhuisStatus.simName ?? null,
     groupName: simhuisStatus.groupName ?? simhuisStatus.groupId ?? null,
+    usageSource: sf.usageSource ?? null,
+    usageBundleId: sf.usageBundleId ?? null,
+    usageLocalProductId: sf.usageLocalProductId ?? null,
+    usageLocalProductName: sf.usageLocalProductName ?? null,
+    usagePeriodStart: toDateOrNull(sf.usagePeriodStart),
+    usagePeriodEnd: toDateOrNull(sf.usagePeriodEnd),
+    usageRetrievedAt: toDateOrNull(sf.usageRetrievedAt),
+    usageCdrQueryStart: toDateOrNull(sf.usageCdrQueryStart),
+    usageCdrQueryEnd: toDateOrNull(sf.usageCdrQueryEnd),
+    usageBundleUsages: sf.usageBundleUsages ?? null,
+    usageSelectionNote: sf.usageSelectionNote ?? null,
   };
 
   return {

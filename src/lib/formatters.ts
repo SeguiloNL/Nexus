@@ -27,6 +27,22 @@ export function formatDateTimeFull(
   return format(d, "dd MMMM yyyy HH:mm:ss", { locale: nl });
 }
 
+export function formatDateLong(
+  date: Date | string | null | undefined
+): string {
+  if (!date) return "-";
+  const d = typeof date === "string" ? new Date(date) : date;
+  return format(d, "dd MMMM yyyy", { locale: nl });
+}
+
+export function formatDateTimeLong(
+  date: Date | string | null | undefined
+): string {
+  if (!date) return "-";
+  const d = typeof date === "string" ? new Date(date) : date;
+  return format(d, "dd MMMM yyyy HH:mm", { locale: nl });
+}
+
 export function formatDateRange(
   startAt: Date | string,
   endAt: Date | string | null | undefined
@@ -35,6 +51,19 @@ export function formatDateRange(
   const end = formatDate(endAt);
   if (!endAt) return `${start} tot heden`;
   return `${start} tot ${end}`;
+}
+
+export function formatDateRangeLong(
+  startAt: Date | string | null | undefined,
+  endAt: Date | string | null | undefined
+): string {
+  if (!startAt && !endAt) return "Periode onbekend";
+  const start = formatDateLong(startAt);
+  const end = formatDateLong(endAt);
+  if (startAt && !endAt) return `Periode: ${start} tot heden`;
+  if (!startAt && endAt) return `Periode: tot ${end}`;
+  if (start === end) return `Periode: ${start}`;
+  return `${start} – ${end}`;
 }
 
 // ============================================================

@@ -3,6 +3,8 @@ import type {
   ActivateSimOptions,
   SimhuisApiResponse,
   SimhuisSimStatus,
+  SimhuisBundleUsage,
+  UsageSource,
   SimhuisSubscribeOptions,
   SimhuisSubscribeResult,
   SimhuisAssetActionResult,
@@ -22,6 +24,88 @@ function billTimeCurrentMonth(refDate: Date = new Date()): { start: string; end:
   const lastDay = new Date(y, m + 1, 0, 23, 59, 59, 999);
   const fmt = (d: Date): string => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
   return { start: fmt(firstDay), end: fmt(lastDay), combined: `${fmt(firstDay)},${fmt(lastDay)}` };
+}
+
+function parseBundleDate(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  if (raw instanceof Date) {
+    return Number.isFinite(raw.getTime()) ? raw.toISOString() : null;
+  }
+  if (typeof raw === 'number') {
+    const d = new Date(raw);
+    return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+  }
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return null;
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(s)) {
+      try {
+        const d = new Date(s.includes(' ') ? s.replace(' ', 'T') : s);
+        if (Number.isFinite(d.getTime())) return d.toISOString();
+      } catch { /* ignore */ }
+    }
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+      try {
+        const d = new Date(s + 'T00:00:00');
+        if (Number.isFinite(d.getTime())) return d.toISOString();
+      } catch { /* ignore */ }
+    }
+    try {
+      const d = new Date(s);
+      return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function billTimeFromPeriod(
+  periodStartIso: string | null | undefined,
+  periodEndIso: string | null | undefined,
+  forOngoing = true
+): { start: string; end: string; combined: string; usedNow: boolean } | null {
+  if (!periodStartIso) return null;
+  const start = new Date(periodStartIso);
+  if (!Number.isFinite(start.getTime())) return null;
+  let endDate: Date;
+  if (periodEndIso) {
+    const parsedEnd = new Date(periodEndIso);
+    endDate = Number.isFinite(parsedEnd.getTime()) ? parsedEnd : new Date();
+  } else {
+    endDate = new Date();
+  }
+  const now = new Date();
+  const actualEnd = forOngoing ? new Date(Math.min(endDate.getTime(), now.getTime())) : endDate;
+  const fmt = (d: Date): string => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  const s = fmt(start);
+  const e = fmt(actualEnd);
+  return { start: s, end: e, combined: `${s},${e}`, usedNow: forOngoing && actualEnd.getTime() === now.getTime() };
+}
+
+function classifyBundlePeriod(startIso: string | null | undefined, endIso: string | null | undefined, ref = new Date()): { isActiveNow: boolean; isExpired: boolean; isFuture: boolean } {
+  const refMs = ref.getTime();
+  const startMs = startIso ? new Date(startIso).getTime() : NaN;
+  const endMs = endIso ? new Date(endIso).getTime() : NaN;
+  const hasStart = Number.isFinite(startMs);
+  const hasEnd = Number.isFinite(endMs);
+  let isActiveNow = false;
+  let isExpired = false;
+  let isFuture = false;
+  if (hasStart && hasEnd) {
+    isActiveNow = refMs >= startMs && refMs <= endMs;
+    isExpired = refMs > endMs;
+    isFuture = refMs < startMs;
+  } else if (hasStart && !hasEnd) {
+    isActiveNow = refMs >= startMs;
+    isFuture = refMs < startMs;
+  } else if (!hasStart && hasEnd) {
+    isExpired = refMs > endMs;
+    isActiveNow = !isExpired;
+  } else {
+    isActiveNow = true;
+  }
+  return { isActiveNow, isExpired, isFuture };
 }
 
 // ============================================================
@@ -1723,17 +1807,32 @@ function enrichSimhuisStatusWithDirectRawExtracts(
 
   // ============================================================
   // 🆕 Swagger-bevestigd: subscriptions[] is ARRAY. Elke subscription heeft bundles[] ARRAY!
-  //    Loop door subscriptions[*].bundles[*] → daar zitten ECHTE dataUsed + localProductName!
+  //    Loop door subscriptions[*].bundles[*] → daar zitten ECHTE dataUsed + localProductName + startTime + endTime!
+  //
+  // WIJZE VAN WERKEN (per eis):
+  //   - Per bundel: bewaar dataUsed, remaining, initial, smsUsed, product + startTime/endTime ALS EEN GEHEEL
+  //   - NIET automatisch de eerste bundel nemen
+  //   - Selecteer de bundel die nu actief is (startTime <= nu <= endTime), voorkeur
+  //   - Meerdere relevante bundels: als losse entries in bundleUsages, NIET bij elkaar optellen
+  //   - Geen eenduidige bundel: "Periode onbekend" + logging
   // ============================================================
-  const extractFromAllBundles = (): { found: boolean; dataUsed: number|null; remaining: number|null; initial: number|null; smsUsed: number|null; productName: string|null; productSrc: string } => {
-    let dataUsed: number | null = null;
-    let dataUsedSrc = '';
-    let remainingBytes: number | null = null;
-    let initialBytes: number | null = null;
-    let smsUsed: number | null = null;
-    let smsUsedSrc = '';
-    let pName: string | null = null;
-    let pSrc = '';
+  type ExtractBundleResult = {
+    found: boolean;
+    dataUsed: number|null;
+    remaining: number|null;
+    initial: number|null;
+    smsUsed: number|null;
+    productName: string|null;
+    productSrc: string;
+    bundleUsages: SimhuisBundleUsage[];
+    selectedBundle: SimhuisBundleUsage | null;
+    selectedIndex: number;
+    selectionNote: string | null;
+    dataUsedIsBundleCounter: boolean;
+  };
+  const extractFromAllBundles = (): ExtractBundleResult => {
+    const bundleUsages: SimhuisBundleUsage[] = [];
+    const shortIccid = iccid.slice(-6);
     try {
       const subscriptionsArr = Array.isArray(rawObj.subscriptions) ? rawObj.subscriptions
         : Array.isArray(nested?.subscriptions) ? nested.subscriptions
@@ -1747,56 +1846,135 @@ function enrichSimhuisStatusWithDirectRawExtracts(
         for (let bi = 0; bi < bundlesArr.length; bi++) {
           const b = bundlesArr[bi];
           if (!b || typeof b !== 'object') continue;
+          const bu: SimhuisBundleUsage = {
+            subscriptionIndex: si,
+            bundleIndex: bi,
+            rawBundle: b,
+          };
+          bu.bundleId = isValidStringValue((b as any).bundleId) ?? null;
+          bu.localProductId = isValidStringValue((b as any).localProductId) ?? isValidStringValue((b as any).productId) ?? null;
+          bu.localProductName = isValidStringValue((b as any).localProductName) ?? null;
+          bu.productName = isValidStringValue((b as any).productName) ?? isValidStringValue((b as any).name) ?? isValidStringValue((b as any).bundleName) ?? bu.localProductName;
+          bu.sharedDataPoolId = isValidStringValue((b as any).sharedDataPoolId) ?? null;
+          bu.periodStart = parseBundleDate((b as any).startTime) ?? parseBundleDate((b as any).startDate) ?? null;
+          bu.periodEnd = parseBundleDate((b as any).endTime) ?? parseBundleDate((b as any).endDate) ?? null;
+          const cls = classifyBundlePeriod(bu.periodStart, bu.periodEnd);
+          bu.isActiveNow = cls.isActiveNow;
+          bu.isExpired = cls.isExpired;
+          bu.isFuture = cls.isFuture;
           const bInit = safeNum((b as any).initialSize);
           const bRem = safeNum((b as any).remainingBytes);
           const bType = isValidStringValue((b as any).type)?.toLowerCase() ?? '';
           const isPpuBundle = (bInit === 0 && bRem === 0) || bType === 'permb' || bType.includes('per') || bType.includes('pay');
-          if (dataUsed === null) {
-            for (const k of BUNDLE_DATA_KEYS) {
-              const rawV = (b as any)[k];
-              if (isPpuBundle) {
+          bu.initialSizeBytes = bInit ?? null;
+          bu.remainingBytes = bRem ?? null;
+          for (const k of BUNDLE_DATA_KEYS) {
+            const rawV = (b as any)[k];
+            let pb: number | null = null;
+            if (isPpuBundle) {
+              const sv = safeNum(rawV);
+              if (sv !== null && sv >= 0) pb = Math.round(sv);
+            } else {
+              pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
+              if (pb === null) {
                 const sv = safeNum(rawV);
-                if (sv !== null && sv >= 0) { dataUsed = Math.round(sv); dataUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}|PPU-BYTES`; break; }
-              } else {
-                const pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
-                if (pb !== null && pb >= 0) { dataUsed = pb; dataUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
-                const sv = safeNum(rawV);
-                if (sv !== null && sv === 0) { dataUsed = 0; dataUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
+                if (sv !== null && sv === 0) pb = 0;
               }
             }
-          }
-          if (remainingBytes === null) {
-            const rawV = (b as any).remainingBytes;
-            const pb = pickBytesSmart(rawV, baselineDataLimit, 'limit');
-            if (pb !== null && pb >= 0) { remainingBytes = pb; }
-            else { const sv = safeNum(rawV); if (sv === 0) remainingBytes = 0; }
-          }
-          if (initialBytes === null) {
-            const rawV = (b as any).initialSize;
-            const pb = pickBytesSmart(rawV, baselineDataLimit, 'limit');
-            if (pb !== null && pb >= 0) { initialBytes = pb; }
-            else { const sv = safeNum(rawV); if (sv === 0) initialBytes = 0; }
-          }
-          if (smsUsed === null) {
-            for (const k of BUNDLE_SMS_KEYS) {
-              const sv = safeNum((b as any)[k]);
-              if (sv !== null && sv >= 0) { smsUsed = sv; smsUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
+            if (pb !== null && pb >= 0 && bu.dataUsedBytes === undefined) {
+              bu.dataUsedBytes = pb;
+              break;
             }
           }
-          if (!pName) {
-            for (const k of BUNDLE_PRODUCT_KEYS) {
-              const s = isValidStringValue((b as any)[k]);
-              if (s && !looksLikeTechProfile(s)) { pName = s; pSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
+          for (const k of BUNDLE_SMS_KEYS) {
+            const sv = safeNum((b as any)[k]);
+            if (sv !== null && sv >= 0 && bu.smsUsedCount === undefined) {
+              bu.smsUsedCount = sv;
+              break;
             }
           }
-        }
-        if (!pName) {
-          for (const k of BUNDLE_PRODUCT_KEYS) {
-            const s = isValidStringValue((sub as any)[k]);
-            if (s && !looksLikeTechProfile(s)) { pName = s; pSrc = `SUBS[${si}].${k}`; break; }
-          }
+          bundleUsages.push(bu);
         }
       }
+    } catch (e) {
+      try { console.warn(`[simhuis:extractBundleUsages] [${shortIccid}] exceptie: ${(e as any)?.message ?? e}`); } catch {}
+    }
+
+    let selectedBundle: SimhuisBundleUsage | null = null;
+    let selectedIndex = -1;
+    let selectionNote: string | null = null;
+    let dataUsed: number | null = null;
+    let remainingBytes: number | null = null;
+    let initialBytes: number | null = null;
+    let smsUsed: number | null = null;
+    let pName: string | null = null;
+    let pSrc = '';
+    let dataUsedSrc = '';
+    let smsUsedSrc = '';
+    let dataUsedIsBundleCounter = false;
+
+    if (bundleUsages.length > 0) {
+      const withProduct = bundleUsages.filter(b => (b.dataUsedBytes !== undefined && b.dataUsedBytes !== null) || (b.localProductName && !looksLikeTechProfile(b.localProductName)) || b.isActiveNow);
+      if (bundleUsages.length === 1) {
+        selectedIndex = 0;
+        selectedBundle = bundleUsages[0];
+        selectionNote = `1 bundel gevonden; direct geselecteerd.${selectedBundle.periodStart || selectedBundle.periodEnd ? '' : ' Opmerking: bundel heeft geen (volledige) periode-datums.'}`;
+      } else {
+        const actives = bundleUsages.filter(b => b.isActiveNow);
+        if (actives.length === 1) {
+          selectedIndex = bundleUsages.indexOf(actives[0]);
+          selectedBundle = actives[0];
+          selectionNote = `${bundleUsages.length} bundels; 1 actief nu → geselecteerd.`;
+        } else if (actives.length > 1) {
+          const withUsage = actives.filter(b => (b.dataUsedBytes ?? 0) > 0 || (b.remainingBytes ?? 0) > 0);
+          const candidates = withUsage.length > 0 ? withUsage : actives;
+          selectedIndex = bundleUsages.indexOf(candidates[0]);
+          selectedBundle = candidates[0];
+          selectionNote = `${bundleUsages.length} bundels; ${actives.length} actief nu → meest recente met verbruik geselecteerd (${candidates.length} kandidaten). Let op: meerdere actieve bundels aanwezig; worden afzonderlijk bewaard in bundleUsages, NIET bij elkaar opgeteld.`;
+          try {
+            console.info(`[simhuis:bundleSelect] [${shortIccid}] ⚠️ MEERDERE actieve bundels gedetecteerd (${actives.length}). Geselecteerd: SUBS[${selectedBundle.subscriptionIndex}].BUNDLE[${selectedBundle.bundleIndex}] product=${selectedBundle.localProductName ?? selectedBundle.productName ?? '-'}`);
+          } catch {}
+        } else {
+          const recent = [...bundleUsages].sort((a, z) => {
+            const aEnd = a.periodEnd ? new Date(a.periodEnd).getTime() : 0;
+            const zEnd = z.periodEnd ? new Date(z.periodEnd).getTime() : 0;
+            return zEnd - aEnd;
+          });
+          selectedIndex = 0;
+          selectedBundle = recent[0];
+          const hasExpired = bundleUsages.some(b => b.isExpired);
+          const hasFuture = bundleUsages.some(b => b.isFuture);
+          selectionNote = `${bundleUsages.length} bundels; 0 actief nu → meest recente (einddatum) geselecteerd.${hasExpired ? ' Bevat verlopen bundel(s).' : ''}${hasFuture ? ' Bevat toekomstige bundel(s).' : ''}`;
+        }
+      }
+      if (selectedBundle) {
+        if (selectedBundle.dataUsedBytes !== undefined && selectedBundle.dataUsedBytes !== null) {
+          dataUsed = selectedBundle.dataUsedBytes;
+          dataUsedSrc = `SUBS[${selectedBundle.subscriptionIndex}].BUNDLE[${selectedBundle.bundleIndex}].dataUsed|SELECTED`;
+          dataUsedIsBundleCounter = true;
+        }
+        if (selectedBundle.remainingBytes !== undefined && selectedBundle.remainingBytes !== null) {
+          remainingBytes = selectedBundle.remainingBytes;
+        }
+        if (selectedBundle.initialSizeBytes !== undefined && selectedBundle.initialSizeBytes !== null) {
+          initialBytes = selectedBundle.initialSizeBytes;
+        }
+        if (selectedBundle.smsUsedCount !== undefined && selectedBundle.smsUsedCount !== null) {
+          smsUsed = selectedBundle.smsUsedCount;
+          smsUsedSrc = `SUBS[${selectedBundle.subscriptionIndex}].BUNDLE[${selectedBundle.bundleIndex}].smsUsed|SELECTED`;
+        }
+        if (selectedBundle.localProductName && !looksLikeTechProfile(selectedBundle.localProductName)) {
+          pName = selectedBundle.localProductName;
+          pSrc = `SUBS[${selectedBundle.subscriptionIndex}].BUNDLE[${selectedBundle.bundleIndex}].localProductName|SELECTED`;
+        } else if (selectedBundle.productName && !looksLikeTechProfile(selectedBundle.productName)) {
+          pName = selectedBundle.productName;
+          pSrc = `SUBS[${selectedBundle.subscriptionIndex}].BUNDLE[${selectedBundle.bundleIndex}].productName|SELECTED`;
+        }
+      }
+    }
+
+    // Fallback: legacy ratings + data[] + TOP-LEVEL.bytes (cdr/stats)
+    try {
       if (dataUsed === null) {
         const ratings = (rawObj as any).ratings;
         if (ratings && typeof ratings === 'object') {
@@ -1843,17 +2021,40 @@ function enrichSimhuisStatusWithDirectRawExtracts(
         }
       }
     } catch { /* ignore */ }
+
+    if (!pName) {
+      const subscriptionsArr = Array.isArray(rawObj.subscriptions) ? rawObj.subscriptions
+        : Array.isArray(nested?.subscriptions) ? nested.subscriptions
+        : Array.isArray((rawObj as any).enabledProfile?.subscriptions) ? (rawObj as any).enabledProfile.subscriptions : [];
+      for (let si = 0; si < subscriptionsArr.length; si++) {
+        const sub = subscriptionsArr[si];
+        if (!sub || typeof sub !== 'object') continue;
+        for (const k of BUNDLE_PRODUCT_KEYS) {
+          const s = isValidStringValue((sub as any)[k]);
+          if (s && !looksLikeTechProfile(s)) { pName = s; pSrc = `SUBS[${si}].${k}`; break; }
+        }
+        if (pName) break;
+      }
+    }
+
     return {
-      found: dataUsed !== null || smsUsed !== null || !!pName,
+      found: dataUsed !== null || smsUsed !== null || !!pName || bundleUsages.length > 0,
       dataUsed,
       remaining: remainingBytes,
       initial: initialBytes,
       smsUsed,
       productName: pName,
-      productSrc: pSrc + (dataUsedSrc ? `|data=${dataUsedSrc}` : '') + (smsUsedSrc ? `|sms=${smsUsedSrc}` : '')
+      productSrc: pSrc + (dataUsedSrc ? `|data=${dataUsedSrc}` : '') + (smsUsedSrc ? `|sms=${smsUsedSrc}` : ''),
+      bundleUsages,
+      selectedBundle,
+      selectedIndex,
+      selectionNote,
+      dataUsedIsBundleCounter,
     };
   };
   const bundleData = extractFromAllBundles();
+  const bundleUsages: SimhuisBundleUsage[] = bundleData.bundleUsages ?? [];
+  const selectedBundle: SimhuisBundleUsage | null = bundleData.selectedBundle ?? null;
 
   let duBytes: number | null = bundleData.dataUsed;
   let duSource: string = bundleData.productSrc.split('|data=').pop()?.split('|')[0] || '';
@@ -1887,20 +2088,6 @@ function enrichSimhuisStatusWithDirectRawExtracts(
       duBytes = baselineDataUsed;
     }
   }
-  // Bundles debug!
-  try {
-    const shortIccid = iccid.slice(-6);
-    const bdMb = bundleData.dataUsed !== null ? (bundleData.dataUsed / _MB).toFixed(4) + ' MB' : '-';
-    const remMb = bundleData.remaining !== null ? (bundleData.remaining / _MB).toFixed(4) + ' MB' : '-';
-    const initMb = bundleData.initial !== null ? (bundleData.initial / _MB).toFixed(4) + ' MB' : '-';
-    console.info(`[simhuis:enrichExtract] [${shortIccid}] 🎁 BUNDLES[] extractie: dataUsed=${bdMb} remaining=${remMb} initial=${initMb} smsUsed=${JSON.stringify(bundleData.smsUsed)} product=${JSON.stringify(bundleData.productName)} (src=${bundleData.productSrc})`);
-  } catch {}
-  try {
-    const shortIccid = iccid.slice(-6);
-    const mbDisplay = duBytes !== null ? `${(duBytes / _MB).toFixed(2)} MB` : '-';
-    console.info(`[simhuis:enrichExtract] [${shortIccid}] 📊 dataUsed: source=${duSource || 'NOT_FOUND'} raw=${duBytes !== null ? 'FOUND' : 'NULL'} → ${mbDisplay}`);
-  } catch {}
-
   const smsLimitRaw = rawObj.smsLimit ?? nested?.smsLimit ?? rawObj.enabledProfile?.smsLimit ?? (firstSub as any)?.smsLimit ?? (firstSetup as any)?.smsLimit;
   const smsLowestLimitRaw = rawObj.lowestSmsLimit ?? nested?.lowestSmsLimit ?? rawObj.enabledProfile?.lowestSmsLimit;
   let smsUsedNum: number | null = bundleData.smsUsed;
@@ -2068,6 +2255,70 @@ function enrichSimhuisStatusWithDirectRawExtracts(
   if (directGroupId) { (baseStatus as any).groupId = directGroupId; }
   if (directProductName) { (baseStatus as any).productName = directProductName; (baseStatus as any).planName = directProductName; (baseStatus as any).offerName = directProductName; }
   if (directProductType) { (baseStatus as any).productType = directProductType; }
+
+  // ============================================================
+  // 🎯 NIEUW: Vul usage* metadata velden (bron, periode, bundel-ID, opgehaaldOp)
+  //    Onderscheid:
+  //      - BUNDLE_COUNTER: dataUsed komt uit subscriptions[].bundles[].dataUsed
+  //      - CDR_STATS: dataUsed komt uit /v3/cdr/stats (TOP-LEVEL.bytes) of /v3/cdr (data[].bytes SUM)
+  // ============================================================
+  let usageSource: UsageSource = 'NONE';
+  if (directDataUsedBytes !== null || directSmsUsedCount !== null) {
+    const duSrcNorm = (duSource || '').toLowerCase();
+    if (bundleData.dataUsedIsBundleCounter || duSrcNorm.includes('bundle') || duSrcNorm.includes('selected') || duSrcNorm.includes('subs[')) {
+      usageSource = 'BUNDLE_COUNTER';
+    } else if (duSrcNorm.includes('/cdr/stats') || duSrcNorm.includes('data[].bytes') || duSrcNorm.includes('top-level.bytes')) {
+      usageSource = 'CDR_STATS';
+    } else if (duSrcNorm) {
+      usageSource = 'UNKNOWN';
+    } else {
+      usageSource = directDataUsedBytes !== null ? 'UNKNOWN' : 'NONE';
+    }
+  }
+  (baseStatus as any).usageSource = usageSource;
+  (baseStatus as any).usageRetrievedAt = new Date().toISOString();
+
+  // Periode + bundel info: als er een selectedBundle is met periode, dan gebruiken
+  if (selectedBundle) {
+    (baseStatus as any).usageBundleId = selectedBundle.bundleId ?? null;
+    (baseStatus as any).usageLocalProductId = selectedBundle.localProductId ?? null;
+    (baseStatus as any).usageLocalProductName = selectedBundle.localProductName ?? selectedBundle.productName ?? null;
+    (baseStatus as any).usagePeriodStart = selectedBundle.periodStart ?? null;
+    (baseStatus as any).usagePeriodEnd = selectedBundle.periodEnd ?? null;
+  } else {
+    (baseStatus as any).usageBundleId = null;
+    (baseStatus as any).usageLocalProductId = null;
+    (baseStatus as any).usageLocalProductName = null;
+    (baseStatus as any).usagePeriodStart = null;
+    (baseStatus as any).usagePeriodEnd = null;
+  }
+  (baseStatus as any).usageBundleUsages = bundleUsages.length > 0 ? bundleUsages : null;
+  (baseStatus as any).usageSelectionNote = bundleData.selectionNote ?? null;
+
+  // Bundles debug + nieuwe periode/selectie logging
+  try {
+    const shortIccid = iccid.slice(-6);
+    const bdMb = bundleData.dataUsed !== null ? (bundleData.dataUsed / _MB).toFixed(4) + ' MB' : '-';
+    const remMb = bundleData.remaining !== null ? (bundleData.remaining / _MB).toFixed(4) + ' MB' : '-';
+    const initMb = bundleData.initial !== null ? (bundleData.initial / _MB).toFixed(4) + ' MB' : '-';
+    const pStart = selectedBundle?.periodStart ?? '-';
+    const pEnd = selectedBundle?.periodEnd ?? '-';
+    const pStatus = selectedBundle
+      ? (selectedBundle.isActiveNow ? 'ACTIEF' : selectedBundle.isExpired ? 'VERLOPEN' : selectedBundle.isFuture ? 'TOEKOMSTIG' : 'ONBEKEND')
+      : 'GEEN-SELECTIE';
+    const noteSummary = bundleData.selectionNote ? bundleData.selectionNote.slice(0, 150) : '-';
+    console.info(
+      `[simhuis:enrichExtract] [${shortIccid}] 🎁 BUNDLES[] extractie: #bundles=${bundleUsages.length}  selected=#${bundleData.selectedIndex}  status=${pStatus}\n` +
+      `     dataUsed=${bdMb} remaining=${remMb} initial=${initMb} smsUsed=${JSON.stringify(bundleData.smsUsed)} product=${JSON.stringify(bundleData.productName)} (src=${bundleData.productSrc})\n` +
+      `     periode: start=${pStart}  end=${pEnd}\n` +
+      `     usageSource=${usageSource}  selectie: ${noteSummary}`
+    );
+  } catch {}
+  try {
+    const shortIccid = iccid.slice(-6);
+    const mbDisplay = duBytes !== null ? `${(duBytes / _MB).toFixed(2)} MB` : '-';
+    console.info(`[simhuis:enrichExtract] [${shortIccid}] 📊 dataUsed: source=${duSource || 'NOT_FOUND'} raw=${duBytes !== null ? 'FOUND' : 'NULL'} → ${mbDisplay}`);
+  } catch {}
 
   return baseStatus;
 }
@@ -2379,8 +2630,14 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
         const needsUsage = best.dataUsedBytes === null || best.smsUsedCount === null || best.productName === null || /cardcentri|mii|imeifplmn/i.test(best.productName ?? '');
         if (needsUsage && bearerToken && aidForGetSim) {
           DEBUG_LOG(`🏆 Phase A.5: needsUsage=${needsUsage} dataUsed=${JSON.stringify((best as any).dataUsedBytes)} smsUsed=${JSON.stringify((best as any).smsUsedCount)} product=${JSON.stringify((best as any).productName)} → Probeer 4 Swagger-bevestigde per-SIM endpoints met Bearer-token + accountId!`);
-          const billTime = billTimeCurrentMonth();
-          DEBUG_LOG(`🏆 Phase A.5: billTime (huidige maand facturatieperiode) = ${billTime.combined}`);
+          // 🆕 Gebruik eerst de bundelperiode als billTime filter! Alleen fallback naar kalendermaand als die ontbreekt.
+          const periodStart = (best as any).usagePeriodStart;
+          const periodEnd = (best as any).usagePeriodEnd;
+          const periodBillTime = periodStart || periodEnd ? billTimeFromPeriod(periodStart, periodEnd, true) : null;
+          const monthBillTime = billTimeCurrentMonth();
+          const billTime = periodBillTime ?? monthBillTime;
+          const isPeriodBased = !!periodBillTime && periodBillTime.combined !== monthBillTime.combined;
+          DEBUG_LOG(`🏆 Phase A.5: billTime = ${isPeriodBased ? `BUNDELPERIODE (start=${billTime.start} end=${billTime.end})` : `kalendermaand (fallback; periode datums ontbreken) (${billTime.combined})`}`);
           try {
             // ============================================================
             // 🆕 Swagger-bevestigde endpoints (volgorde = HOOGSTE PRIO eerst!):
@@ -2393,11 +2650,11 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
             //   4. GET /v3/cdr?accountId={aid}&iccid={iccid}&type=data&limit=50&order=desc
             //      → data[].bytes + ratings[].dataUsed + ratings[].product.remainingBytes!
             // ============================================================
-            const usageTemplates: Array<{ method: 'GET' | 'POST'; path: string; query?: Record<string, any>; body?: Record<string, any>; contentType?: 'json' | 'form' | 'none' }> = [];
+            const usageTemplates: Array<{ method: 'GET' | 'POST'; path: string; query?: Record<string, any>; body?: Record<string, any>; contentType?: 'json' | 'form' | 'none'; isCdr?: boolean }> = [];
             usageTemplates.push({ method: 'GET', path: `/assets/${iccid}`, query: { accountId: aidForGetSim } });
             usageTemplates.push({ method: 'GET', path: `/accounts/${aidForGetSim}/assets/${iccid}`, query: { accountId: aidForGetSim } });
-            usageTemplates.push({ method: 'GET', path: `/cdr/stats`, query: { accountId: aidForGetSim, iccid, type: 'data', billTime: billTime.combined } });
-            usageTemplates.push({ method: 'GET', path: `/cdr`, query: { accountId: aidForGetSim, iccid, type: 'data', limit: 50, sort: 'billTime', order: 'desc', billTime: billTime.combined } });
+            usageTemplates.push({ method: 'GET', path: `/cdr/stats`, query: { accountId: aidForGetSim, iccid, type: 'data', billTime: billTime.combined }, isCdr: true });
+            usageTemplates.push({ method: 'GET', path: `/cdr`, query: { accountId: aidForGetSim, iccid, type: 'data', limit: 50, sort: 'billTime', order: 'desc', billTime: billTime.combined }, isCdr: true });
             for (let i = 0; i < usageTemplates.length; i++) {
               const ut = usageTemplates[i];
               if (Date.now() - startedAtGetSim > 15_000) { DEBUG_LOG(`🏆 Phase A.5: time-out (>15s) na ${i} pogingen.`); break; }
@@ -2415,7 +2672,6 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                 });
                 if (result.tag === 'ok') {
                   try {
-                    // 🆕 Debug: print TOP-LEVEL keys van response (geen data dump!) zodat we weten wat erin zit!
                     const topKeys = Array.isArray(result.body)
                       ? `ARRAY len=${result.body.length}${result.body.length > 0 ? `; item[0] keys=${Object.keys((result.body as any[])[0] ?? {}).join(',')}` : ''}`
                       : `OBJECT keys=${Object.keys((result.body ?? {}) as object).join(',')}`;
@@ -2431,11 +2687,22 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                       const newSMS = (enriched as any).smsUsedCount;
                       const newProd = (enriched as any).productName;
                       DEBUG_LOG(`🏆 Phase A.5: ${ut.method} /v3${ut.path} → dataUsed ${prevDU ?? 'NULL'} → ${newDU ?? 'NULL'}, smsUsed ${prevSMS ?? 'NULL'} → ${newSMS ?? 'NULL'}, product ${prevProd ?? 'NULL'} → ${newProd ?? 'NULL'}.`);
+                      // 🆕 Als het een CDR endpoint was: bewaar de gebruikte query-grenzen (los van bundelperiode!)
+                      if (ut.isCdr) {
+                        try {
+                          (enriched as any).usageCdrQueryStart = new Date(billTime.start.replace(' ', 'T')).toISOString();
+                          (enriched as any).usageCdrQueryEnd = new Date(billTime.end.replace(' ', 'T')).toISOString();
+                          // Als de bron nog niet expliciet BUNDLE_COUNTER was → markeer als CDR_STATS
+                          const enrichedSrc = (enriched as any).usageSource;
+                          if (!enrichedSrc || enrichedSrc === 'UNKNOWN' || enrichedSrc === 'NONE') {
+                            (enriched as any).usageSource = 'CDR_STATS';
+                          }
+                        } catch {}
+                      }
                       const verbeterd =
                         (newDU !== null && prevDU === null) ||
                         (newSMS !== null && prevSMS === null) ||
                         (newProd !== null && !/cardcentri|mii|imeifplmn/i.test(newProd) && /cardcentri|mii|imeifplmn/i.test(prevProd ?? ''));
-                      // 💥 EARLY RETURN: als we dataUsed HEBBEN + geen lege tech profiel naam meer → meteen returnen!
                       if (newDU !== null && newSMS !== null) {
                         DEBUG_LOG(`🏆 Phase A.5: COMPLETE usage data (data+sms) → EARLY RETURN!`);
                         return enriched;
@@ -2444,8 +2711,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                         DEBUG_LOG(`🏆 Phase A.5: Verbetering gevonden! Update phaseABest...`);
                         (best as any).dataUsedBytes = newDU;
                         (best as any).smsUsedCount = newSMS;
-                        // Alle andere velden van enriched ook overnemen (mocht het een los asset endpoint zijn met meer meta!)
-                        for (const f of ['productName','productType','simName','groupName','groupId','dataLimitBytes','smsLimitCount','lowestDataLimitBytes','lowestSmsLimitCount','status','msisdn','eid'] as const) {
+                        for (const f of ['productName','productType','simName','groupName','groupId','dataLimitBytes','smsLimitCount','lowestDataLimitBytes','lowestSmsLimitCount','status','msisdn','eid','usageSource','usageBundleId','usageLocalProductId','usageLocalProductName','usagePeriodStart','usagePeriodEnd','usageRetrievedAt','usageBundleUsages','usageSelectionNote','usageCdrQueryStart','usageCdrQueryEnd'] as const) {
                           const v = (enriched as any)[f];
                           if (v !== null && v !== undefined) {
                             if (f === 'productName' && (best as any)[f] && /cardcentri|mii|imeifplmn/i.test(String((best as any)[f]))) { (best as any)[f] = v; }

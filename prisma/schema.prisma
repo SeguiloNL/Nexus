@@ -432,6 +432,17 @@ model SIM {
   smsLimitCount            Int?
   lowestSmsLimitCount      Int?
   lastUsageSyncAt          DateTime?
+  usageSource              String?   @db.VarChar(30)
+  usageBundleId            String?   @db.VarChar(200)
+  usageLocalProductId      String?   @db.VarChar(200)
+  usageLocalProductName    String?   @db.VarChar(300)
+  usagePeriodStart         DateTime? @db.Timestamptz
+  usagePeriodEnd           DateTime? @db.Timestamptz
+  usageRetrievedAt         DateTime? @db.Timestamptz
+  usageCdrQueryStart       DateTime? @db.Timestamptz
+  usageCdrQueryEnd         DateTime? @db.Timestamptz
+  usageBundleUsages        Json?
+  usageSelectionNote       String?   @db.Text
   notes                    String?   @db.Text
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt

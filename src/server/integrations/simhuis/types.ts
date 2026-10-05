@@ -1,5 +1,27 @@
 export type SimhuisAuthMode = 'basic' | 'bearer';
 
+export type UsageSource = 'BUNDLE_COUNTER' | 'CDR_STATS' | 'UNKNOWN' | 'NONE';
+
+export interface SimhuisBundleUsage {
+  bundleId?: string | null;
+  localProductId?: string | null;
+  localProductName?: string | null;
+  productName?: string | null;
+  sharedDataPoolId?: string | null;
+  dataUsedBytes?: number | null;
+  remainingBytes?: number | null;
+  initialSizeBytes?: number | null;
+  smsUsedCount?: number | null;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  isActiveNow?: boolean | null;
+  isExpired?: boolean | null;
+  isFuture?: boolean | null;
+  subscriptionIndex?: number;
+  bundleIndex?: number;
+  rawBundle?: unknown;
+}
+
 export interface SimhuisCredentials {
   baseUrl: string;
   authMode: SimhuisAuthMode;
@@ -51,6 +73,17 @@ export interface SimhuisSimStatus {
   lowestSmsLimitCount?: number | null;
   activatedAt?: string | null;
   raw?: unknown;
+  usageSource?: UsageSource;
+  usageBundleId?: string | null;
+  usageLocalProductId?: string | null;
+  usageLocalProductName?: string | null;
+  usagePeriodStart?: string | null;
+  usagePeriodEnd?: string | null;
+  usageRetrievedAt?: string | null;
+  usageCdrQueryStart?: string | null;
+  usageCdrQueryEnd?: string | null;
+  usageBundleUsages?: SimhuisBundleUsage[] | null;
+  usageSelectionNote?: string | null;
 }
 
 export interface ActivateSimOptions {
