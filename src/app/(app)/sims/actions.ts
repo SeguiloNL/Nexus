@@ -460,14 +460,7 @@ export async function syncUsageForSingleSimAction(
   _formData: FormData
 ): Promise<SimUsageSyncState> {
   const user = await getCurrentUser();
-  if (
-    user.roleScope !== RoleScope.INTERNAL ||
-    !hasMinRole(user.role, UserRole.ADMIN)
-  ) {
-    throw new PermissionError(
-      "Onvoldoende rechten: alleen interne beheerders (ADMIN) mogen een verbruikssync uitvoeren."
-    );
-  }
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "view", "sim");
   const ctx = {
     userId: user.id,
     userRole: user.role,

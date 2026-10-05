@@ -60,7 +60,7 @@ export default async function SimDetailPage({
 
   const canEdit = canUserRole(user.permissions, "edit", "sim");
   const canDelete = canUserRole(user.permissions, "delete", "sim");
-  const canSyncUsage = isAdmin;
+  const canSyncUsage = canUserRole(user.permissions, "view", "sim");
 
   return (
     <SimDetail
