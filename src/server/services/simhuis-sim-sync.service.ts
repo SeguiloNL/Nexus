@@ -898,13 +898,12 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
         if (networkVal && existing.simType !== networkVal) { newData.simType = networkVal; changed = true; }
         if (notesVal && existing.notes !== notesVal) { newData.notes = notesVal; changed = true; }
 
-        // 🚨 NON-NULL PRESERVATION: schrijf ALLEEN over als nieuw NIET null is!
-        if (dataUsedBytesVal !== null && dataUsedBytesVal !== undefined && !bigIntEq(existing.dataUsedBytes, dataUsedBytesVal)) { newData.dataUsedBytes = dataUsedBytesVal; changed = true; }
-        if (dataLimitBytesVal !== null && dataLimitBytesVal !== undefined && !bigIntEq(existing.dataLimitBytes, dataLimitBytesVal)) { newData.dataLimitBytes = dataLimitBytesVal; changed = true; }
-        if (lowestDataLimitBytesVal !== null && lowestDataLimitBytesVal !== undefined && !bigIntEq(existing.lowestDataLimitBytes, lowestDataLimitBytesVal)) { newData.lowestDataLimitBytes = lowestDataLimitBytesVal; changed = true; }
-        if (smsUsedCountVal !== null && smsUsedCountVal !== undefined && existing.smsUsedCount !== smsUsedCountVal) { newData.smsUsedCount = smsUsedCountVal; changed = true; }
-        if (smsLimitCountVal !== null && smsLimitCountVal !== undefined && existing.smsLimitCount !== smsLimitCountVal) { newData.smsLimitCount = smsLimitCountVal; changed = true; }
-        if (lowestSmsLimitCountVal !== null && lowestSmsLimitCountVal !== undefined && existing.lowestSmsLimitCount !== lowestSmsLimitCountVal) { newData.lowestSmsLimitCount = lowestSmsLimitCountVal; changed = true; }
+        if (!bigIntEq(existing.dataUsedBytes, dataUsedBytesVal)) { newData.dataUsedBytes = dataUsedBytesVal; changed = true; }
+        if (!bigIntEq(existing.dataLimitBytes, dataLimitBytesVal)) { newData.dataLimitBytes = dataLimitBytesVal; changed = true; }
+        if (!bigIntEq(existing.lowestDataLimitBytes, lowestDataLimitBytesVal)) { newData.lowestDataLimitBytes = lowestDataLimitBytesVal; changed = true; }
+        if (existing.smsUsedCount !== smsUsedCountVal) { newData.smsUsedCount = smsUsedCountVal; changed = true; }
+        if (existing.smsLimitCount !== smsLimitCountVal) { newData.smsLimitCount = smsLimitCountVal; changed = true; }
+        if (existing.lowestSmsLimitCount !== lowestSmsLimitCountVal) { newData.lowestSmsLimitCount = lowestSmsLimitCountVal; changed = true; }
         if (lastUsageSyncAtVal) { newData.lastUsageSyncAt = lastUsageSyncAtVal; changed = true; }
 
         const usageKeys = [
@@ -1484,28 +1483,27 @@ export async function syncActiveSimsUsageFromSimhuis(
 
       let changed = false;
       const newData: any = { ...oldData };
-      // 🚨 NON-NULL PRESERVATION: alleen overschrijven als nieuw NIET null is!
-      if (dataUsedBytesVal !== null && dataUsedBytesVal !== undefined && !bigIntEq(existing.dataUsedBytes, dataUsedBytesVal)) {
+      if (!bigIntEq(existing.dataUsedBytes, dataUsedBytesVal)) {
         newData.dataUsedBytes = dataUsedBytesVal;
         changed = true;
       }
-      if (dataLimitBytesVal !== null && dataLimitBytesVal !== undefined && !bigIntEq(existing.dataLimitBytes, dataLimitBytesVal)) {
+      if (!bigIntEq(existing.dataLimitBytes, dataLimitBytesVal)) {
         newData.dataLimitBytes = dataLimitBytesVal;
         changed = true;
       }
-      if (lowestDataLimitBytesVal !== null && lowestDataLimitBytesVal !== undefined && !bigIntEq(existing.lowestDataLimitBytes, lowestDataLimitBytesVal)) {
+      if (!bigIntEq(existing.lowestDataLimitBytes, lowestDataLimitBytesVal)) {
         newData.lowestDataLimitBytes = lowestDataLimitBytesVal;
         changed = true;
       }
-      if (smsUsedCountVal !== null && smsUsedCountVal !== undefined && existing.smsUsedCount !== smsUsedCountVal) {
+      if (existing.smsUsedCount !== smsUsedCountVal) {
         newData.smsUsedCount = smsUsedCountVal;
         changed = true;
       }
-      if (smsLimitCountVal !== null && smsLimitCountVal !== undefined && existing.smsLimitCount !== smsLimitCountVal) {
+      if (existing.smsLimitCount !== smsLimitCountVal) {
         newData.smsLimitCount = smsLimitCountVal;
         changed = true;
       }
-      if (lowestSmsLimitCountVal !== null && lowestSmsLimitCountVal !== undefined && existing.lowestSmsLimitCount !== lowestSmsLimitCountVal) {
+      if (existing.lowestSmsLimitCount !== lowestSmsLimitCountVal) {
         newData.lowestSmsLimitCount = lowestSmsLimitCountVal;
         changed = true;
       }
@@ -1916,28 +1914,49 @@ export async function syncUsageForSingleSim(
     }
   }
 
+  const finalCoreDataUsage = applyUsage.newData;
+  const finalProductData = applyProduct.newData;
+  const toNum = (v: any): number | null => {
+    if (v === null || v === undefined) return null;
+    if (typeof v === 'bigint') {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    }
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
   const simhuisFields: PerSimUsageSyncResult["simhuisFields"] = {
-    dataUsedBytes: simhuisStatus.dataUsedBytes ?? null,
-    dataLimitBytes: simhuisStatus.dataLimitBytes ?? null,
-    lowestDataLimitBytes: simhuisStatus.lowestDataLimitBytes ?? null,
-    smsUsedCount: simhuisStatus.smsUsedCount ?? null,
-    smsLimitCount: simhuisStatus.smsLimitCount ?? null,
-    lowestSmsLimitCount: simhuisStatus.lowestSmsLimitCount ?? null,
-    productName: simhuisStatus.productName ?? simhuisStatus.planName ?? null,
-    productType: simhuisStatus.productType ?? null,
-    simName: simhuisStatus.simName ?? null,
-    groupName: simhuisStatus.groupName ?? simhuisStatus.groupId ?? null,
-    usageSource: (simhuisStatus as any).usageSource ?? null,
-    usageBundleId: (simhuisStatus as any).usageBundleId ?? null,
-    usageLocalProductId: (simhuisStatus as any).usageLocalProductId ?? null,
-    usageLocalProductName: (simhuisStatus as any).usageLocalProductName ?? null,
-    usagePeriodStart: (simhuisStatus as any).usagePeriodStart ? new Date((simhuisStatus as any).usagePeriodStart) : null,
-    usagePeriodEnd: (simhuisStatus as any).usagePeriodEnd ? new Date((simhuisStatus as any).usagePeriodEnd) : null,
-    usageRetrievedAt: (simhuisStatus as any).usageRetrievedAt ? new Date((simhuisStatus as any).usageRetrievedAt) : null,
-    usageCdrQueryStart: (simhuisStatus as any).usageCdrQueryStart ? new Date((simhuisStatus as any).usageCdrQueryStart) : null,
-    usageCdrQueryEnd: (simhuisStatus as any).usageCdrQueryEnd ? new Date((simhuisStatus as any).usageCdrQueryEnd) : null,
-    usageBundleUsages: (simhuisStatus as any).usageBundleUsages ?? null,
-    usageSelectionNote: (simhuisStatus as any).usageSelectionNote ?? null,
+    dataUsedBytes: toNum(finalCoreDataUsage.dataUsedBytes),
+    dataLimitBytes: toNum(finalCoreDataUsage.dataLimitBytes),
+    lowestDataLimitBytes: toNum(finalCoreDataUsage.lowestDataLimitBytes),
+    smsUsedCount:
+      typeof finalCoreDataUsage.smsUsedCount === 'number' && Number.isFinite(finalCoreDataUsage.smsUsedCount)
+        ? Math.round(finalCoreDataUsage.smsUsedCount)
+        : null,
+    smsLimitCount:
+      typeof finalCoreDataUsage.smsLimitCount === 'number' && Number.isFinite(finalCoreDataUsage.smsLimitCount)
+        ? Math.round(finalCoreDataUsage.smsLimitCount)
+        : null,
+    lowestSmsLimitCount:
+      typeof finalCoreDataUsage.lowestSmsLimitCount === 'number' && Number.isFinite(finalCoreDataUsage.lowestSmsLimitCount)
+        ? Math.round(finalCoreDataUsage.lowestSmsLimitCount)
+        : null,
+    productName: finalProductData.product ?? simhuisStatus.productName ?? simhuisStatus.planName ?? null,
+    productType: finalProductData.productType ?? simhuisStatus.productType ?? null,
+    simName: finalProductData.simName ?? simhuisStatus.simName ?? null,
+    groupName: finalProductData.simGroup ?? simhuisStatus.groupName ?? simhuisStatus.groupId ?? null,
+    usageSource: (finalCoreDataUsage as any).usageSource ?? (simhuisStatus as any).usageSource ?? null,
+    usageBundleId: (finalCoreDataUsage as any).usageBundleId ?? (simhuisStatus as any).usageBundleId ?? null,
+    usageLocalProductId: (finalCoreDataUsage as any).usageLocalProductId ?? (simhuisStatus as any).usageLocalProductId ?? null,
+    usageLocalProductName: (finalCoreDataUsage as any).usageLocalProductName ?? (simhuisStatus as any).usageLocalProductName ?? null,
+    usagePeriodStart: (finalCoreDataUsage as any).usagePeriodStart ?? ((simhuisStatus as any).usagePeriodStart ? new Date((simhuisStatus as any).usagePeriodStart) : null),
+    usagePeriodEnd: (finalCoreDataUsage as any).usagePeriodEnd ?? ((simhuisStatus as any).usagePeriodEnd ? new Date((simhuisStatus as any).usagePeriodEnd) : null),
+    usageRetrievedAt: (finalCoreDataUsage as any).usageRetrievedAt ?? ((simhuisStatus as any).usageRetrievedAt ? new Date((simhuisStatus as any).usageRetrievedAt) : null),
+    usageCdrQueryStart: (finalCoreDataUsage as any).usageCdrQueryStart ?? ((simhuisStatus as any).usageCdrQueryStart ? new Date((simhuisStatus as any).usageCdrQueryStart) : null),
+    usageCdrQueryEnd: (finalCoreDataUsage as any).usageCdrQueryEnd ?? ((simhuisStatus as any).usageCdrQueryEnd ? new Date((simhuisStatus as any).usageCdrQueryEnd) : null),
+    usageBundleUsages: (finalCoreDataUsage as any).usageBundleUsages ?? (simhuisStatus as any).usageBundleUsages ?? null,
+    usageSelectionNote: (finalCoreDataUsage as any).usageSelectionNote ?? (simhuisStatus as any).usageSelectionNote ?? null,
   };
 
   return {

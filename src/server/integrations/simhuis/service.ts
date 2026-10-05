@@ -1941,6 +1941,15 @@ function enrichSimhuisStatusWithDirectRawExtracts(
   const extractFromAllBundles = (): ExtractBundleResult => {
     const bundleUsages: SimhuisBundleUsage[] = [];
     const shortIccid = iccid.slice(-6);
+    let dataUsed: number | null = null;
+    let remainingBytes: number | null = null;
+    let initialBytes: number | null = null;
+    let smsUsed: number | null = null;
+    let pName: string | null = null;
+    let pSrc = '';
+    let dataUsedSrc = '';
+    let smsUsedSrc = '';
+    let dataUsedIsBundleCounter = false;
     try {
       const subscriptionsArr = Array.isArray(rawObj.subscriptions) ? rawObj.subscriptions
         : Array.isArray(nested?.subscriptions) ? nested.subscriptions
@@ -1978,13 +1987,44 @@ function enrichSimhuisStatusWithDirectRawExtracts(
           bu.remainingBytes = bRem ?? null;
           for (const k of BUNDLE_DATA_KEYS) {
             const rawV = (b as any)[k];
-            const pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
+            let pb: number | null = null;
+            if (isPpuBundle) {
+              const sv = safeNum(rawV);
+              if (sv !== null && sv >= 0) pb = Math.round(sv);
+            } else {
+              pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
+              if (pb === null) {
+                const sv = safeNum(rawV);
+                if (sv !== null && sv === 0) pb = 0;
+              }
+            }
             if (pb !== null && pb >= 0 && bu.dataUsedBytes === undefined) {
               bu.dataUsedBytes = pb;
+              if (dataUsed === null) {
+                dataUsed = pb;
+                dataUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}|FIRSTFOUND`;
+                dataUsedIsBundleCounter = true;
+              }
               break;
             }
-            const sv = safeNum(rawV);
-            if (sv === 0 && bu.dataUsedBytes === undefined) { bu.dataUsedBytes = 0; break; }
+          }
+          if (remainingBytes === null) {
+            const rawV = (b as any).remainingBytes;
+            const pb = pickBytesSmart(rawV, baselineDataLimit, 'limit');
+            if (pb !== null && pb >= 0) remainingBytes = pb;
+            else { const sv = safeNum(rawV); if (sv !== null && sv === 0) remainingBytes = 0; }
+          }
+          if (initialBytes === null) {
+            const rawV = (b as any).initialSize;
+            const pb = pickBytesSmart(rawV, baselineDataLimit, 'limit');
+            if (pb !== null && pb >= 0) initialBytes = pb;
+            else { const sv = safeNum(rawV); if (sv !== null && sv === 0) initialBytes = 0; }
+          }
+          if (smsUsed === null) {
+            for (const k of BUNDLE_SMS_KEYS) {
+              const sv = safeNum((b as any)[k]);
+              if (sv !== null && sv >= 0) { smsUsed = sv; smsUsedSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
+            }
           }
           for (const k of BUNDLE_SMS_KEYS) {
             const sv = safeNum((b as any)[k]);
@@ -1993,7 +2033,19 @@ function enrichSimhuisStatusWithDirectRawExtracts(
               break;
             }
           }
+          if (!pName) {
+            for (const k of BUNDLE_PRODUCT_KEYS) {
+              const s = isValidStringValue((b as any)[k]);
+              if (s && !looksLikeTechProfile(s)) { pName = s; pSrc = `SUBS[${si}].BUNDLE[${bi}].${k}`; break; }
+            }
+          }
           bundleUsages.push(bu);
+        }
+        if (!pName) {
+          for (const k of BUNDLE_PRODUCT_KEYS) {
+            const s = isValidStringValue((sub as any)[k]);
+            if (s && !looksLikeTechProfile(s)) { pName = s; pSrc = `SUBS[${si}].${k}`; break; }
+          }
         }
       }
     } catch (e) {
@@ -2003,18 +2055,8 @@ function enrichSimhuisStatusWithDirectRawExtracts(
     let selectedBundle: SimhuisBundleUsage | null = null;
     let selectedIndex = -1;
     let selectionNote: string | null = null;
-    let dataUsed: number | null = null;
-    let remainingBytes: number | null = null;
-    let initialBytes: number | null = null;
-    let smsUsed: number | null = null;
-    let pName: string | null = null;
-    let pSrc = '';
-    let dataUsedSrc = '';
-    let smsUsedSrc = '';
-    let dataUsedIsBundleCounter = false;
 
     if (bundleUsages.length > 0) {
-      const withProduct = bundleUsages.filter(b => (b.dataUsedBytes !== undefined && b.dataUsedBytes !== null) || (b.localProductName && !looksLikeTechProfile(b.localProductName)) || b.isActiveNow);
       if (bundleUsages.length === 1) {
         selectedIndex = 0;
         selectedBundle = bundleUsages[0];
@@ -2048,25 +2090,25 @@ function enrichSimhuisStatusWithDirectRawExtracts(
         }
       }
       if (selectedBundle) {
-        if (selectedBundle.dataUsedBytes !== undefined && selectedBundle.dataUsedBytes !== null) {
+        if (dataUsed === null && selectedBundle.dataUsedBytes !== undefined && selectedBundle.dataUsedBytes !== null) {
           dataUsed = selectedBundle.dataUsedBytes;
           dataUsedSrc = `SUBS[${selectedBundle.subscriptionIndex}].BUNDLE[${selectedBundle.bundleIndex}].dataUsed|SELECTED`;
           dataUsedIsBundleCounter = true;
         }
-        if (selectedBundle.remainingBytes !== undefined && selectedBundle.remainingBytes !== null) {
+        if (remainingBytes === null && selectedBundle.remainingBytes !== undefined && selectedBundle.remainingBytes !== null) {
           remainingBytes = selectedBundle.remainingBytes;
         }
-        if (selectedBundle.initialSizeBytes !== undefined && selectedBundle.initialSizeBytes !== null) {
+        if (initialBytes === null && selectedBundle.initialSizeBytes !== undefined && selectedBundle.initialSizeBytes !== null) {
           initialBytes = selectedBundle.initialSizeBytes;
         }
-        if (selectedBundle.smsUsedCount !== undefined && selectedBundle.smsUsedCount !== null) {
+        if (smsUsed === null && selectedBundle.smsUsedCount !== undefined && selectedBundle.smsUsedCount !== null) {
           smsUsed = selectedBundle.smsUsedCount;
           smsUsedSrc = `SUBS[${selectedBundle.subscriptionIndex}].BUNDLE[${selectedBundle.bundleIndex}].smsUsed|SELECTED`;
         }
-        if (selectedBundle.localProductName && !looksLikeTechProfile(selectedBundle.localProductName)) {
+        if (!pName && selectedBundle.localProductName && !looksLikeTechProfile(selectedBundle.localProductName)) {
           pName = selectedBundle.localProductName;
           pSrc = `SUBS[${selectedBundle.subscriptionIndex}].BUNDLE[${selectedBundle.bundleIndex}].localProductName|SELECTED`;
-        } else if (selectedBundle.productName && !looksLikeTechProfile(selectedBundle.productName)) {
+        } else if (!pName && selectedBundle.productName && !looksLikeTechProfile(selectedBundle.productName)) {
           pName = selectedBundle.productName;
           pSrc = `SUBS[${selectedBundle.subscriptionIndex}].BUNDLE[${selectedBundle.bundleIndex}].productName|SELECTED`;
         }
@@ -5002,9 +5044,14 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                       if (owner) wDirectGroupName = owner;
                     }
                     if (!wDirectGroupName && Array.isArray((raw as any).ownership) && (raw as any).ownership.length > 1) {
+                      const ownerIdNorm = isValidStr((raw as any).ownerAccountId)?.toLowerCase() ?? '';
                       for (const item of (raw as any).ownership) {
                         const s = isValidStr(item);
-                        if (s && s.toLowerCase() !== isValidStr((raw as any).ownerAccountId).toLowerCase()) {
+                        const sNorm = s?.toLowerCase() ?? '';
+                        if (sNorm && ownerIdNorm && sNorm !== ownerIdNorm) {
+                          wDirectGroupName = s; break;
+                        }
+                        if (sNorm && !ownerIdNorm) {
                           wDirectGroupName = s; break;
                         }
                       }
@@ -5585,9 +5632,14 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                       if (owner) wDirectGroupName = owner;
                     }
                     if (!wDirectGroupName && Array.isArray((raw as any).ownership) && (raw as any).ownership.length > 1) {
+                      const ownerIdNorm = isValidStr((raw as any).ownerAccountId)?.toLowerCase() ?? '';
                       for (const item of (raw as any).ownership) {
                         const s = isValidStr(item);
-                        if (s && s.toLowerCase() !== isValidStr((raw as any).ownerAccountId).toLowerCase()) {
+                        const sNorm = s?.toLowerCase() ?? '';
+                        if (sNorm && ownerIdNorm && sNorm !== ownerIdNorm) {
+                          wDirectGroupName = s; break;
+                        }
+                        if (sNorm && !ownerIdNorm) {
                           wDirectGroupName = s; break;
                         }
                       }
