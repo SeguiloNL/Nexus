@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "./audit.service";
-import { listAllSims, getSimStatus, simhuisClient } from "@/server/integrations/simhuis/service";
+import { listAllSims, getSimStatus, simhuisClient, ensureUsageDetailsForSim } from "@/server/integrations/simhuis/service";
 import type { SimhuisSimStatus } from "@/server/integrations/simhuis/types";
 import { SimStatus, type UserRole } from "@/types/enums";
 
@@ -1788,28 +1788,80 @@ export async function syncUsageForSingleSim(
   let simhuisStatus: SimhuisSimStatus | null = null;
   let errorMessage: string | undefined;
   let source: PerSimUsageSyncResult["source"] = "per-sim-discovery";
+  const errors: string[] = [];
 
-  // POGING 1: Per-SIM endpoints (sneller, want alleen 1 SIM)
+  // POGING 1: Eerst listAllSims() bulk inventory → basis SIM data (limieten, product, status)
+  let baseFromList: SimhuisSimStatus | null = null;
   try {
-    simhuisStatus = await getSimStatus(normalizedIccid);
+    const all = await listAllSims();
+    const match = all.find(
+      (s) => normIccid(s.iccid) === normalizedIccid
+    );
+    if (match) baseFromList = match;
   } catch (e: any) {
-    errorMessage = e?.message ?? String(e);
+    errors.push(`listAllSims mislukt: ${e?.message ?? String(e)}`);
   }
 
-  // POGING 2: Fallback listAllSims + filter op iccid
-  if (!simhuisStatus) {
-    source = "list-fallback";
-    try {
-      const all = await listAllSims();
-      const match = all.find(
-        (s) => normIccid(s.iccid) === normalizedIccid
-      );
-      if (match) simhuisStatus = match;
-      else errorMessage = errorMessage ? `${errorMessage} | Fallback listAllSims: ICCID niet gevonden in lijst.` : `ICCID niet gevonden in Simhuis lijst.`;
-    } catch (e: any) {
-      errorMessage = errorMessage
-        ? `${errorMessage} | Fallback listAllSims mislukt: ${e?.message ?? e}`
-        : `listAllSims mislukt: ${e?.message ?? e}`;
+  // POGING 2: Vervolgens altijd getSimStatus() — bevat Winning Combo + Phase A.5 (4 usage endpoints: /assets/{iccid}, /cdr/stats, /cdr)
+  let detailedFromPerSim: SimhuisSimStatus | null = null;
+  try {
+    detailedFromPerSim = await getSimStatus(normalizedIccid);
+  } catch (e: any) {
+    errors.push(`getSimStatus mislukt: ${e?.message ?? String(e)}`);
+  }
+
+  // POGING 3: MERGE — precies hetzelfde patroon als bulk sync (regel 1390-1408)
+  //   Neem baseFromList als baseline, overschrijf/verrijk met detailedFromPerSim als die BETERE waardes heeft
+  //   (niet-null tellers, betere productName, enz.)
+  if (baseFromList || detailedFromPerSim) {
+    const baseline: SimhuisSimStatus = (baseFromList ?? detailedFromPerSim) as SimhuisSimStatus;
+    const merged: SimhuisSimStatus = { ...baseline };
+    if (detailedFromPerSim) {
+      for (const f of [
+        'dataUsedBytes','smsUsedCount','dataLimitBytes','lowestDataLimitBytes','smsLimitCount','lowestSmsLimitCount',
+        'productName','productType','simName','groupName','groupId','status','msisdn','eid','imsi',
+        'usageSource','usageBundleId','usageLocalProductId','usageLocalProductName',
+        'usagePeriodStart','usagePeriodEnd','usageRetrievedAt','usageCdrQueryStart','usageCdrQueryEnd',
+        'usageBundleUsages','usageSelectionNote',
+      ] as const) {
+        const detailVal = (detailedFromPerSim as any)[f];
+        const baseVal = (baseFromList ? (baseFromList as any)[f] : undefined);
+        const improve =
+          detailVal !== null && detailVal !== undefined &&
+          (baseVal === null || baseVal === undefined ||
+           (f === 'productName' && typeof detailVal === 'string' && /cardcentri|mii|imeifplmn/i.test(String(baseVal)) && !/cardcentri|mii|imeifplmn/i.test(detailVal)) ||
+           (typeof baseVal === 'string' && baseVal.length === 0)
+          );
+        if (improve) { (merged as any)[f] = detailVal; }
+      }
+    }
+    simhuisStatus = merged;
+    // Als detailedFromPerSim de tellers WEL heeft (en baseFromList niet), dan markeren we als per-sim-discovery
+    // (want de verbruiksdata kwam uit de per-SIM usage endpoints)
+    const hadListCounters =
+      typeof (baseFromList as any)?.dataUsedBytes === 'number' &&
+      typeof (baseFromList as any)?.smsUsedCount === 'number';
+    if (hadListCounters) source = "list-fallback";
+    else source = "per-sim-discovery";
+  }
+
+  errorMessage = errors.length > 0 ? errors.join(' | ') : undefined;
+
+  // 💥 EXTRA FALLBACK: Als na merge stap de tellers nog ontbreken,
+  //    roep dan expliciet ensureUsageDetailsForSim() aan die de 4 usage endpoints
+  //    (/assets/{iccid}, /accounts/{aid}/assets/{iccid}, /cdr/stats, /cdr)
+  //    los aanroept en de data verrijkt. Dit is de extra zekerheidslag voor
+  //    de SIM-detailpagina knop "Dataverbruik vernieuwen".
+  if (simhuisStatus) {
+    const missingDU = typeof (simhuisStatus as any).dataUsedBytes !== 'number';
+    const missingSU = typeof (simhuisStatus as any).smsUsedCount !== 'number';
+    if (missingDU || missingSU) {
+      try {
+        simhuisStatus = await ensureUsageDetailsForSim(simhuisStatus);
+      } catch (e: any) {
+        errors.push(`ensureUsageDetailsForSim mislukt: ${e?.message ?? String(e)}`);
+        errorMessage = errors.join(' | ');
+      }
     }
   }
 

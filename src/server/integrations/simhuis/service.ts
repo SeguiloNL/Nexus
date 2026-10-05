@@ -6163,5 +6163,80 @@ export async function unsuspendSimhuisAsset(iccid: string): Promise<SimhuisAsset
   return _performSimhuisAssetAction('unsuspend', iccid);
 }
 
+// ============================================================
+// 🔁 ensureUsageDetailsForSim — expliciete fallback voor per-SIM usage sync
+//    Als de initiele Winning Combo / listAllSims geen dataUsed of smsUsed
+//    leverde, dan roepen we ALTIJD de 4 Swagger-bevestigde usage endpoints
+//    aan (zelfde als Phase A.5 in getSimStatus) en verrijken we de status.
+//    Gebruikt door syncUsageForSingleSim op de SIM-detailpagina.
+// ============================================================
+export async function ensureUsageDetailsForSim(
+  base: SimhuisSimStatus
+): Promise<SimhuisSimStatus> {
+  const iccid = base.iccid;
+  if (!iccid) return base;
+
+  const hasDataUsed = typeof (base as any).dataUsedBytes === 'number';
+  const hasSmsUsed = typeof (base as any).smsUsedCount === 'number';
+  if (hasDataUsed && hasSmsUsed) return base;
+
+  try {
+    const creds = await getSimhuisCreds();
+    const aidForGetSim = getSimhuisAccountId();
+    const bearerToken = await acquireBearerToken(creds);
+    if (!bearerToken || !aidForGetSim) return base;
+
+    const periodStart = (base as any).usagePeriodStart;
+    const periodEnd = (base as any).usagePeriodEnd;
+    const periodBillTime = periodStart || periodEnd ? billTimeFromPeriod(periodStart, periodEnd, true) : null;
+    const monthBillTime = billTimeCurrentMonth();
+    const billTime = periodBillTime ?? monthBillTime;
+
+    const usageTemplates: Array<{ method: 'GET' | 'POST'; path: string; query?: Record<string, any>; isCdr?: boolean }> = [
+      { method: 'GET', path: `/assets/${iccid}`, query: { accountId: aidForGetSim } },
+      { method: 'GET', path: `/accounts/${aidForGetSim}/assets/${iccid}`, query: { accountId: aidForGetSim } },
+      { method: 'GET', path: `/cdr/stats`, query: { accountId: aidForGetSim, iccid, type: 'data', billTime: billTime.combined }, isCdr: true },
+      { method: 'GET', path: `/cdr`, query: { accountId: aidForGetSim, iccid, type: 'data', limit: 50, sort: 'billTime', order: 'desc', billTime: billTime.combined }, isCdr: true },
+    ];
+
+    let result: SimhuisSimStatus = { ...base as any };
+    const auth: { tag: 'bearer-token'; token: string } = { tag: 'bearer-token', token: bearerToken };
+    const startedAtEnsure = Date.now();
+
+    for (const ut of usageTemplates) {
+      if (Date.now() - startedAtEnsure > 15_000) break;
+      if (typeof (result as any).dataUsedBytes === 'number' && typeof (result as any).smsUsedCount === 'number') break;
+      try {
+        const fullUrl = makePerSimFullUrl(creds.baseUrl, `/v3${ut.path}`, ut.query ?? {});
+        const resp = await doPerSimFetch({
+          fullUrl,
+          method: ut.method,
+          contentType: 'none',
+          body: null as any,
+          auth,
+          timeoutMs: 5000,
+        });
+        if (resp.tag === 'ok' && resp.body) {
+          const enriched = enrichSimhuisStatusWithDirectRawExtracts(result, resp.body, iccid);
+          if (enriched) {
+            result = enriched;
+            if (ut.isCdr) {
+              try {
+                (result as any).usageCdrQueryStart = new Date(billTime.start.replace(' ', 'T')).toISOString();
+                (result as any).usageCdrQueryEnd = new Date(billTime.end.replace(' ', 'T')).toISOString();
+                const src = (result as any).usageSource;
+                if (!src || src === 'UNKNOWN' || src === 'NONE') (result as any).usageSource = 'CDR_STATS';
+              } catch {}
+            }
+          }
+        }
+      } catch {}
+    }
+    return result;
+  } catch {
+    return base;
+  }
+}
+
 export { simhuisClient, SimhuisApiError };
 export type { SimhuisRequestOptions, SimhuisAssetActionResult, SimhuisSubscribeResult };
