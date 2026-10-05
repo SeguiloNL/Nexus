@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { findManySims } from "@/server/services/sim.service";
 import { SimListWithImport } from "./_components/sim-list-with-import";
@@ -30,14 +31,16 @@ export default async function SimsPage() {
     hasMinRole(user.role, UserRole.ADMIN);
 
   return (
-    <SimListWithImport
-      sims={result.data as any}
-      canCreate={canCreate}
-      canEdit={canEdit}
-      canDelete={canDelete}
-      canImport={canImport}
-      canExport={canExport}
-      canSyncUsage={canSyncUsage}
-    />
+    <Suspense fallback={<div className="p-4 text-sm text-slate-500">Laden…</div>}>
+      <SimListWithImport
+        sims={result.data as any}
+        canCreate={canCreate}
+        canEdit={canEdit}
+        canDelete={canDelete}
+        canImport={canImport}
+        canExport={canExport}
+        canSyncUsage={canSyncUsage}
+      />
+    </Suspense>
   );
 }

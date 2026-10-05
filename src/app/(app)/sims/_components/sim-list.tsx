@@ -1,5 +1,8 @@
+"use client";
+
 import Link from "next/link";
 import { useFormState } from "react-dom";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { ColumnDef, Row } from "@tanstack/react-table";
 import { MoreHorizontal, Plus, Trash2, Edit, Upload, Download, Filter, RefreshCw, AlertTriangle } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
@@ -24,6 +27,17 @@ import {
   type BulkActionState,
 } from "../actions";
 import { useMemo, useRef, useEffect, useState, useTransition } from "react";
+
+const VALID_STATUS_FILTERS: ReadonlySet<string> = new Set([
+  "__ALL__",
+  ...Object.keys(SIM_STATUS),
+]);
+
+function resolveStatusFilter(raw: string | null): SimStatus | "__ALL__" {
+  if (!raw) return "ACTIVE";
+  if (VALID_STATUS_FILTERS.has(raw)) return raw as SimStatus | "__ALL__";
+  return "ACTIVE";
+}
 
 type ListSim = SIM;
 
@@ -166,10 +180,34 @@ export function SimList({
   canExport,
   canSyncUsage,
 }: SimListProps) {
-  const [statusFilter, setStatusFilter] = useState<SimStatus | "__ALL__">("ACTIVE");
+  const router = useRouter();
+  const sp = useSearchParams();
+  const [isNavTransitioning, startNavTransition] = useTransition();
+
+  const [statusFilter, setStatusFilter] = useState<SimStatus | "__ALL__">(() =>
+    resolveStatusFilter(sp?.get("status") ?? null),
+  );
   const [syncState, syncFormAction, syncPendingNative] = useFormState(syncUsageSimsAction, {
     ok: false,
   } as BulkActionState);
+
+  useEffect(() => {
+    setStatusFilter(resolveStatusFilter(sp?.get("status") ?? null));
+  }, [sp]);
+
+  const applyStatusFilter = (next: SimStatus | "__ALL__") => {
+    setStatusFilter(next);
+    startNavTransition(() => {
+      const params = new URLSearchParams(Array.from(sp?.entries() || []));
+      if (next === "__ALL__") {
+        params.delete("status");
+      } else {
+        params.set("status", next);
+      }
+      const qs = params.toString();
+      router.replace(`/sims${qs ? `?${qs}` : ""}`);
+    });
+  };
 
   const [isSyncPendingClient, setIsSyncPendingClient] = useState(false);
   const [isSyncTransitioning, startSyncTransition] = useTransition();
@@ -536,8 +574,10 @@ export function SimList({
             <span className="whitespace-nowrap">Status:</span>
             <select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as SimStatus | "__ALL__")}
+              onChange={(e) => applyStatusFilter(e.target.value as SimStatus | "__ALL__")}
               className="h-9 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+              aria-busy={isNavTransitioning || undefined}
+              disabled={isNavTransitioning}
             >
               {STATUS_OPTIONS.map((opt) => (
                 <option key={String(opt.value)} value={String(opt.value)}>
@@ -551,8 +591,9 @@ export function SimList({
               variant="ghost"
               size="sm"
               type="button"
-              onClick={() => setStatusFilter("__ALL__")}
+              onClick={() => applyStatusFilter("__ALL__")}
               className="h-8 text-xs text-slate-600 hover:text-slate-900"
+              disabled={isNavTransitioning}
             >
               Filter wissen
             </Button>
