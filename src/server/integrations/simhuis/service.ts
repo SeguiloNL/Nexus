@@ -1877,8 +1877,11 @@ function enrichSimhuisStatusWithDirectRawExtracts(
             } else {
               pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
               if (pb === null) {
+                // 💥 FALLBACK: Als pickBytesSmart te streng was (geen baseline of onbekende eenheid),
+                //    maar safeNum WEL een geldige waarde >=0 geeft → gebruiken!
+                //    (Dit was de bug: pickBytesSmart verwierp waardes die voorheen WEL werkten.)
                 const sv = safeNum(rawV);
-                if (sv !== null && sv === 0) pb = 0;
+                if (sv !== null && sv >= 0) pb = sv === 0 ? 0 : Math.round(sv);
               }
             }
             if (pb !== null && pb >= 0 && bu.dataUsedBytes === undefined) {
@@ -1984,8 +1987,9 @@ function enrichSimhuisStatusWithDirectRawExtracts(
             const rawV = (rt as any)?.dataUsed;
             const pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
             if (pb !== null && pb >= 0) { dataUsed = pb; dataUsedSrc = `RATINGS[${ri}].dataUsed`; break; }
+            // 💥 FALLBACK safeNum: pickBytesSmart te streng? → direct gebruiken
             const sv = safeNum(rawV);
-            if (sv === 0) { dataUsed = 0; dataUsedSrc = `RATINGS[${ri}].dataUsed`; break; }
+            if (sv !== null && sv >= 0) { dataUsed = sv === 0 ? 0 : Math.round(sv); dataUsedSrc = `RATINGS[${ri}].dataUsed|safeNum`; break; }
             if (!pName && (rt as any)?.product && typeof (rt as any).product === 'object') {
               for (const k of BUNDLE_PRODUCT_KEYS) {
                 const s = isValidStringValue(((rt as any).product as any)[k]);
@@ -1995,6 +1999,10 @@ function enrichSimhuisStatusWithDirectRawExtracts(
                 const rawV2 = ((rt as any).product as any).remainingBytes;
                 const pb2 = pickBytesSmart(rawV2, baselineDataLimit, 'limit');
                 if (pb2 !== null) remainingBytes = pb2;
+                else {
+                  const sv2 = safeNum(rawV2);
+                  if (sv2 !== null && sv2 > 0) remainingBytes = Math.round(sv2);
+                }
               }
             }
           }
@@ -2065,8 +2073,10 @@ function enrichSimhuisStatusWithDirectRawExtracts(
       const rawV = (obj as any)[k];
       const pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
       if (pb !== null && pb >= 0) return { bytes: pb, src: `${label}.${k}` };
+      // 💥 FALLBACK: pickBytesSmart te streng? safeNum probeert zonder baseline, zonder eenheids-gok.
+      //    Dit was de bug: waardes die voorheen WEL werkten, werden nu door pickBytesSmart verworpen.
       const sv = safeNum(rawV);
-      if (sv === 0) return { bytes: 0, src: `${label}.${k}` };
+      if (sv !== null && sv >= 0) return { bytes: sv === 0 ? 0 : Math.round(sv), src: `${label}.${k}|safeNum-fallback` };
     }
     return { bytes: null, src: '' };
   };
@@ -2084,11 +2094,14 @@ function enrichSimhuisStatusWithDirectRawExtracts(
 
   if (duBytes !== null && baselineDataUsed !== null && baselineDataUsed > 0) {
     const ratio = Math.max(duBytes, 1) / Math.max(baselineDataUsed, 1);
-    if (ratio > 1000 || ratio < 0.001) {
+    // 💥 Drempel VERRE VERHOOGD (voorheen 0.001 / 1000): baseline komt vaak uit toSimStatus
+    //    en is onbetrouwbaar (bijv. 0 of 500 in plaats van echte teller). Alleen bij extreem
+    //    onrealistische waarden (factor 1M x) nog corrigeren. Voorkomt dataverlies.
+    if (ratio > 1_000_000 || ratio < 0.000001) {
       try {
         const shortIccid = iccid.slice(-6);
         console.info(
-          `[simhuis:enrichExtract] [${shortIccid}] ⚠️ dataUsed sanity-check: enrich=${duBytes} bytes (${(duBytes/_MB).toFixed(2)} MB) ≠ baseline=${baselineDataUsed} bytes (${(baselineDataUsed/_MB).toFixed(2)} MB). ratio=${ratio.toFixed(1)}x → baseline gehandhaafd.`
+          `[simhuis:enrichExtract] [${shortIccid}] ⚠️ dataUsed sanity-check (EXTREME ratio!): enrich=${duBytes} bytes (${(duBytes/_MB).toFixed(2)} MB) ≠ baseline=${baselineDataUsed} bytes (${(baselineDataUsed/_MB).toFixed(2)} MB). ratio=${ratio.toFixed(1)}x → baseline gehandhaafd.`
         );
       } catch {}
       duBytes = baselineDataUsed;
