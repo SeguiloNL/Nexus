@@ -46,6 +46,7 @@ export interface DataTableProps<TData, TValue> {
   className?: string;
   enableRowSelection?: boolean;
   getRowId?: (row: TData, index: number, parent?: Row<TData>) => string;
+  defaultSorting?: SortingState;
   bulkActions?: (params: {
     selectedRows: Row<TData>[];
     selectedCount: number;
@@ -69,9 +70,10 @@ export function DataTable<TData, TValue>({
   className,
   enableRowSelection = false,
   getRowId,
+  defaultSorting = [],
   bulkActions,
 }: DataTableProps<TData, TValue>) {
-  const [sorting, setSorting] = React.useState<SortingState>([]);
+  const [sorting, setSorting] = React.useState<SortingState>(defaultSorting);
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([]);
   const [columnVisibility, setColumnVisibility] = React.useState<VisibilityState>({});
   const [rowSelection, setRowSelection] = React.useState<Record<string, boolean>>({});

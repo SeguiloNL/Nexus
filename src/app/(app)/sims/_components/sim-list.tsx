@@ -551,6 +551,7 @@ export function SimList({
         searchColumnAccessors={["iccid", "msisdn", "imsi", "provider"]}
         searchPlaceholder="Zoek SIM (ICCID, MSISDN, IMSI, provider…)"
         enableRowSelection={canDelete}
+        defaultSorting={[{ id: "usage", desc: true }]}
         getRowId={(row) => (row as any).id}
         bulkActions={
           canDelete
