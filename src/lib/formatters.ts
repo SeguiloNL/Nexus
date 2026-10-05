@@ -7,40 +7,65 @@ import { nl } from "date-fns/locale/nl";
 
 export function formatDate(date: Date | string | null | undefined): string {
   if (!date) return "-";
-  const d = typeof date === "string" ? new Date(date) : date;
-  return format(d, "dd-MM-yyyy", { locale: nl });
+  try {
+    const d = typeof date === "string" ? new Date(date) : date;
+    if (!d || !Number.isFinite(d.getTime())) return "-";
+    return format(d, "dd-MM-yyyy", { locale: nl });
+  } catch {
+    return "-";
+  }
 }
 
 export function formatDateTime(
   date: Date | string | null | undefined
 ): string {
   if (!date) return "-";
-  const d = typeof date === "string" ? new Date(date) : date;
-  return format(d, "dd-MM-yyyy HH:mm", { locale: nl });
+  try {
+    const d = typeof date === "string" ? new Date(date) : date;
+    if (!d || !Number.isFinite(d.getTime())) return "-";
+    return format(d, "dd-MM-yyyy HH:mm", { locale: nl });
+  } catch {
+    return "-";
+  }
 }
 
 export function formatDateTimeFull(
   date: Date | string | null | undefined
 ): string {
   if (!date) return "-";
-  const d = typeof date === "string" ? new Date(date) : date;
-  return format(d, "dd MMMM yyyy HH:mm:ss", { locale: nl });
+  try {
+    const d = typeof date === "string" ? new Date(date) : date;
+    if (!d || !Number.isFinite(d.getTime())) return "-";
+    return format(d, "dd MMMM yyyy HH:mm:ss", { locale: nl });
+  } catch {
+    return "-";
+  }
 }
 
 export function formatDateLong(
   date: Date | string | null | undefined
 ): string {
   if (!date) return "-";
-  const d = typeof date === "string" ? new Date(date) : date;
-  return format(d, "dd MMMM yyyy", { locale: nl });
+  try {
+    const d = typeof date === "string" ? new Date(date) : date;
+    if (!d || !Number.isFinite(d.getTime())) return "-";
+    return format(d, "dd MMMM yyyy", { locale: nl });
+  } catch {
+    return "-";
+  }
 }
 
 export function formatDateTimeLong(
   date: Date | string | null | undefined
 ): string {
   if (!date) return "-";
-  const d = typeof date === "string" ? new Date(date) : date;
-  return format(d, "dd MMMM yyyy HH:mm", { locale: nl });
+  try {
+    const d = typeof date === "string" ? new Date(date) : date;
+    if (!d || !Number.isFinite(d.getTime())) return "-";
+    return format(d, "dd MMMM yyyy HH:mm", { locale: nl });
+  } catch {
+    return "-";
+  }
 }
 
 export function formatDateRange(

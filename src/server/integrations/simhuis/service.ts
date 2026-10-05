@@ -2416,6 +2416,74 @@ function enrichSimhuisStatusWithDirectRawExtracts(
   if (directProductName) { (baseStatus as any).productName = directProductName; (baseStatus as any).planName = directProductName; (baseStatus as any).offerName = directProductName; }
   if (directProductType) { (baseStatus as any).productType = directProductType; }
 
+  // ------------------------------------------------------------------
+  // 🆕 4 NIEUWE DATUMVELDEN + usageBundleUsages:
+  //    Altijd expliciet op baseStatus schrijven, ook als toSimStatus()
+  //    ze al had, zodat ze zeker in de response van getSimStatus{Fast}
+  //    zitten en dus worden opgeslagen in de DB (en getoond in de UI).
+  // ------------------------------------------------------------------
+  const PICK_DATE = (candidates: Array<unknown>): string | null => {
+    for (const v of candidates) {
+      if (v === null || v === undefined) continue;
+      const s = typeof v === 'string' ? v.trim() : (v instanceof Date ? v.toISOString() : String(v).trim());
+      if (!s) continue;
+      try {
+        const d = new Date(s);
+        if (Number.isFinite(d.getTime())) return d.toISOString();
+      } catch {
+        /* ignore */
+      }
+    }
+    return null;
+  };
+
+  const topActivationDate = PICK_DATE([
+    (rawObj as any).activationDate,
+    (rawObj as any).activation_date,
+    (rawObj as any).firstActivationDate,
+    (rawObj as any).first_activation_date,
+    (rawObj as any).initialActivationDate,
+    (rawObj as any).initial_activation_date,
+    nested?.activationDate,
+    nested?.activation_date,
+  ]);
+  const topReactivationDate = PICK_DATE([
+    (rawObj as any).reactivationDate,
+    (rawObj as any).reactivation_date,
+    (rawObj as any).lastReactivationDate,
+    (rawObj as any).last_reactivation_date,
+    (rawObj as any).resumeDate,
+    (rawObj as any).resume_date,
+    nested?.reactivationDate,
+    nested?.reactivation_date,
+  ]);
+  const topSubscriptionDate = PICK_DATE([
+    (rawObj as any).subscriptionDate,
+    (rawObj as any).subscription_date,
+    (rawObj as any).lastSubscriptionDate,
+    (rawObj as any).last_subscription_date,
+    (rawObj as any).subscribeDate,
+    (rawObj as any).subscribe_date,
+    nested?.subscriptionDate,
+    nested?.subscription_date,
+  ]);
+
+  if (topActivationDate) (baseStatus as any).activationDate = topActivationDate;
+  if (topReactivationDate) (baseStatus as any).reactivationDate = topReactivationDate;
+  if (topSubscriptionDate) (baseStatus as any).subscriptionDate = topSubscriptionDate;
+
+  if (Array.isArray(bundleUsages) && bundleUsages.length > 0) {
+    try {
+      const cleaned = bundleUsages.map((b: SimhuisBundleUsage) => {
+        const { rawBundle: _rawBundle, ...rest } = b as SimhuisBundleUsage & { rawBundle?: unknown };
+        return rest;
+      });
+      (baseStatus as any).usageBundleUsages = cleaned;
+    } catch {
+      (baseStatus as any).usageBundleUsages = bundleUsages;
+    }
+  }
+
   return baseStatus;
 }
 
