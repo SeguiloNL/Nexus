@@ -1790,7 +1790,9 @@ export async function syncUsageForSingleSim(
     if (noUsage || noProduct) fallbackNeeded = true;
   }
   if (fallbackNeeded) {
-    source = simhuisStatus ? "per-sim-discovery+list-fallback" : "list-fallback";
+    // Source is strikt: per-sim-discovery als we IETS uit per-SIM flow hadden (ook al viel list erachteraan),
+    // alleen pure list-all-sims fallback zonder enkele per-SIM match = list-fallback.
+    if (!simhuisStatus) source = "list-fallback";
     try {
       const all = await listAllSims();
       const match = all.find(
