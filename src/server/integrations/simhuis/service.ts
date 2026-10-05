@@ -751,7 +751,14 @@ export function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     }
     // Daarna via expliciete waardes als die in de args zitten
     for (const a of opts.aliases) {
-      if (typeof a === 'string') continue;
+      if (a === null || a === undefined) continue;
+      if (typeof a === 'string') {
+        if (!isNaN(Number(a)) && a.trim() !== '' && /^\d+(\.\d+)?$/.test(a.trim())) {
+          const n = Number(a.trim());
+          if (Number.isFinite(n)) return n;
+        }
+        continue;
+      }
       const pb = parseBytes(a);
       if (pb !== null) return pb;
       const nb = pickNumber({ aliases: [a] });
@@ -890,7 +897,7 @@ export function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     valueKind: 'limit',
     aliases: [
       'Data Limit', 'Data_Limit', 'dataLimit', 'data_limit_bytes',
-      'limit_bytes', 'data_quota', 'dataQuota',
+      'limit_bytes', 'data_quota', 'dataQuota', 'limit',
       'plan data_limit_bytes', 'data_quota_plan',
       'max_data_bytes', 'total_data_bytes', 'allowance_data',
       'dataLimitMB', 'data_limit_mb', 'dataLimitGB', 'data_limit_gb', 'dataLimitKB', 'data_limit_kb',
@@ -905,7 +912,7 @@ export function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
       'dataPoolLimit', 'data_pool_limit', 'poolDataLimit', 'pool_data_limit',
       'thresholdLimit', 'threshold_limit',
       r.dataLimit, r.data_limit_bytes, r.dataQuota, r.data_quota,
-      r.dataLimitMB, r.dataLimitGB, r.maxMB, r.maxGB,
+      r.dataLimitMB, r.dataLimitGB, r.maxMB, r.maxGB, r.limit,
     ],
   });
   const lowestDataLimitBytesVal = pickBytes({
@@ -2555,7 +2562,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
       //   Dus: als er EEN BESTAANDE match is (phaseABest !== null) → eerst Phase A.5 (usage endpoints) proberen, DAN return!
       if (phaseABest) {
         const best = phaseABest as SimhuisSimStatus;
-        const needsUsage = best.dataUsedBytes === null || best.smsUsedCount === null || best.productName === null || /cardcentri|mii|imeifplmn/i.test(best.productName ?? '');
+        const needsUsage = best.dataUsedBytes == null || best.smsUsedCount == null || best.productName == null || /cardcentri|mii|imeifplmn/i.test(best.productName ?? '');
         if (needsUsage && bearerToken && aidForGetSim) {
           DEBUG_LOG(`🏆 Phase A.5: needsUsage=${needsUsage} dataUsed=${JSON.stringify((best as any).dataUsedBytes)} smsUsed=${JSON.stringify((best as any).smsUsedCount)} product=${JSON.stringify((best as any).productName)} → Probeer 4 Swagger-bevestigde per-SIM endpoints met Bearer-token + accountId!`);
           const billTime = billTimeCurrentMonth();
