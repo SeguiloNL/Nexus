@@ -4897,6 +4897,24 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                         }
                       }
                     }
+                    // 💥 CATCH-ALL: subscriptions[].bundles[].dataUsed (STRING-getallen zoals "580237312"!)
+                    if (duBytes === null && Array.isArray((raw as any).subscriptions)) {
+                      outerSubs: for (let si = 0; si < (raw as any).subscriptions.length; si++) {
+                        const sb: any = (raw as any).subscriptions[si];
+                        if (!sb || !Array.isArray(sb.bundles)) continue;
+                        for (let bi = 0; bi < sb.bundles.length; bi++) {
+                          const bb: any = sb.bundles[bi];
+                          if (!bb) continue;
+                          const sv = safeNum(bb.dataUsed);
+                          if (sv !== null && sv >= 0) {
+                            duBytes = sv;
+                            duSource = `SUBS[${si}].BUNDLES[${bi}].dataUsed`;
+                            duDbg = ` → SUBS[${si}].BUNDLES[${bi}].dataUsed=${sv}`;
+                            break outerSubs;
+                          }
+                        }
+                      }
+                    }
                     if (duBytes === null) duDbg = ` → NOT_FOUND keys=${DATA_USED_KEYS_WIN.length}`;
 
                     // SMS limits/used
@@ -4918,6 +4936,23 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                       for (const k of SMS_USED_KEYS_WIN) {
                         const sv = safeNum((firstSetup as any)[k]);
                         if (sv !== null && sv >= 0) { smsUsedNum = sv; smsSrc = `SETUP.${k}`; break; }
+                      }
+                    }
+                    // 💥 CATCH-ALL: subscriptions[].bundles[].smsUsed (STRING-getallen zoals "0"!)
+                    if (smsUsedNum === null && Array.isArray((raw as any).subscriptions)) {
+                      outerSms: for (let si = 0; si < (raw as any).subscriptions.length; si++) {
+                        const sb: any = (raw as any).subscriptions[si];
+                        if (!sb || !Array.isArray(sb.bundles)) continue;
+                        for (let bi = 0; bi < sb.bundles.length; bi++) {
+                          const bb: any = sb.bundles[bi];
+                          if (!bb) continue;
+                          const sv = safeNum(bb.smsUsed);
+                          if (sv !== null && sv >= 0) {
+                            smsUsedNum = sv;
+                            smsSrc = `SUBS[${si}].BUNDLES[${bi}].smsUsed`;
+                            break outerSms;
+                          }
+                        }
                       }
                     }
                     const smsLimitNum = safeNum(smsLimitRaw);
@@ -4982,6 +5017,21 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
 
                     let wDirectProductName: string | null = null;
                     wDirectProductName = tryExtract(wFirstBundle, PRODUCT_KEYS_WIN) || tryExtract(firstSub, PRODUCT_KEYS_WIN) || tryExtract(firstSetup, PRODUCT_KEYS_WIN) || tryExtract(raw, PRODUCT_KEYS_WIN) || tryExtract(nested, PRODUCT_KEYS_WIN) || tryExtract((raw as any).enabledProfile, PRODUCT_KEYS_WIN) || null;
+                    // 💥 CATCH-ALL: subscriptions[].bundles[].localProductName heeft VOORRANG
+                    if ((!wDirectProductName || wLooksLikeTech(wDirectProductName)) && Array.isArray((raw as any).subscriptions)) {
+                      outerProd: for (let si = 0; si < (raw as any).subscriptions.length; si++) {
+                        const sb: any = (raw as any).subscriptions[si];
+                        if (!sb || !Array.isArray(sb.bundles)) continue;
+                        for (let bi = 0; bi < sb.bundles.length; bi++) {
+                          const bb: any = sb.bundles[bi];
+                          if (!bb) continue;
+                          const sv = isValidStr(bb.localProductName);
+                          if (sv && !wLooksLikeTech(sv)) { wDirectProductName = sv; break outerProd; }
+                          const sv2 = isValidStr(bb.localProductId);
+                          if (sv2 && !wLooksLikeTech(sv2) && !wDirectProductName) wDirectProductName = sv2;
+                        }
+                      }
+                    }
                     if (!wDirectProductName && (raw as any).carriers && typeof (raw as any).carriers === 'object') {
                       const carrierKeys = Object.keys((raw as any).carriers).filter((c: any) => c && !wLooksLikeTech(c));
                       if (carrierKeys.length > 0) {
@@ -5449,12 +5499,121 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                         else duBytes = 0;
                       }
                     }
+                    // 💥 CATCH-ALL: subscriptions[].bundles[].dataUsed (STRING-getallen zoals "580237312"!)
+                    if (duBytes === null && Array.isArray((raw as any).subscriptions)) {
+                      outerSubs: for (let si = 0; si < (raw as any).subscriptions.length; si++) {
+                        const sb: any = (raw as any).subscriptions[si];
+                        if (!sb || !Array.isArray(sb.bundles)) continue;
+                        for (let bi = 0; bi < sb.bundles.length; bi++) {
+                          const bb: any = sb.bundles[bi];
+                          if (!bb) continue;
+                          const sv = safeNum(bb.dataUsed);
+                          if (sv !== null && sv >= 0) {
+                            duBytes = sv;
+                            break outerSubs;
+                          }
+                        }
+                      }
+                    }
                     const smsLimitRaw = (raw as any).smsLimit ?? nested?.smsLimit ?? (raw as any).enabledProfile?.smsLimit;
                     const smsLowestLimitRaw = (raw as any).lowestSmsLimit ?? nested?.lowestSmsLimit ?? (raw as any).enabledProfile?.lowestSmsLimit;
                     const smsUsedRaw = (raw as any).smsUsed ?? (raw as any).smsCount ?? (raw as any).totalSms ?? (raw as any).smsSent ?? nested?.smsUsed ?? (firstSub as any)?.smsUsed ?? (firstSub as any)?.smsCount ?? (firstSetup as any)?.smsUsed;
                     const smsLimitNum = safeNum(smsLimitRaw);
                     const smsLowestLimitNum = safeNum(smsLowestLimitRaw);
-                    const smsUsedNum = safeNum(smsUsedRaw);
+                    let smsUsedNum = safeNum(smsUsedRaw);
+                    // 💥 CATCH-ALL: subscriptions[].bundles[].smsUsed (STRING-getallen zoals "0"!)
+                    if (smsUsedNum === null && Array.isArray((raw as any).subscriptions)) {
+                      outerSms: for (let si = 0; si < (raw as any).subscriptions.length; si++) {
+                        const sb: any = (raw as any).subscriptions[si];
+                        if (!sb || !Array.isArray(sb.bundles)) continue;
+                        for (let bi = 0; bi < sb.bundles.length; bi++) {
+                          const bb: any = sb.bundles[bi];
+                          if (!bb) continue;
+                          const sv = safeNum(bb.smsUsed);
+                          if (sv !== null && sv >= 0) {
+                            smsUsedNum = sv;
+                            break outerSms;
+                          }
+                        }
+                      }
+                    }
+                    // ============================================================
+                    // 🏷️ SIM NAME / GROUP / PRODUCT: EXPLICIET UIT RAW HALEN!
+                    // ============================================================
+                    const SIM_NAME_KEYS_WIN = [
+                      'simName','sim_name','assetName','asset_name','displayName','display_name','label','name','nickname','friendlyName',
+                      'deviceName','customerLabel','userLabel','description','customName','simLabel','cardName','profileName','eSimName'
+                    ];
+                    const GROUP_KEYS_WIN = [
+                      'groupName','group_name','group','groupId','group_id','poolName','pool_name','batchName','batch_name',
+                      'pool','batch','segment','department','costCenter','costcenter','customerGroup','accountGroup'
+                    ];
+                    const PRODUCT_KEYS_WIN = [
+                      'productName','product_name','planName','plan_name','offerName','offer_name','productCode','product_code',
+                      'product','plan','offer','tariff','tariffName','rateplan','ratePlan','subscriptionName','packageName',
+                      'bundleName','bundle_name','bundle','planDescription','offerDescription','description','billingPlan','billing_plan','priceplan','pricingPlan'
+                    ];
+                    const esimsFirstBundle: any = firstSub && Array.isArray((firstSub as any).bundles) && (firstSub as any).bundles.length > 0
+                      ? (firstSub as any).bundles[0] : null;
+                    const esimsLooksLikeTech = (n: string): boolean => {
+                      if (!n) return false;
+                      const l = n.toLowerCase();
+                      return l.startsWith('cardcentri') || l.startsWith('mii') || l.includes('imeifplmn') || l.startsWith('simprofile') || l.startsWith('esimprofile') || l.startsWith('profile_') || l.startsWith('cardprofile') || l === 'profile' || l === 'card';
+                    };
+                    const isValidStr = (v: any): string | null => {
+                      if (v === null || v === undefined) return null;
+                      const s = String(v).trim();
+                      if (!s || s === '-' || s.toLowerCase() === 'null') return null;
+                      return s;
+                    };
+                    const tryExtract = (obj: any, keys: string[]): string => {
+                      if (!obj || typeof obj !== 'object') return '';
+                      for (const k of keys) {
+                        const s = isValidStr((obj as any)[k]);
+                        if (s && !esimsLooksLikeTech(s)) return s;
+                      }
+                      return '';
+                    };
+
+                    let wDirectSimName: string | null = null;
+                    wDirectSimName = tryExtract(firstSub, SIM_NAME_KEYS_WIN) || tryExtract(esimsFirstBundle, SIM_NAME_KEYS_WIN) || tryExtract(firstSetup, SIM_NAME_KEYS_WIN) || tryExtract(raw, SIM_NAME_KEYS_WIN) || tryExtract(nested, SIM_NAME_KEYS_WIN) || tryExtract((raw as any).enabledProfile, SIM_NAME_KEYS_WIN) || null;
+
+                    let wDirectGroupName: string | null = null;
+                    wDirectGroupName = tryExtract(firstSub, GROUP_KEYS_WIN) || tryExtract(esimsFirstBundle, GROUP_KEYS_WIN) || tryExtract(firstSetup, GROUP_KEYS_WIN) || tryExtract(raw, GROUP_KEYS_WIN) || tryExtract(nested, GROUP_KEYS_WIN) || null;
+                    if (!wDirectGroupName) {
+                      const owner = isValidStr((raw as any).ownerAccountName) || isValidStr(nested?.ownerAccountName);
+                      if (owner) wDirectGroupName = owner;
+                    }
+                    if (!wDirectGroupName && Array.isArray((raw as any).ownership) && (raw as any).ownership.length > 1) {
+                      for (const item of (raw as any).ownership) {
+                        const s = isValidStr(item);
+                        if (s && s.toLowerCase() !== isValidStr((raw as any).ownerAccountId).toLowerCase()) {
+                          wDirectGroupName = s; break;
+                        }
+                      }
+                    }
+                    let wDirectGroupId: string | null = null;
+                    for (const k of ['groupId','group_id','poolId','pool_id','batchId','batch_id']) {
+                      const s = isValidStr((raw as any)[k] ?? (firstSub as any)?.[k] ?? (esimsFirstBundle as any)?.[k] ?? (firstSetup as any)?.[k]);
+                      if (s) { wDirectGroupId = s; break; }
+                    }
+
+                    let wDirectProductName: string | null = null;
+                    wDirectProductName = tryExtract(esimsFirstBundle, PRODUCT_KEYS_WIN) || tryExtract(firstSub, PRODUCT_KEYS_WIN) || tryExtract(firstSetup, PRODUCT_KEYS_WIN) || tryExtract(raw, PRODUCT_KEYS_WIN) || tryExtract(nested, PRODUCT_KEYS_WIN) || tryExtract((raw as any).enabledProfile, PRODUCT_KEYS_WIN) || null;
+                    // 💥 CATCH-ALL: subscriptions[].bundles[].localProductName heeft VOORRANG
+                    if ((!wDirectProductName || esimsLooksLikeTech(wDirectProductName)) && Array.isArray((raw as any).subscriptions)) {
+                      outerProd: for (let si = 0; si < (raw as any).subscriptions.length; si++) {
+                        const sb: any = (raw as any).subscriptions[si];
+                        if (!sb || !Array.isArray(sb.bundles)) continue;
+                        for (let bi = 0; bi < sb.bundles.length; bi++) {
+                          const bb: any = sb.bundles[bi];
+                          if (!bb) continue;
+                          const sv = isValidStr(bb.localProductName);
+                          if (sv && !esimsLooksLikeTech(sv)) { wDirectProductName = sv; break outerProd; }
+                        }
+                      }
+                    }
+
                     const directDataLimitBytes = (dlBytes !== null && dlBytes > 0) ? dlBytes : null;
                     const directLowestDataLimitBytes = (ldlBytes !== null && ldlBytes > 0) ? ldlBytes : null;
                     const directSmsLimitCount = (smsLimitNum !== null && smsLimitNum >= 0) ? smsLimitNum : null;
@@ -5478,6 +5637,11 @@ export async function listAllSims(options: Omit<ListSimsOptions, 'page' | 'limit
                     // Fallback: lowest = dataLimit als lowest null is
                     if (directLowestDataLimitBytes === null && directDataLimitBytes !== null) (base as any).lowestDataLimitBytes = directDataLimitBytes;
                     if (directLowestSmsLimitCount === null && directSmsLimitCount !== null) (base as any).lowestSmsLimitCount = directSmsLimitCount;
+                    // 🏷️ Expliciete naam/ groep/ product velden (voorrang boven toSimStatus!)
+                    if (wDirectSimName) (base as any).simName = wDirectSimName;
+                    if (wDirectGroupName) (base as any).groupName = wDirectGroupName;
+                    if (wDirectProductName) (base as any).productName = wDirectProductName;
+                    if (wDirectGroupId && !(base as any).groupId) (base as any).groupId = wDirectGroupId;
 
                     const final = base as SimhuisSimStatus;
                     if ((final as any).iccid) batchItems.push(final);
