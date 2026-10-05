@@ -2622,11 +2622,11 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
             DEBUG_LOG(`🏆 Phase A EARLY RETURN: complete usage data (score=${sc}).`);
             return valid;
           }
-          // 💥 DREMPEL VERLAAGD: Winning Combo data = altijd inventory data. Dus:
-          //   - Als we ANY usage hebben (dataLimit of dataUsed of smsLimit) → onmiddellijk return; beter dan 50 attempts!
-          //   - Als status gevuld is + msisdn → return (score>=3 ok)
-          if (hasAnyUsage(valid) && sc >= 4) {
-            DEBUG_LOG(`🏆 Phase A EARLY RETURN (drempel verlaagd): hasAnyUsage=true & score=${sc} ≥4. Beter dan 50× mislukte endpoints!`);
+          // 💥 EARLY RETURN ALLEEN ALS WE EEN ECHTE TELLER HEBBEN (dataUsed of smsUsed NIET null)!
+          //    hasAnyUsage=true alleen op basis van dataLimitBytes (limiet) is NIET voldoende
+          //    — dan missen we Phase A.5 die de echte teller + bundelperiode uit /assets/{iccid} haalt!
+          if (hasAnyCounter(valid) && sc >= 4) {
+            DEBUG_LOG(`🏆 Phase A EARLY RETURN: hasAnyCounter=true (teller aanwezig) & score=${sc} ≥4.`);
             return valid;
           }
           if (sc > phaseABestScore) {
@@ -2853,6 +2853,9 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
     return (s.dataUsedBytes != null || s.smsUsedCount != null)
       && (s.dataLimitBytes != null || s.smsLimitCount != null);
   }
+  function hasAnyCounter(s: SimhuisSimStatus): boolean {
+    return s.dataUsedBytes != null || s.smsUsedCount != null;
+  }
   function consider(s: SimhuisSimStatus | null | undefined): SimhuisSimStatus | null {
     if (!s || !s.iccid) return bestStatus;
     const sc = scoreSimStatus(s);
@@ -2992,7 +2995,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                       st = enrichSimhuisStatusWithDirectRawExtracts(st, match, iccid);
                       if (st?.iccid) {
                         consider(st);
-                        if (hasFullUsage(st) || hasAnyUsage(st)) { DEBUG_LOG(`✅ listGET hit ${pc.label} found iccid! returning.`); return st; }
+                        if (hasFullUsage(st) || hasAnyCounter(st)) { DEBUG_LOG(`✅ listGET hit ${pc.label} found iccid! returning (teller aanwezig).`); return st; }
                       }
                     } catch { /* bad item, continue */ }
                   }
@@ -3036,7 +3039,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
               st = enrichSimhuisStatusWithDirectRawExtracts(st, match, iccid);
               if (st?.iccid) {
                 consider(st);
-                if (hasFullUsage(st) || hasAnyUsage(st)) { DEBUG_LOG(`✅ listSims() fallback hit iccid! returning.`); return st; }
+                if (hasFullUsage(st) || hasAnyCounter(st)) { DEBUG_LOG(`✅ listSims() fallback hit iccid! returning (teller aanwezig).`); return st; }
               }
             } catch { /* bad shape, continue */ }
           }
@@ -3047,7 +3050,9 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
 
   // Op dit punt: als we een "best" hebben met in ieder geval wat usage,
   // geef die voorkeur boven de raw eerste-OK fallback.
-  if (bestStatus && hasAnyUsage(bestStatus)) return bestStatus;
+  // Alleen returnen op basis van ECHTE TELLER (hasFullUsage of hasAnyCounter),
+  // niet alleen op limiet (hasAnyUsage zou al true zijn op enkel dataLimitBytes).
+  if (bestStatus && (hasFullUsage(bestStatus) || hasAnyCounter(bestStatus))) return bestStatus;
 
   const top = topRanked(5);
   const topStr = top.length
