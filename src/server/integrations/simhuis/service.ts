@@ -1845,6 +1845,12 @@ function enrichSimhuisStatusWithDirectRawExtracts(
   const baselineDataLimit = typeof baseStatus?.dataLimitBytes === 'number' ? baseStatus.dataLimitBytes : null;
   const baselineLowestLimit = typeof baseStatus?.lowestDataLimitBytes === 'number' ? baseStatus.lowestDataLimitBytes : null;
 
+  const looksLikeTechProfile = (name: string): boolean => {
+    if (!name) return false;
+    const l = name.toLowerCase();
+    return l.startsWith('cardcentri') || l.startsWith('mii') || l.includes('imeifplmn') || l.startsWith('simprofile') || l.startsWith('esimprofile') || l.startsWith('profile_') || l.startsWith('cardprofile') || l === 'profile' || l === 'card';
+  };
+
   const pickBytesSmart = (rawVal: any, baseline: number | null | undefined, fieldHint: 'limit' | 'used'): number | null => {
     if (typeof rawVal === 'string') {
       const pb = parseBytes(rawVal);
@@ -2064,7 +2070,11 @@ function enrichSimhuisStatusWithDirectRawExtracts(
         }
       }
     } catch (e) {
-      try { console.warn(`[simhuis:extractBundleUsages] [${shortIccid}] exceptie: ${(e as any)?.message ?? e}`); } catch {}
+      try {
+        const msg = (e as any)?.message ?? e;
+        const stack = (e as any)?.stack ? String((e as any).stack).split('\n').slice(0, 6).join(' | ') : '';
+        console.warn(`[simhuis:extractBundleUsages] [${shortIccid}] exceptie: ${msg}${stack ? ` @ ${stack}` : ''}`);
+      } catch {}
     }
 
     let selectedBundle: SimhuisBundleUsage | null = null;
@@ -2288,13 +2298,6 @@ function enrichSimhuisStatusWithDirectRawExtracts(
 
   const firstBundle: any = firstSub && Array.isArray((firstSub as any).bundles) && (firstSub as any).bundles.length > 0
     ? (firstSub as any).bundles[0] : null;
-
-  // Filter to skip TECHNICAL product names: anything starting with "CardCentri" / "MIIMEIFPLMN" / "SimProfile" / "eSIMProfile" etc.
-  const looksLikeTechProfile = (name: string): boolean => {
-    if (!name) return false;
-    const l = name.toLowerCase();
-    return l.startsWith('cardcentri') || l.startsWith('mii') || l.includes('imeifplmn') || l.startsWith('simprofile') || l.startsWith('esimprofile') || l.startsWith('profile_') || l.startsWith('cardprofile') || l === 'profile' || l === 'card';
-  };
 
   let directSimName: string | null = null;
   let simNameSrc = '';
