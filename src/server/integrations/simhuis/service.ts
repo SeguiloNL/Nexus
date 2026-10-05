@@ -785,7 +785,7 @@ export function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     r.id, nestedSim?.id, nestedSim?.subscriberId,
   );
 
-  const simNameVal = pickString(
+  let simNameVal = pickString(
     'SIM Name', 'SIM_NAME', 'simName', 'name', 'assetName', 'asset_name',
     'displayName', 'display_name', 'label', 'title',
     r.name, r.simName, nestedSim?.name, nestedSim?.simName, nestedSim?.displayName,
@@ -796,13 +796,13 @@ export function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     r.groupId, nestedSim?.groupId,
   );
 
-  const groupNameVal = pickString(
+  let groupNameVal = pickString(
     'Group', 'group', 'groupName', 'group_name', 'groupLabel',
     'poolName', 'pool_name', 'batch', 'batchName',
     r.group, r.groupName, nestedSim?.group, nestedSim?.poolName,
   );
 
-  const productNameVal = pickString(
+  let productNameVal = pickString(
     'Product Name', 'productName', 'product_name', 'product',
     'productCode', 'product_code', 'productId',
     'tariffName', 'ratePlan', 'rate_plan', 'planName',
@@ -867,7 +867,7 @@ export function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
   })();
 
   // Data / Usage velden — gebruiken pickBytes met context-extractie eerst
-  const dataUsedBytesVal = pickBytes({
+  let dataUsedBytesVal = pickBytes({
     contextKind: 'data',
     valueKind: 'used',
     aliases: [
@@ -892,7 +892,7 @@ export function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
       r.dataUsedMB, r.dataUsedGb, r.usedMB, r.usedGB, r.usedMb, r.usedGb,
     ],
   });
-  const dataLimitBytesVal = pickBytes({
+  let dataLimitBytesVal = pickBytes({
     contextKind: 'data',
     valueKind: 'limit',
     aliases: [
@@ -936,7 +936,7 @@ export function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
     ],
   });
   // SMS velden — gebruiken pickNumber met context-extractie eerst
-  const smsUsedCountVal = pickNumber({
+  let smsUsedCountVal = pickNumber({
     contextKind: 'sms',
     valueKind: 'used',
     aliases: [
@@ -953,7 +953,7 @@ export function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
       r.smsUsed, r.sms_used, r.sms_count, r.totalSms, r.smsSent,
     ],
   });
-  const smsLimitCountVal = pickNumber({
+  let smsLimitCountVal = pickNumber({
     contextKind: 'sms',
     valueKind: 'limit',
     aliases: [
@@ -987,6 +987,107 @@ export function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
       r.lowestSmsLimit, r.lowest_sms_limit, r.lowSmsLimit,
     ],
   });
+
+  // ============================================================
+  // 💥 CATCH-ALL FALLBACK (laatste kans VOOR return):
+  //    Als pickBytes/pickNumber iets hebben gemist (string-getallen,
+  //    diep-geneste aliassen, ontbrekende keys, ...) → vandaag
+  //    vullen we de waarden direct uit de bekende Simhuis paden.
+  //    Dit voorkomt de "—" weergave wanneer de data WEL in raw zit.
+  // ============================================================
+  {
+    const safeInt = (v: unknown): number | null => {
+      if (v === null || v === undefined) return null;
+      if (typeof v === 'number' && Number.isFinite(v)) return Math.round(v);
+      if (typeof v === 'bigint') try { return Number(v); } catch { return null; }
+      if (typeof v === 'string') {
+        const t = v.trim();
+        if (!t) return null;
+        if (/^\d+$/.test(t)) { const n = Number(t); return Number.isFinite(n) ? n : null; }
+        if (/^\d+\.\d+$/.test(t)) { const n = Number(t); return Number.isFinite(n) ? Math.round(n) : null; }
+        const cl = t.replace(/[^\d.\-]/g, '');
+        if (cl) { const n = Number(cl); if (Number.isFinite(n)) return Math.round(n); }
+      }
+      return null;
+    };
+    const safeStr = (v: unknown): string | null => {
+      if (v === null || v === undefined) return null;
+      const s = String(v).trim();
+      return s ? s : null;
+    };
+
+    // 1) Top-level raw limit / smsLimit
+    if (dataLimitBytesVal === null || dataLimitBytesVal === undefined) {
+      const n = safeInt((r as any).limit); if (n !== null) dataLimitBytesVal = n;
+    }
+    if (smsLimitCountVal === null || smsLimitCountVal === undefined) {
+      const n = safeInt((r as any).smsLimit); if (n !== null) smsLimitCountVal = n;
+    }
+
+    // 2) subscriptions[] → limit / smsLimit (per subscription)
+    try {
+      const subs: any[] = Array.isArray((r as any).subscriptions) ? (r as any).subscriptions : [];
+      for (const sub of subs) {
+        if (!sub) continue;
+        if (dataLimitBytesVal === null || dataLimitBytesVal === undefined) {
+          const n = safeInt(sub.limit); if (n !== null) dataLimitBytesVal = n;
+        }
+        if (smsLimitCountVal === null || smsLimitCountVal === undefined) {
+          const n = safeInt(sub.smsLimit); if (n !== null) smsLimitCountVal = n;
+        }
+
+        // 3) subscriptions[].bundles[].dataUsed / smsUsed / localProductName (STRING-getallen!)
+        const bundles: any[] = Array.isArray(sub.bundles) ? sub.bundles : [];
+        for (const b of bundles) {
+          if (!b) continue;
+          if (dataUsedBytesVal === null || dataUsedBytesVal === undefined) {
+            const n = safeInt(b.dataUsed); if (n !== null) dataUsedBytesVal = n;
+          }
+          if (smsUsedCountVal === null || smsUsedCountVal === undefined) {
+            const n = safeInt(b.smsUsed); if (n !== null) smsUsedCountVal = n;
+          }
+          if (!productNameVal || /cardcentri|mii|imeifplmn/i.test(productNameVal)) {
+            const s = safeStr(b.localProductName);
+            if (s && !/cardcentri|mii|imeifplmn/i.test(s)) productNameVal = s;
+          }
+          if (dataLimitBytesVal === null || dataLimitBytesVal === undefined) {
+            const n = safeInt(b.initialSize); if (n !== null) dataLimitBytesVal = n;
+            const rmb = safeInt(b.remainingBytes);
+            const du = safeInt(b.dataUsed);
+            if (rmb !== null && du !== null && (dataLimitBytesVal === null || dataLimitBytesVal === undefined)) {
+              dataLimitBytesVal = rmb + du;
+            }
+          }
+          if (smsLimitCountVal === null || smsLimitCountVal === undefined) {
+            const n = safeInt(b.smsInitialSize); if (n !== null) smsLimitCountVal = n;
+            const rs = safeInt(b.remainingSms);
+            const su = safeInt(b.smsUsed);
+            if (rs !== null && su !== null && (smsLimitCountVal === null || smsLimitCountVal === undefined)) {
+              smsLimitCountVal = rs + su;
+            }
+          }
+        }
+      }
+    } catch { /* ignore */ }
+
+    // 4) setups[].assetName (simName), setups[].groupName (groupName)
+    try {
+      const setups: any[] = Array.isArray((r as any).setups) ? (r as any).setups : [];
+      for (const setup of setups) {
+        if (!setup) continue;
+        if (!simNameVal) { const s = safeStr(setup.assetName); if (s) simNameVal = s; }
+        if (!groupNameVal) {
+          const s = safeStr(setup.groupName); if (s && s.length >= 2) groupNameVal = s;
+        }
+      }
+    } catch { /* ignore */ }
+
+    // 5) ownerAccountName fallback for groupName
+    if (!groupNameVal) {
+      const s = safeStr((r as any).ownerAccountName);
+      if (s && s.length >= 2) groupNameVal = s;
+    }
+  }
 
   if (DEBUG) {
     // eslint-disable-next-line no-console

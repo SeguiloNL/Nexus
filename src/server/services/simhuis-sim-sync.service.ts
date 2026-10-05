@@ -1778,19 +1778,48 @@ export async function syncUsageForSingleSim(
   }
 
   // POGING 2: Fallback listAllSims + filter op iccid
-  if (!simhuisStatus) {
-    source = "list-fallback";
+  //    Activeer NIET alleen op !simhuisStatus, maar OOK wanneer de geretourneerde
+  //    simhuisStatus duidelijk incompleet is (geen dataUsed EN geen dataLimit EN geen product).
+  //    Simhuis geeft per-SIM endpoints soms 403/405 terwijl listAllSims WEL de data heeft.
+  let fallbackNeeded = !simhuisStatus;
+  if (simhuisStatus) {
+    const noUsage =
+      (simhuisStatus.dataUsedBytes == null && simhuisStatus.dataLimitBytes == null) ||
+      (simhuisStatus.smsUsedCount == null && simhuisStatus.smsLimitCount == null);
+    const noProduct = !simhuisStatus.productName || /cardcentri|mii|imeifplmn/i.test(simhuisStatus.productName);
+    if (noUsage || noProduct) fallbackNeeded = true;
+  }
+  if (fallbackNeeded) {
+    source = simhuisStatus ? "per-sim-discovery+list-fallback" : "list-fallback";
     try {
       const all = await listAllSims();
       const match = all.find(
         (s) => normIccid(s.iccid) === normalizedIccid
       );
-      if (match) simhuisStatus = match;
-      else errorMessage = errorMessage ? `${errorMessage} | Fallback listAllSims: ICCID niet gevonden in lijst.` : `ICCID niet gevonden in Simhuis lijst.`;
+      if (match) {
+        // Merge: neem de beste van beide (behoud velden die WEL gevonden waren in P1)
+        if (!simhuisStatus) {
+          simhuisStatus = match;
+        } else {
+          (simhuisStatus as any) = { ...(match as any), ...(simhuisStatus as any) };
+          // Belangrijke keys: voorrang geven aan de MATCH (listAllSims) als die WEL tellers heeft
+          for (const k of ['dataUsedBytes','dataLimitBytes','lowestDataLimitBytes','smsUsedCount','smsLimitCount','lowestSmsLimitCount','productName','productType','simName','groupName','groupId'] as const) {
+            const p1 = (simhuisStatus as any)[k];
+            const p2 = (match as any)[k];
+            if ((p1 === null || p1 === undefined) && (p2 !== null && p2 !== undefined)) {
+              (simhuisStatus as any)[k] = p2;
+            }
+          }
+        }
+      } else if (!simhuisStatus) {
+        errorMessage = errorMessage ? `${errorMessage} | Fallback listAllSims: ICCID niet gevonden in lijst.` : `ICCID niet gevonden in Simhuis lijst.`;
+      }
     } catch (e: any) {
-      errorMessage = errorMessage
-        ? `${errorMessage} | Fallback listAllSims mislukt: ${e?.message ?? e}`
-        : `listAllSims mislukt: ${e?.message ?? e}`;
+      if (!simhuisStatus) {
+        errorMessage = errorMessage
+          ? `${errorMessage} | Fallback listAllSims mislukt: ${e?.message ?? e}`
+          : `listAllSims mislukt: ${e?.message ?? e}`;
+      }
     }
   }
 
