@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "./audit.service";
-import { listAllSims, getSimStatus, simhuisClient, ensureUsageDetailsForSim } from "@/server/integrations/simhuis/service";
+import { listAllSims, getSimStatus, simhuisClient } from "@/server/integrations/simhuis/service";
 import type { SimhuisSimStatus } from "@/server/integrations/simhuis/types";
 import { SimStatus, type UserRole } from "@/types/enums";
 
@@ -137,58 +137,39 @@ function applyUsageFieldsFromSimhuis(
     usageSelectionNote: existing.usageSelectionNote,
   };
   const parsed = buildUsageFieldsFromSimhuis(simhuis);
-  // 🚨 NON-NULL PRESERVATION VOOR ALLE VELDEN (niet alleen usage*!)
-  //    Baseline: start met oldData, pas parsed velden toe ALSNIET null.
-  const mergedFromParsed: Partial<UsageFields> = {};
-  for (const k of Object.keys(parsed) as Array<keyof typeof parsed>) {
-    const nv = (parsed as any)[k];
-    if (nv !== null && nv !== undefined) (mergedFromParsed as any)[k] = nv;
-  }
   const newData: UsageFields = {
     ...oldData,
-    ...mergedFromParsed,
+    ...parsed,
   };
   const changedFields: Array<keyof UsageFields> = [];
   let changed = false;
 
-  // Data-usage / limiet velden: alleen wijzigen als nieuw niet-null EN ANDERS
-  const usageNumericKeys: Array<keyof UsageFields> = [
-    "dataUsedBytes", "dataLimitBytes", "lowestDataLimitBytes",
-    "smsUsedCount", "smsLimitCount", "lowestSmsLimitCount",
-  ];
-  for (const k of usageNumericKeys) {
-    const nv = (newData as any)[k];
-    if (nv !== null && nv !== undefined) {
-      // Voor bigint-velden: bigIntEq, voor number-velden: strict ===
-      const isBigIntK = k.includes("Bytes");
-      const isDiff = isBigIntK
-        ? !bigIntEq((oldData as any)[k], nv)
-        : (oldData as any)[k] !== nv;
-      if (isDiff) { changedFields.push(k); changed = true; }
-    } else {
-      // Behoud oude waarde expliciet (zorgt ervoor dat spread nooit met null overschrijft)
-      (newData as any)[k] = (oldData as any)[k];
-    }
-  }
-  // 🆕 usage* velden: verander alleen als nieuwe waarde niet-null is (geen ongedaanmaakt met null)
-  const nonNullUsageKeys: Array<keyof UsageFields> = [
+  if (!bigIntEq(oldData.dataUsedBytes, newData.dataUsedBytes)) { changedFields.push("dataUsedBytes"); changed = true; }
+  if (!bigIntEq(oldData.dataLimitBytes, newData.dataLimitBytes)) { changedFields.push("dataLimitBytes"); changed = true; }
+  if (!bigIntEq(oldData.lowestDataLimitBytes, newData.lowestDataLimitBytes)) { changedFields.push("lowestDataLimitBytes"); changed = true; }
+  if (oldData.smsUsedCount !== newData.smsUsedCount) { changedFields.push("smsUsedCount"); changed = true; }
+  if (oldData.smsLimitCount !== newData.smsLimitCount) { changedFields.push("smsLimitCount"); changed = true; }
+  if (oldData.lowestSmsLimitCount !== newData.lowestSmsLimitCount) { changedFields.push("lowestSmsLimitCount"); changed = true; }
+
+  // usage* velden: NON-NULL PRESERVATION (nieuwere velden, nooit ongedaan maken met null)
+  const usageMetadataKeys: Array<keyof UsageFields> = [
     "usageSource", "usageBundleId", "usageLocalProductId", "usageLocalProductName",
     "usagePeriodStart", "usagePeriodEnd", "usageRetrievedAt",
     "usageCdrQueryStart", "usageCdrQueryEnd", "usageSelectionNote",
   ];
-  for (const k of nonNullUsageKeys) {
-    const nv = (newData as any)[k];
+  for (const k of usageMetadataKeys) {
+    const nv = (parsed as any)[k];
     if (nv !== null && nv !== undefined && !jsonSafeEq((oldData as any)[k], nv)) {
+      (newData as any)[k] = nv;
       changedFields.push(k);
       changed = true;
     } else {
-      // Houd oude waarde als nieuwe null is
       (newData as any)[k] = (oldData as any)[k];
     }
   }
-  // usageBundleUsages apart: als nieuw niet-null EN ANDERS → overnemen
-  if (newData.usageBundleUsages !== null && newData.usageBundleUsages !== undefined &&
-      !jsonSafeEq(oldData.usageBundleUsages, newData.usageBundleUsages)) {
+  if (parsed.usageBundleUsages !== null && parsed.usageBundleUsages !== undefined &&
+      !jsonSafeEq(oldData.usageBundleUsages, parsed.usageBundleUsages)) {
+    newData.usageBundleUsages = parsed.usageBundleUsages;
     changedFields.push("usageBundleUsages");
     changed = true;
   } else {
@@ -1788,87 +1769,28 @@ export async function syncUsageForSingleSim(
   let simhuisStatus: SimhuisSimStatus | null = null;
   let errorMessage: string | undefined;
   let source: PerSimUsageSyncResult["source"] = "per-sim-discovery";
-  const errors: string[] = [];
 
-  // POGING 1: Eerst listAllSims() bulk inventory → basis SIM data (limieten, product, status)
-  let baseFromList: SimhuisSimStatus | null = null;
+  // POGING 1: Per-SIM endpoints (sneller, want alleen 1 SIM)
   try {
-    const all = await listAllSims();
-    const match = all.find(
-      (s) => normIccid(s.iccid) === normalizedIccid
-    );
-    if (match) baseFromList = match;
+    simhuisStatus = await getSimStatus(normalizedIccid);
   } catch (e: any) {
-    errors.push(`listAllSims mislukt: ${e?.message ?? String(e)}`);
+    errorMessage = e?.message ?? String(e);
   }
 
-  // POGING 2: Vervolgens altijd getSimStatus() — bevat Winning Combo + Phase A.5 (4 usage endpoints: /assets/{iccid}, /cdr/stats, /cdr)
-  let detailedFromPerSim: SimhuisSimStatus | null = null;
-  try {
-    detailedFromPerSim = await getSimStatus(normalizedIccid);
-  } catch (e: any) {
-    errors.push(`getSimStatus mislukt: ${e?.message ?? String(e)}`);
-  }
-
-  // POGING 3: MERGE — precies hetzelfde patroon als bulk sync (regel 1390-1408)
-  //   Neem baseFromList als baseline, overschrijf/verrijk met detailedFromPerSim als die BETERE waardes heeft
-  //   (niet-null tellers, betere productName, enz.)
-  if (baseFromList || detailedFromPerSim) {
-    const baseline: SimhuisSimStatus = (baseFromList ?? detailedFromPerSim) as SimhuisSimStatus;
-    const merged: SimhuisSimStatus = { ...baseline };
-    if (detailedFromPerSim) {
-      for (const f of [
-        'dataUsedBytes','smsUsedCount','dataLimitBytes','lowestDataLimitBytes','smsLimitCount','lowestSmsLimitCount',
-        'productName','productType','simName','groupName','groupId','status','msisdn','eid','imsi',
-        'usageSource','usageBundleId','usageLocalProductId','usageLocalProductName',
-        'usagePeriodStart','usagePeriodEnd','usageRetrievedAt','usageCdrQueryStart','usageCdrQueryEnd',
-        'usageBundleUsages','usageSelectionNote',
-      ] as const) {
-        const detailVal = (detailedFromPerSim as any)[f];
-        const baseVal = (baseFromList ? (baseFromList as any)[f] : undefined);
-        const improve =
-          detailVal !== null && detailVal !== undefined &&
-          (baseVal === null || baseVal === undefined ||
-           (f === 'productName' && typeof detailVal === 'string' && /cardcentri|mii|imeifplmn/i.test(String(baseVal)) && !/cardcentri|mii|imeifplmn/i.test(detailVal)) ||
-           (typeof baseVal === 'string' && baseVal.length === 0)
-          );
-        if (improve) { (merged as any)[f] = detailVal; }
-      }
-    }
-    simhuisStatus = merged;
-    // Als detailedFromPerSim de tellers WEL heeft (en baseFromList niet), dan markeren we als per-sim-discovery
-    // (want de verbruiksdata kwam uit de per-SIM usage endpoints)
-    const hadListCounters =
-      typeof (baseFromList as any)?.dataUsedBytes === 'number' &&
-      typeof (baseFromList as any)?.smsUsedCount === 'number';
-    if (hadListCounters) source = "list-fallback";
-    else source = "per-sim-discovery";
-  }
-
-  errorMessage = errors.length > 0 ? errors.join(' | ') : undefined;
-
-  // #region debug-point H1:pre-ensure-check
-  (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H1', location:'simhuis-sim-sync.service.ts:1848', msg:'[DEBUG] syncUsageForSingleSim — na merge, voor ensure fallback', data: { iccid: normalizedIccid, hasSimhuisStatus: !!simhuisStatus, baseFromList_dataUsed: typeof (baseFromList as any)?.dataUsedBytes, baseFromList_smsUsed: typeof (baseFromList as any)?.smsUsedCount, detailedFromPerSim_dataUsed: typeof (detailedFromPerSim as any)?.dataUsedBytes, detailedFromPerSim_smsUsed: typeof (detailedFromPerSim as any)?.smsUsedCount, merged_dataUsed: simhuisStatus ? typeof (simhuisStatus as any).dataUsedBytes : null, merged_dataUsedVal: simhuisStatus ? (simhuisStatus as any).dataUsedBytes : null, merged_smsUsed: simhuisStatus ? typeof (simhuisStatus as any).smsUsedCount : null, merged_smsUsedVal: simhuisStatus ? (simhuisStatus as any).smsUsedCount : null, sourceUsed: source, errorsNow: [...errors] }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
-  // #endregion
-
-  // 💥 EXTRA FALLBACK: Als na merge stap de tellers nog ontbreken,
-  //    roep dan expliciet ensureUsageDetailsForSim() aan die de 4 usage endpoints
-  //    (/assets/{iccid}, /accounts/{aid}/assets/{iccid}, /cdr/stats, /cdr)
-  //    los aanroept en de data verrijkt. Dit is de extra zekerheidslag voor
-  //    de SIM-detailpagina knop "Dataverbruik vernieuwen".
-  if (simhuisStatus) {
-    const missingDU = typeof (simhuisStatus as any).dataUsedBytes !== 'number';
-    const missingSU = typeof (simhuisStatus as any).smsUsedCount !== 'number';
-    if (missingDU || missingSU) {
-      // #region debug-point H1:ensure-will-run
-      (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H1', location:'simhuis-sim-sync.service.ts:1856', msg:'[DEBUG] ensure fallback wordt NU aangeroepen', data: { iccid: normalizedIccid, missingDU, missingSU }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
-      // #endregion
-      try {
-        simhuisStatus = await ensureUsageDetailsForSim(simhuisStatus);
-      } catch (e: any) {
-        errors.push(`ensureUsageDetailsForSim mislukt: ${e?.message ?? String(e)}`);
-        errorMessage = errors.join(' | ');
-      }
+  // POGING 2: Fallback listAllSims + filter op iccid
+  if (!simhuisStatus) {
+    source = "list-fallback";
+    try {
+      const all = await listAllSims();
+      const match = all.find(
+        (s) => normIccid(s.iccid) === normalizedIccid
+      );
+      if (match) simhuisStatus = match;
+      else errorMessage = errorMessage ? `${errorMessage} | Fallback listAllSims: ICCID niet gevonden in lijst.` : `ICCID niet gevonden in Simhuis lijst.`;
+    } catch (e: any) {
+      errorMessage = errorMessage
+        ? `${errorMessage} | Fallback listAllSims mislukt: ${e?.message ?? e}`
+        : `listAllSims mislukt: ${e?.message ?? e}`;
     }
   }
 
@@ -1914,10 +1836,6 @@ export async function syncUsageForSingleSim(
   };
   const applyUsage = applyUsageFieldsFromSimhuis(existingUsage, simhuisStatus);
   const applyProduct = applyProductSimFieldsFromSimhuis(existingProduct, simhuisStatus);
-
-  // #region debug-point H4:post-apply-usage
-  (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H4', location:'simhuis-sim-sync.service.ts:1915', msg:'[DEBUG] Na applyUsageFieldsFromSimhuis', data: { iccid: normalizedIccid, simhuisStatus_dataUsed: (simhuisStatus as any)?.dataUsedBytes, simhuisStatus_smsUsed: (simhuisStatus as any)?.smsUsedCount, simhuisStatus_usageSource: (simhuisStatus as any)?.usageSource, existingUsage_dataUsed: String(existingUsage.dataUsedBytes), existingUsage_smsUsed: existingUsage.smsUsedCount, applyUsage_newDataUsed: String(applyUsage.newData.dataUsedBytes), applyUsage_newSmsUsed: applyUsage.newData.smsUsedCount, applyUsage_changedFields: applyUsage.changedFields, applyUsage_changed: applyUsage.changed, applyUsage_hasAnyUsageData: applyUsage.hasAnyUsageData }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
-  // #endregion
 
   const allChangedFields: string[] = [...applyUsage.changedFields, ...applyProduct.changedFields];
   const shouldUpdateDb = applyUsage.changed || applyUsage.hasAnyUsageData || applyProduct.changed;
@@ -1967,42 +1885,28 @@ export async function syncUsageForSingleSim(
     }
   }
 
-  // 🎯 simhuisFields: rechtstreeks uit applyUsage.newData + applyProduct.newData
-  //    Zodat het altijd overeenkomt met wat WEL in de DB is gezet,
-  //    in plaats van rechtstreeks uit simhuisStatus (dat de velden soms
-  //    via (baseStatus as any) dynamisch zette, waardoor ze in de
-  //    weergave als null verschenen, ook al werden ze correct verwerkt).
-  const sf = simhuisStatus as any;
-  const toNumberOrNull = (v: bigint | number | null | undefined): number | null => {
-    if (v === null || v === undefined) return null;
-    if (typeof v === "bigint") {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : null;
-    }
-    return Number.isFinite(v) ? v : null;
-  };
   const simhuisFields: PerSimUsageSyncResult["simhuisFields"] = {
-    dataUsedBytes: toNumberOrNull(applyUsage.newData.dataUsedBytes),
-    dataLimitBytes: toNumberOrNull(applyUsage.newData.dataLimitBytes),
-    lowestDataLimitBytes: toNumberOrNull(applyUsage.newData.lowestDataLimitBytes),
-    smsUsedCount: applyUsage.newData.smsUsedCount ?? null,
-    smsLimitCount: applyUsage.newData.smsLimitCount ?? null,
-    lowestSmsLimitCount: applyUsage.newData.lowestSmsLimitCount ?? null,
-    productName: applyProduct.newData.product ?? null,
-    productType: applyProduct.newData.productType ?? null,
-    simName: applyProduct.newData.simName ?? null,
-    groupName: applyProduct.newData.simGroup ?? null,
-    usageSource: (applyUsage.newData as any).usageSource ?? null,
-    usageBundleId: (applyUsage.newData as any).usageBundleId ?? null,
-    usageLocalProductId: (applyUsage.newData as any).usageLocalProductId ?? null,
-    usageLocalProductName: (applyUsage.newData as any).usageLocalProductName ?? sf.usageLocalProductName ?? null,
-    usagePeriodStart: (applyUsage.newData as any).usagePeriodStart ? new Date((applyUsage.newData as any).usagePeriodStart) : null,
-    usagePeriodEnd: (applyUsage.newData as any).usagePeriodEnd ? new Date((applyUsage.newData as any).usagePeriodEnd) : null,
-    usageRetrievedAt: (applyUsage.newData as any).usageRetrievedAt ? new Date((applyUsage.newData as any).usageRetrievedAt) : null,
-    usageCdrQueryStart: (applyUsage.newData as any).usageCdrQueryStart ? new Date((applyUsage.newData as any).usageCdrQueryStart) : null,
-    usageCdrQueryEnd: (applyUsage.newData as any).usageCdrQueryEnd ? new Date((applyUsage.newData as any).usageCdrQueryEnd) : null,
-    usageBundleUsages: (applyUsage.newData as any).usageBundleUsages ?? sf.usageBundleUsages ?? null,
-    usageSelectionNote: (applyUsage.newData as any).usageSelectionNote ?? sf.usageSelectionNote ?? null,
+    dataUsedBytes: simhuisStatus.dataUsedBytes ?? null,
+    dataLimitBytes: simhuisStatus.dataLimitBytes ?? null,
+    lowestDataLimitBytes: simhuisStatus.lowestDataLimitBytes ?? null,
+    smsUsedCount: simhuisStatus.smsUsedCount ?? null,
+    smsLimitCount: simhuisStatus.smsLimitCount ?? null,
+    lowestSmsLimitCount: simhuisStatus.lowestSmsLimitCount ?? null,
+    productName: simhuisStatus.productName ?? simhuisStatus.planName ?? null,
+    productType: simhuisStatus.productType ?? null,
+    simName: simhuisStatus.simName ?? null,
+    groupName: simhuisStatus.groupName ?? simhuisStatus.groupId ?? null,
+    usageSource: (simhuisStatus as any).usageSource ?? null,
+    usageBundleId: (simhuisStatus as any).usageBundleId ?? null,
+    usageLocalProductId: (simhuisStatus as any).usageLocalProductId ?? null,
+    usageLocalProductName: (simhuisStatus as any).usageLocalProductName ?? null,
+    usagePeriodStart: (simhuisStatus as any).usagePeriodStart ? new Date((simhuisStatus as any).usagePeriodStart) : null,
+    usagePeriodEnd: (simhuisStatus as any).usagePeriodEnd ? new Date((simhuisStatus as any).usagePeriodEnd) : null,
+    usageRetrievedAt: (simhuisStatus as any).usageRetrievedAt ? new Date((simhuisStatus as any).usageRetrievedAt) : null,
+    usageCdrQueryStart: (simhuisStatus as any).usageCdrQueryStart ? new Date((simhuisStatus as any).usageCdrQueryStart) : null,
+    usageCdrQueryEnd: (simhuisStatus as any).usageCdrQueryEnd ? new Date((simhuisStatus as any).usageCdrQueryEnd) : null,
+    usageBundleUsages: (simhuisStatus as any).usageBundleUsages ?? null,
+    usageSelectionNote: (simhuisStatus as any).usageSelectionNote ?? null,
   };
 
   return {

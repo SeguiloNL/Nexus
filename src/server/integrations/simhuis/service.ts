@@ -1870,24 +1870,13 @@ function enrichSimhuisStatusWithDirectRawExtracts(
           bu.remainingBytes = bRem ?? null;
           for (const k of BUNDLE_DATA_KEYS) {
             const rawV = (b as any)[k];
-            let pb: number | null = null;
-            if (isPpuBundle) {
-              const sv = safeNum(rawV);
-              if (sv !== null && sv >= 0) pb = Math.round(sv);
-            } else {
-              pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
-              if (pb === null) {
-                // 💥 FALLBACK: Als pickBytesSmart te streng was (geen baseline of onbekende eenheid),
-                //    maar safeNum WEL een geldige waarde >=0 geeft → gebruiken!
-                //    (Dit was de bug: pickBytesSmart verwierp waardes die voorheen WEL werkten.)
-                const sv = safeNum(rawV);
-                if (sv !== null && sv >= 0) pb = sv === 0 ? 0 : Math.round(sv);
-              }
-            }
+            const pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
             if (pb !== null && pb >= 0 && bu.dataUsedBytes === undefined) {
               bu.dataUsedBytes = pb;
               break;
             }
+            const sv = safeNum(rawV);
+            if (sv === 0 && bu.dataUsedBytes === undefined) { bu.dataUsedBytes = 0; break; }
           }
           for (const k of BUNDLE_SMS_KEYS) {
             const sv = safeNum((b as any)[k]);
@@ -1987,9 +1976,8 @@ function enrichSimhuisStatusWithDirectRawExtracts(
             const rawV = (rt as any)?.dataUsed;
             const pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
             if (pb !== null && pb >= 0) { dataUsed = pb; dataUsedSrc = `RATINGS[${ri}].dataUsed`; break; }
-            // 💥 FALLBACK safeNum: pickBytesSmart te streng? → direct gebruiken
             const sv = safeNum(rawV);
-            if (sv !== null && sv >= 0) { dataUsed = sv === 0 ? 0 : Math.round(sv); dataUsedSrc = `RATINGS[${ri}].dataUsed|safeNum`; break; }
+            if (sv === 0) { dataUsed = 0; dataUsedSrc = `RATINGS[${ri}].dataUsed`; break; }
             if (!pName && (rt as any)?.product && typeof (rt as any).product === 'object') {
               for (const k of BUNDLE_PRODUCT_KEYS) {
                 const s = isValidStringValue(((rt as any).product as any)[k]);
@@ -1999,10 +1987,6 @@ function enrichSimhuisStatusWithDirectRawExtracts(
                 const rawV2 = ((rt as any).product as any).remainingBytes;
                 const pb2 = pickBytesSmart(rawV2, baselineDataLimit, 'limit');
                 if (pb2 !== null) remainingBytes = pb2;
-                else {
-                  const sv2 = safeNum(rawV2);
-                  if (sv2 !== null && sv2 > 0) remainingBytes = Math.round(sv2);
-                }
               }
             }
           }
@@ -2073,10 +2057,8 @@ function enrichSimhuisStatusWithDirectRawExtracts(
       const rawV = (obj as any)[k];
       const pb = pickBytesSmart(rawV, baselineDataUsed, 'used');
       if (pb !== null && pb >= 0) return { bytes: pb, src: `${label}.${k}` };
-      // 💥 FALLBACK: pickBytesSmart te streng? safeNum probeert zonder baseline, zonder eenheids-gok.
-      //    Dit was de bug: waardes die voorheen WEL werkten, werden nu door pickBytesSmart verworpen.
       const sv = safeNum(rawV);
-      if (sv !== null && sv >= 0) return { bytes: sv === 0 ? 0 : Math.round(sv), src: `${label}.${k}|safeNum-fallback` };
+      if (sv === 0) return { bytes: 0, src: `${label}.${k}` };
     }
     return { bytes: null, src: '' };
   };
@@ -2085,23 +2067,14 @@ function enrichSimhuisStatusWithDirectRawExtracts(
   if (duBytes === null) { const r = pickDataUsedFrom(rawObj, 'RAW'); if (r.bytes !== null) { duBytes = r.bytes; duSource = r.src; } }
   if (duBytes === null && nested) { const r = pickDataUsedFrom(nested, 'NESTED'); if (r.bytes !== null) { duBytes = r.bytes; duSource = r.src; } }
   if (duBytes === null && cardProfile) { const r = pickDataUsedFrom(cardProfile, 'CARDPROFILE'); if (r.bytes !== null) { duBytes = r.bytes; duSource = r.src; } }
-  // ✅ ULTIEME FALLBACK: als ALLE extracties falen, maar fast-extract (baseStatus) WEL dataUsedBytes had — gebruik die!
-  //    Dit voorkomt "dataUsedBytes: —" in de UI terwijl de SIM-lijst WEL tellers heeft.
-  if (duBytes === null && baselineDataUsed !== null && baselineDataUsed >= 0) {
-    duBytes = baselineDataUsed;
-    duSource = 'baseline-dataUsedBytes (fast-extract fallback)';
-  }
 
   if (duBytes !== null && baselineDataUsed !== null && baselineDataUsed > 0) {
     const ratio = Math.max(duBytes, 1) / Math.max(baselineDataUsed, 1);
-    // 💥 Drempel VERRE VERHOOGD (voorheen 0.001 / 1000): baseline komt vaak uit toSimStatus
-    //    en is onbetrouwbaar (bijv. 0 of 500 in plaats van echte teller). Alleen bij extreem
-    //    onrealistische waarden (factor 1M x) nog corrigeren. Voorkomt dataverlies.
-    if (ratio > 1_000_000 || ratio < 0.000001) {
+    if (ratio > 1000 || ratio < 0.001) {
       try {
         const shortIccid = iccid.slice(-6);
         console.info(
-          `[simhuis:enrichExtract] [${shortIccid}] ⚠️ dataUsed sanity-check (EXTREME ratio!): enrich=${duBytes} bytes (${(duBytes/_MB).toFixed(2)} MB) ≠ baseline=${baselineDataUsed} bytes (${(baselineDataUsed/_MB).toFixed(2)} MB). ratio=${ratio.toFixed(1)}x → baseline gehandhaafd.`
+          `[simhuis:enrichExtract] [${shortIccid}] ⚠️ dataUsed sanity-check: enrich=${duBytes} bytes (${(duBytes/_MB).toFixed(2)} MB) ≠ baseline=${baselineDataUsed} bytes (${(baselineDataUsed/_MB).toFixed(2)} MB). ratio=${ratio.toFixed(1)}x → baseline gehandhaafd.`
         );
       } catch {}
       duBytes = baselineDataUsed;
@@ -2125,14 +2098,6 @@ function enrichSimhuisStatusWithDirectRawExtracts(
     for (const k of SMS_USED_KEYS) {
       const sv = safeNum((firstSetup as any)[k]);
       if (sv !== null && sv >= 0) { smsUsedNum = sv; smsSource = `SETUP.${k}`; break; }
-    }
-  }
-  // ✅ SMS ULTIEME FALLBACK: baseStatus.smsUsedCount als alle bundles/keys NULL zijn
-  if (smsUsedNum === null) {
-    const baseSms = safeNum((baseStatus as any).smsUsedCount);
-    if (baseSms !== null && baseSms >= 0) {
-      smsUsedNum = baseSms;
-      smsSource = 'baseline-smsUsedCount (fast-extract fallback)';
     }
   }
   const smsLimitNum = safeNum(smsLimitRaw);
@@ -2282,70 +2247,6 @@ function enrichSimhuisStatusWithDirectRawExtracts(
   if (directGroupId) { (baseStatus as any).groupId = directGroupId; }
   if (directProductName) { (baseStatus as any).productName = directProductName; (baseStatus as any).planName = directProductName; (baseStatus as any).offerName = directProductName; }
   if (directProductType) { (baseStatus as any).productType = directProductType; }
-
-  // ============================================================
-  // 🎯 NIEUW: Vul usage* metadata velden (bron, periode, bundel-ID, opgehaaldOp)
-  //    Onderscheid:
-  //      - BUNDLE_COUNTER: dataUsed komt uit subscriptions[].bundles[].dataUsed
-  //      - CDR_STATS: dataUsed komt uit /v3/cdr/stats (TOP-LEVEL.bytes) of /v3/cdr (data[].bytes SUM)
-  // ============================================================
-  let usageSource: UsageSource = 'NONE';
-  if (directDataUsedBytes !== null || directSmsUsedCount !== null) {
-    const duSrcNorm = (duSource || '').toLowerCase();
-    if (bundleData.dataUsedIsBundleCounter || duSrcNorm.includes('bundle') || duSrcNorm.includes('selected') || duSrcNorm.includes('subs[')) {
-      usageSource = 'BUNDLE_COUNTER';
-    } else if (duSrcNorm.includes('/cdr/stats') || duSrcNorm.includes('data[].bytes') || duSrcNorm.includes('top-level.bytes')) {
-      usageSource = 'CDR_STATS';
-    } else if (duSrcNorm) {
-      usageSource = 'UNKNOWN';
-    } else {
-      usageSource = directDataUsedBytes !== null ? 'UNKNOWN' : 'NONE';
-    }
-  }
-  (baseStatus as any).usageSource = usageSource;
-  (baseStatus as any).usageRetrievedAt = new Date().toISOString();
-
-  // Periode + bundel info: als er een selectedBundle is met periode, dan gebruiken
-  if (selectedBundle) {
-    (baseStatus as any).usageBundleId = selectedBundle.bundleId ?? null;
-    (baseStatus as any).usageLocalProductId = selectedBundle.localProductId ?? null;
-    (baseStatus as any).usageLocalProductName = selectedBundle.localProductName ?? selectedBundle.productName ?? null;
-    (baseStatus as any).usagePeriodStart = selectedBundle.periodStart ?? null;
-    (baseStatus as any).usagePeriodEnd = selectedBundle.periodEnd ?? null;
-  } else {
-    (baseStatus as any).usageBundleId = null;
-    (baseStatus as any).usageLocalProductId = null;
-    (baseStatus as any).usageLocalProductName = null;
-    (baseStatus as any).usagePeriodStart = null;
-    (baseStatus as any).usagePeriodEnd = null;
-  }
-  (baseStatus as any).usageBundleUsages = bundleUsages.length > 0 ? bundleUsages : null;
-  (baseStatus as any).usageSelectionNote = bundleData.selectionNote ?? null;
-
-  // Bundles debug + nieuwe periode/selectie logging
-  try {
-    const shortIccid = iccid.slice(-6);
-    const bdMb = bundleData.dataUsed !== null ? (bundleData.dataUsed / _MB).toFixed(4) + ' MB' : '-';
-    const remMb = bundleData.remaining !== null ? (bundleData.remaining / _MB).toFixed(4) + ' MB' : '-';
-    const initMb = bundleData.initial !== null ? (bundleData.initial / _MB).toFixed(4) + ' MB' : '-';
-    const pStart = selectedBundle?.periodStart ?? '-';
-    const pEnd = selectedBundle?.periodEnd ?? '-';
-    const pStatus = selectedBundle
-      ? (selectedBundle.isActiveNow ? 'ACTIEF' : selectedBundle.isExpired ? 'VERLOPEN' : selectedBundle.isFuture ? 'TOEKOMSTIG' : 'ONBEKEND')
-      : 'GEEN-SELECTIE';
-    const noteSummary = bundleData.selectionNote ? bundleData.selectionNote.slice(0, 150) : '-';
-    console.info(
-      `[simhuis:enrichExtract] [${shortIccid}] 🎁 BUNDLES[] extractie: #bundles=${bundleUsages.length}  selected=#${bundleData.selectedIndex}  status=${pStatus}\n` +
-      `     dataUsed=${bdMb} remaining=${remMb} initial=${initMb} smsUsed=${JSON.stringify(bundleData.smsUsed)} product=${JSON.stringify(bundleData.productName)} (src=${bundleData.productSrc})\n` +
-      `     periode: start=${pStart}  end=${pEnd}\n` +
-      `     usageSource=${usageSource}  selectie: ${noteSummary}`
-    );
-  } catch {}
-  try {
-    const shortIccid = iccid.slice(-6);
-    const mbDisplay = duBytes !== null ? `${(duBytes / _MB).toFixed(2)} MB` : '-';
-    console.info(`[simhuis:enrichExtract] [${shortIccid}] 📊 dataUsed: source=${duSource || 'NOT_FOUND'} raw=${duBytes !== null ? 'FOUND' : 'NULL'} → ${mbDisplay}`);
-  } catch {}
 
   return baseStatus;
 }
@@ -2635,11 +2536,11 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
             DEBUG_LOG(`🏆 Phase A EARLY RETURN: complete usage data (score=${sc}).`);
             return valid;
           }
-          // 💥 EARLY RETURN ALLEEN ALS WE EEN ECHTE TELLER HEBBEN (dataUsed of smsUsed NIET null)!
-          //    hasAnyUsage=true alleen op basis van dataLimitBytes (limiet) is NIET voldoende
-          //    — dan missen we Phase A.5 die de echte teller + bundelperiode uit /assets/{iccid} haalt!
-          if (hasAnyCounter(valid) && sc >= 4) {
-            DEBUG_LOG(`🏆 Phase A EARLY RETURN: hasAnyCounter=true (teller aanwezig) & score=${sc} ≥4.`);
+          // 💥 DREMPEL VERLAAGD: Winning Combo data = altijd inventory data. Dus:
+          //   - Als we ANY usage hebben (dataLimit of dataUsed of smsLimit) → onmiddellijk return; beter dan 50 attempts!
+          //   - Als status gevuld is + msisdn → return (score>=3 ok)
+          if (hasAnyUsage(valid) && sc >= 4) {
+            DEBUG_LOG(`🏆 Phase A EARLY RETURN (drempel verlaagd): hasAnyUsage=true & score=${sc} ≥4. Beter dan 50× mislukte endpoints!`);
             return valid;
           }
           if (sc > phaseABestScore) {
@@ -2657,14 +2558,8 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
         const needsUsage = best.dataUsedBytes === null || best.smsUsedCount === null || best.productName === null || /cardcentri|mii|imeifplmn/i.test(best.productName ?? '');
         if (needsUsage && bearerToken && aidForGetSim) {
           DEBUG_LOG(`🏆 Phase A.5: needsUsage=${needsUsage} dataUsed=${JSON.stringify((best as any).dataUsedBytes)} smsUsed=${JSON.stringify((best as any).smsUsedCount)} product=${JSON.stringify((best as any).productName)} → Probeer 4 Swagger-bevestigde per-SIM endpoints met Bearer-token + accountId!`);
-          // 🆕 Gebruik eerst de bundelperiode als billTime filter! Alleen fallback naar kalendermaand als die ontbreekt.
-          const periodStart = (best as any).usagePeriodStart;
-          const periodEnd = (best as any).usagePeriodEnd;
-          const periodBillTime = periodStart || periodEnd ? billTimeFromPeriod(periodStart, periodEnd, true) : null;
-          const monthBillTime = billTimeCurrentMonth();
-          const billTime = periodBillTime ?? monthBillTime;
-          const isPeriodBased = !!periodBillTime && periodBillTime.combined !== monthBillTime.combined;
-          DEBUG_LOG(`🏆 Phase A.5: billTime = ${isPeriodBased ? `BUNDELPERIODE (start=${billTime.start} end=${billTime.end})` : `kalendermaand (fallback; periode datums ontbreken) (${billTime.combined})`}`);
+          const billTime = billTimeCurrentMonth();
+          DEBUG_LOG(`🏆 Phase A.5: billTime (huidige maand facturatieperiode) = ${billTime.combined}`);
           try {
             // ============================================================
             // 🆕 Swagger-bevestigde endpoints (volgorde = HOOGSTE PRIO eerst!):
@@ -2677,11 +2572,11 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
             //   4. GET /v3/cdr?accountId={aid}&iccid={iccid}&type=data&limit=50&order=desc
             //      → data[].bytes + ratings[].dataUsed + ratings[].product.remainingBytes!
             // ============================================================
-            const usageTemplates: Array<{ method: 'GET' | 'POST'; path: string; query?: Record<string, any>; body?: Record<string, any>; contentType?: 'json' | 'form' | 'none'; isCdr?: boolean }> = [];
+            const usageTemplates: Array<{ method: 'GET' | 'POST'; path: string; query?: Record<string, any>; body?: Record<string, any>; contentType?: 'json' | 'form' | 'none' }> = [];
             usageTemplates.push({ method: 'GET', path: `/assets/${iccid}`, query: { accountId: aidForGetSim } });
             usageTemplates.push({ method: 'GET', path: `/accounts/${aidForGetSim}/assets/${iccid}`, query: { accountId: aidForGetSim } });
-            usageTemplates.push({ method: 'GET', path: `/cdr/stats`, query: { accountId: aidForGetSim, iccid, type: 'data', billTime: billTime.combined }, isCdr: true });
-            usageTemplates.push({ method: 'GET', path: `/cdr`, query: { accountId: aidForGetSim, iccid, type: 'data', limit: 50, sort: 'billTime', order: 'desc', billTime: billTime.combined }, isCdr: true });
+            usageTemplates.push({ method: 'GET', path: `/cdr/stats`, query: { accountId: aidForGetSim, iccid, type: 'data', billTime: billTime.combined } });
+            usageTemplates.push({ method: 'GET', path: `/cdr`, query: { accountId: aidForGetSim, iccid, type: 'data', limit: 50, sort: 'billTime', order: 'desc', billTime: billTime.combined } });
             for (let i = 0; i < usageTemplates.length; i++) {
               const ut = usageTemplates[i];
               if (Date.now() - startedAtGetSim > 15_000) { DEBUG_LOG(`🏆 Phase A.5: time-out (>15s) na ${i} pogingen.`); break; }
@@ -2714,18 +2609,6 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                       const newSMS = (enriched as any).smsUsedCount;
                       const newProd = (enriched as any).productName;
                       DEBUG_LOG(`🏆 Phase A.5: ${ut.method} /v3${ut.path} → dataUsed ${prevDU ?? 'NULL'} → ${newDU ?? 'NULL'}, smsUsed ${prevSMS ?? 'NULL'} → ${newSMS ?? 'NULL'}, product ${prevProd ?? 'NULL'} → ${newProd ?? 'NULL'}.`);
-                      // 🆕 Als het een CDR endpoint was: bewaar de gebruikte query-grenzen (los van bundelperiode!)
-                      if (ut.isCdr) {
-                        try {
-                          (enriched as any).usageCdrQueryStart = new Date(billTime.start.replace(' ', 'T')).toISOString();
-                          (enriched as any).usageCdrQueryEnd = new Date(billTime.end.replace(' ', 'T')).toISOString();
-                          // Als de bron nog niet expliciet BUNDLE_COUNTER was → markeer als CDR_STATS
-                          const enrichedSrc = (enriched as any).usageSource;
-                          if (!enrichedSrc || enrichedSrc === 'UNKNOWN' || enrichedSrc === 'NONE') {
-                            (enriched as any).usageSource = 'CDR_STATS';
-                          }
-                        } catch {}
-                      }
                       const verbeterd =
                         (newDU !== null && prevDU === null) ||
                         (newSMS !== null && prevSMS === null) ||
@@ -2738,7 +2621,7 @@ export async function getSimStatus(iccid: string): Promise<SimhuisSimStatus> {
                         DEBUG_LOG(`🏆 Phase A.5: Verbetering gevonden! Update phaseABest...`);
                         (best as any).dataUsedBytes = newDU;
                         (best as any).smsUsedCount = newSMS;
-                        for (const f of ['productName','productType','simName','groupName','groupId','dataLimitBytes','smsLimitCount','lowestDataLimitBytes','lowestSmsLimitCount','status','msisdn','eid','usageSource','usageBundleId','usageLocalProductId','usageLocalProductName','usagePeriodStart','usagePeriodEnd','usageRetrievedAt','usageBundleUsages','usageSelectionNote','usageCdrQueryStart','usageCdrQueryEnd'] as const) {
+                        for (const f of ['productName','productType','simName','groupName','groupId','dataLimitBytes','smsLimitCount','lowestDataLimitBytes','lowestSmsLimitCount','status','msisdn','eid'] as const) {
                           const v = (enriched as any)[f];
                           if (v !== null && v !== undefined) {
                             if (f === 'productName' && (best as any)[f] && /cardcentri|mii|imeifplmn/i.test(String((best as any)[f]))) { (best as any)[f] = v; }
@@ -6161,103 +6044,6 @@ export async function suspendSimhuisAsset(iccid: string): Promise<SimhuisAssetAc
 
 export async function unsuspendSimhuisAsset(iccid: string): Promise<SimhuisAssetActionResult> {
   return _performSimhuisAssetAction('unsuspend', iccid);
-}
-
-// ============================================================
-// 🔁 ensureUsageDetailsForSim — expliciete fallback voor per-SIM usage sync
-//    Als de initiele Winning Combo / listAllSims geen dataUsed of smsUsed
-//    leverde, dan roepen we ALTIJD de 4 Swagger-bevestigde usage endpoints
-//    aan (zelfde als Phase A.5 in getSimStatus) en verrijken we de status.
-//    Gebruikt door syncUsageForSingleSim op de SIM-detailpagina.
-// ============================================================
-export async function ensureUsageDetailsForSim(
-  base: SimhuisSimStatus
-): Promise<SimhuisSimStatus> {
-  const iccid = base.iccid;
-  if (!iccid) return base;
-
-  const hasDataUsed = typeof (base as any).dataUsedBytes === 'number';
-  const hasSmsUsed = typeof (base as any).smsUsedCount === 'number';
-  if (hasDataUsed && hasSmsUsed) return base;
-
-  // #region debug-point H1:ensure-entry
-  (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H1', location:'service.ts:6173', msg:'[DEBUG] ensureUsageDetailsForSim ENTERED', data: { iccid, input_dataUsed: (base as any).dataUsedBytes, input_smsUsed: (base as any).smsUsedCount, input_dataLimit: (base as any).dataLimitBytes, input_productName: (base as any).productName }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
-  // #endregion
-
-  try {
-    const creds = await getSimhuisCreds();
-    const aidForGetSim = getSimhuisAccountId();
-    const bearerToken = await acquireBearerToken(creds);
-    if (!bearerToken || !aidForGetSim) return base;
-
-    const periodStart = (base as any).usagePeriodStart;
-    const periodEnd = (base as any).usagePeriodEnd;
-    const periodBillTime = periodStart || periodEnd ? billTimeFromPeriod(periodStart, periodEnd, true) : null;
-    const monthBillTime = billTimeCurrentMonth();
-    const billTime = periodBillTime ?? monthBillTime;
-
-    const usageTemplates: Array<{ method: 'GET' | 'POST'; path: string; query?: Record<string, any>; isCdr?: boolean }> = [
-      { method: 'GET', path: `/assets/${iccid}`, query: { accountId: aidForGetSim } },
-      { method: 'GET', path: `/accounts/${aidForGetSim}/assets/${iccid}`, query: { accountId: aidForGetSim } },
-      { method: 'GET', path: `/cdr/stats`, query: { accountId: aidForGetSim, iccid, type: 'data', billTime: billTime.combined }, isCdr: true },
-      { method: 'GET', path: `/cdr`, query: { accountId: aidForGetSim, iccid, type: 'data', limit: 50, sort: 'billTime', order: 'desc', billTime: billTime.combined }, isCdr: true },
-    ];
-
-    let result: SimhuisSimStatus = { ...base as any };
-    const auth: { tag: 'bearer-token'; token: string } = { tag: 'bearer-token', token: bearerToken };
-    const startedAtEnsure = Date.now();
-
-    for (const ut of usageTemplates) {
-      if (Date.now() - startedAtEnsure > 15_000) break;
-      if (typeof (result as any).dataUsedBytes === 'number' && typeof (result as any).smsUsedCount === 'number') break;
-      try {
-        const fullUrl = makePerSimFullUrl(creds.baseUrl, `/v3${ut.path}`, ut.query ?? {});
-        const resp = await doPerSimFetch({
-          fullUrl,
-          method: ut.method,
-          contentType: 'none',
-          body: null as any,
-          auth,
-          timeoutMs: 5000,
-        });
-        // #region debug-point H2:endpoint-http-response
-        (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} const ra: any = resp; await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H2', location:'service.ts:6206', msg:'[DEBUG] ensure endpoint response', data: { iccid, endpoint: ut.path, respTag: ra?.tag, httpStatus: ra?.httpStatus ?? ra?.statusCode ?? null, bodyType: ra?.body ? typeof ra.body : null, bodyIsNull: ra?.body === null, bodyIsEmptyObj: ra?.body && typeof ra.body==='object' && Object.keys(ra.body as object).length===0, hasBytes: ra?.body && typeof ra.body==='object' && ('bytes' in (ra.body as object)), hasData: ra?.body && typeof ra.body==='object' && ('data' in (ra.body as object)), hasRatings: ra?.body && typeof ra.body==='object' && ('ratings' in (ra.body as object)), hasSubscriptions: ra?.body && typeof ra.body==='object' && ('subscriptions' in (ra.body as object)), bodyTopKeys: ra?.body && typeof ra.body==='object' ? Object.keys(ra.body as object).slice(0,15) : null, dataLen: ra?.body && typeof ra.body==='object' && 'data' in (ra.body as object) && Array.isArray((ra.body as any).data) ? (ra.body as any).data.length : null, ratingsLen: ra?.body && typeof ra.body==='object' && 'ratings' in (ra.body as object) && Array.isArray((ra.body as any).ratings) ? (ra.body as any).ratings.length : null, subsLen: ra?.body && typeof ra.body==='object' && 'subscriptions' in (ra.body as object) && Array.isArray((ra.body as any).subscriptions) ? (ra.body as any).subscriptions.length : null, bodyBytesVal: ra?.body && typeof ra.body==='object' && ('bytes' in (ra.body as object)) ? String((ra.body as any).bytes) : null, billTimeUsed: billTime.combined, fullUrl_redacted: fullUrl.replace(/token=[^&]+/g,'token=***').replace(/Authorization/gi,'AUTH_REDACTED').slice(0,200) }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
-        // #endregion
-        if (resp.tag === 'ok' && resp.body) {
-          const beforeDU = (result as any).dataUsedBytes;
-          const beforeSU = (result as any).smsUsedCount;
-          const enriched = enrichSimhuisStatusWithDirectRawExtracts(result, resp.body, iccid);
-          // #region debug-point H3:before-after-enrich
-          (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H3', location:'service.ts:6220', msg:'[DEBUG] enrichSimhuisStatusWithDirectRawExtracts before vs after', data: { iccid, endpoint: ut.path, before_dataUsed: beforeDU, before_smsUsed: beforeSU, after_dataUsed: enriched ? (enriched as any).dataUsedBytes : null, after_smsUsed: enriched ? (enriched as any).smsUsedCount : null, after_usageSource: enriched ? (enriched as any).usageSource : null, after_usageSelectionNote: enriched ? (enriched as any).usageSelectionNote : null, enrichedIsNull: enriched === null }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
-          // #endregion
-          if (enriched) {
-            result = enriched;
-            if (ut.isCdr) {
-              try {
-                (result as any).usageCdrQueryStart = new Date(billTime.start.replace(' ', 'T')).toISOString();
-                (result as any).usageCdrQueryEnd = new Date(billTime.end.replace(' ', 'T')).toISOString();
-                const src = (result as any).usageSource;
-                if (!src || src === 'UNKNOWN' || src === 'NONE') (result as any).usageSource = 'CDR_STATS';
-              } catch {}
-            }
-          }
-        }
-      } catch (e: any) {
-        // #region debug-point H2:endpoint-exception
-        (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H2', location:'service.ts:6233', msg:'[DEBUG] ensure endpoint EXCEPTION caught', data: { iccid, endpoint: ut.path, errMsg: e?.message ?? String(e) }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
-        // #endregion
-      }
-    }
-    // #region debug-point H1:ensure-exit
-    (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H1', location:'service.ts:6235', msg:'[DEBUG] ensureUsageDetailsForSim EXIT', data: { iccid, final_dataUsed: (result as any).dataUsedBytes, final_smsUsed: (result as any).smsUsedCount, final_usageSource: (result as any).usageSource, final_usageSelectionNote: (result as any).usageSelectionNote, durationMs: Date.now() - startedAtEnsure }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
-    // #endregion
-    return result;
-  } catch (e: any) {
-    // #region debug-point H1:ensure-catch
-    (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H1', location:'service.ts:6237', msg:'[DEBUG] ensureUsageDetailsForSim OUTER catch', data: { iccid, errMsg: e?.message ?? String(e) }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
-    // #endregion
-    return base;
-  }
 }
 
 export { simhuisClient, SimhuisApiError };
