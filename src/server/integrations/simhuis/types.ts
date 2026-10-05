@@ -72,6 +72,9 @@ export interface SimhuisSimStatus {
   smsLimitCount?: number | null;
   lowestSmsLimitCount?: number | null;
   activatedAt?: string | null;
+  activationDate?: string | null;
+  reactivationDate?: string | null;
+  subscriptionDate?: string | null;
   raw?: unknown;
   usageSource?: UsageSource;
   usageBundleId?: string | null;

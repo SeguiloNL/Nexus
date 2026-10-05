@@ -1163,6 +1163,21 @@ export function toSimStatus(raw: unknown, iccid: string): SimhuisSimStatus {
       'startDate', 'start_date',
       nestedSim?.activatedAt, nestedSim?.provisioned_at,
     ),
+    activationDate: pickString(
+      'activationDate', 'activation_date', 'firstActivationDate',
+      'first_activation_date', 'initialActivationDate', 'initial_activation_date',
+      (r as any).activationDate, nestedSim?.activationDate,
+    ),
+    reactivationDate: pickString(
+      'reactivationDate', 'reactivation_date', 'lastReactivationDate',
+      'last_reactivation_date', 'resumeDate', 'resume_date',
+      (r as any).reactivationDate, nestedSim?.reactivationDate,
+    ),
+    subscriptionDate: pickString(
+      'subscriptionDate', 'subscription_date', 'lastSubscriptionDate',
+      'last_subscription_date', 'subscribeDate', 'subscribe_date',
+      (r as any).subscriptionDate, nestedSim?.subscriptionDate,
+    ),
     raw,
   };
 }
@@ -6294,26 +6309,52 @@ export async function getDiagnosticByIccid(
   if (!accountId) {
     return { ok: false, detail: 'accountId is niet beschikbaar.' };
   }
-  const fullUrl = makePerSimFullUrl(creds.baseUrl, `/v3/assets/${encodeURIComponent(iccid)}/diagnostic`, {
-    accountId,
-  });
-  const res = await doPerSimFetch({
-    fullUrl,
-    method: 'GET',
-    contentType: 'none',
-    body: null,
-    auth: { tag: 'bearer-token', token },
-    timeoutMs: 10_000,
-  });
-  if (res.tag !== 'ok') {
-    return {
-      ok: false,
-      httpStatus: res.statusCode,
-      accountIdUsed: accountId,
-      detail: `Netwerkdiagnose kon niet worden opgehaald (HTTP ${res.statusCode || 0}).`,
-    };
+  const templates: Array<{ path: string; query?: Record<string, string | number | boolean | undefined> }> = [
+    {
+      path: `/v3/accounts/${encodeURIComponent(accountId)}/assets/${encodeURIComponent(iccid)}/diagnostic`,
+      query: { accountId },
+    },
+    {
+      path: `/v3/assets/${encodeURIComponent(iccid)}/diagnostic`,
+      query: { accountId },
+    },
+    {
+      path: `/v3/assets/${encodeURIComponent(iccid)}/diagnostic`,
+    },
+  ];
+  let lastStatus: number | undefined;
+  let lastDetail: string | undefined;
+  for (let i = 0; i < templates.length; i++) {
+    const tpl = templates[i];
+    const fullUrl = makePerSimFullUrl(creds.baseUrl, tpl.path, tpl.query ?? null);
+    const res = await doPerSimFetch({
+      fullUrl,
+      method: 'GET',
+      contentType: 'none',
+      body: null,
+      auth: { tag: 'bearer-token', token },
+      timeoutMs: 10_000,
+    });
+    if (res.tag === 'ok') {
+      try { console.debug(`[simhuis:getDiagnosticByIccid] [${iccid.slice(-6)}] poging ${i + 1}/${templates.length} OK via ${tpl.path}`); } catch {}
+      return { ok: true, httpStatus: res.statusCode, raw: res.body, accountIdUsed: accountId };
+    }
+    lastStatus = res.statusCode;
+    lastDetail = `Netwerkdiagnose kon niet worden opgehaald (HTTP ${res.statusCode || 0}).`;
+    try { console.debug(`[simhuis:getDiagnosticByIccid] [${iccid.slice(-6)}] poging ${i + 1}/${templates.length} ${tpl.path} → HTTP ${res.statusCode}`); } catch {}
+    const isRetryable =
+      res.statusCode === 403 ||
+      res.statusCode === 404 ||
+      res.statusCode === 405 ||
+      (res.statusCode ?? 0) >= 500;
+    if (!isRetryable || i === templates.length - 1) break;
   }
-  return { ok: true, httpStatus: res.statusCode, raw: res.body, accountIdUsed: accountId };
+  return {
+    ok: false,
+    httpStatus: lastStatus,
+    accountIdUsed: accountId,
+    detail: lastDetail ?? 'Netwerkdiagnose kon niet worden opgehaald.',
+  };
 }
 
 function extractLocalProductInfo(rawGet: unknown): { localProductId?: string | null; localProductName?: string | null } {

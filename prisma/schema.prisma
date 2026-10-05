@@ -425,6 +425,9 @@ model SIM {
   status                   SimStatus @default(IN_STOCK)
   providerActivationDate   DateTime? @db.Date
   providerDeactivationDate DateTime? @db.Date
+  activationDate           DateTime? @db.Timestamptz
+  reactivationDate         DateTime? @db.Timestamptz
+  subscriptionDate         DateTime? @db.Timestamptz
   dataUsedBytes            BigInt?
   dataLimitBytes           BigInt?
   lowestDataLimitBytes     BigInt?

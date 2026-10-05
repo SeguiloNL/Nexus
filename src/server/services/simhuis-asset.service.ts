@@ -87,6 +87,16 @@ function mapSimhuisStatusToNexus(
   return SimStatus.IN_STOCK;
 }
 
+function toDateOrNull(raw: unknown): Date | null {
+  if (raw === null || raw === undefined) return null;
+  try {
+    const d = raw instanceof Date ? raw : new Date(String(raw));
+    return Number.isFinite(d.getTime()) ? d : null;
+  } catch {
+    return null;
+  }
+}
+
 async function authorize(ctx: AuthContext): Promise<SimSuspendError | null> {
   try {
     if (ctx.roleScope !== "INTERNAL") {
@@ -1254,13 +1264,21 @@ export async function refreshSimStatusById(
 
   const changed = previousStatus !== refreshedStatus;
 
+  const dateFields: { activationDate?: Date; reactivationDate?: Date; subscriptionDate?: Date } = {};
+  const liveAd = toDateOrNull((live as any).activationDate);
+  const liveRad = toDateOrNull((live as any).reactivationDate);
+  const liveSd = toDateOrNull((live as any).subscriptionDate);
+  if (liveAd) dateFields.activationDate = liveAd;
+  if (liveRad) dateFields.reactivationDate = liveRad;
+  if (liveSd) dateFields.subscriptionDate = liveSd;
+
   let dbUpdated = false;
   try {
     if (changed) {
       await prisma.$transaction(async (tx) => {
         const updated = await tx.sIM.update({
           where: { id: sim.id },
-          data: { status: refreshedStatus, updatedAt: new Date() },
+          data: { status: refreshedStatus, updatedAt: new Date(), ...dateFields },
         });
         await logAudit(tx, {
           entityType: "sim",
@@ -1268,7 +1286,7 @@ export async function refreshSimStatusById(
           action: "UPDATE",
           userId: ctx.userId,
           oldValues: { status: previousStatus },
-          newValues: { status: refreshedStatus },
+          newValues: { status: refreshedStatus, ...dateFields },
           metadata: {
             source: "sim-status-refresh",
             simhuisStatusRaw,
@@ -1281,7 +1299,7 @@ export async function refreshSimStatusById(
       try {
         await prisma.sIM.update({
           where: { id: sim.id },
-          data: { updatedAt: new Date() },
+          data: { updatedAt: new Date(), ...dateFields },
         });
       } catch {
         // Ignore; refreshed at timestamp is best effort

@@ -25,6 +25,9 @@ type UsageFields = {
   usageCdrQueryEnd: Date | null;
   usageBundleUsages: any;
   usageSelectionNote: string | null;
+  activationDate: Date | null;
+  reactivationDate: Date | null;
+  subscriptionDate: Date | null;
 };
 
 function toDateOrNull(raw: unknown): Date | null {
@@ -109,6 +112,9 @@ function buildUsageFieldsFromSimhuis(simhuis: SimhuisSimStatus): Omit<UsageField
     usageCdrQueryEnd: toDateOrNull((simhuis as any).usageCdrQueryEnd),
     usageBundleUsages: (simhuis as any).usageBundleUsages ?? null,
     usageSelectionNote: truncate((simhuis as any).usageSelectionNote ?? null, 10000),
+    activationDate: toDateOrNull((simhuis as any).activationDate),
+    reactivationDate: toDateOrNull((simhuis as any).reactivationDate),
+    subscriptionDate: toDateOrNull((simhuis as any).subscriptionDate),
   };
 }
 
@@ -135,6 +141,9 @@ function applyUsageFieldsFromSimhuis(
     usageCdrQueryEnd: existing.usageCdrQueryEnd,
     usageBundleUsages: existing.usageBundleUsages,
     usageSelectionNote: existing.usageSelectionNote,
+    activationDate: existing.activationDate,
+    reactivationDate: existing.reactivationDate,
+    subscriptionDate: existing.subscriptionDate,
   };
   const parsed = buildUsageFieldsFromSimhuis(simhuis);
   const newData: UsageFields = {
@@ -156,6 +165,7 @@ function applyUsageFieldsFromSimhuis(
     "usageSource", "usageBundleId", "usageLocalProductId", "usageLocalProductName",
     "usagePeriodStart", "usagePeriodEnd", "usageRetrievedAt",
     "usageCdrQueryStart", "usageCdrQueryEnd", "usageSelectionNote",
+    "activationDate", "reactivationDate", "subscriptionDate",
   ];
   for (const k of usageMetadataKeys) {
     const nv = (parsed as any)[k];
@@ -697,6 +707,9 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
       usageCdrQueryEnd: true,
       usageBundleUsages: true,
       usageSelectionNote: true,
+      activationDate: true,
+      reactivationDate: true,
+      subscriptionDate: true,
     },
   });
   const existingByIccid = new Map(existingSims.map((s) => [s.iccid, s]));
@@ -880,6 +893,9 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           usageCdrQueryEnd: existing.usageCdrQueryEnd ?? null,
           usageBundleUsages: (existing as any).usageBundleUsages ?? null,
           usageSelectionNote: (existing as any).usageSelectionNote ?? null,
+          activationDate: (existing as any).activationDate ?? null,
+          reactivationDate: (existing as any).reactivationDate ?? null,
+          subscriptionDate: (existing as any).subscriptionDate ?? null,
         };
         const newData: Record<string, any> = { ...oldData };
         let changed = wasSoftDeleted;
@@ -909,7 +925,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
         const usageKeys = [
           'usageSource','usageBundleId','usageLocalProductId','usageLocalProductName',
           'usagePeriodStart','usagePeriodEnd','usageRetrievedAt','usageCdrQueryStart','usageCdrQueryEnd',
-          'usageSelectionNote',
+          'usageSelectionNote','activationDate','reactivationDate','subscriptionDate',
         ] as const;
         for (const k of usageKeys) {
           const nv = (usageFields as any)[k];
@@ -983,6 +999,9 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
               usageCdrQueryEnd: newData.usageCdrQueryEnd,
               usageBundleUsages: newData.usageBundleUsages,
               usageSelectionNote: newData.usageSelectionNote,
+              activationDate: newData.activationDate,
+              reactivationDate: newData.reactivationDate,
+              subscriptionDate: newData.subscriptionDate,
             },
           })
           .then(() => {
@@ -1040,6 +1059,9 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
               usageCdrQueryEnd: usageFields.usageCdrQueryEnd,
               usageBundleUsages: usageFields.usageBundleUsages,
               usageSelectionNote: usageFields.usageSelectionNote,
+              activationDate: usageFields.activationDate,
+              reactivationDate: usageFields.reactivationDate,
+              subscriptionDate: usageFields.subscriptionDate,
             },
           })
           .then(() => {
@@ -1302,6 +1324,9 @@ export async function syncActiveSimsUsageFromSimhuis(
       usageCdrQueryEnd: true,
       usageBundleUsages: true,
       usageSelectionNote: true,
+      activationDate: true,
+      reactivationDate: true,
+      subscriptionDate: true,
     },
   });
 
@@ -1375,6 +1400,7 @@ export async function syncActiveSimsUsageFromSimhuis(
               'usageSource','usageBundleId','usageLocalProductId','usageLocalProductName',
               'usagePeriodStart','usagePeriodEnd','usageRetrievedAt','usageCdrQueryStart','usageCdrQueryEnd',
               'usageBundleUsages','usageSelectionNote',
+              'activationDate','reactivationDate','subscriptionDate',
             ] as const) {
               const detailVal = (detailed as any)[f];
               const baseVal = (baseSimhuis as any)[f];
@@ -1479,6 +1505,9 @@ export async function syncActiveSimsUsageFromSimhuis(
         usageCdrQueryEnd: existing.usageCdrQueryEnd ?? null,
         usageBundleUsages: (existing as any).usageBundleUsages ?? null,
         usageSelectionNote: (existing as any).usageSelectionNote ?? null,
+        activationDate: (existing as any).activationDate ?? null,
+        reactivationDate: (existing as any).reactivationDate ?? null,
+        subscriptionDate: (existing as any).subscriptionDate ?? null,
       };
 
       let changed = false;
@@ -1511,7 +1540,7 @@ export async function syncActiveSimsUsageFromSimhuis(
       const usageKeys = [
         'usageSource','usageBundleId','usageLocalProductId','usageLocalProductName',
         'usagePeriodStart','usagePeriodEnd','usageRetrievedAt','usageCdrQueryStart','usageCdrQueryEnd',
-        'usageSelectionNote',
+        'usageSelectionNote','activationDate','reactivationDate','subscriptionDate',
       ] as const;
       for (const k of usageKeys) {
         const nv = (usageFields as any)[k];
@@ -1575,6 +1604,9 @@ export async function syncActiveSimsUsageFromSimhuis(
             usageCdrQueryEnd: newData.usageCdrQueryEnd,
             usageBundleUsages: newData.usageBundleUsages,
             usageSelectionNote: newData.usageSelectionNote,
+            activationDate: newData.activationDate,
+            reactivationDate: newData.reactivationDate,
+            subscriptionDate: newData.subscriptionDate,
           },
         })
         .then(() => {
@@ -1697,6 +1729,9 @@ export type PerSimUsageSyncResult = {
     usageCdrQueryEnd: Date | null;
     usageBundleUsages: unknown | null;
     usageSelectionNote: string | null;
+    activationDate: Date | null;
+    reactivationDate: Date | null;
+    subscriptionDate: Date | null;
   };
 };
 
@@ -1751,6 +1786,9 @@ export async function syncUsageForSingleSim(
       usageCdrQueryEnd: true,
       usageBundleUsages: true,
       usageSelectionNote: true,
+      activationDate: true,
+      reactivationDate: true,
+      subscriptionDate: true,
     },
   });
   if (!sim) {
@@ -1803,7 +1841,7 @@ export async function syncUsageForSingleSim(
         } else {
           (simhuisStatus as any) = { ...(match as any), ...(simhuisStatus as any) };
           // Belangrijke keys: voorrang geven aan de MATCH (listAllSims) als die WEL tellers heeft
-          for (const k of ['dataUsedBytes','dataLimitBytes','lowestDataLimitBytes','smsUsedCount','smsLimitCount','lowestSmsLimitCount','productName','productType','simName','groupName','groupId'] as const) {
+          for (const k of ['dataUsedBytes','dataLimitBytes','lowestDataLimitBytes','smsUsedCount','smsLimitCount','lowestSmsLimitCount','productName','productType','simName','groupName','groupId','activationDate','reactivationDate','subscriptionDate'] as const) {
             const p1 = (simhuisStatus as any)[k];
             const p2 = (match as any)[k];
             if ((p1 === null || p1 === undefined) && (p2 !== null && p2 !== undefined)) {
@@ -1856,6 +1894,9 @@ export async function syncUsageForSingleSim(
     usageCdrQueryEnd: sim.usageCdrQueryEnd ?? null,
     usageBundleUsages: (sim as any).usageBundleUsages ?? null,
     usageSelectionNote: (sim as any).usageSelectionNote ?? null,
+    activationDate: (sim as any).activationDate ?? null,
+    reactivationDate: (sim as any).reactivationDate ?? null,
+    subscriptionDate: (sim as any).subscriptionDate ?? null,
   };
   const existingProduct: ProductSimFields = {
     product: sim.product ?? null,
@@ -1896,6 +1937,9 @@ export async function syncUsageForSingleSim(
         usageCdrQueryEnd: (applyUsage.newData as any).usageCdrQueryEnd,
         usageBundleUsages: (applyUsage.newData as any).usageBundleUsages,
         usageSelectionNote: (applyUsage.newData as any).usageSelectionNote,
+        activationDate: (applyUsage.newData as any).activationDate,
+        reactivationDate: (applyUsage.newData as any).reactivationDate,
+        subscriptionDate: (applyUsage.newData as any).subscriptionDate,
       },
     });
     try {
@@ -1957,6 +2001,9 @@ export async function syncUsageForSingleSim(
     usageCdrQueryEnd: (finalCoreDataUsage as any).usageCdrQueryEnd ?? ((simhuisStatus as any).usageCdrQueryEnd ? new Date((simhuisStatus as any).usageCdrQueryEnd) : null),
     usageBundleUsages: (finalCoreDataUsage as any).usageBundleUsages ?? (simhuisStatus as any).usageBundleUsages ?? null,
     usageSelectionNote: (finalCoreDataUsage as any).usageSelectionNote ?? (simhuisStatus as any).usageSelectionNote ?? null,
+    activationDate: (finalCoreDataUsage as any).activationDate ?? ((simhuisStatus as any).activationDate ? new Date((simhuisStatus as any).activationDate) : null),
+    reactivationDate: (finalCoreDataUsage as any).reactivationDate ?? ((simhuisStatus as any).reactivationDate ? new Date((simhuisStatus as any).reactivationDate) : null),
+    subscriptionDate: (finalCoreDataUsage as any).subscriptionDate ?? ((simhuisStatus as any).subscriptionDate ? new Date((simhuisStatus as any).subscriptionDate) : null),
   };
 
   return {

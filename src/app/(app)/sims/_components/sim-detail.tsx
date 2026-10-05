@@ -1407,6 +1407,74 @@ export function SimDetail({
                       : null
                   }
                 />
+                <InfoRow
+                  icon={<Calendar className="h-4 w-4" />}
+                  label="Eerste activatie"
+                  value={
+                    (sim as any).activationDate
+                      ? formatDate((sim as any).activationDate)
+                      : "Niet beschikbaar"
+                  }
+                />
+                <InfoRow
+                  icon={<Calendar className="h-4 w-4" />}
+                  label="Laatste heractivatie"
+                  value={
+                    (sim as any).reactivationDate
+                      ? formatDate((sim as any).reactivationDate)
+                      : "Niet beschikbaar"
+                  }
+                />
+                <InfoRow
+                  icon={<Calendar className="h-4 w-4" />}
+                  label="Laatste abonnementsdatum"
+                  value={
+                    (sim as any).subscriptionDate
+                      ? formatDate((sim as any).subscriptionDate)
+                      : "Niet beschikbaar"
+                  }
+                />
+                <InfoRow
+                  icon={<Calendar className="h-4 w-4" />}
+                  label="Start bundelperiode"
+                  value={(() => {
+                    const bundles = (sim as any).usageBundleUsages as
+                      | Array<{
+                          localProductName?: string | null;
+                          periodStart?: string | null;
+                        }>
+                      | null
+                      | undefined;
+                    if (!bundles || !Array.isArray(bundles) || bundles.length === 0) {
+                      return "Niet beschikbaar";
+                    }
+                    const withPeriod = bundles.filter(
+                      (b) => typeof b.periodStart === "string" && b.periodStart.trim() !== ""
+                    );
+                    if (withPeriod.length === 0) {
+                      return "Niet beschikbaar";
+                    }
+                    if (withPeriod.length === 1) {
+                      return formatDate(withPeriod[0].periodStart as string);
+                    }
+                    return (
+                      <div className="space-y-1">
+                        {withPeriod.map((b, idx) => {
+                          const name =
+                            typeof b.localProductName === "string" && b.localProductName.trim() !== ""
+                              ? b.localProductName
+                              : `Bundel ${idx + 1}`;
+                          return (
+                            <div key={idx} className="truncate">
+                              <span className="font-medium">{name}:</span>{" "}
+                              {formatDate(b.periodStart as string)}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                />
                 </div>
 
                 {latestDiagnosticError ? (
@@ -1952,9 +2020,10 @@ function InfoRow({
 }: {
   icon: React.ReactNode;
   label: string;
-  value: string | null | undefined;
+  value: React.ReactNode;
   mono?: boolean;
 }) {
+  const hasValue = value !== null && value !== undefined && value !== false && value !== "";
   return (
     <div className="flex items-start gap-3">
       <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-slate-100 text-slate-600">
@@ -1964,7 +2033,7 @@ function InfoRow({
         <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
           {label}
         </div>
-        {value ? (
+        {hasValue ? (
           <div className={`truncate ${mono ? "font-mono text-xs" : ""}`}>
             {value}
           </div>
