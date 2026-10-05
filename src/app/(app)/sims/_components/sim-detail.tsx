@@ -60,7 +60,7 @@ import {
 import { SIM_PROVIDER_UI_LABELS } from "@/lib/providers/provider-registry";
 import type { UserRole, AuditAction } from "@/types/enums";
 import type { SIM, SimStatus, AssignmentReason } from "@prisma/client";
-import type { SimUsageSyncState, SimSuspendActionState, SimStatusRefreshActionState } from "../actions";
+import type { SimUsageSyncState, SimSuspendActionState, SimStatusRefreshActionState, SimDiagnosticActionState } from "../actions";
 
 type DetailSim = SIM & {
   assignments: Array<{
@@ -122,10 +122,16 @@ type SimDetailProps = {
     prev: SimStatusRefreshActionState,
     formData: FormData
   ) => Promise<SimStatusRefreshActionState>;
+  runDiagnosticAction?: (
+    simId: string,
+    prev: SimDiagnosticActionState,
+    formData: FormData
+  ) => Promise<SimDiagnosticActionState>;
   isAdmin: boolean;
   canEdit: boolean;
   canDelete: boolean;
   canSyncUsage: boolean;
+  canDiagnostic: boolean;
 };
 
 type SuspendSimDialogProps = {
@@ -598,6 +604,162 @@ function renderActionResult(s: SimSuspendActionState, action: "suspend" | "unsus
   return null;
 }
 
+type DiagnosticResultDisplayProps = {
+  result: NonNullable<SimDiagnosticActionState["result"]>;
+  checkedAt: string;
+};
+
+function DiagnosticResultDisplay({ result, checkedAt }: DiagnosticResultDisplayProps) {
+  const onb = "Onbekend";
+  const nb = (v: string | undefined, fallback: string = onb) => (v && v.trim().length > 0 ? v : fallback);
+
+  const mcc = result.lastRegistrationMcc;
+  const mnc = result.lastRegistrationMnc;
+  const netwerkCode =
+    mcc && mnc ? `${mcc}-${mnc}` : mcc ?? mnc ?? undefined;
+
+  const notices = Array.isArray(result.notices) ? result.notices : [];
+
+  return (
+    <section
+      aria-label="Netwerkdiagnose resultaat"
+      className="mt-2 rounded-lg border border-slate-200 bg-slate-50/60 p-4 text-sm"
+    >
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+          <Activity className="h-4 w-4 text-slate-500" aria-hidden="true" />
+          Netwerkdiagnose
+        </h3>
+        <div className="text-right">
+          <p className="text-xs font-medium text-slate-600">Gecontroleerd op</p>
+          <p className="text-xs tabular-nums text-slate-700">
+            {formatDateTime(checkedAt)}
+          </p>
+          <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
+            Applicatie-tijdstip, geen gegarandeerd provider-verversmoment.
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Diagnose</p>
+          <dl className="space-y-1">
+            <div>
+              <dt className="inline text-xs text-slate-500">Diagnosecode: </dt>
+              <dd className="inline font-mono text-slate-800">{nb(result.resultRaw)}</dd>
+            </div>
+            <div>
+              <dt className="inline text-xs text-slate-500">Beschrijving: </dt>
+              <dd className="inline break-words text-slate-800">{nb(result.description)}</dd>
+            </div>
+          </dl>
+          {notices.length > 0 ? (
+            <div className="mt-2">
+              <p className="text-xs font-medium text-slate-500">Meldingen</p>
+              <ul className="mt-1 list-inside list-disc space-y-0.5 text-slate-700">
+                {notices.map((n, i) => (
+                  <li key={i} className="break-words">
+                    {[n.severity, n.code, n.message]
+                      .filter((x) => x && String(x).trim().length > 0)
+                      .join(" — ") || onb}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Provisioning</p>
+          <dl className="space-y-1">
+            <div>
+              <dt className="inline text-xs text-slate-500">Status: </dt>
+              <dd className="inline text-slate-800">{nb(result.provisioningStatus)}</dd>
+            </div>
+          </dl>
+
+          <p className="pt-2 text-xs font-medium uppercase tracking-wide text-slate-500">Laatste netwerkregistratie</p>
+          <dl className="space-y-1">
+            <div>
+              <dt className="inline text-xs text-slate-500">Tijdstip: </dt>
+              <dd className="inline text-slate-800">
+                {result.lastRegistrationStart ? formatDateTime(result.lastRegistrationStart) : onb}
+              </dd>
+            </div>
+            <div>
+              <dt className="inline text-xs text-slate-500">Netwerk (MCC-MNC): </dt>
+              <dd className="inline font-mono text-slate-800">{nb(netwerkCode)}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Dataverbinding</p>
+          <dl className="space-y-1">
+            <div>
+              <dt className="inline text-xs text-slate-500">APN: </dt>
+              <dd className="inline text-slate-800">{nb(result.dataApn)}</dd>
+            </div>
+            <div>
+              <dt className="inline text-xs text-slate-500">IP-adres: </dt>
+              <dd className="inline font-mono text-slate-800">{nb(result.dataIp)}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Live datasessie</p>
+          <dl className="space-y-1">
+            <div>
+              <dt className="inline text-xs text-slate-500">Start: </dt>
+              <dd className="inline text-slate-800">
+                {result.liveSessionStart ? formatDateTime(result.liveSessionStart) : onb}
+              </dd>
+            </div>
+            <div>
+              <dt className="inline text-xs text-slate-500">Laatste update: </dt>
+              <dd className="inline text-slate-800">
+                {result.liveSessionLastUpdate ? formatDateTime(result.liveSessionLastUpdate) : onb}
+              </dd>
+            </div>
+            <div>
+              <dt className="inline text-xs text-slate-500">Type: </dt>
+              <dd className="inline text-slate-800">{nb(result.liveSessionType)}</dd>
+            </div>
+            <div>
+              <dt className="inline text-xs text-slate-500">Provider: </dt>
+              <dd className="inline text-slate-800">{nb(result.liveSessionProvider)}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div className="sm:col-span-2 space-y-1.5">
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Laatste actieve datasessie</p>
+          <dl className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-3">
+            <div>
+              <dt className="inline text-xs text-slate-500">Start: </dt>
+              <dd className="inline text-slate-800">
+                {result.lastSessionStart ? formatDateTime(result.lastSessionStart) : onb}
+              </dd>
+            </div>
+            <div>
+              <dt className="inline text-xs text-slate-500">Einde: </dt>
+              <dd className="inline text-slate-800">
+                {result.lastSessionEnd ? formatDateTime(result.lastSessionEnd) : onb}
+              </dd>
+            </div>
+            <div>
+              <dt className="inline text-xs text-slate-500">Resultaat: </dt>
+              <dd className="inline text-slate-800">{nb(result.lastSessionOutcome, "Niet beschikbaar")}</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function SimDetail({
   sim,
   role,
@@ -609,10 +771,12 @@ export function SimDetail({
   suspendAction,
   unsuspendAction,
   refreshStatusAction,
+  runDiagnosticAction,
   isAdmin,
   canEdit,
   canDelete,
   canSyncUsage,
+  canDiagnostic,
 }: SimDetailProps) {
 
   const [, deleteFormAction] = useFormState(
@@ -683,6 +847,90 @@ export function SimDetail({
     refreshPendingNative;
 
   const effectiveSimStatus: SimStatus = simStatusOverride ?? sim.status;
+
+  const [diagnosticState, diagnosticFormAction, diagnosticPendingNative] = useFormState(
+    (runDiagnosticAction
+      ? runDiagnosticAction.bind(null, simId)
+      : async (
+          _prev: SimDiagnosticActionState,
+          _form: FormData
+        ): Promise<SimDiagnosticActionState> => ({
+          ok: false,
+          error: "Netwerkdiagnose is niet beschikbaar.",
+        })) as unknown as (
+      prev: SimDiagnosticActionState,
+      formData: FormData
+    ) => Promise<SimDiagnosticActionState>,
+    { ok: false } satisfies SimDiagnosticActionState
+  );
+  const [isDiagnosticPendingClient, setIsDiagnosticPendingClient] = useState(false);
+  const [isDiagnosticTransitioning, startDiagnosticTransition] = useTransition();
+  const diagnosticSubmittedOnceRef = useRef(false);
+  const diagnosticRanRef = useRef(false);
+  const prevDiagnosticStateRef = useRef(diagnosticState);
+  const diagnosticEmergencyRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [lastValidDiagnostic, setLastValidDiagnostic] = useState<{
+    result: NonNullable<SimDiagnosticActionState["result"]>;
+    checkedAt: string;
+  } | null>(null);
+  const [latestDiagnosticError, setLatestDiagnosticError] = useState<string | null>(null);
+
+  const isDiagnosticPending =
+    isDiagnosticPendingClient ||
+    isDiagnosticTransitioning ||
+    diagnosticPendingNative;
+
+  useEffect(() => {
+    const prev = prevDiagnosticStateRef.current;
+    const curr = diagnosticState;
+    const isInitial = !diagnosticRanRef.current && !curr.error && !curr.ok;
+    if (!diagnosticRanRef.current) {
+      diagnosticRanRef.current = Boolean(curr.ok || curr.error);
+    }
+    const changed =
+      prev !== curr && !isInitial &&
+      ((prev?.ok !== curr?.ok) ||
+        (prev?.error !== curr?.error) ||
+        (prev?.checkedAt !== curr?.checkedAt));
+    if (changed) {
+      diagnosticSubmittedOnceRef.current = false;
+      if (diagnosticEmergencyRef.current) {
+        clearTimeout(diagnosticEmergencyRef.current);
+        diagnosticEmergencyRef.current = null;
+      }
+      setIsDiagnosticPendingClient(false);
+      if (curr.ok && curr.result && curr.checkedAt) {
+        setLastValidDiagnostic({ result: curr.result, checkedAt: curr.checkedAt });
+        setLatestDiagnosticError(null);
+      } else if (curr.error) {
+        setLatestDiagnosticError(curr.error);
+      }
+    }
+    prevDiagnosticStateRef.current = curr;
+  }, [diagnosticState]);
+
+  const onDiagnosticSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    if (isDiagnosticPending) {
+      event.preventDefault();
+      return;
+    }
+    if (diagnosticSubmittedOnceRef.current) {
+      event.preventDefault();
+      return;
+    }
+    diagnosticSubmittedOnceRef.current = true;
+    latestDiagnosticError && setLatestDiagnosticError(null);
+    setIsDiagnosticPendingClient(true);
+    startDiagnosticTransition(() => {
+      const form = event.currentTarget;
+      const formData = new FormData(form);
+      diagnosticFormAction(formData);
+    });
+    diagnosticEmergencyRef.current = setTimeout(() => {
+      diagnosticSubmittedOnceRef.current = false;
+      setIsDiagnosticPendingClient(false);
+    }, 20_000);
+  };
 
   const prevSuspendStateRef = useRef(suspendState);
   const prevUnsuspendStateRef = useRef(unsuspendState);
@@ -1088,15 +1336,37 @@ export function SimDetail({
                 <div>
                   <CardTitle>Netwerk &amp; Identificatie</CardTitle>
                 </div>
-                {canEdit ? (
-                  <Button asChild size="sm" className="mt-0.5 shrink-0">
-                    <Link href="#edit">
-                      <Edit className="h-4 w-4" /> Bewerken
-                    </Link>
-                  </Button>
-                ) : null}
+                <div className="mt-0.5 flex shrink-0 flex-wrap items-center gap-2">
+                  {canDiagnostic && runDiagnosticAction ? (
+                    <form action={diagnosticFormAction as any} onSubmit={onDiagnosticSubmit}>
+                      <Button
+                        type="submit"
+                        size="sm"
+                        variant="outline"
+                        disabled={isDiagnosticPending}
+                        aria-disabled={isDiagnosticPending}
+                        aria-busy={isDiagnosticPending}
+                        className="gap-1.5"
+                      >
+                        <RefreshCw
+                          className={"h-4 w-4 " + (isDiagnosticPending ? "animate-spin" : "")}
+                          aria-hidden="true"
+                        />
+                        {isDiagnosticPending ? "Bezig met controleren…" : "Netwerkstatus controleren"}
+                      </Button>
+                    </form>
+                  ) : null}
+                  {canEdit ? (
+                    <Button asChild size="sm" className="shrink-0">
+                      <Link href="#edit">
+                        <Edit className="h-4 w-4" /> Bewerken
+                      </Link>
+                    </Button>
+                  ) : null}
+                </div>
               </CardHeader>
-              <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <InfoRow
                   icon={<CreditCard className="h-4 w-4" />}
                   label="SIM type"
@@ -1137,6 +1407,31 @@ export function SimDetail({
                       : null
                   }
                 />
+                </div>
+
+                {latestDiagnosticError ? (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2.5 rounded-md border border-red-300 bg-red-50 px-3.5 py-2.5 text-sm text-red-800 shadow-sm"
+                  >
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-red-900">
+                        {lastValidDiagnostic
+                          ? "Nieuwe netwerkcontrole mislukt — vorig resultaat blijft staan."
+                          : "Netwerkstatus controleren mislukt"}
+                      </p>
+                      <p className="whitespace-pre-wrap break-words text-red-800/90">{latestDiagnosticError}</p>
+                    </div>
+                  </div>
+                ) : null}
+
+                {lastValidDiagnostic ? (
+                  <DiagnosticResultDisplay
+                    result={lastValidDiagnostic.result}
+                    checkedAt={lastValidDiagnostic.checkedAt}
+                  />
+                ) : null}
               </CardContent>
             </Card>
             <Card>

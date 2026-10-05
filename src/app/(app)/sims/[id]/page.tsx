@@ -11,6 +11,7 @@ import {
   suspendSimAction,
   unsuspendSimAction,
   refreshSimStatusAction,
+  runDiagnosticForSingleSimAction,
 } from "../actions";
 import { RoleScope, UserRole } from "@/types/enums";
 
@@ -74,10 +75,12 @@ export default async function SimDetailPage({
       suspendAction={isAdmin ? suspendSimAction : undefined}
       unsuspendAction={isAdmin ? unsuspendSimAction : undefined}
       refreshStatusAction={canEdit ? refreshSimStatusAction : undefined}
+      runDiagnosticAction={canSyncUsage ? runDiagnosticForSingleSimAction : undefined}
       isAdmin={isAdmin}
       canEdit={canEdit}
       canDelete={canDelete}
       canSyncUsage={canSyncUsage}
+      canDiagnostic={canSyncUsage}
     />
   );
 }

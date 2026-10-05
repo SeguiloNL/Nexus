@@ -155,6 +155,51 @@ export interface SimhuisLoginResponse {
   [key: string]: unknown;
 }
 
+export interface SimhuisDiagnosticNotice {
+  code?: string | number | null;
+  message?: string | null;
+  severity?: string | null;
+  [key: string]: unknown;
+}
+
+export interface SimhuisDiagnosticResult {
+  result?: string | number | boolean | null;
+  description?: string | null;
+  notice?: SimhuisDiagnosticNotice[] | null;
+  provisioning?: {
+    status?: string | null;
+    [key: string]: unknown;
+  } | null;
+  network?: {
+    lastRegistration?: {
+      startTime?: string | null;
+      mcc?: string | number | null;
+      mnc?: string | number | null;
+      [key: string]: unknown;
+    } | null;
+    [key: string]: unknown;
+  } | null;
+  data?: {
+    apn?: string | null;
+    ip?: string | null;
+    liveDataSession?: {
+      startTime?: string | null;
+      lastSessionUpdate?: string | null;
+      type?: string | null;
+      provider?: string | null;
+      [key: string]: unknown;
+    } | null;
+    lastActiveSession?: {
+      startTime?: string | null;
+      endTime?: string | null;
+      outcome?: string | null;
+      [key: string]: unknown;
+    } | null;
+    [key: string]: unknown;
+  } | null;
+  [key: string]: unknown;
+}
+
 export interface SimhuisApiResponse<T = unknown> {
   success?: boolean;
   data?: T;

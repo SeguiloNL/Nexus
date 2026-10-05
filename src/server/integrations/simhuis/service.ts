@@ -6267,6 +6267,55 @@ export async function getAssetByIccid(
   return { ok: true, httpStatus: res.statusCode, raw: res.body, accountIdUsed: accountId };
 }
 
+export async function getDiagnosticByIccid(
+  iccid: string,
+  accountIdOverride?: string,
+): Promise<{
+  ok: boolean;
+  httpStatus?: number;
+  raw?: unknown;
+  accountIdUsed?: string;
+  detail?: string;
+}> {
+  let creds: { baseUrl: string; username: string; password: string; resellerId?: string | null } | null = null;
+  try {
+    creds = await getSimhuisCreds();
+  } catch (e: any) {
+    return { ok: false, detail: String(e?.message ?? e ?? 'Simhuis niet geconfigureerd.') };
+  }
+  if (!creds) {
+    return { ok: false, detail: 'Simhuis niet geconfigureerd (geen credentials).' };
+  }
+  const token = await acquireBearerToken(creds);
+  if (!token) {
+    return { ok: false, detail: 'Bearer-token kon niet worden verkregen (Simhuis login mislukt).' };
+  }
+  const accountId = accountIdOverride ?? getSimhuisAccountId();
+  if (!accountId) {
+    return { ok: false, detail: 'accountId is niet beschikbaar.' };
+  }
+  const fullUrl = makePerSimFullUrl(creds.baseUrl, `/v3/assets/${encodeURIComponent(iccid)}/diagnostic`, {
+    accountId,
+  });
+  const res = await doPerSimFetch({
+    fullUrl,
+    method: 'GET',
+    contentType: 'none',
+    body: null,
+    auth: { tag: 'bearer-token', token },
+    timeoutMs: 10_000,
+  });
+  if (res.tag !== 'ok') {
+    return {
+      ok: false,
+      httpStatus: res.statusCode,
+      accountIdUsed: accountId,
+      detail: `Netwerkdiagnose kon niet worden opgehaald (HTTP ${res.statusCode || 0}).`,
+    };
+  }
+  return { ok: true, httpStatus: res.statusCode, raw: res.body, accountIdUsed: accountId };
+}
+
 function extractLocalProductInfo(rawGet: unknown): { localProductId?: string | null; localProductName?: string | null } {
   if (!rawGet || typeof rawGet !== 'object') return {};
   const r = rawGet as Record<string, any>;

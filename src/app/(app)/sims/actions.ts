@@ -30,6 +30,8 @@ import {
   type SimSuspendError,
   type SimStatusRefreshResult,
 } from "@/server/services/simhuis-asset.service";
+import { getDiagnosticByIccid } from "@/server/integrations/simhuis/service";
+import type { SimhuisDiagnosticResult } from "@/server/integrations/simhuis/types";
 import { hasMinRole } from "@/lib/rbac";
 import { UserRole, RoleScope } from "@/types/enums";
 import { assertNoProviderNameLeak } from "@/lib/providers/provider-leak-guard";
@@ -798,4 +800,181 @@ export async function refreshSimStatusAction(
     simhuisStatusRaw: result.simhuisStatusRaw,
     changed: false,
   };
+}
+
+export type DiagnosticNotice = {
+  code?: string;
+  message?: string;
+  severity?: string;
+};
+
+export type SimDiagnosticResult = {
+  resultRaw?: string;
+  description?: string;
+  notices?: DiagnosticNotice[];
+  provisioningStatus?: string;
+  lastRegistrationStart?: string;
+  lastRegistrationMcc?: string;
+  lastRegistrationMnc?: string;
+  dataApn?: string;
+  dataIp?: string;
+  liveSessionStart?: string;
+  liveSessionLastUpdate?: string;
+  liveSessionType?: string;
+  liveSessionProvider?: string;
+  lastSessionStart?: string;
+  lastSessionEnd?: string;
+  lastSessionOutcome?: string;
+  raw?: SimhuisDiagnosticResult;
+};
+
+export type SimDiagnosticActionState = {
+  ok: boolean;
+  error?: string;
+  result?: SimDiagnosticResult;
+  checkedAt?: string;
+};
+
+function stringifyDiagnosticValue(v: unknown): string | undefined {
+  if (v === null || v === undefined) return undefined;
+  if (typeof v === "string") return v.length > 0 ? v : undefined;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  try {
+    const s = JSON.stringify(v);
+    return s && s.length > 0 && s !== "{}" && s !== "[]" ? s : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeDiagnosticNotices(raw: unknown): DiagnosticNotice[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: DiagnosticNotice[] = [];
+  for (const n of raw) {
+    if (!n || typeof n !== "object") continue;
+    const r = n as Record<string, unknown>;
+    const code = stringifyDiagnosticValue(r.code ?? r.Code ?? r.type);
+    const message = stringifyDiagnosticValue(r.message ?? r.Message ?? r.description ?? r.detail);
+    const severity = stringifyDiagnosticValue(r.severity ?? r.Severity ?? r.level);
+    if (!code && !message && !severity) continue;
+    out.push({ code, message, severity });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function normalizeDiagnosticRaw(raw: unknown): SimDiagnosticResult {
+  const empty: SimDiagnosticResult = {};
+  if (!raw || typeof raw !== "object") return empty;
+  const r = raw as Record<string, unknown>;
+  const provisioning = r.provisioning && typeof r.provisioning === "object" ? (r.provisioning as Record<string, unknown>) : null;
+  const network = r.network && typeof r.network === "object" ? (r.network as Record<string, unknown>) : null;
+  const lastReg =
+    network?.lastRegistration && typeof network.lastRegistration === "object"
+      ? (network.lastRegistration as Record<string, unknown>)
+      : null;
+  const data = r.data && typeof r.data === "object" ? (r.data as Record<string, unknown>) : null;
+  const liveSess =
+    data?.liveDataSession && typeof data.liveDataSession === "object"
+      ? (data.liveDataSession as Record<string, unknown>)
+      : null;
+  const lastSess =
+    data?.lastActiveSession && typeof data.lastActiveSession === "object"
+      ? (data.lastActiveSession as Record<string, unknown>)
+      : null;
+
+  return {
+    resultRaw: stringifyDiagnosticValue(r.result),
+    description: stringifyDiagnosticValue(r.description),
+    notices: normalizeDiagnosticNotices(r.notice ?? r.notices),
+    provisioningStatus: stringifyDiagnosticValue(provisioning?.status),
+    lastRegistrationStart: stringifyDiagnosticValue(lastReg?.startTime),
+    lastRegistrationMcc: stringifyDiagnosticValue(lastReg?.mcc),
+    lastRegistrationMnc: stringifyDiagnosticValue(lastReg?.mnc),
+    dataApn: stringifyDiagnosticValue(data?.apn),
+    dataIp: stringifyDiagnosticValue(data?.ip),
+    liveSessionStart: stringifyDiagnosticValue(liveSess?.startTime),
+    liveSessionLastUpdate: stringifyDiagnosticValue(liveSess?.lastSessionUpdate),
+    liveSessionType: stringifyDiagnosticValue(liveSess?.type),
+    liveSessionProvider: stringifyDiagnosticValue(liveSess?.provider),
+    lastSessionStart: stringifyDiagnosticValue(lastSess?.startTime),
+    lastSessionEnd: stringifyDiagnosticValue(lastSess?.endTime),
+    lastSessionOutcome: stringifyDiagnosticValue(lastSess?.outcome),
+    raw: r as SimhuisDiagnosticResult,
+  };
+}
+
+export async function runDiagnosticForSingleSimAction(
+  simId: string,
+  _prev: SimDiagnosticActionState,
+  _formData: FormData,
+): Promise<SimDiagnosticActionState> {
+  const user = await getCurrentUser();
+  try {
+    await requirePermission(user.permissions ?? user.roleId ?? user.role, "view", "sim");
+  } catch (e: any) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: `Je bent niet bevoegd om deze netwerkdiagnose uit te voeren. ${msg}` };
+  }
+
+  const hasCustomerScope = Array.isArray(user.customerIds) && user.customerIds.length > 0;
+  const sim = await prisma.sIM.findUnique({
+    where: { id: simId, deletedAt: null },
+    include: {
+      assignments: {
+        where: { endAt: null },
+        select: { subscription: { select: { customerId: true } } },
+      },
+    },
+  });
+  if (!sim) {
+    return { ok: false, error: "SIM-kaart is niet (meer) beschikbaar in dit account." };
+  }
+  if (hasCustomerScope) {
+    const allowed = new Set(user.customerIds as string[]);
+    const customerMatches = sim.assignments.some((a) => a.subscription?.customerId && allowed.has(a.subscription.customerId));
+    if (!customerMatches) {
+      return { ok: false, error: "Je bent niet bevoegd om deze SIM-kaart te bekijken." };
+    }
+  }
+
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleScope: user.roleScope,
+  };
+
+  try {
+    const diag = await getDiagnosticByIccid(sim.iccid);
+    if (!diag.ok) {
+      const generic =
+        diag.detail ??
+        "Netwerkdiagnose kon niet worden opgehaald. Controleer de internetverbinding of probeer het later opnieuw.";
+      assertNoProviderNameLeak([generic, diag.detail ?? ""], {
+        userId: ctx.userId,
+        userRole: ctx.userRole,
+        roleScope: ctx.roleScope,
+        actionName: "runDiagnosticForSingleSimAction",
+        source: "sims/actions.ts (diagnostic provider error)",
+      });
+      return { ok: false, error: generic };
+    }
+    const checkedAt = new Date();
+    const result = normalizeDiagnosticRaw(diag.raw);
+    return {
+      ok: true,
+      result,
+      checkedAt: checkedAt.toISOString(),
+    };
+  } catch (e: any) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const wrapped = `Onverwachte fout tijdens netwerkdiagnose: ${msg}`;
+    assertNoProviderNameLeak([wrapped, msg], {
+      userId: ctx.userId,
+      userRole: ctx.userRole,
+      roleScope: ctx.roleScope,
+      actionName: "runDiagnosticForSingleSimAction",
+      source: "sims/actions.ts (diagnostic catch)",
+    });
+    return { ok: false, error: wrapped };
+  }
 }
