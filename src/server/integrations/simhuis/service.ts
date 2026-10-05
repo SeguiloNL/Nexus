@@ -2075,6 +2075,12 @@ function enrichSimhuisStatusWithDirectRawExtracts(
   if (duBytes === null) { const r = pickDataUsedFrom(rawObj, 'RAW'); if (r.bytes !== null) { duBytes = r.bytes; duSource = r.src; } }
   if (duBytes === null && nested) { const r = pickDataUsedFrom(nested, 'NESTED'); if (r.bytes !== null) { duBytes = r.bytes; duSource = r.src; } }
   if (duBytes === null && cardProfile) { const r = pickDataUsedFrom(cardProfile, 'CARDPROFILE'); if (r.bytes !== null) { duBytes = r.bytes; duSource = r.src; } }
+  // ✅ ULTIEME FALLBACK: als ALLE extracties falen, maar fast-extract (baseStatus) WEL dataUsedBytes had — gebruik die!
+  //    Dit voorkomt "dataUsedBytes: —" in de UI terwijl de SIM-lijst WEL tellers heeft.
+  if (duBytes === null && baselineDataUsed !== null && baselineDataUsed >= 0) {
+    duBytes = baselineDataUsed;
+    duSource = 'baseline-dataUsedBytes (fast-extract fallback)';
+  }
 
   if (duBytes !== null && baselineDataUsed !== null && baselineDataUsed > 0) {
     const ratio = Math.max(duBytes, 1) / Math.max(baselineDataUsed, 1);
@@ -2106,6 +2112,14 @@ function enrichSimhuisStatusWithDirectRawExtracts(
     for (const k of SMS_USED_KEYS) {
       const sv = safeNum((firstSetup as any)[k]);
       if (sv !== null && sv >= 0) { smsUsedNum = sv; smsSource = `SETUP.${k}`; break; }
+    }
+  }
+  // ✅ SMS ULTIEME FALLBACK: baseStatus.smsUsedCount als alle bundles/keys NULL zijn
+  if (smsUsedNum === null) {
+    const baseSms = safeNum((baseStatus as any).smsUsedCount);
+    if (baseSms !== null && baseSms >= 0) {
+      smsUsedNum = baseSms;
+      smsSource = 'baseline-smsUsedCount (fast-extract fallback)';
     }
   }
   const smsLimitNum = safeNum(smsLimitRaw);
