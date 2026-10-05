@@ -6180,6 +6180,10 @@ export async function ensureUsageDetailsForSim(
   const hasSmsUsed = typeof (base as any).smsUsedCount === 'number';
   if (hasDataUsed && hasSmsUsed) return base;
 
+  // #region debug-point H1:ensure-entry
+  (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H1', location:'service.ts:6173', msg:'[DEBUG] ensureUsageDetailsForSim ENTERED', data: { iccid, input_dataUsed: (base as any).dataUsedBytes, input_smsUsed: (base as any).smsUsedCount, input_dataLimit: (base as any).dataLimitBytes, input_productName: (base as any).productName }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
+  // #endregion
+
   try {
     const creds = await getSimhuisCreds();
     const aidForGetSim = getSimhuisAccountId();
@@ -6216,8 +6220,16 @@ export async function ensureUsageDetailsForSim(
           auth,
           timeoutMs: 5000,
         });
+        // #region debug-point H2:endpoint-http-response
+        (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} const ra: any = resp; await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H2', location:'service.ts:6206', msg:'[DEBUG] ensure endpoint response', data: { iccid, endpoint: ut.path, respTag: ra?.tag, httpStatus: ra?.httpStatus ?? ra?.statusCode ?? null, bodyType: ra?.body ? typeof ra.body : null, bodyIsNull: ra?.body === null, bodyIsEmptyObj: ra?.body && typeof ra.body==='object' && Object.keys(ra.body as object).length===0, hasBytes: ra?.body && typeof ra.body==='object' && ('bytes' in (ra.body as object)), hasData: ra?.body && typeof ra.body==='object' && ('data' in (ra.body as object)), hasRatings: ra?.body && typeof ra.body==='object' && ('ratings' in (ra.body as object)), hasSubscriptions: ra?.body && typeof ra.body==='object' && ('subscriptions' in (ra.body as object)), bodyTopKeys: ra?.body && typeof ra.body==='object' ? Object.keys(ra.body as object).slice(0,15) : null, dataLen: ra?.body && typeof ra.body==='object' && 'data' in (ra.body as object) && Array.isArray((ra.body as any).data) ? (ra.body as any).data.length : null, ratingsLen: ra?.body && typeof ra.body==='object' && 'ratings' in (ra.body as object) && Array.isArray((ra.body as any).ratings) ? (ra.body as any).ratings.length : null, subsLen: ra?.body && typeof ra.body==='object' && 'subscriptions' in (ra.body as object) && Array.isArray((ra.body as any).subscriptions) ? (ra.body as any).subscriptions.length : null, bodyBytesVal: ra?.body && typeof ra.body==='object' && ('bytes' in (ra.body as object)) ? String((ra.body as any).bytes) : null, billTimeUsed: billTime.combined, fullUrl_redacted: fullUrl.replace(/token=[^&]+/g,'token=***').replace(/Authorization/gi,'AUTH_REDACTED').slice(0,200) }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
+        // #endregion
         if (resp.tag === 'ok' && resp.body) {
+          const beforeDU = (result as any).dataUsedBytes;
+          const beforeSU = (result as any).smsUsedCount;
           const enriched = enrichSimhuisStatusWithDirectRawExtracts(result, resp.body, iccid);
+          // #region debug-point H3:before-after-enrich
+          (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H3', location:'service.ts:6220', msg:'[DEBUG] enrichSimhuisStatusWithDirectRawExtracts before vs after', data: { iccid, endpoint: ut.path, before_dataUsed: beforeDU, before_smsUsed: beforeSU, after_dataUsed: enriched ? (enriched as any).dataUsedBytes : null, after_smsUsed: enriched ? (enriched as any).smsUsedCount : null, after_usageSource: enriched ? (enriched as any).usageSource : null, after_usageSelectionNote: enriched ? (enriched as any).usageSelectionNote : null, enrichedIsNull: enriched === null }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
+          // #endregion
           if (enriched) {
             result = enriched;
             if (ut.isCdr) {
@@ -6230,10 +6242,20 @@ export async function ensureUsageDetailsForSim(
             }
           }
         }
-      } catch {}
+      } catch (e: any) {
+        // #region debug-point H2:endpoint-exception
+        (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H2', location:'service.ts:6233', msg:'[DEBUG] ensure endpoint EXCEPTION caught', data: { iccid, endpoint: ut.path, errMsg: e?.message ?? String(e) }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
+        // #endregion
+      }
     }
+    // #region debug-point H1:ensure-exit
+    (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H1', location:'service.ts:6235', msg:'[DEBUG] ensureUsageDetailsForSim EXIT', data: { iccid, final_dataUsed: (result as any).dataUsedBytes, final_smsUsed: (result as any).smsUsedCount, final_usageSource: (result as any).usageSource, final_usageSelectionNote: (result as any).usageSelectionNote, durationMs: Date.now() - startedAtEnsure }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
+    // #endregion
     return result;
-  } catch {
+  } catch (e: any) {
+    // #region debug-point H1:ensure-catch
+    (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H1', location:'service.ts:6237', msg:'[DEBUG] ensureUsageDetailsForSim OUTER catch', data: { iccid, errMsg: e?.message ?? String(e) }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
+    // #endregion
     return base;
   }
 }

@@ -1847,6 +1847,10 @@ export async function syncUsageForSingleSim(
 
   errorMessage = errors.length > 0 ? errors.join(' | ') : undefined;
 
+  // #region debug-point H1:pre-ensure-check
+  (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H1', location:'simhuis-sim-sync.service.ts:1848', msg:'[DEBUG] syncUsageForSingleSim — na merge, voor ensure fallback', data: { iccid: normalizedIccid, hasSimhuisStatus: !!simhuisStatus, baseFromList_dataUsed: typeof (baseFromList as any)?.dataUsedBytes, baseFromList_smsUsed: typeof (baseFromList as any)?.smsUsedCount, detailedFromPerSim_dataUsed: typeof (detailedFromPerSim as any)?.dataUsedBytes, detailedFromPerSim_smsUsed: typeof (detailedFromPerSim as any)?.smsUsedCount, merged_dataUsed: simhuisStatus ? typeof (simhuisStatus as any).dataUsedBytes : null, merged_dataUsedVal: simhuisStatus ? (simhuisStatus as any).dataUsedBytes : null, merged_smsUsed: simhuisStatus ? typeof (simhuisStatus as any).smsUsedCount : null, merged_smsUsedVal: simhuisStatus ? (simhuisStatus as any).smsUsedCount : null, sourceUsed: source, errorsNow: [...errors] }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
+  // #endregion
+
   // 💥 EXTRA FALLBACK: Als na merge stap de tellers nog ontbreken,
   //    roep dan expliciet ensureUsageDetailsForSim() aan die de 4 usage endpoints
   //    (/assets/{iccid}, /accounts/{aid}/assets/{iccid}, /cdr/stats, /cdr)
@@ -1856,6 +1860,9 @@ export async function syncUsageForSingleSim(
     const missingDU = typeof (simhuisStatus as any).dataUsedBytes !== 'number';
     const missingSU = typeof (simhuisStatus as any).smsUsedCount !== 'number';
     if (missingDU || missingSU) {
+      // #region debug-point H1:ensure-will-run
+      (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H1', location:'simhuis-sim-sync.service.ts:1856', msg:'[DEBUG] ensure fallback wordt NU aangeroepen', data: { iccid: normalizedIccid, missingDU, missingSU }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
+      // #endregion
       try {
         simhuisStatus = await ensureUsageDetailsForSim(simhuisStatus);
       } catch (e: any) {
@@ -1907,6 +1914,10 @@ export async function syncUsageForSingleSim(
   };
   const applyUsage = applyUsageFieldsFromSimhuis(existingUsage, simhuisStatus);
   const applyProduct = applyProductSimFieldsFromSimhuis(existingProduct, simhuisStatus);
+
+  // #region debug-point H4:post-apply-usage
+  (async () => { try { const f = require('node:fs'); let u='http://127.0.0.1:7777/event', s='sim-usage-null-bug'; try { const e = f.readFileSync('.dbg/sim-usage-null-bug.env','utf8'); u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u; s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s } catch {} await fetch(u, { method:'POST', body: JSON.stringify({ sessionId:s, runId:'pre', hypothesisId:'H4', location:'simhuis-sim-sync.service.ts:1915', msg:'[DEBUG] Na applyUsageFieldsFromSimhuis', data: { iccid: normalizedIccid, simhuisStatus_dataUsed: (simhuisStatus as any)?.dataUsedBytes, simhuisStatus_smsUsed: (simhuisStatus as any)?.smsUsedCount, simhuisStatus_usageSource: (simhuisStatus as any)?.usageSource, existingUsage_dataUsed: String(existingUsage.dataUsedBytes), existingUsage_smsUsed: existingUsage.smsUsedCount, applyUsage_newDataUsed: String(applyUsage.newData.dataUsedBytes), applyUsage_newSmsUsed: applyUsage.newData.smsUsedCount, applyUsage_changedFields: applyUsage.changedFields, applyUsage_changed: applyUsage.changed, applyUsage_hasAnyUsageData: applyUsage.hasAnyUsageData }, ts: Date.now() }) }).catch(() => {}) } catch {} })();
+  // #endregion
 
   const allChangedFields: string[] = [...applyUsage.changedFields, ...applyProduct.changedFields];
   const shouldUpdateDb = applyUsage.changed || applyUsage.hasAnyUsageData || applyProduct.changed;
