@@ -26,9 +26,11 @@ import {
   suspendSimById,
   unsuspendSimById,
   refreshSimStatusById,
+  purgeSimById,
   type SimSuspendResult,
   type SimSuspendError,
   type SimStatusRefreshResult,
+  type SimPurgeResult,
 } from "@/server/services/simhuis-asset.service";
 import { getDiagnosticByIccid } from "@/server/integrations/simhuis/service";
 import type { SimhuisDiagnosticResult } from "@/server/integrations/simhuis/types";
@@ -799,6 +801,67 @@ export async function refreshSimStatusAction(
     refreshedStatus: result.refreshedStatus,
     simhuisStatusRaw: result.simhuisStatusRaw,
     changed: false,
+  };
+}
+
+export type SimPurgeActionState = {
+  ok: boolean;
+  message: string;
+  error?: SimSuspendError;
+};
+
+export async function purgeSimNetworkAction(
+  simId: string,
+  _prev: SimPurgeActionState,
+  _form: FormData
+): Promise<SimPurgeActionState> {
+  const user = await getCurrentUser();
+
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "edit", "sim");
+
+  const ctx = buildActionCtx(user);
+  let result: SimPurgeResult;
+  try {
+    result = await purgeSimById(simId, ctx);
+  } catch (e: any) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      ok: false,
+      message: "Onverwachte fout tijdens netwerkvernieuwing.",
+      error: { kind: "TIMEOUT_OR_NETWORK", detail: msg },
+    };
+  }
+
+  if (result.ok) {
+    try {
+      revalidatePath("/sims");
+      revalidatePath(`/sims/${simId}`);
+    } catch {}
+    assertNoProviderNameLeak([result.message], {
+      userId: user.id,
+      userRole: user.role,
+      roleScope: user.roleScope,
+      actionName: "purgeSimNetworkAction",
+      source: "sims/actions.ts (purge ok)",
+    });
+    return {
+      ok: true,
+      message: result.message,
+    };
+  }
+
+  const friendlyPurgeErr = mapErrorToFriendlyMessage(result.error);
+  assertNoProviderNameLeak([friendlyPurgeErr, result.error?.detail ?? ""], {
+    userId: user.id,
+    userRole: user.role,
+    roleScope: user.roleScope,
+    actionName: "purgeSimNetworkAction",
+    source: "sims/actions.ts (purge error)",
+  });
+  return {
+    ok: false,
+    message: friendlyPurgeErr || result.message || "Netwerkverbinding vernieuwen mislukt.",
+    error: result.error,
   };
 }
 

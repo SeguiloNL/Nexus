@@ -104,6 +104,18 @@ export type SimhuisAssetErrorKind =
   | 'PROVIDER_REJECTED'
   | 'TIMEOUT_OR_NETWORK';
 
+export interface SimhuisPurgeResult {
+  ok: boolean;
+  accountIdUsed: string | null;
+  httpStatus?: number;
+  raw?: unknown;
+  error?: {
+    kind: SimhuisAssetErrorKind;
+    detail: string;
+    httpStatus?: number;
+  };
+}
+
 export interface SimhuisAssetActionResult {
   ok: boolean;
   rawPut: unknown;

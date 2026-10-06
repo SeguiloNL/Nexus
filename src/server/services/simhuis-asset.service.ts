@@ -9,8 +9,10 @@ import {
   precheckProductAvailability,
   subscribeSimhuisAsset,
   getAssetByIccid,
+  purgeSimhuisAsset,
   type SimhuisAssetActionResult,
   type SimhuisSubscribeResult,
+  type SimhuisPurgeResult,
 } from "@/server/integrations/simhuis/service";
 import type { SimhuisSimStatus } from "@/server/integrations/simhuis/types";
 import { findSimById } from "./sim.service";
@@ -164,6 +166,27 @@ function mapProviderError(
         detail: (err as any)?.detail || "Onbekende provider-fout.",
         statusCode: (err as any)?.httpStatus ?? undefined,
       };
+    }
+  }
+}
+
+export function mapErrorToFriendlyMessage(err: SimSuspendError | undefined): string {
+  if (!err) return "Onbekende fout.";
+  switch (err.kind) {
+    case "PERMISSION":
+      return err.detail?.length ? err.detail : "Je bent niet bevoegd deze actie uit te voeren.";
+    case "INVALID_STATUS_TRANSITION":
+      return err.detail;
+    case "PROVIDER":
+      return `Provider weigerde het verzoek: ${err.detail}. Probeer het later opnieuw of neem contact op met de beheerder.`;
+    case "TIMEOUT_OR_NETWORK":
+      return "Verzoek duurde te lang of mislukte. Controleer eerst de actuele SIM-status alvorens te herhalen.";
+    case "NOT_FOUND":
+      return "SIM is niet (meer) beschikbaar in dit account.";
+    default: {
+      const exhaustive: never = err;
+      void exhaustive;
+      return (err as any)?.detail || "Onbekende fout.";
     }
   }
 }
@@ -1342,6 +1365,156 @@ export async function refreshSimStatusById(
     refreshedStatus,
     simhuisStatusRaw,
     changed: false,
+  };
+}
+
+export type SimPurgeResult = {
+  ok: boolean;
+  message: string;
+  error?: SimSuspendError;
+};
+
+export async function purgeSimById(
+  simId: string,
+  ctx: AuthContext
+): Promise<SimPurgeResult> {
+  try {
+    await requirePermission(pickAuth(ctx), "edit", "sim");
+  } catch (e: any) {
+    const detail = e?.message ? String(e.message) : "Onvoldoende rechten.";
+    console.warn(`[purgeSimById] Permission denied for sim=${simId}: ${detail}`);
+    return {
+      ok: false,
+      message: detail,
+      error: { kind: "PERMISSION", detail },
+    };
+  }
+
+  const sim = await findSimById(simId, ctx.customerScope);
+  if (!sim) {
+    return {
+      ok: false,
+      message: "SIM is niet (meer) beschikbaar in dit account.",
+      error: { kind: "NOT_FOUND", detail: "SIM niet gevonden of onvoldoende toegang." },
+    };
+  }
+
+  const iccid = sim.iccid;
+  if (!iccid || typeof iccid !== "string" || iccid.trim().length === 0) {
+    return {
+      ok: false,
+      message: "Netwerkverbinding vernieuwen mislukt: ICCID ontbreekt voor deze SIM-kaart.",
+      error: {
+        kind: "PROVIDER",
+        detail: "ICCID is leeg of ongeldig. Kan geen purge-verzoek indienen zonder ICCID.",
+      },
+    };
+  }
+
+  const configured = await simhuisClient.isConfigured();
+  if (!configured) {
+    return {
+      ok: false,
+      message: "Simhuis integratie is niet geconfigureerd.",
+      error: {
+        kind: "PROVIDER",
+        detail: "Simhuis integratie is niet geconfigureerd (username/password ontbreken).",
+      },
+    };
+  }
+
+  let providerRes: SimhuisPurgeResult;
+  try {
+    providerRes = await purgeSimhuisAsset(iccid);
+  } catch (e: any) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[purgeSimById] Unexpected error during purge for sim=${simId}:`, msg);
+    return {
+      ok: false,
+      message: "Onverwachte fout tijdens aanvraag van netwerkvernieuwing.",
+      error: { kind: "TIMEOUT_OR_NETWORK", detail: msg },
+    };
+  }
+
+  if (providerRes.error?.kind === "INVALID_ACCOUNTID") {
+    return {
+      ok: false,
+      message: "Netwerkverbinding vernieuwen mislukt: accountId ontbreekt of is ongeldig.",
+      error: {
+        kind: "PROVIDER",
+        detail: providerRes.error.detail || "accountId ontbreekt in de Simhuis-sessie.",
+      },
+    };
+  }
+
+  if (!providerRes.ok) {
+    const kind = providerRes.error?.kind ?? "PROVIDER";
+    const detail =
+      providerRes.error?.detail || "Onbekende provider-fout tijdens purge.";
+    let mapped: SimSuspendError;
+    switch (kind) {
+      case "AUTH_FAILED":
+        mapped = {
+          kind: "PROVIDER",
+          detail: `Kan geen verbinding maken met Simhuis: ${detail}`,
+          statusCode: providerRes.error?.httpStatus,
+        };
+        break;
+      case "NOT_CONFIGURED":
+        mapped = {
+          kind: "PROVIDER",
+          detail: `Kan geen verbinding maken met Simhuis: ${detail}`,
+        };
+        break;
+      case "TIMEOUT_OR_NETWORK":
+        mapped = { kind: "TIMEOUT_OR_NETWORK", detail };
+        break;
+      case "PROVIDER_REJECTED":
+        if (/conflict|status|state|already|cannot|invalid/i.test(detail)) {
+          mapped = { kind: "INVALID_STATUS_TRANSITION", detail: `Kan actie niet uitvoeren: ${detail}` };
+        } else {
+          mapped = {
+            kind: "PROVIDER",
+            detail,
+            statusCode: providerRes.error?.httpStatus,
+          };
+        }
+        break;
+      default:
+        mapped = {
+          kind: "PROVIDER" as const,
+          detail,
+          statusCode: providerRes.error?.httpStatus,
+        };
+    }
+    return {
+      ok: false,
+      message: mapErrorToFriendlyMessage(mapped) || detail,
+      error: mapped,
+    };
+  }
+
+  try {
+    await logAudit(prisma, {
+      entityType: "sim",
+      entityId: sim.id,
+      action: "UPDATE",
+      userId: ctx.userId,
+      oldValues: {},
+      newValues: { networkPurgeRequested: true },
+      metadata: {
+        source: "sim-purge-network",
+        simhuisHttpStatus: providerRes.httpStatus,
+        accountIdUsed: providerRes.accountIdUsed,
+      },
+    }).catch(() => {});
+  } catch {}
+
+  return {
+    ok: true,
+    message:
+      "De netwerkregistratie van de SIM-kaart is opnieuw aangevraagd. " +
+      "Het kan enige tijd duren voordat de SIM opnieuw verbinding heeft.",
   };
 }
 

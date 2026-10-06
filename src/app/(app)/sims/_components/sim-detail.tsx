@@ -60,7 +60,7 @@ import {
 import { SIM_PROVIDER_UI_LABELS } from "@/lib/providers/provider-registry";
 import type { UserRole, AuditAction } from "@/types/enums";
 import type { SIM, SimStatus, AssignmentReason } from "@prisma/client";
-import type { SimUsageSyncState, SimSuspendActionState, SimStatusRefreshActionState, SimDiagnosticActionState } from "../actions";
+import type { SimUsageSyncState, SimSuspendActionState, SimStatusRefreshActionState, SimDiagnosticActionState, SimPurgeActionState } from "../actions";
 
 type DetailSim = SIM & {
   assignments: Array<{
@@ -127,11 +127,17 @@ type SimDetailProps = {
     prev: SimDiagnosticActionState,
     formData: FormData
   ) => Promise<SimDiagnosticActionState>;
+  purgeNetworkAction?: (
+    simId: string,
+    prev: SimPurgeActionState,
+    formData: FormData
+  ) => Promise<SimPurgeActionState>;
   isAdmin: boolean;
   canEdit: boolean;
   canDelete: boolean;
   canSyncUsage: boolean;
   canDiagnostic: boolean;
+  canPurgeNetwork?: boolean;
 };
 
 type SuspendSimDialogProps = {
@@ -495,6 +501,148 @@ function DeleteSimDialog({
   );
 }
 
+type PurgeSimDialogProps = {
+  sim: DetailSim;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  formAction: (payload: FormData) => void;
+  isPending: boolean;
+  hasResult: boolean;
+};
+
+function PurgeSimDialog({
+  sim,
+  open,
+  onOpenChange,
+  formAction,
+  isPending,
+  hasResult,
+}: PurgeSimDialogProps) {
+  const submittedRef = useRef(false);
+  const emergencyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isPendingClient, setIsPendingClient] = useState(false);
+  const [isTransitioning, startTransition] = useTransition();
+
+  const combinedPending = isPending || isPendingClient || isTransitioning;
+
+  useEffect(() => {
+    if ((open === false && hasResult) || (hasResult && !combinedPending)) {
+      submittedRef.current = false;
+      setIsPendingClient(false);
+      if (emergencyTimerRef.current) {
+        clearTimeout(emergencyTimerRef.current);
+        emergencyTimerRef.current = null;
+      }
+    }
+  }, [open, combinedPending, hasResult]);
+
+  useEffect(() => {
+    return () => {
+      if (emergencyTimerRef.current) {
+        clearTimeout(emergencyTimerRef.current);
+        emergencyTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    if (submittedRef.current || combinedPending) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    submittedRef.current = true;
+    setIsPendingClient(true);
+    if (emergencyTimerRef.current) clearTimeout(emergencyTimerRef.current);
+    emergencyTimerRef.current = setTimeout(() => {
+      console.warn("[sim-detail] ⏹️ Netwerkvernieuwen noodstop na 20s timeout.");
+      submittedRef.current = false;
+      setIsPendingClient(false);
+      emergencyTimerRef.current = null;
+    }, 20_000);
+    startTransition(async () => {
+      try {
+        const fd = new FormData(e.currentTarget);
+        formAction(fd);
+      } finally {
+        setTimeout(() => {
+          setIsPendingClient(false);
+          submittedRef.current = false;
+          if (emergencyTimerRef.current) {
+            clearTimeout(emergencyTimerRef.current);
+            emergencyTimerRef.current = null;
+          }
+        }, 0);
+      }
+    });
+    e.preventDefault();
+  }
+
+  const simLabel = sim.simName && sim.simName.trim() ? sim.simName : formatIccid(sim.iccid);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={combinedPending}
+          aria-busy={combinedPending}
+          aria-disabled={combinedPending}
+          className="gap-1.5"
+        >
+          {combinedPending ? (
+            <>
+              <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Bezig met vernieuwen…
+            </>
+          ) : (
+            <>
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
+              Netwerkverbinding vernieuwen
+            </>
+          )}
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Netwerkverbinding vernieuwen?</DialogTitle>
+          <DialogDescription>
+            Hiermee wordt de netwerkregistratie van SIM-kaart{' '}
+            <strong>{simLabel}</strong> opnieuw vernieuwd. De dataverbinding kan
+            hierdoor tijdelijk worden onderbroken. Wil je doorgaan?
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={onSubmit}>
+          <DialogFooter className="gap-2 sm:justify-end">
+            <DialogClose asChild>
+              <Button type="button" variant="outline" disabled={combinedPending}>
+                Annuleren
+              </Button>
+            </DialogClose>
+            <Button
+              type="submit"
+              variant="secondary"
+              disabled={combinedPending}
+              aria-busy={combinedPending}
+              aria-disabled={combinedPending}
+            >
+              {combinedPending ? (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                  Bezig met vernieuwen…
+                </>
+              ) : (
+                <>Verbinding vernieuwen</>
+              )}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function renderActionResult(s: SimSuspendActionState, action: "suspend" | "unsuspend", lastAction: "suspend" | "unsuspend" | null): React.ReactNode {
   if (!s || (!s.message && !s.error)) return null;
 
@@ -772,11 +920,13 @@ export function SimDetail({
   unsuspendAction,
   refreshStatusAction,
   runDiagnosticAction,
+  purgeNetworkAction,
   isAdmin,
   canEdit,
   canDelete,
   canSyncUsage,
   canDiagnostic,
+  canPurgeNetwork,
 }: SimDetailProps) {
 
   const [, deleteFormAction] = useFormState(
@@ -932,6 +1082,58 @@ export function SimDetail({
     }, 20_000);
   };
 
+  const [purgeOpen, setPurgeOpen] = useState(false);
+  const [purgeState, purgeFormAction, purgePendingNative] = useFormState(
+    (purgeNetworkAction
+      ? purgeNetworkAction.bind(null, simId)
+      : async (
+          _prev: SimPurgeActionState,
+          _form: FormData
+        ): Promise<SimPurgeActionState> => ({
+          ok: false,
+          message: "Netwerkvernieuwing is niet beschikbaar.",
+        })) as unknown as (
+      prev: SimPurgeActionState,
+      formData: FormData
+    ) => Promise<SimPurgeActionState>,
+    { ok: false, message: "" } satisfies SimPurgeActionState
+  );
+  const [isPurgePendingClient, setIsPurgePendingClient] = useState(false);
+  const [isPurgeTransitioning, startPurgeTransition] = useTransition();
+  const purgeSubmittedOnceRef = useRef(false);
+  const purgeRanRef = useRef(false);
+  const prevPurgeStateRef = useRef(purgeState);
+  const purgeEmergencyRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isPurgePending =
+    isPurgePendingClient || isPurgeTransitioning || purgePendingNative;
+
+  useEffect(() => {
+    const prev = prevPurgeStateRef.current;
+    const curr = purgeState;
+    const isInitial = !purgeRanRef.current && !curr.message && !curr.ok && !curr.error;
+    if (!purgeRanRef.current) {
+      purgeRanRef.current = Boolean(curr.ok || curr.error || (curr.message && curr.message.length > 0));
+    }
+    const changed =
+      prev !== curr && !isInitial &&
+      ((prev?.ok !== curr?.ok) ||
+        (prev?.message !== curr?.message) ||
+        (prev?.error !== curr?.error));
+    if (changed) {
+      purgeSubmittedOnceRef.current = false;
+      if (purgeEmergencyRef.current) {
+        clearTimeout(purgeEmergencyRef.current);
+        purgeEmergencyRef.current = null;
+      }
+      setIsPurgePendingClient(false);
+      if (curr.ok || curr.error || curr.message) {
+        setPurgeOpen(false);
+      }
+    }
+    prevPurgeStateRef.current = curr;
+  }, [purgeState]);
+
   const prevSuspendStateRef = useRef(suspendState);
   const prevUnsuspendStateRef = useRef(unsuspendState);
 
@@ -995,6 +1197,10 @@ export function SimDetail({
       if (statusRefreshEmergencyRef.current) {
         clearTimeout(statusRefreshEmergencyRef.current);
         statusRefreshEmergencyRef.current = null;
+      }
+      if (purgeEmergencyRef.current) {
+        clearTimeout(purgeEmergencyRef.current);
+        purgeEmergencyRef.current = null;
       }
     };
   }, []);
@@ -1225,12 +1431,74 @@ export function SimDetail({
     }
   }
 
+  let purgeBanner: React.ReactNode = null;
+  if (purgeState && (purgeState.ok || purgeState.error || purgeState.message)) {
+    if (purgeState.ok) {
+      purgeBanner = (
+        <div
+          role="status"
+          className="flex items-start gap-2.5 rounded-md border border-emerald-300 bg-emerald-50 px-3.5 py-2.5 text-sm text-emerald-800 shadow-sm w-full"
+          key="banner-purge-success"
+        >
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+          <div className="flex-1 min-w-0">
+            <p className="font-medium text-emerald-900">Netwerkverbinding wordt vernieuwd</p>
+            {purgeState.message ? (
+              <p className="whitespace-pre-wrap break-words text-emerald-800/90">{purgeState.message}</p>
+            ) : null}
+          </div>
+        </div>
+      );
+    } else if (purgeState.error || purgeState.message) {
+      const kind = purgeState.error?.kind;
+      const isTimeout = kind === "TIMEOUT_OR_NETWORK";
+      const isInvalid = kind === "INVALID_STATUS_TRANSITION";
+      const isPermission = kind === "PERMISSION";
+      const isWarning = isTimeout || isInvalid;
+      const title = isPermission
+        ? "Onvoldoende rechten"
+        : isInvalid
+          ? "Actie niet mogelijk"
+          : isWarning
+            ? "Verzoek mislukt"
+            : "Netwerkvernieuwen mislukt";
+      const borderCls = isWarning
+        ? "border-amber-300 bg-amber-50 text-amber-800"
+        : "border-red-300 bg-red-50 text-red-800";
+      const iconCls = isWarning ? "text-amber-600" : "text-red-600";
+      const titleCls = isWarning ? "text-amber-900" : "text-red-900";
+      const msgCls = isWarning ? "text-amber-800/90" : "text-red-800/90";
+      const hintCls = isWarning ? "text-amber-700/80" : "text-red-700/80";
+      purgeBanner = (
+        <div
+          role={isWarning ? "status" : "alert"}
+          className={`flex items-start gap-2.5 rounded-md border ${borderCls} px-3.5 py-2.5 text-sm shadow-sm w-full`}
+          key="banner-purge-error"
+        >
+          <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${iconCls}`} aria-hidden="true" />
+          <div className="flex-1 min-w-0">
+            <p className={`font-medium ${titleCls}`}>{title}</p>
+            <p className={`whitespace-pre-wrap break-words ${msgCls}`}>
+              {purgeState.message || purgeState.error?.detail || "Netwerkverbinding vernieuwen mislukt. Probeer het later opnieuw."}
+            </p>
+            {isTimeout ? (
+              <p className={`mt-1 text-xs ${hintCls}`}>
+                Herhaal het verzoek niet blind. Controleer eerst of de SIM opnieuw verbinding heeft alvorens opnieuw te proberen.
+              </p>
+            ) : null}
+          </div>
+        </div>
+      );
+    }
+  }
+
   const actionBanners =
-    suspendBanner || unsuspendBanner || statusRefreshBanner ? (
+    suspendBanner || unsuspendBanner || statusRefreshBanner || purgeBanner ? (
       <div className="flex flex-col gap-3" aria-live="polite">
         {statusRefreshBanner}
         {suspendBanner}
         {unsuspendBanner}
+        {purgeBanner}
       </div>
     ) : null;
 
@@ -1355,6 +1623,16 @@ export function SimDetail({
                         {isDiagnosticPending ? "Bezig met controleren…" : "Netwerkstatus controleren"}
                       </Button>
                     </form>
+                  ) : null}
+                  {canPurgeNetwork && purgeNetworkAction ? (
+                    <PurgeSimDialog
+                      sim={sim}
+                      open={purgeOpen}
+                      onOpenChange={setPurgeOpen}
+                      formAction={purgeFormAction as any}
+                      isPending={isPurgePending}
+                      hasResult={Boolean(purgeState.ok || purgeState.error || (purgeState.message && purgeState.message.length > 0))}
+                    />
                   ) : null}
                   {canEdit ? (
                     <Button asChild size="sm" className="shrink-0">

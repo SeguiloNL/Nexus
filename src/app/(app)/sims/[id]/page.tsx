@@ -12,6 +12,7 @@ import {
   unsuspendSimAction,
   refreshSimStatusAction,
   runDiagnosticForSingleSimAction,
+  purgeSimNetworkAction,
 } from "../actions";
 import { RoleScope, UserRole } from "@/types/enums";
 
@@ -76,11 +77,13 @@ export default async function SimDetailPage({
       unsuspendAction={isAdmin ? unsuspendSimAction : undefined}
       refreshStatusAction={canEdit ? refreshSimStatusAction : undefined}
       runDiagnosticAction={canSyncUsage ? runDiagnosticForSingleSimAction : undefined}
+      purgeNetworkAction={canEdit ? purgeSimNetworkAction : undefined}
       isAdmin={isAdmin}
       canEdit={canEdit}
       canDelete={canDelete}
       canSyncUsage={canSyncUsage}
       canDiagnostic={canSyncUsage}
+      canPurgeNetwork={canEdit}
     />
   );
 }

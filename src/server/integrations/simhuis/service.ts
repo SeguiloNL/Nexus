@@ -8,6 +8,7 @@ import type {
   SimhuisSubscribeOptions,
   SimhuisSubscribeResult,
   SimhuisAssetActionResult,
+  SimhuisPurgeResult,
 } from './types';
 
 // ============================================================
@@ -6531,5 +6532,159 @@ export async function unsuspendSimhuisAsset(iccid: string): Promise<SimhuisAsset
   return _performSimhuisAssetAction('unsuspend', iccid);
 }
 
+export async function purgeSimhuisAsset(iccid: string): Promise<SimhuisPurgeResult> {
+  const t0 = Date.now();
+  const iccidSuffix = iccid.slice(-6);
+  const emptyResult: SimhuisPurgeResult = {
+    ok: false,
+    accountIdUsed: null,
+    raw: null,
+  };
+
+  let creds: { baseUrl: string; username: string; password: string; resellerId?: string | null } | null = null;
+  try {
+    creds = await getSimhuisCreds();
+  } catch (e: any) {
+    return {
+      ...emptyResult,
+      error: { kind: 'NOT_CONFIGURED', detail: String(e?.message ?? e ?? 'Simhuis niet geconfigureerd.') },
+    };
+  }
+
+  const base = creds.baseUrl;
+  let token = await acquireBearerToken(creds);
+  if (!token) {
+    return {
+      ...emptyResult,
+      error: { kind: 'AUTH_FAILED', detail: 'Bearer-token kon niet worden verkregen (Simhuis login mislukt).' },
+    };
+  }
+
+  let accountId: string | null = getSimhuisAccountId();
+  if (!accountId) {
+    return {
+      ...emptyResult,
+      error: { kind: 'INVALID_ACCOUNTID', detail: 'accountId is niet beschikbaar in de Bearer-token cache.' },
+    };
+  }
+
+  const path = `/v3/assets/${encodeURIComponent(iccid)}/purge`;
+
+  const doPurge = async (bearer: string, accId: string) => {
+    const fullUrl = makePerSimFullUrl(base, path, null);
+    const body = { accountId: accId, confirm: true };
+    return doPerSimFetch({
+      fullUrl,
+      method: 'POST',
+      contentType: 'json',
+      body,
+      auth: { tag: 'bearer-token', token: bearer },
+      timeoutMs: 12_000,
+    });
+  };
+
+  let res = await doPurge(token, accountId);
+  let retried401 = false;
+  if ((res.tag === 'skip' || res.tag === 'error') && res.statusCode === 401) {
+    invalidateBearerTokenCache(base);
+    const fresh = await acquireBearerToken(creds);
+    if (fresh) {
+      token = fresh;
+      accountId = getSimhuisAccountId() ?? accountId;
+      if (!accountId) {
+        return {
+          ...emptyResult,
+          error: { kind: 'INVALID_ACCOUNTID', detail: 'accountId ontbreekt na bearer refresh.' },
+        };
+      }
+      res = await doPurge(token, accountId);
+      retried401 = true;
+    }
+  }
+
+  try {
+    console.info(
+      `[simhuis:purge] iccidSuffix=${iccidSuffix} httpStatus=${res.statusCode} durationMs=${Date.now() - t0} retried401=${retried401}`
+    );
+  } catch {}
+
+  if (res.tag === 'ok') {
+    const body = res.body;
+    let success = false;
+    try {
+      if (body && typeof body === 'object') {
+        const b = body as Record<string, unknown>;
+        success =
+          b.success === true ||
+          b.ok === true ||
+          (typeof b.success === 'string' && b.success.toLowerCase() === 'true');
+      }
+    } catch {}
+    if (success || res.statusCode === 200 || res.statusCode === 202 || res.statusCode === 204) {
+      return {
+        ok: true,
+        accountIdUsed: accountId,
+        httpStatus: res.statusCode,
+        raw: body,
+      };
+    }
+    const snippet = body ? String(JSON.stringify(body)).slice(0, 250) : `HTTP ${res.statusCode}`;
+    return {
+      ...emptyResult,
+      accountIdUsed: accountId,
+      httpStatus: res.statusCode,
+      raw: body,
+      error: {
+        kind: 'PROVIDER_REJECTED',
+        detail: snippet || `Simhuis weigerde purge-verzoek (HTTP ${res.statusCode}).`,
+        httpStatus: res.statusCode,
+      },
+    };
+  }
+
+  const snippet = res.error ? String(res.error).slice(0, 250) : `HTTP ${res.statusCode}`;
+
+  if (res.statusCode === 0 || /timeout|network|abort|econn|fetch/i.test(snippet)) {
+    return {
+      ...emptyResult,
+      httpStatus: res.statusCode,
+      error: { kind: 'TIMEOUT_OR_NETWORK', detail: snippet || 'Netwerk- of time-out fout.' },
+    };
+  }
+
+  if (res.statusCode === 401 || res.statusCode === 403) {
+    return {
+      ...emptyResult,
+      httpStatus: res.statusCode,
+      error: {
+        kind: 'AUTH_FAILED',
+        detail: res.statusCode === 403 ? 'Onvoldoende rechten in Simhuis (HTTP 403).' : 'Authenticatie mislukt (HTTP 401).',
+        httpStatus: res.statusCode,
+      },
+    };
+  }
+
+  if (res.statusCode >= 400 && res.statusCode < 500) {
+    return {
+      ...emptyResult,
+      httpStatus: res.statusCode,
+      error: {
+        kind: 'PROVIDER_REJECTED',
+        detail: snippet || `Simhuis weigerde purge-verzoek (HTTP ${res.statusCode}).`,
+        httpStatus: res.statusCode,
+      },
+    };
+  }
+
+  return {
+    ...emptyResult,
+    httpStatus: res.statusCode,
+    error: {
+      kind: 'TIMEOUT_OR_NETWORK',
+      detail: snippet || `Onverwachte provider-fout (HTTP ${res.statusCode || 0}).`,
+    },
+  };
+}
+
 export { simhuisClient, SimhuisApiError };
-export type { SimhuisRequestOptions, SimhuisAssetActionResult, SimhuisSubscribeResult };
+export type { SimhuisRequestOptions, SimhuisAssetActionResult, SimhuisSubscribeResult, SimhuisPurgeResult };
