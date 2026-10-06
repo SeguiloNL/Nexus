@@ -2397,19 +2397,36 @@ UP7_ENV_EOF
   # ==============================================================================
   title "Verificatie: code + migrations correct toegepast?"
   CODE_VERIFY_OK=0
-  UI_FILE="/app/app/(app)/profile/_components/notification-settings-form.tsx"
-  CODE_HITS=$(docker exec stm-app sh -lc "grep -c 'WARNING_70\|WARNING_90\|CRITICAL_100' '${UI_FILE}' 2>/dev/null || echo 0") 2>/dev/null || CODE_HITS=0
-  if [ "${CODE_HITS:-0}" -ge 3 ]; then
+  # De runner image heeft GEEN .tsx bronbestanden (alleen gebundelde JS in .next/
+  # en Prisma schema in node_modules/.prisma). Daarom checken we op 3 plekken:
+  #   A) Prisma client schema.prisma (meest betrouwbaar: bevat AlertThresholdLevel enum)
+  #   B) Next.js standalone server chunks (bevatten UI code)
+  #   C) Next.js server chunks (fallback)
+  PRISMA_SCHEMA="/app/node_modules/.prisma/client/schema.prisma"
+  STANDALONE_DIR="/app/.next/standalone/.next/server"
+  SERVER_DIR="/app/.next/server"
+  CODE_HITS=0
+  _TMP=$(docker exec stm-app sh -lc "grep -c 'WARNING_70\|WARNING_90\|CRITICAL_100' '${PRISMA_SCHEMA}' 2>/dev/null || echo 0") 2>/dev/null || _TMP=0
+  CODE_HITS=$(( CODE_HITS + _TMP ))
+  if [ "${CODE_HITS}" -lt 2 ]; then
+    _TMP=$(docker exec stm-app sh -lc "grep -rc 'WARNING_70\|WARNING_90\|CRITICAL_100' '${STANDALONE_DIR}' 2>/dev/null | awk -F: '{s+=\$2} END {print s+0}'") 2>/dev/null || _TMP=0
+    CODE_HITS=$(( CODE_HITS + _TMP ))
+  fi
+  if [ "${CODE_HITS}" -lt 2 ]; then
+    _TMP=$(docker exec stm-app sh -lc "grep -rc 'WARNING_70\|WARNING_90\|CRITICAL_100' '${SERVER_DIR}' 2>/dev/null | awk -F: '{s+=\$2} END {print s+0}'") 2>/dev/null || _TMP=0
+    CODE_HITS=$(( CODE_HITS + _TMP ))
+  fi
+  if [ "${CODE_HITS:-0}" -ge 2 ]; then
     ok "  ✅  Code in container = VERS NIEUW (WARNING_70/90/100 gevonden: ${CODE_HITS} treffers)."
     CODE_VERIFY_OK=1
   else
-    # Fallback: check of de file uberhaupt bestaat (voor oude commits zonder deze UI feature)
-    FILE_EXISTS=$(docker exec stm-app sh -lc "if [ -f '${UI_FILE}' ]; then echo yes; else echo no; fi") 2>/dev/null || FILE_EXISTS=no
+    # Fallback: check of Prisma schema uberhaupt bestaat (voor oude commits zonder deze feature)
+    FILE_EXISTS=$(docker exec stm-app sh -lc "if [ -f '${PRISMA_SCHEMA}' ]; then echo yes; else echo no; fi") 2>/dev/null || FILE_EXISTS=no
     if [ "${FILE_EXISTS}" = "no" ]; then
-      info "  ⚪  Fallback: UI-file bestaat niet in deze commit (geen waarschuwing, feature bestaat simpelweg nog niet)."
+      info "  ⚪  Fallback: Prisma schema bestaat niet in de container (geen waarschuwing, oudere codebase)."
       CODE_VERIFY_OK=1
     else
-      warn "  ⚠️  Code in container lijkt OUD! File bestaat maar WARNING_70-tref teller = ${CODE_HITS} (verwachting >= 3)."
+      warn "  ⚠️  Code in container lijkt OUD! Prisma schema bestaat maar WARNING_70-tref teller = ${CODE_HITS} (verwachting >= 2)."
       info "     💡  Oplossing: FORCEER clean rebuild:"
       info "         cd ${INSTALL_DIR}"
       info "         docker compose -f ${COMPOSE_FILE} build --pull --no-cache stm-app"
