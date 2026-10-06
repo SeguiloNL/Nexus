@@ -66,15 +66,16 @@ export function getDefaultSyncJobConfig(jobId: SyncJobId): SaveSyncScheduleInput
       return {
         jobId,
         enabled: true,
-        frequency: SyncFrequency.HOURLY,
+        frequency: SyncFrequency.EVERY_15_MINUTES,
         hour: 0,
         minute: 5,
         dayOfWeek: 1,
         dayOfMonth: 1,
         timezone: "Europe/Amsterdam",
         comment:
-          "Verstuur e-mail notificaties wanneer SIMs de 80% data-drempel bereiken. " +
-          "Deze job loopt standaard 5 minuten na de hour, zodat de :00 usage-sync altijd eerst afloopt.",
+          "Verstuur e-mail notificaties wanneer SIMs de 70/80/90/100% data-drempel bereiken. " +
+          "Standaard elke 15 minuten zodat gebruikers met korte intervallen snel gewaarschuwd worden. " +
+          "Per gebruiker wordt persoonlijke interval gehonoreerd (anti-spam).",
       };
     case SyncJobId.INSERVE:
       return {
@@ -396,6 +397,57 @@ export function shouldRunNow(
   }
 
   switch (config.frequency) {
+    case SyncFrequency.EVERY_15_MINUTES: {
+      const offset = ((config.minute ?? 0) % 15 + 15) % 15;
+      const aligned = (() => {
+        let test = offset;
+        const steps = [0, 15, 30, 45];
+        for (const base of steps) {
+          const candidate = (base + offset) % 60;
+          const diff = ((minute - candidate) % 60 + 60) % 60;
+          if (diff <= GRACE_MINUTES) return true;
+        }
+        return false;
+      })();
+      return aligned
+        ? {
+            shouldRun: true,
+            reason: `binnen per-15-minuten window (start elke :${String(
+              offset
+            ).padStart(2, "0")}, :${String(offset + 15).padStart(
+              2,
+              "0"
+            )}, :${String(offset + 30).padStart(2, "0")}, :${String(
+              (offset + 45) % 60
+            ).padStart(2, "0")} ±${GRACE_MINUTES}m)`,
+          }
+        : {
+            shouldRun: false,
+            reason: `buiten per-15-minuten window.`,
+          };
+    }
+    case SyncFrequency.EVERY_30_MINUTES: {
+      const offset = ((config.minute ?? 0) % 30 + 30) % 30;
+      const candidates = [offset, offset + 30];
+      const matches = candidates.some((targetMinute) => {
+        const diff = ((minute - targetMinute) % 60 + 60) % 60;
+        return diff <= GRACE_MINUTES;
+      });
+      return matches
+        ? {
+            shouldRun: true,
+            reason: `binnen per-30-minuten window (:${String(
+              offset
+            ).padStart(2, "0")} en :${String(offset + 30).padStart(
+              2,
+              "0"
+            )} ±${GRACE_MINUTES}m)`,
+          }
+        : {
+            shouldRun: false,
+            reason: `buiten per-30-minuten window.`,
+          };
+    }
     case SyncFrequency.HOURLY:
       return withinMinuteWindow(config.minute)
         ? { shouldRun: true, reason: `binnen per-uur window (:${config.minute} ±${GRACE_MINUTES}m)` }

@@ -16,7 +16,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { formatDateLong } from "@/lib/formatters";
-import { collectUserCustomerIds } from "@/lib/rbac";
+import { collectUserCustomerIds, hasMinRole } from "@/lib/rbac";
 import { getMyNotificationSettingsAction } from "./actions";
 import { NotificationSettingsForm } from "./_components/notification-settings-form";
 import {
@@ -27,7 +27,7 @@ import {
   Clock,
   BellRing,
 } from "lucide-react";
-import { RoleScope } from "@/types/enums";
+import { RoleScope, UserRole } from "@/types/enums";
 
 const ROLE_VARIANT: Record<string, "default" | "secondary" | "outline" | "destructive"> = {
   ADMIN: "default",
@@ -229,7 +229,11 @@ export default async function ProfilePage() {
         <TabsContent value="notifications" className="mt-4">
           <NotificationSettingsForm
             initialSettings={notifySettings}
-            isInternal={(scopeName as RoleScope) === "INTERNAL"}
+            isAdmin={
+              (scopeName as RoleScope) === "INTERNAL" &&
+              (userDb.roleObj?.isSystem === true ||
+                hasMinRole(userDb.role as UserRole | null, UserRole.ADMIN))
+            }
             customerCount={customers.length}
           />
         </TabsContent>

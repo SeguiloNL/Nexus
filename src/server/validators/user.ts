@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { validateEmail } from "@/lib/validation";
 import { UserRole } from "@/types/enums";
+import { AlertThresholdLevel } from "@prisma/client";
+
+const VALID_THRESHOLD_LEVELS = Object.values(AlertThresholdLevel) as string[];
+const VALID_CHECK_INTERVALS_MINUTES = [
+  15, 30, 60, 120, 240, 360, 720, 1440,
+];
 
 export const CreateUserSchema = z.object({
   email: z
@@ -78,8 +84,26 @@ export const SaveNotificationSettingsSchema = z.object({
     .number()
     .int()
     .min(1, "Drempel minimaal 1%")
-    .max(99, "Drempel maximaal 99%")
+    .max(100, "Drempel maximaal 100%")
     .default(80),
+  thresholdLevels: z
+    .array(z.enum(VALID_THRESHOLD_LEVELS as [string, ...string[]]))
+    .optional()
+    .default([]),
+  usageAlertCheckIntervalMinutes: z.coerce
+    .number()
+    .int()
+    .min(15, "Minimaal 15 minuten")
+    .max(1440, "Maximaal 1440 minuten (1 dag)")
+    .refine(
+      (v) => VALID_CHECK_INTERVALS_MINUTES.includes(v),
+      (v) => ({
+        message: `Ongeldige interval: ${v} min. Kies uit: ${VALID_CHECK_INTERVALS_MINUTES.join(
+          ", "
+        )}.`,
+      })
+    )
+    .default(60),
   notifyAllSims: z.boolean().default(false),
 });
 

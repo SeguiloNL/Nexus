@@ -332,6 +332,8 @@ function JobCard({ cfg, initialState, canEdit, viewerIsInternal, refresh, recent
                   <SelectValue placeholder="Kies frequentie" />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value={SyncFrequency.EVERY_15_MINUTES}>Elke 15 minuten</SelectItem>
+                  <SelectItem value={SyncFrequency.EVERY_30_MINUTES}>Elke 30 minuten</SelectItem>
                   <SelectItem value={SyncFrequency.HOURLY}>Per uur</SelectItem>
                   <SelectItem value={SyncFrequency.DAILY}>Dagelijks</SelectItem>
                   <SelectItem value={SyncFrequency.WEEKLY}>Wekelijks</SelectItem>
@@ -340,7 +342,9 @@ function JobCard({ cfg, initialState, canEdit, viewerIsInternal, refresh, recent
               </Select>
             </div>
 
-            {freq !== SyncFrequency.HOURLY ? (
+            {freq !== SyncFrequency.HOURLY &&
+            freq !== SyncFrequency.EVERY_15_MINUTES &&
+            freq !== SyncFrequency.EVERY_30_MINUTES ? (
               <div>
                 <Label htmlFor={`h-${cfg.jobId}`} className="mb-1 block">Uur (0–23)</Label>
                 <Input

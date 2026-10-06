@@ -17,6 +17,75 @@ import {
 
 type RbacRoleScope = (typeof RoleScope)[keyof typeof RoleScope];
 
+const THRESHOLD_LEVEL_TO_PERCENT: Record<AlertThresholdLevel, number> = {
+  [AlertThresholdLevel.WARNING_70]: 70,
+  [AlertThresholdLevel.WARNING_80]: 80,
+  [AlertThresholdLevel.WARNING_90]: 90,
+  [AlertThresholdLevel.CRITICAL_100]: 100,
+};
+
+const PERCENT_TO_THRESHOLD_LEVEL: Record<number, AlertThresholdLevel> = {
+  70: AlertThresholdLevel.WARNING_70,
+  80: AlertThresholdLevel.WARNING_80,
+  90: AlertThresholdLevel.WARNING_90,
+  100: AlertThresholdLevel.CRITICAL_100,
+};
+
+export const DEFAULT_THRESHOLD_LEVELS: AlertThresholdLevel[] = [
+  AlertThresholdLevel.WARNING_80,
+];
+
+export const USAGE_ALERT_CHECK_INTERVAL_OPTIONS: Array<{
+  value: number;
+  label: string;
+}> = [
+  { value: 15, label: "Elke 15 minuten" },
+  { value: 30, label: "Elke 30 minuten" },
+  { value: 60, label: "Elk uur" },
+  { value: 120, label: "Elke 2 uur" },
+  { value: 240, label: "Elke 4 uur" },
+  { value: 360, label: "Elke 6 uur" },
+  { value: 720, label: "Elke 12 uur" },
+  { value: 1440, label: "Eenmaal per dag" },
+];
+
+export function thresholdLevelToPercent(
+  level: AlertThresholdLevel
+): number {
+  return THRESHOLD_LEVEL_TO_PERCENT[level] ?? 80;
+}
+
+export function percentToThresholdLevel(
+  pct: number
+): AlertThresholdLevel | null {
+  return PERCENT_TO_THRESHOLD_LEVEL[Number(pct)] ?? null;
+}
+
+export function resolveUserThresholdLevels(
+  settings: Pick<
+    UserNotificationSettings,
+    "thresholdLevels" | "dataThresholdPercent"
+  >
+): AlertThresholdLevel[] {
+  if (
+    Array.isArray(settings.thresholdLevels) &&
+    settings.thresholdLevels.length > 0
+  ) {
+    return settings.thresholdLevels;
+  }
+  const legacy = percentToThresholdLevel(settings.dataThresholdPercent ?? 80);
+  if (legacy) return [legacy];
+  return DEFAULT_THRESHOLD_LEVELS;
+}
+
+export function resolveUserCheckIntervalMinutes(
+  settings: Pick<UserNotificationSettings, "usageAlertCheckIntervalMinutes">
+): number {
+  const raw = settings.usageAlertCheckIntervalMinutes ?? 60;
+  if (!Number.isFinite(raw) || raw < 1) return 60;
+  return Math.round(raw);
+}
+
 export interface SimWithCustomerAndUsage {
   id: string;
   iccid: string | null;
@@ -50,6 +119,7 @@ export interface UserNotificationSettingsWithUser
 export interface UsageAlertCycleReport {
   usersChecked: number;
   usersEnabledForEmail: number;
+  usersSkippedInterval: number;
   usersWithAlerts: number;
   usersNotified: number;
   usersNotifiedDryRun: number;
@@ -66,6 +136,8 @@ export interface UsageAlertCycleReport {
     name: string;
     notifyAllSims: boolean;
     roleScope: string | null;
+    checkIntervalMinutes: number;
+    thresholdLevels: string[];
     simsTotalInScopeAtThreshold: number;
     simsToReport: number;
     simsPreviouslyAlerted: number;
@@ -92,13 +164,16 @@ export function isDataAboveThreshold(
   },
   thresholdPercent: number = 80
 ): boolean {
-  if (thresholdPercent <= 0 || thresholdPercent >= 100) {
+  if (thresholdPercent <= 0 || thresholdPercent > 100) {
     thresholdPercent = 80;
   }
   if (sim.dataUsedBytes === null || sim.dataUsedBytes <= 0n) return false;
   const limit = getEffectiveDataLimit(sim);
   if (limit === null || limit <= 0n) return false;
   const pctBig = BigInt(Math.round(thresholdPercent));
+  if (thresholdPercent >= 100) {
+    return sim.dataUsedBytes >= limit;
+  }
   return sim.dataUsedBytes * 100n >= limit * pctBig;
 }
 
@@ -116,9 +191,9 @@ export function actualUsagePercent(sim: {
   );
 }
 
-export async function getSimsRequiringAlert(
-  thresholdPercent: number = 80
-): Promise<SimWithCustomerAndUsage[]> {
+export async function getAllActiveSimsWithUsage(): Promise<
+  SimWithCustomerAndUsage[]
+> {
   const rows = await prisma.sIM.findMany({
     where: {
       status: "ACTIVE",
@@ -151,7 +226,7 @@ export async function getSimsRequiringAlert(
     },
   });
 
-  const mapped: SimWithCustomerAndUsage[] = rows.map((s) => {
+  return rows.map((s) => {
     const ass = s.assignments[0];
     const cust = ass?.subscription?.customer ?? null;
     return {
@@ -170,8 +245,17 @@ export async function getSimsRequiringAlert(
       customerNumber: cust?.customerNumber ?? null,
     };
   });
+}
 
-  return mapped.filter((s) => isDataAboveThreshold(s, thresholdPercent));
+export function getSimsAboveThresholdLevels(
+  allSims: SimWithCustomerAndUsage[],
+  levels: AlertThresholdLevel[]
+): SimWithCustomerAndUsage[] {
+  if (levels.length === 0) return [];
+  const percents = levels.map((l) => thresholdLevelToPercent(l));
+  return allSims.filter((s) =>
+    percents.some((p) => isDataAboveThreshold(s, p))
+  );
 }
 
 async function buildRoleScopeMap(
@@ -269,6 +353,8 @@ async function getAllEligibleUsersWithDefaults(): Promise<
         enabledEmail: true,
         enabledDataThresholdAlert: true,
         dataThresholdPercent: 80,
+        thresholdLevels: DEFAULT_THRESHOLD_LEVELS,
+        usageAlertCheckIntervalMinutes: 60,
         notifyAllSims: false,
         channels: [NotificationChannel.EMAIL],
         lastNotificationAt: null,
@@ -289,6 +375,36 @@ function buildPeriodKey(usagePeriodStart: Date | null): Date | null {
   return null;
 }
 
+type AlertKey = string;
+const alertKeyOf = (
+  userId: string,
+  simId: string,
+  thresholdLevel: AlertThresholdLevel,
+  usagePeriodStart: Date | null
+): AlertKey =>
+  usagePeriodStart
+    ? `${userId}|${simId}|${thresholdLevel}|${usagePeriodStart.toISOString()}`
+    : `${userId}|${simId}|${thresholdLevel}|__no_period__`;
+
+function highestLevelPercentForSim(
+  sim: SimWithCustomerAndUsage,
+  levels: AlertThresholdLevel[]
+): number {
+  const sorted = [...levels]
+    .map((l) => thresholdLevelToPercent(l))
+    .sort((a, b) => b - a);
+  for (const p of sorted) {
+    if (isDataAboveThreshold(sim, p)) return p;
+  }
+  return 0;
+}
+
+function levelForSimAndPercent(
+  percent: number
+): AlertThresholdLevel | null {
+  return percentToThresholdLevel(percent);
+}
+
 export async function runUsageAlertNotificationCycle(
   opts: {
     thresholdPercentOverride?: number;
@@ -297,16 +413,27 @@ export async function runUsageAlertNotificationCycle(
   } = {}
 ): Promise<UsageAlertCycleReport> {
   const users = await getAllEligibleUsersWithDefaults();
-  const allAtThreshold = await getSimsRequiringAlert(80);
+  const allSims = await getAllActiveSimsWithUsage();
+
+  const maxPercentAcrossAllUsers = Math.max(
+    80,
+    ...users.flatMap((u) =>
+      resolveUserThresholdLevels(u).map((l) => thresholdLevelToPercent(l))
+    )
+  );
+  const allAtAnyThreshold = allSims.filter((s) =>
+    isDataAboveThreshold(s, Math.min(70, maxPercentAcrossAllUsers))
+  );
 
   const report: UsageAlertCycleReport = {
     usersChecked: users.length,
     usersEnabledForEmail: users.length,
+    usersSkippedInterval: 0,
     usersWithAlerts: 0,
     usersNotified: 0,
     usersNotifiedDryRun: 0,
     userSendFailures: 0,
-    simsAtThresholdTotal: allAtThreshold.length,
+    simsAtThresholdTotal: allAtAnyThreshold.length,
     simsSkippedAlreadySent: 0,
     simsSkippedScope: 0,
     simsReportedEmails: 0,
@@ -315,12 +442,13 @@ export async function runUsageAlertNotificationCycle(
     details: [],
   };
 
-  if (users.length === 0 || allAtThreshold.length === 0) return report;
+  if (users.length === 0 || allAtAnyThreshold.length === 0) return report;
 
+  const allThresholdLevels = Object.values(AlertThresholdLevel) as AlertThresholdLevel[];
   const alreadySentRows = await prisma.simUsageAlert.findMany({
     where: {
-      simId: { in: allAtThreshold.map((s) => s.id) },
-      thresholdLevel: AlertThresholdLevel.WARNING_80,
+      simId: { in: allAtAnyThreshold.map((s) => s.id) },
+      thresholdLevel: { in: allThresholdLevels },
       channel: NotificationChannel.EMAIL,
     },
     select: {
@@ -331,21 +459,14 @@ export async function runUsageAlertNotificationCycle(
     },
   });
 
-  type AlertKey = string;
-  const alertKeyOf = (
-    userId: string,
-    simId: string,
-    usagePeriodStart: Date | null
-  ): AlertKey =>
-    usagePeriodStart
-      ? `${userId}|${simId}|${usagePeriodStart.toISOString()}`
-      : `${userId}|${simId}|__no_period__`;
-
   const alreadySent = new Set<AlertKey>(
-    alreadySentRows.map((r) => alertKeyOf(r.userId, r.simId, r.usagePeriodStart))
+    alreadySentRows.map((r) =>
+      alertKeyOf(r.userId, r.simId, r.thresholdLevel, r.usagePeriodStart)
+    )
   );
 
   const limitUsers = opts.limitUsers ?? 2000;
+  const nowCycle = new Date();
 
   let processedUsers = 0;
   for (const row of users) {
@@ -354,18 +475,53 @@ export async function runUsageAlertNotificationCycle(
     const u = row.user;
     if (!u.email) continue;
 
-    const userPct = opts.thresholdPercentOverride ?? row.dataThresholdPercent ?? 80;
+    const userLevels = opts.thresholdPercentOverride
+      ? [percentToThresholdLevel(opts.thresholdPercentOverride) ?? AlertThresholdLevel.WARNING_80]
+      : resolveUserThresholdLevels(row);
+    const userLevelPercents = userLevels.map((l) => thresholdLevelToPercent(l));
+    const userInterval = resolveUserCheckIntervalMinutes(row);
     const roleScope = u.roleScope;
     const isInternal = roleScope === "INTERNAL";
     const useAllSims = isInternal && !!row.notifyAllSims;
+
+    const lastAt = row.lastNotificationAt;
+    if (
+      !opts.dryRunForce &&
+      !opts.thresholdPercentOverride &&
+      lastAt
+    ) {
+      const diffMs = nowCycle.getTime() - lastAt.getTime();
+      const diffMin = diffMs / (1000 * 60);
+      if (diffMin < userInterval) {
+        report.usersSkippedInterval++;
+        report.details.push({
+          userId: u.id,
+          email: u.email,
+          name: u.name,
+          notifyAllSims: !!row.notifyAllSims,
+          roleScope,
+          checkIntervalMinutes: userInterval,
+          thresholdLevels: userLevels.map((l) => String(l)),
+          simsTotalInScopeAtThreshold: 0,
+          simsToReport: 0,
+          simsPreviouslyAlerted: 0,
+          emailResult: null,
+          errorMessage: `Overgeslagen: laatste notificatie was ${Math.round(
+            diffMin
+          )} min geleden (interval: ${userInterval} min).`,
+        });
+        continue;
+      }
+    }
 
     let scopeCustomerIds: Set<string> | null = null;
     if (!useAllSims) {
       const ids = await collectUserCustomerIds(u.id).catch(() => [] as string[]);
       scopeCustomerIds = new Set(ids);
       if (scopeCustomerIds.size === 0) {
-        const filteredByStatus = allAtThreshold.filter((s) => {
-          if (!isDataAboveThreshold(s, userPct)) return false;
+        const filteredByStatus = allAtAnyThreshold.filter((s) => {
+          if (!userLevelPercents.some((p) => isDataAboveThreshold(s, p)))
+            return false;
           return true;
         });
         report.simsSkippedScope += filteredByStatus.length;
@@ -375,6 +531,8 @@ export async function runUsageAlertNotificationCycle(
           name: u.name,
           notifyAllSims: !!row.notifyAllSims,
           roleScope,
+          checkIntervalMinutes: userInterval,
+          thresholdLevels: userLevels.map((l) => String(l)),
           simsTotalInScopeAtThreshold: 0,
           simsToReport: 0,
           simsPreviouslyAlerted: 0,
@@ -387,8 +545,8 @@ export async function runUsageAlertNotificationCycle(
     }
 
     const simsInScope: SimWithCustomerAndUsage[] = [];
-    for (const sim of allAtThreshold) {
-      if (!isDataAboveThreshold(sim, userPct)) continue;
+    for (const sim of allAtAnyThreshold) {
+      if (!userLevelPercents.some((p) => isDataAboveThreshold(sim, p))) continue;
       if (useAllSims) {
         simsInScope.push(sim);
       } else if (sim.customerId && scopeCustomerIds!.has(sim.customerId)) {
@@ -405,6 +563,8 @@ export async function runUsageAlertNotificationCycle(
         name: u.name,
         notifyAllSims: !!row.notifyAllSims,
         roleScope,
+        checkIntervalMinutes: userInterval,
+        thresholdLevels: userLevels.map((l) => String(l)),
         simsTotalInScopeAtThreshold: 0,
         simsToReport: 0,
         simsPreviouslyAlerted: 0,
@@ -413,10 +573,29 @@ export async function runUsageAlertNotificationCycle(
       continue;
     }
 
-    const simsToReport: SimWithCustomerAndUsage[] = [];
+    type SimWithAlertInfo = SimWithCustomerAndUsage & {
+      highestPercent: number;
+      alertLevel: AlertThresholdLevel;
+    };
+
+    const simsWithLevels: SimWithAlertInfo[] = simsInScope
+      .map((s) => {
+        const highestPct = highestLevelPercentForSim(s, userLevels);
+        const level = levelForSimAndPercent(highestPct);
+        if (!level || highestPct === 0) return null;
+        return { ...s, highestPercent: highestPct, alertLevel: level };
+      })
+      .filter((x): x is SimWithAlertInfo => x !== null);
+
+    const simsToReport: SimWithAlertInfo[] = [];
     let alreadyAlertedCount = 0;
-    for (const sim of simsInScope) {
-      const k = alertKeyOf(u.id, sim.id, buildPeriodKey(sim.usagePeriodStart));
+    for (const sim of simsWithLevels) {
+      const k = alertKeyOf(
+        u.id,
+        sim.id,
+        sim.alertLevel,
+        buildPeriodKey(sim.usagePeriodStart)
+      );
       if (alreadySent.has(k)) {
         alreadyAlertedCount++;
         report.simsSkippedAlreadySent++;
@@ -433,6 +612,8 @@ export async function runUsageAlertNotificationCycle(
         name: u.name,
         notifyAllSims: !!row.notifyAllSims,
         roleScope,
+        checkIntervalMinutes: userInterval,
+        thresholdLevels: userLevels.map((l) => String(l)),
         simsTotalInScopeAtThreshold: simsInScope.length,
         simsToReport: 0,
         simsPreviouslyAlerted: alreadyAlertedCount,
@@ -451,9 +632,14 @@ export async function runUsageAlertNotificationCycle(
       customerName: s.customerName,
       dataUsedBytes: s.dataUsedBytes ?? 0n,
       dataLimitBytes: getEffectiveDataLimit(s) ?? 0n,
-      thresholdPercent: userPct,
+      thresholdPercent: s.highestPercent,
+      thresholdLevel: s.alertLevel,
       detailUrl: SIM_DETAIL_PATH(s.id),
     }));
+
+    const overallThreshold = Math.max(
+      ...items.map((i) => i.thresholdPercent)
+    );
 
     let emailResult: EmailSendResult;
     if (opts.dryRunForce) {
@@ -468,7 +654,7 @@ export async function runUsageAlertNotificationCycle(
         emailResult = await sendSimUsageThresholdEmail({
           toEmail: u.email,
           toName: u.name || "Gebruiker",
-          thresholdPercent: userPct,
+          thresholdPercent: overallThreshold,
           items,
         });
       } catch (e: any) {
@@ -505,7 +691,7 @@ export async function runUsageAlertNotificationCycle(
       const createData = simsToReport.map((s) => ({
         userId: u.id,
         simId: s.id,
-        thresholdLevel: AlertThresholdLevel.WARNING_80,
+        thresholdLevel: s.alertLevel,
         dataUsedBytes: s.dataUsedBytes ?? 0n,
         dataLimitBytes: getEffectiveDataLimit(s) ?? 0n,
         usagePeriodStart: s.usagePeriodStart,
@@ -518,7 +704,9 @@ export async function runUsageAlertNotificationCycle(
           await prisma.simUsageAlert.create({ data: d });
           alertsCreatedForUser++;
           report.alertsCreated++;
-          alreadySent.add(alertKeyOf(u.id, d.simId, d.usagePeriodStart));
+          alreadySent.add(
+            alertKeyOf(u.id, d.simId, d.thresholdLevel, d.usagePeriodStart)
+          );
         } catch (e) {
           if (
             e instanceof Error &&
@@ -529,6 +717,11 @@ export async function runUsageAlertNotificationCycle(
         }
       }
 
+      const storedLevels =
+        Array.isArray(row.thresholdLevels) && row.thresholdLevels.length > 0
+          ? { set: row.thresholdLevels }
+          : undefined;
+
       await prisma.userNotificationSettings
         .upsert({
           where: { userId: u.id },
@@ -536,7 +729,9 @@ export async function runUsageAlertNotificationCycle(
             userId: u.id,
             enabledEmail: row.enabledEmail,
             enabledDataThresholdAlert: row.enabledDataThresholdAlert,
-            dataThresholdPercent: row.dataThresholdPercent,
+            dataThresholdPercent: row.dataThresholdPercent ?? 80,
+            thresholdLevels: storedLevels?.set ?? DEFAULT_THRESHOLD_LEVELS,
+            usageAlertCheckIntervalMinutes: userInterval,
             notifyAllSims: row.notifyAllSims,
             channels: { set: [NotificationChannel.EMAIL] },
             lastNotificationAt: now,
@@ -554,6 +749,8 @@ export async function runUsageAlertNotificationCycle(
       name: u.name,
       notifyAllSims: !!row.notifyAllSims,
       roleScope,
+      checkIntervalMinutes: userInterval,
+      thresholdLevels: userLevels.map((l) => String(l)),
       simsTotalInScopeAtThreshold: simsInScope.length,
       simsToReport: simsToReport.length,
       simsPreviouslyAlerted: alreadyAlertedCount,

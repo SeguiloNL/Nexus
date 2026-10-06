@@ -47,15 +47,7 @@ function LoginForm() {
         ) : null}
       </div>
       <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <Label htmlFor="password">Wachtwoord</Label>
-          <Link
-            href="/forgot-password"
-            className="text-xs font-medium text-blue-600 hover:text-blue-500 underline-offset-2 hover:underline"
-          >
-            Wachtwoord vergeten?
-          </Link>
-        </div>
+        <Label htmlFor="password">Wachtwoord</Label>
         <Input
           id="password"
           name="password"
@@ -72,6 +64,14 @@ function LoginForm() {
             {state.errors.password[0]}
           </p>
         ) : null}
+        <div className="pt-1 text-right">
+          <Link
+            href="/forgot-password"
+            className="text-sm font-medium text-blue-600 hover:text-blue-500 underline-offset-2 hover:underline"
+          >
+            Wachtwoord vergeten?
+          </Link>
+        </div>
       </div>
 
       {state?.message ? (

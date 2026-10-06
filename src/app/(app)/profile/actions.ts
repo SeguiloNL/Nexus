@@ -3,14 +3,24 @@
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth/session";
 import { SaveNotificationSettingsSchema } from "@/server/validators/user";
-import { NotificationChannel, type AlertThresholdLevel } from "@prisma/client";
-import { PermissionError } from "@/lib/rbac";
+import {
+  AlertThresholdLevel,
+  NotificationChannel,
+  type AlertThresholdLevel as AlertThresholdLevelType,
+} from "@prisma/client";
+import { PermissionError, hasMinRole } from "@/lib/rbac";
 import {
   sendTestEmail,
   formatSmtpErrorForUser,
   renderSmtpErrorPlain,
 } from "@/server/services/email.service";
 import { getSmtpSettings } from "@/server/services/app-setting.service";
+import {
+  DEFAULT_THRESHOLD_LEVELS,
+  resolveUserThresholdLevels,
+  resolveUserCheckIntervalMinutes,
+} from "@/server/services/sim-usage-alert.service";
+import { UserRole } from "@/types/enums";
 
 export async function getMyNotificationSettingsAction() {
   const user = await requireUser();
@@ -19,11 +29,18 @@ export async function getMyNotificationSettingsAction() {
   });
   const roleScope = (user.roleScope as "INTERNAL" | "CUSTOMER" | "RESELLER" | "PARTNER" | undefined) ?? null;
   if (row) {
+    const levels = resolveUserThresholdLevels(row);
+    const interval = resolveUserCheckIntervalMinutes(row);
     return {
       enabledEmail: row.enabledEmail,
       enabledDataThresholdAlert: row.enabledDataThresholdAlert,
       dataThresholdPercent: row.dataThresholdPercent,
-      notifyAllSims: roleScope === "INTERNAL" ? row.notifyAllSims : false,
+      thresholdLevels: levels,
+      usageAlertCheckIntervalMinutes: interval,
+      notifyAllSims:
+        roleScope === "INTERNAL" && hasMinRole(user.role, UserRole.ADMIN)
+          ? row.notifyAllSims
+          : false,
       lastNotificationAt: row.lastNotificationAt ?? null,
       _roleScope: roleScope,
     };
@@ -32,6 +49,8 @@ export async function getMyNotificationSettingsAction() {
     enabledEmail: true,
     enabledDataThresholdAlert: true,
     dataThresholdPercent: 80,
+    thresholdLevels: DEFAULT_THRESHOLD_LEVELS,
+    usageAlertCheckIntervalMinutes: 60,
     notifyAllSims: false,
     lastNotificationAt: null,
     _roleScope: roleScope,
@@ -41,10 +60,28 @@ export async function getMyNotificationSettingsAction() {
 export async function saveNotificationSettingsAction(form: FormData) {
   const user = await requireUser();
 
+  const thresholdLevelsRaw = form.getAll("thresholdLevels");
+  const parsedLevels: AlertThresholdLevelType[] = Array.isArray(
+    thresholdLevelsRaw
+  )
+    ? (thresholdLevelsRaw
+        .map((v) => String(v))
+        .filter(
+          (v) =>
+            Object.values(AlertThresholdLevel).includes(
+              v as AlertThresholdLevelType
+            )
+        ) as AlertThresholdLevelType[])
+    : [];
+
   const payload = {
     enabledEmail: form.get("enabledEmail") === "on",
     enabledDataThresholdAlert: form.get("enabledDataThresholdAlert") === "on",
     dataThresholdPercent: Number(form.get("dataThresholdPercent") ?? 80),
+    thresholdLevels: parsedLevels,
+    usageAlertCheckIntervalMinutes: Number(
+      form.get("usageAlertCheckIntervalMinutes") ?? 60
+    ),
     notifyAllSims: form.get("notifyAllSims") === "on",
   };
 
@@ -58,10 +95,58 @@ export async function saveNotificationSettingsAction(form: FormData) {
     | undefined) ?? null;
 
   let finalNotifyAllSims = validated.notifyAllSims;
-  if (finalNotifyAllSims && roleScope !== "INTERNAL") {
+  if (
+    finalNotifyAllSims &&
+    (roleScope !== "INTERNAL" || !hasMinRole(user.role, UserRole.ADMIN))
+  ) {
     throw new PermissionError(
-      "notifyAllSims mag alleen ingeschakeld worden door interne beheerders."
+      "notifyAllSims mag alleen ingeschakeld worden door beheerders."
     );
+  }
+
+  let finalLevels: AlertThresholdLevelType[] =
+    Array.isArray(validated.thresholdLevels) && validated.thresholdLevels.length > 0
+      ? (validated.thresholdLevels as AlertThresholdLevelType[])
+      : [];
+
+  let fallbackPercent = validated.dataThresholdPercent ?? 80;
+  if (finalLevels.length === 0) {
+    if (fallbackPercent >= 100) {
+      finalLevels = [AlertThresholdLevel.CRITICAL_100];
+    } else if (fallbackPercent >= 90) {
+      finalLevels = [AlertThresholdLevel.WARNING_90];
+    } else if (fallbackPercent >= 80) {
+      finalLevels = [AlertThresholdLevel.WARNING_80];
+    } else if (fallbackPercent >= 70) {
+      finalLevels = [AlertThresholdLevel.WARNING_70];
+    } else {
+      finalLevels = DEFAULT_THRESHOLD_LEVELS;
+    }
+    const max = Math.max(
+      ...finalLevels.map((l) =>
+        l === AlertThresholdLevel.CRITICAL_100
+          ? 100
+          : l === AlertThresholdLevel.WARNING_90
+          ? 90
+          : l === AlertThresholdLevel.WARNING_80
+          ? 80
+          : 70
+      )
+    );
+    fallbackPercent = max;
+  } else {
+    const max = Math.max(
+      ...finalLevels.map((l) =>
+        l === AlertThresholdLevel.CRITICAL_100
+          ? 100
+          : l === AlertThresholdLevel.WARNING_90
+          ? 90
+          : l === AlertThresholdLevel.WARNING_80
+          ? 80
+          : 70
+      )
+    );
+    fallbackPercent = max;
   }
 
   const saved = await prisma.userNotificationSettings.upsert({
@@ -70,14 +155,18 @@ export async function saveNotificationSettingsAction(form: FormData) {
       userId: user.id,
       enabledEmail: validated.enabledEmail,
       enabledDataThresholdAlert: validated.enabledDataThresholdAlert,
-      dataThresholdPercent: validated.dataThresholdPercent,
+      dataThresholdPercent: fallbackPercent,
+      thresholdLevels: { set: finalLevels },
+      usageAlertCheckIntervalMinutes: validated.usageAlertCheckIntervalMinutes,
       notifyAllSims: finalNotifyAllSims,
       channels: { set: [NotificationChannel.EMAIL] },
     },
     update: {
       enabledEmail: validated.enabledEmail,
       enabledDataThresholdAlert: validated.enabledDataThresholdAlert,
-      dataThresholdPercent: validated.dataThresholdPercent,
+      dataThresholdPercent: fallbackPercent,
+      thresholdLevels: { set: finalLevels },
+      usageAlertCheckIntervalMinutes: validated.usageAlertCheckIntervalMinutes,
       notifyAllSims: finalNotifyAllSims,
       channels: { set: [NotificationChannel.EMAIL] },
     },
@@ -89,6 +178,8 @@ export async function saveNotificationSettingsAction(form: FormData) {
       enabledEmail: saved.enabledEmail,
       enabledDataThresholdAlert: saved.enabledDataThresholdAlert,
       dataThresholdPercent: saved.dataThresholdPercent,
+      thresholdLevels: resolveUserThresholdLevels(saved),
+      usageAlertCheckIntervalMinutes: resolveUserCheckIntervalMinutes(saved),
       notifyAllSims: roleScope === "INTERNAL" ? saved.notifyAllSims : false,
     },
   };
@@ -165,4 +256,4 @@ export async function sendTestNotificationEmailAction(): Promise<{
   }
 }
 
-export type _AlertThresholdLevelExport = AlertThresholdLevel;
+export type _AlertThresholdLevelExport = AlertThresholdLevelType;

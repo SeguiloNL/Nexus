@@ -98,6 +98,7 @@ export interface SimUsageThresholdEmailItem {
   dataUsedBytes: bigint;
   dataLimitBytes: bigint;
   thresholdPercent: number;
+  thresholdLevel?: string | null;
   detailUrl: string;
 }
 
@@ -128,10 +129,56 @@ function appBaseUrl(): string {
   return process.env.NEXT_PUBLIC_APP_URL?.trim() || "http://localhost:3000";
 }
 
+type ThresholdVisual = {
+  badgeText: string;
+  badgeBg: string;
+  badgeColor: string;
+  titleIntro: string;
+  leadVerb: string;
+};
+
+function visualForThreshold(pct: number): ThresholdVisual {
+  if (pct >= 100) {
+    return {
+      badgeText: "🔴 Kritiek",
+      badgeBg: "#fee2e2",
+      badgeColor: "#991b1b",
+      titleIntro: "Data-limiet bereikt",
+      leadVerb: "heeft de data-limiet volledig verbruikt",
+    };
+  }
+  if (pct >= 90) {
+    return {
+      badgeText: "🟠 Ernstig",
+      badgeBg: "#ffedd5",
+      badgeColor: "#9a3412",
+      titleIntro: "Datadrempel 90%",
+      leadVerb: "heeft 90% van de data-limiet verbruikt",
+    };
+  }
+  if (pct >= 80) {
+    return {
+      badgeText: "⚠️ Waarschuwing",
+      badgeBg: "#fef3c7",
+      badgeColor: "#92400e",
+      titleIntro: "Datadrempel 80%",
+      leadVerb: "heeft 80% van de data-limiet verbruikt",
+    };
+  }
+  return {
+    badgeText: "ℹ️ Melding",
+    badgeBg: "#dbeafe",
+    badgeColor: "#1e40af",
+    titleIntro: `Datadrempel ${fmtPct(pct)}`,
+    leadVerb: `heeft ${fmtPct(pct)} van de data-limiet verbruikt`,
+  };
+}
+
 function buildUsageThresholdHtml(
   input: SendSimUsageThresholdEmailInput
 ): string {
   const base = appBaseUrl();
+  const visual = visualForThreshold(input.thresholdPercent);
   const rows = input.items
     .map((it) => {
       const used = fmtBytes(it.dataUsedBytes);
@@ -150,13 +197,40 @@ function buildUsageThresholdHtml(
       const url = it.detailUrl.startsWith("http")
         ? it.detailUrl
         : `${base}${it.detailUrl}`;
+      const thresholdBadge = it.thresholdPercent
+        ? `<span style="display:inline-block;margin-left:8px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;background:${
+            actual >= 100
+              ? "#fee2e2"
+              : actual >= 90
+              ? "#ffedd5"
+              : actual >= 80
+              ? "#fef3c7"
+              : "#dbeafe"
+          };color:${
+            actual >= 100
+              ? "#991b1b"
+              : actual >= 90
+              ? "#9a3412"
+              : actual >= 80
+              ? "#92400e"
+              : "#1e40af"
+          };">≥${fmtPct(it.thresholdPercent)}</span>`
+        : "";
       return `
         <tr>
           <td style="padding:10px 12px;border-bottom:1px solid #eee;">
-            <a href="${url}" style="font-weight:600;color:#0b63d5;text-decoration:none;">${escapeHtml(label)}</a>${customer}
+            <a href="${url}" style="font-weight:600;color:#0b63d5;text-decoration:none;">${escapeHtml(label)}</a>${customer}${thresholdBadge}
           </td>
           <td style="padding:10px 12px;border-bottom:1px solid #eee;">${used} / ${limit}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #eee;">${fmtPct(actual)}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #eee;font-weight:600;color:${
+            actual >= 100
+              ? "#991b1b"
+              : actual >= 90
+              ? "#9a3412"
+              : actual >= 80
+              ? "#92400e"
+              : "#1e40af"
+          };">${fmtPct(actual)}</td>
         </tr>`;
     })
     .join("");
@@ -170,13 +244,13 @@ function buildUsageThresholdHtml(
 <html lang="nl">
 <head>
 <meta charset="utf-8"/>
-<title>Datadrempel ${fmtPct(input.thresholdPercent)} bereikt</title>
+<title>${visual.titleIntro} — ${input.items.length} SIM kaart${input.items.length === 1 ? "" : "en"}</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#111;background:#f6f7f9;margin:0;padding:24px;}
 .card{background:#fff;border:1px solid #e6e7ea;border-radius:12px;max-width:640px;margin:0 auto;padding:24px;}
 .h{font-size:20px;font-weight:700;margin:0 0 8px;}
 .lead{color:#444;margin:0 0 20px;}
-.badge{display:inline-block;background:#fef3c7;color:#92400e;font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;margin-right:8px;}
+.badge{display:inline-block;font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;margin-right:8px;}
 table{width:100%;border-collapse:collapse;margin-top:12px;}
 th{background:#f3f4f6;padding:10px 12px;text-align:left;font-size:13px;color:#374151;border-bottom:1px solid #e5e7eb;}
 footer{color:#6b7280;font-size:12px;margin-top:20px;padding-top:16px;border-top:1px solid #eee;}
@@ -185,13 +259,13 @@ footer{color:#6b7280;font-size:12px;margin-top:20px;padding-top:16px;border-top:
 <body>
   <div class="card">
     <div>
-      <span class="badge">⚠️ Waarschuwing</span>
+      <span class="badge" style="background:${visual.badgeBg};color:${visual.badgeColor};">${visual.badgeText}</span>
       <span style="color:#6b7280;font-size:13px;">${APP_NAME}</span>
     </div>
-    <h1 class="h">Datadrempel ${fmtPct(input.thresholdPercent)} bereikt — ${input.items.length} SIM kaart${input.items.length === 1 ? "" : "en"}</h1>
+    <h1 class="h">${visual.titleIntro} bereikt — ${input.items.length} SIM kaart${input.items.length === 1 ? "" : "en"}</h1>
     <p class="lead">
       Beste ${escapeHtml(input.toName)},<br/><br/>
-      Er ${input.items.length === 1 ? "is 1 SIM-kaart" : `zijn ${input.items.length} SIM-kaarten`} in uw bereik die de drempel van ${fmtPct(input.thresholdPercent)} dataverbruik heeft bereikt.
+      Er ${input.items.length === 1 ? "is 1 SIM-kaart" : `zijn ${input.items.length} SIM-kaarten`} in uw bereik die ${visual.leadVerb}.
     </p>
     <table>
       <thead>
@@ -215,17 +289,18 @@ footer{color:#6b7280;font-size:12px;margin-top:20px;padding-top:16px;border-top:
 
 function buildUsageThresholdText(input: SendSimUsageThresholdEmailInput): string {
   const base = appBaseUrl();
+  const visual = visualForThreshold(input.thresholdPercent);
   const lines: string[] = [];
   lines.push(
-    `${APP_NAME}: Datadrempel ${fmtPct(input.thresholdPercent)} bereikt`
+    `${APP_NAME}: ${visual.titleIntro} bereikt — ${input.items.length} SIM kaart${input.items.length === 1 ? "" : "en"}`
   );
   lines.push("");
   lines.push(`Beste ${input.toName},`);
   lines.push("");
   lines.push(
     input.items.length === 1
-      ? `Er is 1 SIM-kaart in uw bereik die de drempel van ${fmtPct(input.thresholdPercent)} dataverbruik heeft bereikt:`
-      : `Er zijn ${input.items.length} SIM-kaarten in uw bereik die de drempel van ${fmtPct(input.thresholdPercent)} dataverbruik hebben bereikt:`
+      ? `Er is 1 SIM-kaart in uw bereik die ${visual.leadVerb}:`
+      : `Er zijn ${input.items.length} SIM-kaarten in uw bereik die ${visual.leadVerb}:`
   );
   lines.push("");
   for (const it of input.items) {
@@ -244,7 +319,10 @@ function buildUsageThresholdText(input: SendSimUsageThresholdEmailInput): string
     const url = it.detailUrl.startsWith("http")
       ? it.detailUrl
       : `${base}${it.detailUrl}`;
-    lines.push(`- ${label}${it.customerName ? ` (${it.customerName})` : ""}: ${used} / ${limit} (${fmtPct(actual)})`);
+    const thresh = it.thresholdPercent
+      ? ` [drempel ≥${fmtPct(it.thresholdPercent)}]`
+      : "";
+    lines.push(`- ${label}${it.customerName ? ` (${it.customerName})` : ""}: ${used} / ${limit} (${fmtPct(actual)})${thresh}`);
     lines.push(`  ${url}`);
   }
   lines.push("");
@@ -275,10 +353,21 @@ export interface EmailSendResult {
 export async function sendSimUsageThresholdEmail(
   input: SendSimUsageThresholdEmailInput
 ): Promise<EmailSendResult> {
+  const visual = visualForThreshold(input.thresholdPercent);
+  const pctLabel =
+    input.thresholdPercent >= 100 ? "limiet" : `${fmtPct(input.thresholdPercent)}`;
+  const emoji =
+    input.thresholdPercent >= 100
+      ? "🔴"
+      : input.thresholdPercent >= 90
+      ? "🟠"
+      : input.thresholdPercent >= 80
+      ? "⚠️"
+      : "ℹ️";
   const subject =
     input.items.length === 1
-      ? `⚠️ SIM datadrempel ${fmtPct(input.thresholdPercent)} bereikt`
-      : `⚠️ ${input.items.length} SIM's — datadrempel ${fmtPct(input.thresholdPercent)} bereikt`;
+      ? `${emoji} SIM data${pctLabel === "limiet" ? "limiet" : `drempel ${pctLabel}`} bereikt`
+      : `${emoji} ${input.items.length} SIM's — data${pctLabel === "limiet" ? "limiet" : `drempel ${pctLabel}`} bereikt`;
   const html = buildUsageThresholdHtml(input);
   const text = buildUsageThresholdText(input);
   const { transporter, dryRun, from } = await resolveTransporter();

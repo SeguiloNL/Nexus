@@ -138,6 +138,8 @@ enum InserveSyncStatus {
 }
 
 enum SyncFrequency {
+  EVERY_15_MINUTES
+  EVERY_30_MINUTES
   HOURLY
   DAILY
   WEEKLY
@@ -172,7 +174,10 @@ enum NotificationChannel {
 }
 
 enum AlertThresholdLevel {
+  WARNING_70
   WARNING_80
+  WARNING_90
+  CRITICAL_100
 }
 
 enum InvoiceStatus {
@@ -650,17 +655,19 @@ model AuditLog {
 }
 
 model UserNotificationSettings {
-  id                        String              @id @default(cuid())
-  userId                    String              @unique
-  user                      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  enabledEmail              Boolean             @default(true)
-  enabledDataThresholdAlert Boolean            @default(true)
-  dataThresholdPercent      Int                 @default(80)
-  notifyAllSims             Boolean             @default(false)
-  channels                  NotificationChannel[]
-  lastNotificationAt        DateTime?           @db.Timestamptz
-  createdAt                 DateTime            @default(now())
-  updatedAt                 DateTime            @updatedAt
+  id                              String                @id @default(cuid())
+  userId                          String                @unique
+  user                            User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  enabledEmail                    Boolean               @default(true)
+  enabledDataThresholdAlert       Boolean               @default(true)
+  dataThresholdPercent            Int                   @default(80)
+  thresholdLevels                 AlertThresholdLevel[]
+  usageAlertCheckIntervalMinutes  Int                   @default(60)
+  notifyAllSims                   Boolean               @default(false)
+  channels                        NotificationChannel[]
+  lastNotificationAt              DateTime?             @db.Timestamptz
+  createdAt                       DateTime              @default(now())
+  updatedAt                       DateTime              @updatedAt
 
   @@index([userId])
   @@map("user_notification_settings")

@@ -157,6 +157,8 @@ export type ResourceType =
 /* ========================= Sync-Schedule enums (mirror Prisma) ========================= */
 
 export enum SyncFrequency {
+  EVERY_15_MINUTES = "EVERY_15_MINUTES",
+  EVERY_30_MINUTES = "EVERY_30_MINUTES",
   HOURLY = "HOURLY",
   DAILY = "DAILY",
   WEEKLY = "WEEKLY",
