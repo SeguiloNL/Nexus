@@ -746,6 +746,22 @@ if [[ "$DB_UPDATE_ONLY" -eq 1 ]]; then
   title "DB-UPDATE MODE — Alleen database bijwerken naar laatste versie"
   info "--dbupdate: doet ALLEEN prisma migrate deploy + systeemrollen (VEILIG voor productie)."
 
+  # ── 🔒 PRE-FLIGHT: ECHT root (EUID == 0) VERPLICHT bij --dbupdate ──
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    err "DB-UPDATE MODE FAALT VOORAF: je moet ECHT als ROOT draaien (EUID=0)."
+    info ""
+    info "  ✅  FIX:"
+    info "        sudo -i"
+    info "        cd ${INSTALL_DIR:-/opt/stm}"
+    info "        bash ./nexus-install.sh --dbupdate"
+    exit 10
+  fi
+  if [[ ! -r "${ENV_FILE}" ]]; then
+    err "DB-UPDATE MODE FAALT VOORAF: ${ENV_FILE} is NIET LEESBAAR (permissie issue)."
+    info "  FIX: chmod 0640 ${ENV_FILE} ; chown root:root ${ENV_FILE} ; en opnieuw."
+    exit 10
+  fi
+
   # .env / docker-compose.prod.yml moeten bestaan
   if [[ ! -f "$ENV_FILE" || ! -f "$COMPOSE_FILE" ]]; then
     err "DB-UPDATE FAAL: .env of docker-compose.prod.yml ontbreekt in ${INSTALL_DIR}. Geen bestaande installatie."
@@ -972,6 +988,30 @@ STM_DBUPDATE_SQL_EOF
     warn "  Validatie kon niet automatisch draaien (geen container). Controleer handmatig."
   fi
 
+  # ── STAP 4b: EXPLICIETE prisma migrate status check (geen pending migraties!) ──
+  step "[4b/5] Prisma migrate status: alle migraties applied?"
+  MSTATUS_TEXT=""
+  MSTATUS_PENDING=0
+  if [[ -n "${APP_CONTAINER_ID}" ]]; then
+    MSTATUS_TEXT="$("${COMPOSE_CMD[@]}" exec -T stm-app sh -lc 'cd /app && npx prisma migrate status 2>&1 | tail -40' 2>&1 || true)"
+    echo "${MSTATUS_TEXT}" | grep -Eiq "pending|not applied" && MSTATUS_PENDING=1 || true
+  fi
+  if [[ -n "${MSTATUS_TEXT}" ]]; then
+    echo "${MSTATUS_TEXT}" | tail -10 | tee -a "$LOG_FILE" >&2
+  fi
+  if [[ "${MSTATUS_PENDING}" -eq 1 ]]; then
+    warn "  ⚠️  PENDING MIGRATIES GEVONDEN! Handmatig forceren:"
+    info "        docker exec stm-app sh -lc 'cd /app && npx prisma migrate deploy'"
+    MSTATUS_SUMMARY_LINE="${YLW}⚠️  Pending migraties over!${RST}   Zie hierboven."
+  else
+    if [[ -n "${MSTATUS_TEXT}" ]]; then
+      ok "  Prisma migrate status: schema is up to date."
+      MSTATUS_SUMMARY_LINE="${GRN}✅ Migraties: up to date${RST}"
+    else
+      MSTATUS_SUMMARY_LINE="${DIM}⚪ Migratie status: niet gecontroleerd (geen app container)${RST}"
+    fi
+  fi
+
   # ── STAP 5: stm-app herstarten (indien hij liep) zodat caches leeg zijn ──
   step "[5/5] App container herstarten (indien draaiend) voor permissie-cache invalidatie"
   if [[ -n "${APP_CONTAINER_ID}" ]]; then
@@ -986,6 +1026,7 @@ STM_DBUPDATE_SQL_EOF
   hr
   title "✅  DB-UPDATE VOLTOOID"
   ok "Schema migraties (prisma migrate deploy): TOEGEPAST"
+  info "  Status: ${MSTATUS_SUMMARY_LINE}"
   ok "5 Systeemrollen (ADMIN/EMPLOYEE/VIEWER + 2 Klantrollen): AANGEMAAKT"
   ok "Permissie-matrix per resource: INGESTELD (write ⇒ read)"
   ok "Bestaande legacy gebruikers automatisch gekoppeld via roleId"
@@ -1485,6 +1526,44 @@ fi
 if [[ "$UPDATE_ONLY" -eq 1 ]]; then
   title "UPDATE MODE — Alleen code bijwerken naar nieuwste GitHub commit"
   info "--update: OS prep / hardening / gebruiker / firewall / Docker install worden OVERSLAAN."
+
+  # ── 🔒 PRE-FLIGHT 1: ECHT root (EUID == 0) is VERPLICHT bij --update ──
+  #    Voorkomt half-afgemaakte runs waarbij git wel lukt maar docker/permalinks falen.
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    err "UPDATE MODE FAALT VOORAF: je moet ECHT als ROOT draaien (EUID=0)."
+    info ""
+    info "  Oorzaak: je draait nu als gebruiker $(id -un 2>/dev/null || echo 'onbekend') (EUID=${EUID:-$(id -u)})."
+    info "  Zelfs met 'sudo ...' als non-root gebruiker kunnen .env permissies en"
+    info "  Docker socket operaties halverwege afbreken (waardoor Git WEL update, maar"
+    info "  image NIET herbouwd / migratie NIET gerund)."
+    info ""
+    info "  ✅  FIX — draai eerst dit (en NIETS anders):"
+    info "        sudo -i"
+    info "        cd ${INSTALL_DIR}"
+    info "        bash ./nexus-install.sh --update"
+    exit 10
+  fi
+  # .env MOET als root direct leesbaar zijn.
+  if [[ ! -r "$ENV_FILE" ]]; then
+    err "UPDATE MODE FAALT VOORAF: ${ENV_FILE} is NIET LEESBAAR (permissie issue)."
+    info ""
+    info "  FIX — als root:"
+    info "        chmod 0640 ${ENV_FILE}"
+    info "        chown root:docker ${ENV_FILE} 2>/dev/null || chown root:root ${ENV_FILE}"
+    info "        bash ./nexus-install.sh --update"
+    exit 10
+  fi
+
+  # ── PRE-FLIGHT 2: Snapshot Oude image + commit (voor na-build vergelijking) ──
+  OLD_APP_IMAGE_ID=""
+  OLD_APP_IMAGE_ID="$(docker compose -f "$COMPOSE_FILE" images -q stm-app 2>/dev/null || true)"
+  OLD_APP_IMAGE_CREATED=""
+  if [ -n "${OLD_APP_IMAGE_ID}" ]; then
+    OLD_APP_IMAGE_CREATED="$(docker inspect --format='{{.Created}}' "${OLD_APP_IMAGE_ID}" 2>/dev/null || echo 'onbekend')"
+  fi
+  info "  Oude stm-app image ID      : ${OLD_APP_IMAGE_ID:-onbekend (image bestaat nog niet)}"
+  info "  Oude stm-app image aangemaakt: ${OLD_APP_IMAGE_CREATED:-onbekend}"
+  OLD_COMMIT="$(git -C "${INSTALL_DIR}" rev-parse --short HEAD 2>/dev/null || echo 'onbekend')"
 
   # ── SHELL SAFETY: Bash history expansion UITSCHAKELEN + Git safety ──
   #    Voorkomt crash op speciale chars (!) in URL's / commit messages.
@@ -2236,6 +2315,19 @@ UP7_ENV_EOF
   step "Docker pull Postgres 16 + build stm-app (MET cache voor snelheid, maar met --pull voor nieuwste base images)..."
   "${COMPOSE_CMD[@]}" pull --quiet stm-db 2>&1 | tail -3 | tee -a "$LOG_FILE" >&2 || true
   "${COMPOSE_CMD[@]}" build --pull stm-app 2>&1 | tail -20 | tee -a "$LOG_FILE" >&2
+  NEW_APP_IMAGE_ID=""
+  NEW_APP_IMAGE_ID="$("${COMPOSE_CMD[@]}" images -q stm-app 2>/dev/null || true)"
+  if [[ -n "${OLD_APP_IMAGE_ID:-}" && -n "${NEW_APP_IMAGE_ID}" ]]; then
+    if [[ "${OLD_APP_IMAGE_ID}" == "${NEW_APP_IMAGE_ID}" ]]; then
+      warn "  Image ID IDENTIEK aan voor de build! Docker cache concludeerde dat rebuild niet nodig was."
+      info "   💡  Als je de NIEUWE code NIET ziet in de app: forceer een clean rebuild met:"
+      info "        cd ${INSTALL_DIR}"
+      info "        docker compose -f ${COMPOSE_FILE} build --pull --no-cache stm-app"
+      info "        docker compose -f ${COMPOSE_FILE} up -d --force-recreate stm-app"
+    else
+      ok "  Image ID vernieuwd: ${OLD_APP_IMAGE_ID:0:12}... → ${NEW_APP_IMAGE_ID:0:12}... (code dus gewijzigd!)"
+    fi
+  fi
   ok "Docker build voltooid (cache gebruikt → snel)."
 
   # Up -d (force-recreate: zelfde image hash → toch opnieuw starten, nieuwe env in werking)
@@ -2295,6 +2387,67 @@ UP7_ENV_EOF
     info "LAATSTE 40 REGELS STM-DB LOGS:"
     docker logs --tail 40 stm-db  2>&1 | tee -a "$LOG_FILE" >&2 || true
     exit 8
+  fi
+
+  # ==============================================================================
+  # UPDATE STAP — ROBUUSTHEIDSVERIFICATIE (nieuw)
+  #   1) Controleer dat de container werkelijk de NIEUWE code bevat
+  #      (concreet: de notification-settings-form.tsx heeft WARNING_70)
+  #   2) Controleer dat Prisma migrate status: "geen pending migraties"
+  # ==============================================================================
+  title "Verificatie: code + migrations correct toegepast?"
+  CODE_VERIFY_OK=0
+  UI_FILE="/app/app/(app)/profile/_components/notification-settings-form.tsx"
+  CODE_HITS=$(docker exec stm-app sh -lc "grep -c 'WARNING_70\|WARNING_90\|CRITICAL_100' '${UI_FILE}' 2>/dev/null || echo 0") 2>/dev/null || CODE_HITS=0
+  if [ "${CODE_HITS:-0}" -ge 3 ]; then
+    ok "  ✅  Code in container = VERS NIEUW (WARNING_70/90/100 gevonden: ${CODE_HITS} treffers)."
+    CODE_VERIFY_OK=1
+  else
+    # Fallback: check of de file uberhaupt bestaat (voor oude commits zonder deze UI feature)
+    FILE_EXISTS=$(docker exec stm-app sh -lc "if [ -f '${UI_FILE}' ]; then echo yes; else echo no; fi") 2>/dev/null || FILE_EXISTS=no
+    if [ "${FILE_EXISTS}" = "no" ]; then
+      info "  ⚪  Fallback: UI-file bestaat niet in deze commit (geen waarschuwing, feature bestaat simpelweg nog niet)."
+      CODE_VERIFY_OK=1
+    else
+      warn "  ⚠️  Code in container lijkt OUD! File bestaat maar WARNING_70-tref teller = ${CODE_HITS} (verwachting >= 3)."
+      info "     💡  Oplossing: FORCEER clean rebuild:"
+      info "         cd ${INSTALL_DIR}"
+      info "         docker compose -f ${COMPOSE_FILE} build --pull --no-cache stm-app"
+      info "         docker compose -f ${COMPOSE_FILE} up -d --force-recreate stm-app"
+      CODE_VERIFY_OK=0
+    fi
+  fi
+
+  # --- Migrate status check ---
+  MIGRATE_STATUS_TEXT=""
+  MIGRATE_PENDING=0
+  MIGRATE_NOTFOUND=0
+  if docker exec stm-app sh -lc 'cd /app && command -v npx >/dev/null 2>&1'; then
+    MIGRATE_STATUS_TEXT=$(docker exec stm-app sh -lc 'cd /app && npx prisma migrate status 2>&1 | tail -30' 2>&1 || true)
+    if echo "${MIGRATE_STATUS_TEXT}" | grep -Eiq "pending|not applied|niet toegepast"; then
+      MIGRATE_PENDING=1
+    fi
+    if echo "${MIGRATE_STATUS_TEXT}" | grep -Eiq "could not find|Prisma Migrate could not find|migrate table"; then
+      MIGRATE_NOTFOUND=1
+    fi
+  fi
+  if [ "${MIGRATE_PENDING}" -eq 1 ]; then
+    warn "  ⚠️  Prisma migrate status: ER ZIJN PENDING MIGRATIES! Entrypoint heeft ze niet allemaal gerund."
+    info "     LAATSTE 30 REGELS PRISMA STATUS:"
+    echo "${MIGRATE_STATUS_TEXT}" | tee -a "$LOG_FILE" >&2 || true
+    info "     💡  Handmatig runnen:"
+    info "        docker exec stm-app sh -lc 'cd /app && npx prisma migrate deploy'"
+  elif [ "${MIGRATE_NOTFOUND}" -eq 1 ]; then
+    info "  ⚪  Prisma migrate tabel nog niet aangemaakt (1e run). Geen probleem."
+  else
+    if [ -n "${MIGRATE_STATUS_TEXT}" ]; then
+      LAST_MIGRATION_LINE=$(echo "${MIGRATE_STATUS_TEXT}" | grep -E "Database schema is up to date|All migrations applied" | tail -1)
+      if [ -n "${LAST_MIGRATION_LINE}" ]; then
+        ok "  ✅  Prisma migraties: ${LAST_MIGRATION_LINE}"
+      else
+        ok "  ✅  Prisma migraties: (geen pending migraties volgens status)."
+      fi
+    fi
   fi
 
   # ==============================================================================
@@ -2451,10 +2604,49 @@ STM_SEED_SQL
   ELAPSED_SEC_R=$(( ELAPSED_SEC - ELAPSED_MIN * 60 ))
   title "UPDATE VOLTOOID in ${ELAPSED_MIN}m${ELAPSED_SEC_R}s"
   hr
+
+  # ── Snapshot: Nieuwe image-ID vergelijken met oude ──
+  FINAL_APP_IMAGE_ID=""
+  FINAL_APP_IMAGE_ID="$("${COMPOSE_CMD[@]}" images -q stm-app 2>/dev/null || true)"
+  if [[ -n "${OLD_APP_IMAGE_ID:-}" && -n "${FINAL_APP_IMAGE_ID}" ]]; then
+    if [[ "${OLD_APP_IMAGE_ID}" == "${FINAL_APP_IMAGE_ID}" ]]; then
+      IMAGE_CHANGED_LINE="${YLW}⚠️  Image NIET vernieuwd (cache koos voor bestaande build)${RST} — als je geen nieuwe features ziet: draai eerst --no-cache rebuild"
+    else
+      IMAGE_CHANGED_LINE="${GRN}✅ Image WEL vernieuwd (oude ID ${OLD_APP_IMAGE_ID:0:12}... → nieuwe ${FINAL_APP_IMAGE_ID:0:12}...)${RST}"
+    fi
+  else
+    IMAGE_CHANGED_LINE="${DIM}⚪ Image status: onbekend (geen oude of nieuwe snapshot)${RST}"
+  fi
+
+  # ── Human readable CODE_VERIFY status ──
+  if [ "${CODE_VERIFY_OK:-1}" -eq 1 ]; then
+    CODE_VERIFY_LINE="${GRN}✅ Code in container: geverifieerd${RST}"
+  else
+    CODE_VERIFY_LINE="${YLW}⚠️  Code in container: NIET geverifieerd (risico op oude bundle)${RST} — doe een --no-cache rebuild."
+  fi
+
+  # ── Human readable MIGRATE status ──
+  if [ "${MIGRATE_PENDING:-0}" -eq 1 ]; then
+    MIGRATE_STATUS_LINE="${RED}❌ Migraties: ER ZIJN PENDING MIGRATIES — zie log hierboven.${RST}"
+  elif [ "${MIGRATE_NOTFOUND:-0}" -eq 1 ]; then
+    MIGRATE_STATUS_LINE="${DIM}⚪ Migratie-tabel nog niet aangemaakt (1e run).${RST}"
+  else
+    MIGRATE_STATUS_LINE="${GRN}✅ Migraties: up to date (geen pending)${RST}"
+  fi
+
   FINAL_DOMAIN="$(awk -F= '/^STM_DOMAIN=/ {print $2; exit}' "$ENV_FILE" 2>/dev/null || echo "localhost")"
   FINAL_URL="$(awk -F= '/^NEXT_PUBLIC_APP_URL=/ {print $2; exit}' "$ENV_FILE" 2>/dev/null || echo "http://localhost:3000")"
   cat <<SUMMARY | tee -a "$LOG_FILE"
-${BLD}  ✅ UPDATE SUCCESVOL — STM (voorheen Nexus)${RST}
+${BLD}  💾  NIEUWE FEATURES ZIEN? EERST DIT DOEN!${RST}
+   ${BLD}Sluit de app → Doe HARD REFRESH → of open INCOGNITO:${RST}
+     macOS: ${BLD}Cmd + Shift + R${RST}
+     Windows/Linux: ${BLD}Ctrl + F5${RST} of ${BLD}Ctrl + Shift + R${RST}
+   Frontend JS wordt sterk gecached; een simpele F5 is vaak NIET genoeg!
+
+  ${CYN}Checklist (update betrouwbaarheid):${RST}
+     ${IMAGE_CHANGED_LINE}
+     ${CODE_VERIFY_LINE}
+     ${MIGRATE_STATUS_LINE}
 
   ${CYN}Commit (vorig → nieuw) :${RST}  ${OLD_COMMIT} → ${NEW_COMMIT}
   ${CYN}Nieuwste commit msg    :${RST}  ${NEW_COMMIT_MSG}
@@ -2484,7 +2676,7 @@ SUMMARY
     info "  → Conflicten of wijzigingen terugzetten? sudo -u ${STM_USER} git stash pop"
   fi
   ok "Update-log: ${LOG_FILE} (bij fouten altijd meesturen)."
-  info "Refresh je browser (Ctrl+Shift+R) om de nieuwste frontend code te laden!"
+  info "${BLD}Nogmaals: HARD REFRESH / Incognito! (Cmd+Shift+R / Ctrl+F5) — frontend wordt sterk gecached.${RST}"
   exit 0
 fi
 # ==============================================================================
