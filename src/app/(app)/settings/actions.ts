@@ -78,6 +78,9 @@ import {
   syncAllPendingToInserve,
 } from "@/server/services/inserve-batch-sync.service";
 import {
+  runUsageAlertNotificationCycle,
+} from "@/server/services/sim-usage-alert.service";
+import {
   SyncJobId,
   SyncJobStatus,
   SyncJobTrigger,
@@ -856,6 +859,34 @@ export async function triggerSyncJobAction(
       if (totalFailed > 0) {
         finalStatus = SyncJobStatus.FAILED;
         errorMessage = `${totalFailed} Inserve-items gaven een fout.`;
+      }
+    } else if (validated.data.jobId === SyncJobId.SIMHUIS_USAGE_ALERT_NOTIFY) {
+      const report = await runUsageAlertNotificationCycle({
+        thresholdPercentOverride: undefined,
+        limitUsers: undefined,
+        dryRunForce: false,
+      });
+      recordsAffected = {
+        usersChecked: report.usersChecked,
+        usersWithAlerts: report.usersWithAlerts,
+        usersNotified: report.usersNotified,
+        usersNotifiedDryRun: report.usersNotifiedDryRun,
+        userSendFailures: report.userSendFailures,
+        simsAtThresholdTotal: report.simsAtThresholdTotal,
+        simsReportedEmails: report.simsReportedEmails,
+        simsSkippedAlreadySent: report.simsSkippedAlreadySent,
+        simsSkippedScope: report.simsSkippedScope,
+        alertsCreated: report.alertsCreated,
+      };
+      summary =
+        `Usage alert notificaties afgerond. Gebruikers gecheckt: ${report.usersChecked}. ` +
+        `Gebruikers gerapporteerd: ${report.usersWithAlerts}. ` +
+        `Notificaties verstuurd: ${report.usersNotified}. Dry-run: ${report.usersNotifiedDryRun}. ` +
+        `Falen: ${report.userSendFailures}. SIMs boven drempel: ${report.simsAtThresholdTotal}. ` +
+        `Gerapporteerde SIMs: ${report.simsReportedEmails}. Overgeslagen (anti-spam): ${report.simsSkippedAlreadySent}.`;
+      if (report.userSendFailures > 0) {
+        finalStatus = SyncJobStatus.FAILED;
+        errorMessage = `${report.userSendFailures} gebruikers konden geen e-mail ontvangen.`;
       }
     } else {
       throw new Error(`Onbekende jobId: ${validated.data.jobId}`);
