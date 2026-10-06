@@ -14,22 +14,41 @@ set -euo pipefail
 WORKDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${WORKDIR}/.env"
 
-APP_URL="http://127.0.0.1:3000"
+APP_URL_DEFAULT="http://127.0.0.1:3000"
+APP_URL="${APP_URL_DEFAULT}"
+APP_URL_FALLBACK_1="http://localhost:3000"
 API_TOKEN=""
 
+trim() {
+  local var="$*"
+  var="${var#"${var%%[![:space:]]*}"}"
+  var="${var%"${var##*[![:space:]]}"}"
+  printf '%s' "$var"
+}
+
+# ── .env parsen (robuust: strip whitespace, comments, quoten, inline comments) ──
 if [ -f "${ENV_FILE}" ]; then
-  while IFS='= ' read -r key value; do
-    [[ -z "${key}" || "${key}" == \#* ]] && continue
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="$(trim "$line")"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="$(trim "$key")"
+    value="$(trim "$value")"
+    [[ -z "$key" ]] && continue
+    value="${value%% #*}"
+    value="${value%%\t#*}"
+    value="$(trim "$value")"
     value="${value%\"}"
     value="${value#\"}"
     value="${value%\'}"
     value="${value#\'}"
-    case "${key}" in
+    case "$key" in
       NEXT_PUBLIC_APP_URL|STM_APP_URL)
-        if [ -n "${value}" ]; then APP_URL="${value}"; fi
+        if [ -n "$value" ]; then APP_URL="$value"; fi
         ;;
       SIMHUIS_SYNC_API_TOKEN)
-        API_TOKEN="${value}"
+        API_TOKEN="$value"
         ;;
     esac
   done < "${ENV_FILE}"
@@ -41,26 +60,83 @@ fi
 
 if [ -z "${API_TOKEN}" ]; then
   echo "[fout] SIMHUIS_SYNC_API_TOKEN is niet gezet in .env of environment. Kan usage-sync niet uitvoeren."
+  echo "[hint] Voeg toe aan ${ENV_FILE}: SIMHUIS_SYNC_API_TOKEN=$(openssl rand -hex 24 2>/dev/null || echo '<genereer-een-random-token>')"
   exit 2
 fi
 
-SYNC_URL="${APP_URL%/}/api/integrations/simhuis/sync-usage"
+TOKEN_LEN="${#API_TOKEN}"
+echo "[info] API token geladen (lengte=${TOKEN_LEN}). App URL (via .env/env): ${APP_URL}"
 
-echo "[info] Aanroepen usage-sync: POST ${SYNC_URL}"
+# ── URL-proef: probeer meerdere endpoints zodat we niet afhankelijk zijn van 1 poort ──
+SYNC_PATH="/api/integrations/simhuis/sync-usage"
+CANDIDATES=()
+CANDIDATES+=("${APP_URL%/}")
+if [ "${APP_URL%/}" != "${APP_URL_DEFAULT}" ]; then
+  CANDIDATES+=("${APP_URL_DEFAULT}")
+fi
+if [ "${APP_URL%/}" != "${APP_URL_FALLBACK_1}" ] && [ "${APP_URL_DEFAULT}" != "${APP_URL_FALLBACK_1}" ]; then
+  CANDIDATES+=("${APP_URL_FALLBACK_1}")
+fi
+
+HTTP_CODE=000
+BODY=""
+USED_URL=""
 RESPONSE_FILE="$(mktemp)"
-HTTP_CODE=$(curl -sS -o "${RESPONSE_FILE}" -w "%{http_code}" \
-  -X POST \
-  -H "Authorization: Bearer ${API_TOKEN}" \
-  -H "X-Sync-Triggered-By: systemd-timer" \
-  -H "Content-Type: application/json" \
-  --max-time 600 \
-  "${SYNC_URL}" || true)
+FINAL_RC=0
 
-BODY="$(cat "${RESPONSE_FILE}" 2>/dev/null || echo "")"
+for CAND in "${CANDIDATES[@]}"; do
+  TEST_URL="${CAND}${SYNC_PATH}"
+  echo "[info] Probeer endpoint: POST ${TEST_URL}"
+  CAND_HTTP=$(curl -sS -o "${RESPONSE_FILE}" -w "%{http_code}" \
+    -X POST \
+    -H "Authorization: Bearer ${API_TOKEN}" \
+    -H "X-Sync-Triggered-By: systemd-timer" \
+    -H "Content-Type: application/json" \
+    --max-time 600 \
+    --connect-timeout 10 \
+    "${TEST_URL}" 2>/dev/null || true)
+  CAND_BODY="$(cat "${RESPONSE_FILE}" 2>/dev/null || echo "")"
+  if [ "${CAND_HTTP}" = "200" ] || [ "${CAND_HTTP}" = "403" ] || [ "${CAND_HTTP}" = "500" ] || [ "${CAND_HTTP}" = "503" ]; then
+    HTTP_CODE="${CAND_HTTP}"
+    BODY="${CAND_BODY}"
+    USED_URL="${TEST_URL}"
+    break
+  fi
+  if [ "${CAND_HTTP}" = "000" ]; then
+    echo "[info]   → connectie naar ${CAND} mislukt (geen antwoord; volgende candidate proberen)."
+  else
+    echo "[info]   → onverwachte HTTP ${CAND_HTTP} via ${CAND} (volgende candidate proberen)."
+  fi
+done
+
+if [ -z "${USED_URL}" ]; then
+  HTTP_CODE=000
+  BODY=""
+fi
 rm -f "${RESPONSE_FILE}"
 
-echo "[info] HTTP ${HTTP_CODE}. Response:"
-echo "${BODY}"
+echo "[info] Uiteindelijke call: ${USED_URL:-<geen endpoint bereikbaar>} → HTTP ${HTTP_CODE}"
+if [ -n "${BODY}" ]; then
+  echo "[info] Response body:"
+  echo "${BODY}"
+fi
+
+if [ "${HTTP_CODE}" = "000" ]; then
+  echo "[fout] Usage-sync kon GEEN ENKEL endpoint bereiken."
+  echo "[hint] Geprobeerde URL's:"
+  for CAND in "${CANDIDATES[@]}"; do
+    echo "       - ${CAND}${SYNC_PATH}"
+  done
+  echo "[hint] Controleer: 1) docker container 'stm-app' draait? 2) poort 3000 op host is gepublished? 3) NEXT_PUBLIC_APP_URL in .env is bereikbaar vanaf deze host."
+  echo "[hint] Test handmatig: curl -v ${APP_URL_DEFAULT}/api/health --max-time 10"
+  exit 1
+fi
+
+if [ "${HTTP_CODE}" = "403" ]; then
+  echo "[fout] Usage-sync: 403 Forbidden. SIMHUIS_SYNC_API_TOKEN op host ≠ token in Docker container."
+  echo "[hint] Vergelijk: host-token in ${ENV_FILE} vs 'docker exec stm-app printenv SIMHUIS_SYNC_API_TOKEN'."
+  exit 1
+fi
 
 if [ "${HTTP_CODE}" != "200" ]; then
   echo "[fout] Usage-sync mislukt (HTTP ${HTTP_CODE})."

@@ -1379,7 +1379,7 @@ export async function purgeSimById(
   ctx: AuthContext
 ): Promise<SimPurgeResult> {
   try {
-    await requirePermission(pickAuth(ctx), "edit", "sim");
+    await requirePermission(pickAuth(ctx), "purge_network", "sim");
   } catch (e: any) {
     const detail = e?.message ? String(e.message) : "Onvoldoende rechten.";
     console.warn(`[purgeSimById] Permission denied for sim=${simId}: ${detail}`);

@@ -30,9 +30,9 @@ export type AuditUser = {
 /* =============================== CONFIG DEFAULTS =============================== */
 
 export const HISTORIC_HOURLY_WINDOWS: Record<SyncJobId, number[]> = {
-  [SyncJobId.SIMHUIS_USAGE]: [0],
+  [SyncJobId.SIMHUIS_USAGE]: Array.from({ length: 24 }, (_, i) => i),
   [SyncJobId.SIMHUIS_SIMS]: [3, 9, 15, 21],
-  [SyncJobId.SIMHUIS_USAGE_ALERT_NOTIFY]: [5],
+  [SyncJobId.SIMHUIS_USAGE_ALERT_NOTIFY]: Array.from({ length: 24 }, (_, i) => i),
   [SyncJobId.INSERVE]: [2, 8, 14, 20],
 };
 
@@ -42,13 +42,14 @@ export function getDefaultSyncJobConfig(jobId: SyncJobId): SaveSyncScheduleInput
       return {
         jobId,
         enabled: true,
-        frequency: SyncFrequency.HOURLY,
+        frequency: SyncFrequency.EVERY_15_MINUTES,
         hour: 0,
         minute: 0,
         dayOfWeek: 1,
         dayOfMonth: 1,
         timezone: "Europe/Amsterdam",
-        comment: null,
+        comment:
+          "Verbruiksdata van actieve SIMs bijwerken. Afgestemd op systemd-timer die elke 15 minuten afvuurt (:00/:15/:30/:45).",
       };
     case SyncJobId.SIMHUIS_SIMS:
       return {
@@ -60,7 +61,8 @@ export function getDefaultSyncJobConfig(jobId: SyncJobId): SaveSyncScheduleInput
         dayOfWeek: 1,
         dayOfMonth: 1,
         timezone: "Europe/Amsterdam",
-        comment: null,
+        comment:
+          "SIM-voorraad (aanmaak/wijzigingen) vanuit Simhuis bijwerken. Standaard 4x per dag (03:00 / 09:00 / 15:00 / 21:00).",
       };
     case SyncJobId.SIMHUIS_USAGE_ALERT_NOTIFY:
       return {
@@ -87,7 +89,8 @@ export function getDefaultSyncJobConfig(jobId: SyncJobId): SaveSyncScheduleInput
         dayOfWeek: 1,
         dayOfMonth: 1,
         timezone: "Europe/Amsterdam",
-        comment: null,
+        comment:
+          "Inserve abonnementen en facturen synchroniseren. Standaard 4x per dag (02:00 / 08:00 / 14:00 / 20:00).",
       };
     default:
       return {

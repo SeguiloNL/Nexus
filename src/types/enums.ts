@@ -137,7 +137,8 @@ export type ResourceAction =
   | "delete"
   | "import"
   | "export"
-  | "override_price";
+  | "override_price"
+  | "purge_network";
 
 export type ResourceType =
   | "customer"

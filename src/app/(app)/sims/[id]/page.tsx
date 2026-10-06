@@ -63,6 +63,7 @@ export default async function SimDetailPage({
   const canEdit = canUserRole(user.permissions, "edit", "sim");
   const canDelete = canUserRole(user.permissions, "delete", "sim");
   const canSyncUsage = canUserRole(user.permissions, "view", "sim");
+  const canPurgeNetwork = canUserRole(user.permissions, "purge_network", "sim");
 
   return (
     <SimDetail
@@ -77,13 +78,13 @@ export default async function SimDetailPage({
       unsuspendAction={isAdmin ? unsuspendSimAction : undefined}
       refreshStatusAction={canEdit ? refreshSimStatusAction : undefined}
       runDiagnosticAction={canSyncUsage ? runDiagnosticForSingleSimAction : undefined}
-      purgeNetworkAction={canEdit ? purgeSimNetworkAction : undefined}
+      purgeNetworkAction={canPurgeNetwork ? purgeSimNetworkAction : undefined}
       isAdmin={isAdmin}
       canEdit={canEdit}
       canDelete={canDelete}
       canSyncUsage={canSyncUsage}
       canDiagnostic={canSyncUsage}
-      canPurgeNetwork={canEdit}
+      canPurgeNetwork={canPurgeNetwork}
     />
   );
 }

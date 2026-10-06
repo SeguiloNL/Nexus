@@ -107,13 +107,25 @@ export async function GET() {
   }
 
   response.ok =
-    response.services.db === "ok" &&
+    response.services.db === "ok";
+
+  const integratiesOk =
     response.integrations.inserve !== "error" &&
     response.integrations.simhuis !== "error" &&
     response.integrations.navixy !== "error";
 
   const status =
-    response.ok && response.services.db === "ok" ? 200 : 503;
+    response.ok && response.services.db === "ok"
+      ? 200
+      : 503;
+
+  (response as any).integrationsAllOk = integratiesOk;
+  if (!integratiesOk) {
+    (response as any).warnings = (response as any).warnings || [];
+    (response as any).warnings.push(
+      "Minstens één externe integratie geeft een fout (zie integrations.*=error). De database functioneert normaal."
+    );
+  }
 
   const endNs = process.hrtime.bigint() - startedAt;
   const responseWithLatency = {

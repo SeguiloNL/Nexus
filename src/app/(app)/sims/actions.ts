@@ -817,7 +817,7 @@ export async function purgeSimNetworkAction(
 ): Promise<SimPurgeActionState> {
   const user = await getCurrentUser();
 
-  await requirePermission(user.permissions ?? user.roleId ?? user.role, "edit", "sim");
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "purge_network", "sim");
 
   const ctx = buildActionCtx(user);
   let result: SimPurgeResult;
