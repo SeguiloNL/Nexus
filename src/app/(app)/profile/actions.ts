@@ -5,7 +5,12 @@ import { requireUser } from "@/lib/auth/session";
 import { SaveNotificationSettingsSchema } from "@/server/validators/user";
 import { NotificationChannel, type AlertThresholdLevel } from "@prisma/client";
 import { PermissionError } from "@/lib/rbac";
-import { sendTestEmail } from "@/server/services/email.service";
+import {
+  sendTestEmail,
+  formatSmtpErrorForUser,
+  renderSmtpErrorPlain,
+} from "@/server/services/email.service";
+import { getSmtpSettings } from "@/server/services/app-setting.service";
 
 export async function getMyNotificationSettingsAction() {
   const user = await requireUser();
@@ -104,6 +109,16 @@ export async function sendTestNotificationEmailAction(): Promise<{
     };
   }
 
+  let smtpCtx: { host?: string; from?: string } = {};
+  try {
+    const s = await getSmtpSettings();
+    if (s) {
+      smtpCtx = { host: s.host, from: s.from };
+    }
+  } catch {
+    /* ignore */
+  }
+
   try {
     const result = await sendTestEmail(user.email);
     if (result.dryRun) {
@@ -116,11 +131,18 @@ export async function sendTestNotificationEmailAction(): Promise<{
       };
     }
     if (result.error || result.rejected.length > 0) {
+      const raw =
+        result.error ||
+        (result.rejected.length > 0
+          ? `Test e-mail kon niet worden afgeleverd bij ${result.rejected.join(", ")}.`
+          : "Onbekende SMTP fout.");
+      const friendly = formatSmtpErrorForUser(raw, {
+        ...smtpCtx,
+        to: user.email,
+      });
       return {
         ok: false,
-        message:
-          result.error ||
-          `Test e-mail kon niet worden afgeleverd bij ${result.rejected.join(", ")}.`,
+        message: renderSmtpErrorPlain(friendly),
       };
     }
     if (result.accepted.length > 0) {
@@ -134,8 +156,12 @@ export async function sendTestNotificationEmailAction(): Promise<{
       message: "Onbekende fout bij het verzenden van de test e-mail.",
     };
   } catch (e: any) {
-    const msg = e?.message || "Onbekende fout bij het verzenden van de test e-mail.";
-    return { ok: false, message: msg };
+    const raw = e?.message || "Onbekende fout bij het verzenden van de test e-mail.";
+    const friendly = formatSmtpErrorForUser(raw, {
+      ...smtpCtx,
+      to: user.email,
+    });
+    return { ok: false, message: renderSmtpErrorPlain(friendly) };
   }
 }
 

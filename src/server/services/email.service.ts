@@ -367,3 +367,224 @@ export async function sendTestEmail(toEmail: string): Promise<EmailSendResult> {
     };
   }
 }
+
+export interface SmtpUserFacingError {
+  summary: string;
+  details?: string;
+  hint?: string;
+  category:
+    | "microsoft_365_smtp_auth_disabled"
+    | "microsoft_365_legacy_tls"
+    | "gmail_app_password_required"
+    | "gmail_less_secure_blocked"
+    | "auth_credentials_wrong"
+    | "connection_refused_or_timeout"
+    | "ssl_mismatch"
+    | "sender_address_rejected"
+    | "recipient_rejected"
+    | "generic";
+}
+
+export function formatSmtpErrorForUser(
+  rawError: string | undefined | null,
+  ctx?: { host?: string; from?: string; to?: string }
+): SmtpUserFacingError {
+  const raw = (rawError ?? "").trim();
+  const lowered = raw.toLowerCase();
+  const host = (ctx?.host ?? "").toLowerCase();
+  const isMicrosoft =
+    /outlook\.com|office365|exchange|smtp\.office365|outlook\.office365/.test(
+      host
+    ) || /outlook\.com|office365|EURP|AS4P|NAMPRD|outlook\.office365/.test(lowered);
+  const isGmail =
+    /smtp\.gmail\.com/.test(host) || /gmail\.com|google smtp|gsmtp/.test(lowered);
+
+  if (
+    isMicrosoft &&
+    (/smtpclientauthentication is disabled/.test(lowered) ||
+      /5\.7\.139/.test(raw) ||
+      /smtp_auth_disabled/.test(lowered))
+  ) {
+    return {
+      category: "microsoft_365_smtp_auth_disabled",
+      summary:
+        "Microsoft 365 staat wachtwoord-login (SMTP AUTH) op tenant-niveau standaard uit.",
+      details:
+        "Exchange Online blokkeert standaard SmtpClientAuthentication voor alle postvakken. Dit is een Microsoft 365-beveiligingsinstelling, geen fout in Nexus.",
+      hint:
+        "Oplossing (kies er één):\n" +
+        "1. [Voorkeur] Schakel SMTP AUTH in voor alleen het specifieke verzendpostvak via Exchange Admin Center → Recipients → Mailbox → [kies postvak] → Manage email apps → vink 'Authenticated SMTP' aan. Wacht vervolgens 15-30 minuten.\n" +
+        "2. [Volledige tenant] Gebruik PowerShell: Set-TransportConfig -SmtpClientAuthenticationDisabled $false.\n" +
+        "3. [Modern/Aanbevolen] Stap over op SMTP via OAuth2 (inplannen voor latere Nexus-release) of gebruik een externe SMTP-dienst (SendGrid, Mailgun, Postmark, etc.)",
+    };
+  }
+
+  if (
+    isMicrosoft &&
+    (/legacy tls|starttls is not supported|tls|ssl/.test(lowered) &&
+      /5\.7\./.test(raw))
+  ) {
+    return {
+      category: "microsoft_365_legacy_tls",
+      summary: "Microsoft 365 weigert de verbinding wegens TLS/SSL instellingen.",
+      details:
+        "Exchange Online vereist STARTTLS op poort 587 (geen impliciete SSL op poort 465).",
+      hint:
+        "Stel in Systeem → Instellingen → Notificaties in:\n" +
+        "  SMTP-host: smtp.office365.com\n" +
+        "  Poort: 587\n" +
+        "  SSL/TLS vink: UIT (STARTTLS is vereist)\n" +
+        "  Gebruiker: het volledige e-mailadres van het verzendpostvak.",
+    };
+  }
+
+  if (
+    isGmail &&
+    (/application-specific password|app password|less secure app|allow less secure/.test(
+      lowered
+    ) ||
+      /535 5\.7\..*invalid/.test(raw) ||
+      /username and password not accepted/.test(lowered))
+  ) {
+    return {
+      category: "gmail_app_password_required",
+      summary:
+        "Gmail vereist een 'App Password' wanneer 2-Staps Verificatie (2FA) aan staat.",
+      details:
+        "Gmail blokkeert standaard directe wachtwoord-login van externe apps wanneer 2FA is ingeschakeld.",
+      hint:
+        "Stappen:\n" +
+        "1. Zorg dat 2-Staps Verificatie aanstaat voor het Gmail-account.\n" +
+        "2. Ga naar myaccount.google.com → Beveiliging → App-wachtwoorden.\n" +
+        "3. Maak een nieuw app-wachtwoord (kies 'Andere' en geef het een naam zoals 'Nexus SMTP').\n" +
+        "4. Kopieer dat 16-cijferige wachtwoord (zonder spaties) naar het veld 'Wachtwoord' in de SMTP-instellingen van Nexus.\n" +
+        "5. Gebruik poort 587 met STARTTLS (SSL/TLS vink UIT).",
+    };
+  }
+
+  if (
+    isGmail &&
+    (/534 5\.7\.14/.test(raw) || /please log in with your web browser/.test(lowered))
+  ) {
+    return {
+      category: "gmail_less_secure_blocked",
+      summary: "Gmail blokkeert deze SMTP-login als 'onveilige app'.",
+      details:
+        "Google beschouwt inloggen via basale SMTP-auth als onveilig. Activeer App Password (zie hint) of schakel 2FA in.",
+      hint:
+        "1. Activeer 2-Staps Verificatie op het Gmail-account.\n" +
+        "2. Genereer daarna een App Password en gebruik dat in plaats van het normale wachtwoord.",
+    };
+  }
+
+  if (
+    /authentication failed|invalid credentials|login failed|535 5\.7\.[0-9]/.test(
+      lowered
+    ) &&
+    /username|password|credential/.test(lowered)
+  ) {
+    return {
+      category: "auth_credentials_wrong",
+      summary: "SMTP authenticatie mislukt: gebruikersnaam of wachtwoord onjuist.",
+      details: `Server antwoordde: ${raw}`,
+      hint:
+        "Controleer in Systeem → Instellingen → Notificaties:\n" +
+        "• Gebruikersnaam (vaak het volledige e-mailadres)\n" +
+        "• Wachtwoord\n" +
+        "• Of het postvak bestaat en niet is vergrendeld.",
+    };
+  }
+
+  if (
+    /connection refused|econnrefused|etimedout|getaddrinfo enotfound|dns|no route|host not found/.test(
+      lowered
+    )
+  ) {
+    return {
+      category: "connection_refused_or_timeout",
+      summary: "Kan geen verbinding maken met de SMTP-server.",
+      details: `Server antwoordde: ${raw || "(geen detail)"}`,
+      hint:
+        "Controleer:\n" +
+        "• SMTP-host en poort (veel voorkomend: 587 voor STARTTLS, 465 voor SSL)\n" +
+        "• Firewall op de Nexus-server (uitgaand TCP toegestaan)\n" +
+        "• Of de hostnaam oplost (DNS).",
+    };
+  }
+
+  if (
+    /ssl|tls|handshake|certificate|unknown protocol|secure|1399|1408/.test(
+      lowered
+    ) &&
+    /error|fail|could not/.test(lowered)
+  ) {
+    return {
+      category: "ssl_mismatch",
+      summary: "Verbinding mislukt: SSL/TLS-instelling of poort klopt niet.",
+      details: `Server antwoordde: ${raw}`,
+      hint:
+        "Probeer de inverse instelling van 'SSL/TLS (poort 465)':\n" +
+        "• Poort 587 → vink 'SSL/TLS' UIT (STARTTLS)\n" +
+        "• Poort 465 → vink 'SSL/Tls' AAN (impliciete SSL)",
+    };
+  }
+
+  if (
+    /from.*address not accepted|sender not allowed|550 5\.7\.1.*from/.test(
+      lowered
+    ) ||
+    /550.*spf|550.*dkim|envelope from/.test(lowered)
+  ) {
+    return {
+      category: "sender_address_rejected",
+      summary:
+        "De afzender ('From'-adres) wordt niet geaccepteerd door de SMTP-server.",
+      details: `Server antwoordde: ${raw}`,
+      hint:
+        "Controleer:\n" +
+        "• Het 'Afzender e-mail' veld (moet hetzelfde domein hebben als SMTP, of expliciet toegestaan)\n" +
+        "• SPF/DKIM/Sender-ID records in de DNS van het afzender-domein.\n" +
+        "Gebruikersnaam en From-adres zijn vaak hetzelfde adres.",
+    };
+  }
+
+  if (
+    /550 5\.1\.[0-9]|recipient not found|mailbox unavailable|user unknown/.test(
+      lowered
+    )
+  ) {
+    return {
+      category: "recipient_rejected",
+      summary: "Het ontvangstadres wordt geweigerd door de SMTP-server.",
+      details: `Server antwoordde: ${raw}`,
+      hint:
+        "Controleer of het e-mailadres van de ontvanger juist is en bestaat. Zit er een tikfout in?",
+    };
+  }
+
+  if (raw) {
+    return {
+      category: "generic",
+      summary: "SMTP-server weigert de verbinding.",
+      details: `Server antwoordde: ${raw}`,
+      hint:
+        "Controleer host, poort, SSL/TLS vink, gebruikersnaam en wachtwoord. Overleg zonodig met uw e-mailprovider.",
+    };
+  }
+
+  return {
+    category: "generic",
+    summary: "SMTP-server weigert de verbinding (onbekend antwoord).",
+    hint:
+      "Controleer host, poort, SSL/TLS vink, gebruikersnaam en wachtwoord.",
+  };
+}
+
+export function renderSmtpErrorPlain(
+  info: SmtpUserFacingError
+): string {
+  const parts: string[] = [info.summary];
+  if (info.details) parts.push(info.details);
+  if (info.hint) parts.push(`Hoe op te lossen:\n${info.hint}`);
+  return parts.join("\n\n");
+}

@@ -12,6 +12,7 @@ import {
   getNavixySettingsMasked,
   saveSmtpSettings,
   getSmtpSettingsMasked,
+  getSmtpSettings,
 } from "@/server/services/app-setting.service";
 import { inserveClient } from "@/server/integrations/inserve/client";
 import { simhuisClient } from "@/server/integrations/simhuis/client";
@@ -407,10 +408,22 @@ export async function testSmtpSendAction(): Promise<ConnectionTestResult> {
     return { ok: false, message: "Onvoldoende rechten." };
   }
   // lazy import om cirkelvormige afhankelijkheden te vermijden
-  const { sendTestEmail, resetEmailTransportCache } = await import(
-    "@/server/services/email.service"
-  );
+  const {
+    sendTestEmail,
+    resetEmailTransportCache,
+    formatSmtpErrorForUser,
+    renderSmtpErrorPlain,
+  } = await import("@/server/services/email.service");
   resetEmailTransportCache();
+
+  let smtpCtx: { host?: string; from?: string } = {};
+  try {
+    const s = await getSmtpSettings();
+    if (s) smtpCtx = { host: s.host, from: s.from };
+  } catch {
+    /* ignore */
+  }
+
   if (!user.email) {
     return { ok: false, message: "Uw account heeft geen geldig e-mailadres." };
   }
@@ -424,9 +437,16 @@ export async function testSmtpSendAction(): Promise<ConnectionTestResult> {
     };
   }
   if (r.rejected.length > 0 || r.error) {
+    const raw =
+      r.error ?? `Verzending mislukt: ${r.rejected.join(", ")}`;
+    const friendly = formatSmtpErrorForUser(raw, {
+      ...smtpCtx,
+      to: user.email,
+    });
     return {
       ok: false,
-      message: r.error ?? `Verzending mislukt: ${r.rejected.join(", ")}`,
+      error: raw,
+      message: renderSmtpErrorPlain(friendly),
     };
   }
   return {
