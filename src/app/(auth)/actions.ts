@@ -109,9 +109,32 @@ export async function requestPasswordReset(
       validatedFields.data.email
     );
 
-    if (result.error) {
+    const email = validatedFields.data.email;
+    const dryRun = Boolean(result.emailResult?.dryRun);
+    const smtpErr = result.emailResult?.error;
+
+    if (result.ok && result.emailSent) {
+      console.info(
+        `[password-reset] SUCCES: reset e-mail verzonden naar ${email} ` +
+          `(accepted=${JSON.stringify(result.emailResult?.accepted ?? [])}; ` +
+          `messageId=${result.emailResult?.messageId ?? "?"})`
+      );
+    } else if (dryRun) {
       console.warn(
-        `[password-reset] create token warning voor ${validatedFields.data.email}: ${result.error}`
+        `[password-reset] DRY-RUN (geen e-mail verzonden) voor ${email}. ` +
+          `Reden: SMTP niet geconfigureerd. ` +
+          `${result.error ? "Details: " + result.error : ""}`
+      );
+    } else if (smtpErr || result.error) {
+      console.error(
+        `[password-reset] FAIL: e-mail NIET verzonden naar ${email}. ` +
+          `${result.error ? result.error : ""} ` +
+          `rejected=${JSON.stringify(result.emailResult?.rejected ?? [])}`
+      );
+    } else {
+      console.warn(
+        `[password-reset] Geen e-mail verzonden naar ${email} (ok=${result.ok}, emailSent=${result.emailSent}). ` +
+          `Dit kan liggen aan user niet gevonden, inactief, of rate-limit (15m).`
       );
     }
 
@@ -128,7 +151,7 @@ export async function requestPasswordReset(
     if (isNextRedirect) {
       throw error;
     }
-    console.error("[password-reset] requestPasswordReset error:", error);
+    console.error("[password-reset] requestPasswordReset onverwachte fout:", error);
     return {
       message:
         "Als dit e-mailadres bij ons bekend is, ontvangt u een e-mail met instructies om uw wachtwoord te herstellen.",

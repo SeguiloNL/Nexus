@@ -41,6 +41,7 @@ export async function POST(req: Request) {
   const forceRaw = url.searchParams.get("force");
   const force =
     forceRaw === "1" || forceRaw === "true" || forceRaw === "on";
+  let triggeredBy: SyncJobTrigger = SyncJobTrigger.API_TOKEN;
 
   try {
     const authHeader =
@@ -100,7 +101,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const triggeredBy = determineTriggeredBy(req, principal.via);
+    triggeredBy = determineTriggeredBy(req, principal.via);
     const config = await getSyncJobConfig(JOB_ID);
 
     if (!force) {
@@ -134,6 +135,7 @@ export async function POST(req: Request) {
       result = await syncActiveSimsUsageFromSimhuis({
         userId: principal.userId,
         userRole: principal.userRole,
+        triggeredBy,
       });
     } catch (e: any) {
       await prisma.$transaction(async (tx) =>
@@ -195,7 +197,10 @@ export async function POST(req: Request) {
       ...result,
     });
   } catch (e: any) {
-    console.error("[api/simhuis-sync-usage] POST failed:", e);
+    console.error(
+      `[api/simhuis-sync-usage] POST failed | url=${req.url} | triggeredBy=${triggeredBy} | msg=${e?.message ?? String(e)} | stack=${e?.stack ?? ""}`,
+      e
+    );
     return NextResponse.json(
       {
         ok: false,

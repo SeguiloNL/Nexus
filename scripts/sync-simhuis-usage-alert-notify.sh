@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================
-# STM — Simhuis SIM-voorraad Sync trigger (every 5 min via systemd)
+# STM — Simhuis Usage Alert Notify trigger (every 5 min via systemd)
 #
-# Roept de Next.js API route /api/integrations/simhuis/sync-sims
+# Roept de Next.js API route /api/integrations/simhuis/notify-usage-alerts
 # aan met Bearer auth + X-Sync-Triggered-By header.
 # Ververkt Schedule Guard (skipped=true => exit 0, geen fout).
 #
 # Handmatig testen:
-#   cd /opt/stm && bash scripts/sync-simhuis-sims.sh
+#   cd /opt/stm && bash scripts/sync-simhuis-usage-alert-notify.sh
 # ============================================================
 set -Eeuo pipefail
 
@@ -34,6 +34,7 @@ trim() {
   printf '%s' "$var"
 }
 
+# ── .env parsen (robuust: strip whitespace, comments, quoten, inline comments) ──
 if [ -f "${ENV_FILE}" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
     line="$(trim "$line")"
@@ -66,7 +67,7 @@ else
 fi
 
 if [ -z "${API_TOKEN}" ]; then
-  log "[fout] SIMHUIS_SYNC_API_TOKEN is niet gezet in .env of environment. Kan sims-sync niet uitvoeren."
+  log "[fout] SIMHUIS_SYNC_API_TOKEN is niet gezet in .env of environment. Kan usage-alert notify niet uitvoeren."
   log "[hint] Voeg toe aan ${ENV_FILE}: SIMHUIS_SYNC_API_TOKEN=$(openssl rand -hex 24 2>/dev/null || echo '<genereer-een-random-token>')"
   exit 2
 fi
@@ -74,7 +75,8 @@ fi
 TOKEN_LEN="${#API_TOKEN}"
 log "[info] API token geladen (lengte=${TOKEN_LEN}). App URL (via .env/env): ${APP_URL}"
 
-SYNC_PATH="/api/integrations/simhuis/sync-sims"
+# ── URL-proef: probeer meerdere endpoints zodat we niet afhankelijk zijn van 1 poort ──
+SYNC_PATH="/api/integrations/simhuis/notify-usage-alerts"
 CANDIDATES=()
 CANDIDATES+=("${APP_URL%/}")
 if [ "${APP_URL%/}" != "${APP_URL_DEFAULT}" ]; then
@@ -88,6 +90,7 @@ HTTP_CODE=000
 BODY=""
 USED_URL=""
 RESPONSE_FILE="$(mktemp)"
+FINAL_RC=0
 
 for CAND in "${CANDIDATES[@]}"; do
   TEST_URL="${CAND}${SYNC_PATH}"
@@ -97,7 +100,7 @@ for CAND in "${CANDIDATES[@]}"; do
     -H "Authorization: Bearer ${API_TOKEN}" \
     -H "X-Sync-Triggered-By: systemd-timer" \
     -H "Content-Type: application/json" \
-    --max-time 900 \
+    --max-time 600 \
     --connect-timeout 10 \
     "${TEST_URL}" 2>/dev/null || true)
   CAND_BODY="$(cat "${RESPONSE_FILE}" 2>/dev/null || echo "")"
@@ -108,9 +111,9 @@ for CAND in "${CANDIDATES[@]}"; do
     break
   fi
   if [ "${CAND_HTTP}" = "000" ]; then
-    log "[info]   → connectie naar ${CAND} mislukt (geen antwoord; volgende candidate)."
+    log "[info]   → connectie naar ${CAND} mislukt (geen antwoord; volgende candidate proberen)."
   else
-    log "[info]   → onverwachte HTTP ${CAND_HTTP} via ${CAND} (volgende candidate)."
+    log "[info]   → onverwachte HTTP ${CAND_HTTP} via ${CAND} (volgende candidate proberen)."
   fi
 done
 
@@ -127,33 +130,37 @@ if [ -n "${BODY}" ]; then
 fi
 
 if [ "${HTTP_CODE}" = "000" ]; then
-  log "[fout] Sims-sync kon GEEN ENKEL endpoint bereiken."
+  log "[fout] Usage-alert notify kon GEEN ENKEL endpoint bereiken."
   log "[hint] Geprobeerde URL's:"
-  for CAND in "${CANDIDATES[@]}"; do echo "       - ${CAND}${SYNC_PATH}"; done
-  log "[hint] Controleer: docker ps | grep stm-app ; docker exec stm-app curl -s http://127.0.0.1:3000/api/health --max-time 5"
+  for CAND in "${CANDIDATES[@]}"; do
+    echo "       - ${CAND}${SYNC_PATH}"
+  done
+  log "[hint] Controleer: 1) docker container 'stm-app' draait? 2) poort 3000 op host is gepublished? 3) NEXT_PUBLIC_APP_URL in .env is bereikbaar vanaf deze host."
+  log "[hint] Test handmatig: curl -v ${APP_URL_DEFAULT}/api/health --max-time 10"
   exit 1
 fi
 
 if [ "${HTTP_CODE}" = "403" ]; then
-  log "[fout] Sims-sync: 403 Forbidden. Host-token SIMHUIS_SYNC_API_TOKEN ≠ container-token."
-  log "[hint] Vergelijk: ${ENV_FILE} vs 'docker exec stm-app printenv SIMHUIS_SYNC_API_TOKEN'."
+  log "[fout] Usage-alert notify: 403 Forbidden. SIMHUIS_SYNC_API_TOKEN op host ≠ token in Docker container."
+  log "[hint] Vergelijk: host-token in ${ENV_FILE} vs 'docker exec stm-app printenv SIMHUIS_SYNC_API_TOKEN'."
   exit 1
 fi
 
 if [ "${HTTP_CODE}" != "200" ]; then
-  log "[fout] Sims-sync mislukt (HTTP ${HTTP_CODE})."
+  log "[fout] Usage-alert notify mislukt (HTTP ${HTTP_CODE})."
   exit 1
 fi
 
+# Schedule Guard: taak wordt geskipt indien buiten window => NIET als fout behandelen.
 if echo "${BODY}" | grep -q '"ok"\s*:\s*true'; then
   if echo "${BODY}" | grep -q '"skipped"\s*:\s*true'; then
     REASON="$(echo "${BODY}" | grep -o '"reason"\s*:\s*"[^"]*"' | head -n1 || true)"
-    log "[skip] Sims-sync overgeslagen door Schedule Guard: ${REASON}"
+    log "[skip] Usage-alert notify overgeslagen door Schedule Guard: ${REASON}"
   else
-    log "[ok] Sims-sync voltooid."
+    log "[ok] Usage-alert notify voltooid."
   fi
   exit 0
 else
-  log "[fout] Sims-sync retourneerde ok=false."
+  log "[fout] Usage-alert notify retourneerde ok=false."
   exit 1
 fi

@@ -64,6 +64,7 @@ FORCE_REBUILD=0
 NON_INTERACTIVE=0
 SKIP_BACKUP_INSTALL=0
 SKIP_SIMHUIS_USAGE_SYNC_INSTALL=0
+SKIP_SIMHUIS_USAGE_ALERT_NOTIFY_INSTALL=0
 SHOW_HELP=0
 
 # ANSI colors (uitschakelbaar via NO_COLOR=1)
@@ -140,6 +141,7 @@ while [[ $# -gt 0 ]]; do
     --skip-preflight)       SKIP_PREFLIGHT=1; shift ;;
     --skip-backup-install)  SKIP_BACKUP_INSTALL=1; shift ;;
     --skip-simhuis-usage-sync-install)  SKIP_SIMHUIS_USAGE_SYNC_INSTALL=1; shift ;;
+    --skip-simhuis-usage-alert-notify-install)  SKIP_SIMHUIS_USAGE_ALERT_NOTIFY_INSTALL=1; shift ;;
     -h|--help)              SHOW_HELP=1; shift ;;
     *) err "Onbekende optie: $1"; usage; exit 1 ;;
   esac
@@ -685,6 +687,67 @@ else
       warn "Usage-sync timer NIET actief (status=${TIMER_ACTIVE}). Check handmatig:"
       warn "  sudo systemctl list-timers stm-simhuis-usage-sync.timer"
       warn "  sudo systemctl status stm-simhuis-usage-sync.service"
+    fi
+  fi
+fi
+
+# ------------------------------------------------------------------------------
+# STAP 10.6 — Simhuis Usage Alert Notify (elke 5 min, systemd timer)
+# Roept /api/integrations/simhuis/notify-usage-alerts aan via curl + Bearer token.
+# Vereist: SIMHUIS_SYNC_API_TOKEN is gezet in /opt/stm/.env
+# ------------------------------------------------------------------------------
+title "Simhuis Usage Alert Notify (elke 5 min, systemd timer)"
+
+if [[ "$SKIP_SIMHUIS_USAGE_ALERT_NOTIFY_INSTALL" -eq 1 ]]; then
+  info "--skip-simhuis-usage-alert-notify-install: notify script/timer installatie overgeslagen."
+else
+  NOTIFY_SCRIPT_SRC="${ROOT_DIR}/scripts/sync-simhuis-usage-alert-notify.sh"
+  NOTIFY_SERVICE_SRC="${ROOT_DIR}/deploy/stm-simhuis-usage-alert-notify.service"
+  NOTIFY_TIMER_SRC="${ROOT_DIR}/deploy/stm-simhuis-usage-alert-notify.timer"
+
+  NOTIFY_SCRIPT_DEST="/opt/stm/scripts/sync-simhuis-usage-alert-notify.sh"
+  NOTIFY_SERVICE_DEST="/etc/systemd/system/stm-simhuis-usage-alert-notify.service"
+  NOTIFY_TIMER_DEST="/etc/systemd/system/stm-simhuis-usage-alert-notify.timer"
+
+  MISSING_FILES=()
+  [[ -f "$NOTIFY_SCRIPT_SRC"  ]] || MISSING_FILES+=("${NOTIFY_SCRIPT_SRC}")
+  [[ -f "$NOTIFY_SERVICE_SRC" ]] || MISSING_FILES+=("${NOTIFY_SERVICE_SRC}")
+  [[ -f "$NOTIFY_TIMER_SRC"   ]] || MISSING_FILES+=("${NOTIFY_TIMER_SRC}")
+
+  if [[ ${#MISSING_FILES[@]} -gt 0 ]]; then
+    warn "Simhuis usage-alert-notify bestanden ontbreken (${#MISSING_FILES[@]}):"
+    for f in "${MISSING_FILES[@]}"; do warn "  - $f"; done
+    warn "Usage-alert-notify installatie wordt overgeslagen."
+  elif [[ "$NON_INTERACTIVE" -eq 0 ]] && ! confirm "Simhuis usage-alert-notify systemd timer installeren? (wordt elke 5 min uitgevoerd)"; then
+    info "Simhuis usage-alert-notify timer niet geïnstalleerd (gebruiker geweigerd). Je kunt hem later alsnog installeren:"
+    info "  sudo cp ${NOTIFY_SERVICE_SRC} ${NOTIFY_SERVICE_DEST}"
+    info "  sudo cp ${NOTIFY_TIMER_SRC}   ${NOTIFY_TIMER_DEST}"
+    info "  sudo mkdir -p /opt/stm/scripts && sudo cp ${NOTIFY_SCRIPT_SRC} ${NOTIFY_SCRIPT_DEST} && sudo chmod 750 ${NOTIFY_SCRIPT_DEST}"
+    info "  sudo systemctl daemon-reload && sudo systemctl enable --now stm-simhuis-usage-alert-notify.timer"
+  else
+    step "Kopiëren usage-alert-notify script + systemd unit/timer..."
+    sudo mkdir -p /opt/stm/scripts
+    sudo cp -f "$NOTIFY_SCRIPT_SRC"  "$NOTIFY_SCRIPT_DEST"
+    sudo cp -f "$NOTIFY_SERVICE_SRC" "$NOTIFY_SERVICE_DEST"
+    sudo cp -f "$NOTIFY_TIMER_SRC"   "$NOTIFY_TIMER_DEST"
+    sudo chown root:root "$NOTIFY_SCRIPT_DEST"
+    sudo chmod 750 "$NOTIFY_SCRIPT_DEST"
+
+    step "systemctl daemon-reload + enable --now stm-simhuis-usage-alert-notify.timer..."
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now stm-simhuis-usage-alert-notify.timer
+
+    sleep 1
+    TIMER_ACTIVE="$(sudo systemctl is-active stm-simhuis-usage-alert-notify.timer 2>/dev/null || echo unknown)"
+    TIMER_NEXT="$(sudo systemctl list-timers stm-simhuis-usage-alert-notify.timer --no-pager 2>/dev/null | tail -1 | awk '{print $1, $2, $3}' || echo '?')"
+    if [[ "${TIMER_ACTIVE}" == "active" ]]; then
+      ok "Simhuis usage-alert-notify timer actief. Volgende geplande run: ${TIMER_NEXT}"
+      info "Tip: Zorg dat SMTP-instellingen zijn geconfigureerd in de admin-instellingen (App Settings)."
+      info "Handmatige trigger: sudo bash /opt/stm/scripts/sync-simhuis-usage-alert-notify.sh"
+    else
+      warn "Usage-alert-notify timer NIET actief (status=${TIMER_ACTIVE}). Check handmatig:"
+      warn "  sudo systemctl list-timers stm-simhuis-usage-alert-notify.timer"
+      warn "  sudo systemctl status stm-simhuis-usage-alert-notify.service"
     fi
   fi
 fi

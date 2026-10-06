@@ -32,6 +32,7 @@ done
 STM_TIMERS=(
   "stm-db-backup.timer"
   "stm-simhuis-usage-sync.timer"
+  "stm-simhuis-usage-alert-notify.timer"
   "stm-simhuis-sims-sync.timer"
   "stm-inserve-sync.timer"
   "stm-cleanup.timer"
@@ -42,6 +43,7 @@ STM_TIMERS=(
 declare -A TIMER_SCRIPT
 TIMER_SCRIPT[stm-db-backup.timer]="${INSTALL_DIR}/scripts/backup-stm-db.sh"
 TIMER_SCRIPT[stm-simhuis-usage-sync.timer]="${INSTALL_DIR}/scripts/sync-simhuis-usage.sh"
+TIMER_SCRIPT[stm-simhuis-usage-alert-notify.timer]="${INSTALL_DIR}/scripts/sync-simhuis-usage-alert-notify.sh"
 TIMER_SCRIPT[stm-simhuis-sims-sync.timer]="${INSTALL_DIR}/scripts/sync-simhuis-sims.sh"
 TIMER_SCRIPT[stm-inserve-sync.timer]="${INSTALL_DIR}/scripts/sync-inserve-invoices.sh"
 TIMER_SCRIPT[stm-cleanup.timer]="${INSTALL_DIR}/scripts/cleanup-stm.sh"

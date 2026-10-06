@@ -1,15 +1,17 @@
 # ============================================================
-# STM Simhuis Usage Sync timer: ELKE 15 MINUTEN
+# STM Simhuis Usage Sync timer: ELKE 5 MINUTEN
 # (Schedule Guard in de app bepaalt of de run WERKELIJK mag
 # plaatsvinden op basis van de ADMIN-configuratie; Persistent=true
 # zodat gemiste runs alsnog uitgevoerd worden zodra de VPS online komt.)
+# Elke 5 minuten zorgt dat ELKE mogelijke minute-offset (0-59)
+# altijd binnen de 7-minuten-grace-window van de Schedule Guard valt.
 # ============================================================
 [Unit]
-Description=Elke 15 minuten Simhuis usage/data/SMS synchronisatie (Schedule Guard in app)
+Description=Elke 5 minuten Simhuis usage/data/SMS synchronisatie (Schedule Guard in app)
 Documentation=https://github.com/SeguiloNL/Nexus/
 
 [Timer]
-OnCalendar=*-*-* *:00,15,30,45:00 Europe/Amsterdam
+OnCalendar=*-*-* *:00/5:00 Europe/Amsterdam
 Persistent=true
 RandomizedDelaySec=90
 AccuracySec=1min

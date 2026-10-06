@@ -1,5 +1,5 @@
 # ============================================================
-# STM Inserve Sync timer: ELKE 5 MINUTEN
+# STM Simhuis Usage Alert Notify timer: ELKE 5 MINUTEN
 # (Schedule Guard in de app bepaalt of de run WERKELIJK mag
 # plaatsvinden op basis van de ADMIN-configuratie; Persistent=true
 # zodat gemiste runs alsnog uitgevoerd worden zodra de VPS online komt.)
@@ -7,15 +7,15 @@
 # altijd binnen de 7-minuten-grace-window van de Schedule Guard valt.
 # ============================================================
 [Unit]
-Description=Elke 5 minuten Inserve sync (abonnementen + facturen; Schedule Guard in app)
+Description=Elke 5 minuten SIM datadrempel e-mail notificaties (Schedule Guard in app)
 Documentation=https://github.com/SeguiloNL/Nexus/
 
 [Timer]
 OnCalendar=*-*-* *:00/5:00 Europe/Amsterdam
 Persistent=true
-RandomizedDelaySec=180
+RandomizedDelaySec=90
 AccuracySec=1min
-Unit=stm-inserve-sync.service
+Unit=stm-simhuis-usage-alert-notify.service
 
 [Install]
 WantedBy=timers.target

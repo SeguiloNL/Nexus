@@ -35,7 +35,7 @@ import {
 import { getDiagnosticByIccid } from "@/server/integrations/simhuis/service";
 import type { SimhuisDiagnosticResult } from "@/server/integrations/simhuis/types";
 import { hasMinRole } from "@/lib/rbac";
-import { UserRole, RoleScope } from "@/types/enums";
+import { UserRole, RoleScope, SyncJobTrigger } from "@/types/enums";
 import { assertNoProviderNameLeak } from "@/lib/providers/provider-leak-guard";
 
 export type SimActionState = {
@@ -402,6 +402,7 @@ export async function syncUsageSimsAction(
     roleScope: user.roleScope,
     customerScope: user.customerIds,
     permissions: user.permissions,
+    triggeredBy: SyncJobTrigger.MANUAL_ADMIN,
   };
   try {
     const result = await syncActiveSimsUsageFromSimhuis(ctx);

@@ -2,17 +2,27 @@ import { prisma } from "@/lib/prisma";
 import { logAudit } from "./audit.service";
 import { listAllSims, getSimStatus, simhuisClient } from "@/server/integrations/simhuis/service";
 import type { SimhuisSimStatus } from "@/server/integrations/simhuis/types";
-import { SimStatus, type UserRole } from "@/types/enums";
+import { SimStatus, SyncJobTrigger, SyncJobStatus, SyncJobId, type UserRole } from "@/types/enums";
 import {
   runUsageAlertNotificationCycle,
   type UsageAlertCycleReport,
 } from "./sim-usage-alert.service";
+import {
+  getSyncJobConfig,
+  shouldRunNow,
+  createSyncJobRun,
+  completeSyncJobRun,
+} from "./sync-schedule.service";
 
 type Ctx = {
   userId?: string;
   userRole?: UserRole;
   customerScope?: string[];
   skipNotificationCycle?: boolean;
+  triggeredBy?: SyncJobTrigger;
+  roleId?: string | null;
+  roleScope?: unknown;
+  permissions?: unknown;
 };
 
 type UsageFields = {
@@ -1640,22 +1650,131 @@ export async function syncActiveSimsUsageFromSimhuis(
 
   let notificationReport: UsageAlertCycleReport | null = null;
   try {
-    if (ctx.skipNotificationCycle !== true) {
-      notificationReport = await runUsageAlertNotificationCycle({
-        thresholdPercentOverride: undefined,
-        limitUsers: undefined,
+    const notifyTriggeredBy: SyncJobTrigger =
+      ctx.triggeredBy ??
+      (ctx.userId ? SyncJobTrigger.MANUAL_ADMIN : SyncJobTrigger.API_TOKEN);
+
+    if (ctx.skipNotificationCycle === true) {
+      console.info("[simhuis-usage-sync] ⏭️  Usage alert cycle overgeslagen (skipNotificationCycle=true).");
+    } else {
+      const notifyConfig = await getSyncJobConfig(SyncJobId.SIMHUIS_USAGE_ALERT_NOTIFY);
+      const runCheck = shouldRunNow(notifyConfig, new Date(), {
+        force: false,
+        triggeredBy: notifyTriggeredBy,
       });
-      console.info(
-        `[simhuis-usage-sync] ✉️  Usage alert cycle: ${notificationReport.usersNotified} users notified, ` +
-          `${notificationReport.usersNotifiedDryRun} dry-run, ${notificationReport.userSendFailures} failures, ` +
-          `${notificationReport.simsReportedEmails} sims reported, ${notificationReport.simsSkippedAlreadySent} skipped (anti-spam).`
-      );
+
+      let notifyRunId: string | null = null;
+      let notifyStartedAt: Date | null = null;
+
+      if (!runCheck.shouldRun) {
+        try {
+          await prisma.$transaction(async (tx) => {
+            const r = await createSyncJobRun(tx, {
+              configId: notifyConfig.id,
+              jobId: SyncJobId.SIMHUIS_USAGE_ALERT_NOTIFY,
+              triggeredBy: notifyTriggeredBy,
+              userId: ctx.userId ?? null,
+              status: SyncJobStatus.SKIPPED,
+            });
+            notifyStartedAt = r.startedAt;
+            notifyRunId = r.id;
+            await completeSyncJobRun(tx, {
+              id: r.id,
+              status: SyncJobStatus.SKIPPED,
+              startedAt: r.startedAt,
+              errorMessage: runCheck.reason,
+              recordsAffected: { skippedGuard: true },
+            });
+          });
+        } catch (runLogErr: any) {
+          console.warn(
+            "[simhuis-usage-sync] ⚠️  SKIPPED SyncJobRun wegschrijven mislukt (notify):",
+            runLogErr?.message ?? String(runLogErr)
+          );
+        }
+        console.info(
+          `[simhuis-usage-sync] ⏭️  Usage alert cycle overgeslagen (Schedule Guard): ${runCheck.reason}`
+        );
+      } else {
+        try {
+          await prisma.$transaction(async (tx) => {
+            const r = await createSyncJobRun(tx, {
+              configId: notifyConfig.id,
+              jobId: SyncJobId.SIMHUIS_USAGE_ALERT_NOTIFY,
+              triggeredBy: notifyTriggeredBy,
+              userId: ctx.userId ?? null,
+            });
+            notifyRunId = r.id;
+            notifyStartedAt = r.startedAt;
+          });
+        } catch (runLogErr: any) {
+          console.warn(
+            "[simhuis-usage-sync] ⚠️  RUNNING SyncJobRun wegschrijven mislukt (notify, gaat wel proberen te draaien):",
+            runLogErr?.message ?? String(runLogErr)
+          );
+        }
+
+        try {
+          notificationReport = await runUsageAlertNotificationCycle({
+            thresholdPercentOverride: undefined,
+            limitUsers: undefined,
+          });
+          console.info(
+            `[simhuis-usage-sync] ✉️  Usage alert cycle: ${notificationReport.usersNotified} users notified, ` +
+              `${notificationReport.usersNotifiedDryRun} dry-run, ${notificationReport.userSendFailures} failures, ` +
+              `${notificationReport.simsReportedEmails} sims reported, ${notificationReport.simsSkippedAlreadySent} skipped (anti-spam).`
+          );
+          if (notifyRunId && notifyStartedAt) {
+            try {
+              await prisma.$transaction(async (tx) => {
+                await completeSyncJobRun(tx, {
+                  id: notifyRunId!,
+                  status: SyncJobStatus.SUCCESS,
+                  startedAt: notifyStartedAt!,
+                  recordsAffected: notificationReport,
+                });
+              });
+            } catch (cmplErr: any) {
+              console.warn(
+                "[simhuis-usage-sync] ⚠️  SUCCESS SyncJobRun complete mislukt (notify):",
+                cmplErr?.message ?? String(cmplErr)
+              );
+            }
+          }
+        } catch (notifErr: any) {
+          const msg = notifErr?.message ?? String(notifErr);
+          errors.push(`[usage-alert-notify] Mislukt: ${msg}`);
+          errorCount++;
+          console.error("[simhuis-usage-sync] ❌ Usage alert notification cycle failed:", notifErr);
+          if (notifyRunId && notifyStartedAt) {
+            try {
+              await prisma.$transaction(async (tx) => {
+                await completeSyncJobRun(tx, {
+                  id: notifyRunId!,
+                  status: SyncJobStatus.FAILED,
+                  startedAt: notifyStartedAt!,
+                  errorMessage: msg,
+                  errorDetail: {
+                    stack: (notifErr as any)?.stack ?? null,
+                    name: (notifErr as any)?.name ?? null,
+                  },
+                });
+              });
+            } catch (cmplErr: any) {
+              console.warn(
+                "[simhuis-usage-sync] ⚠️  FAILED SyncJobRun complete mislukt (notify):",
+                cmplErr?.message ?? String(cmplErr)
+              );
+            }
+          }
+        }
+      }
     }
-  } catch (notifErr: any) {
-    const msg = notifErr?.message ?? String(notifErr);
-    errors.push(`[usage-alert-notify] Mislukt: ${msg}`);
+  } catch (outerNotifErr: any) {
+    const outerMsg = outerNotifErr?.message ?? String(outerNotifErr);
+    errors.push(`[usage-alert-notify] Buitenste wrapper mislukt: ${outerMsg}`);
     errorCount++;
-    console.error("[simhuis-usage-sync] ❌ Usage alert notification cycle failed:", notifErr);
+    console.error("[simhuis-usage-sync] ❌ Usage alert notify wrapper failed:", outerNotifErr);
   }
 
   // 5. Audit logging (apart van de grote sync)

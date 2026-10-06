@@ -187,18 +187,31 @@ describe("SaveSyncScheduleSchema (§AC-1 validatie)", () => {
 });
 
 describe("Defaults §AC-9 (historische uren windows)", () => {
-  it("HISTORIC_HOURLY_WINDOWS bevat de 3 legacy sloten", () => {
-    expect(HISTORIC_HOURLY_WINDOWS[SyncJobId.SIMHUIS_USAGE]).toEqual([0]);
+  it("HISTORIC_HOURLY_WINDOWS bevat de legacy sloten", () => {
+    expect(HISTORIC_HOURLY_WINDOWS[SyncJobId.SIMHUIS_USAGE]).toEqual(
+      Array.from({ length: 24 }, (_, i) => i)
+    );
     expect(HISTORIC_HOURLY_WINDOWS[SyncJobId.SIMHUIS_SIMS]).toEqual([
       3, 9, 15, 21,
     ]);
+    expect(HISTORIC_HOURLY_WINDOWS[SyncJobId.SIMHUIS_USAGE_ALERT_NOTIFY]).toEqual(
+      Array.from({ length: 24 }, (_, i) => i)
+    );
     expect(HISTORIC_HOURLY_WINDOWS[SyncJobId.INSERVE]).toEqual([2, 8, 14, 20]);
   });
 
-  it("getDefaultSyncJobConfig SIMHUIS_USAGE = HOURLY :00", () => {
+  it("getDefaultSyncJobConfig SIMHUIS_USAGE = EVERY_15_MINUTES :00", () => {
     const d = getDefaultSyncJobConfig(SyncJobId.SIMHUIS_USAGE);
-    expect(d.frequency).toBe(SyncFrequency.HOURLY);
+    expect(d.frequency).toBe(SyncFrequency.EVERY_15_MINUTES);
     expect(d.minute).toBe(0);
+    expect(d.enabled).toBe(true);
+  });
+
+  it("getDefaultSyncJobConfig SIMHUIS_USAGE_ALERT_NOTIFY = EVERY_15_MINUTES :05", () => {
+    const d = getDefaultSyncJobConfig(SyncJobId.SIMHUIS_USAGE_ALERT_NOTIFY);
+    expect(d.frequency).toBe(SyncFrequency.EVERY_15_MINUTES);
+    expect(d.minute).toBe(5);
+    expect(d.enabled).toBe(true);
   });
 
   it("getDefaultSyncJobConfig SIMHUIS_SIMS = DAILY 03:00", () => {

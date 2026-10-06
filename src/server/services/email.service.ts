@@ -27,7 +27,9 @@ async function resolveTransporter(): Promise<{
   const cfg = await getSmtpSettings();
   const key = configKey(cfg);
   if (cachedTransporter && cachedConfigKey === key && cachedDryRun === !cfg) {
-    const from = cfg?.from ?? "noreply@nexus.local";
+    const from = cachedDryRun
+      ? process.env.SMTP_FROM?.trim() || "noreply@nexus.local"
+      : cfg?.from ?? "noreply@nexus.local";
     return { transporter: cachedTransporter, dryRun: cachedDryRun, from };
   }
   if (cachedTransporter) {

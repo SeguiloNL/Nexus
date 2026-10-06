@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# STM — Simhuis Usage Sync trigger (every 15 min via systemd)
+# STM — Simhuis Usage Sync trigger (every 5 min via systemd)
 #
 # Roept de Next.js API route /api/integrations/simhuis/sync-usage
 # aan met Bearer auth + X-Sync-Triggered-By header.
@@ -9,7 +9,9 @@
 # Handmatig testen:
 #   cd /opt/stm && bash scripts/sync-simhuis-usage.sh
 # ============================================================
-set -euo pipefail
+set -Eeuo pipefail
+
+trap 'TS="$(date "+%Y-%m-%dT%H:%M:%S%z")"; echo "[${TS}] [fout] Script $0 faalde op regel $LINENO: exit code $?" >&2' ERR
 
 WORKDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${WORKDIR}/.env"
@@ -18,6 +20,12 @@ APP_URL_DEFAULT="http://127.0.0.1:3000"
 APP_URL="${APP_URL_DEFAULT}"
 APP_URL_FALLBACK_1="http://localhost:3000"
 API_TOKEN=""
+
+log() {
+  local ts
+  ts="$(date "+%Y-%m-%dT%H:%M:%S%z")"
+  echo "[${ts}] $*"
+}
 
 trim() {
   local var="$*"
@@ -53,19 +61,19 @@ if [ -f "${ENV_FILE}" ]; then
     esac
   done < "${ENV_FILE}"
 else
-  echo "[warn] Geen .env bestand gevonden in ${WORKDIR}. STM_APP_URL en SIMHUIS_SYNC_API_TOKEN worden uit environment gehaald."
+  log "[warn] Geen .env bestand gevonden in ${WORKDIR}. STM_APP_URL en SIMHUIS_SYNC_API_TOKEN worden uit environment gehaald."
   APP_URL="${STM_APP_URL:-${APP_URL}}"
   API_TOKEN="${SIMHUIS_SYNC_API_TOKEN:-}"
 fi
 
 if [ -z "${API_TOKEN}" ]; then
-  echo "[fout] SIMHUIS_SYNC_API_TOKEN is niet gezet in .env of environment. Kan usage-sync niet uitvoeren."
-  echo "[hint] Voeg toe aan ${ENV_FILE}: SIMHUIS_SYNC_API_TOKEN=$(openssl rand -hex 24 2>/dev/null || echo '<genereer-een-random-token>')"
+  log "[fout] SIMHUIS_SYNC_API_TOKEN is niet gezet in .env of environment. Kan usage-sync niet uitvoeren."
+  log "[hint] Voeg toe aan ${ENV_FILE}: SIMHUIS_SYNC_API_TOKEN=$(openssl rand -hex 24 2>/dev/null || echo '<genereer-een-random-token>')"
   exit 2
 fi
 
 TOKEN_LEN="${#API_TOKEN}"
-echo "[info] API token geladen (lengte=${TOKEN_LEN}). App URL (via .env/env): ${APP_URL}"
+log "[info] API token geladen (lengte=${TOKEN_LEN}). App URL (via .env/env): ${APP_URL}"
 
 # ── URL-proef: probeer meerdere endpoints zodat we niet afhankelijk zijn van 1 poort ──
 SYNC_PATH="/api/integrations/simhuis/sync-usage"
@@ -86,7 +94,7 @@ FINAL_RC=0
 
 for CAND in "${CANDIDATES[@]}"; do
   TEST_URL="${CAND}${SYNC_PATH}"
-  echo "[info] Probeer endpoint: POST ${TEST_URL}"
+  log "[info] Probeer endpoint: POST ${TEST_URL}"
   CAND_HTTP=$(curl -sS -o "${RESPONSE_FILE}" -w "%{http_code}" \
     -X POST \
     -H "Authorization: Bearer ${API_TOKEN}" \
@@ -103,9 +111,9 @@ for CAND in "${CANDIDATES[@]}"; do
     break
   fi
   if [ "${CAND_HTTP}" = "000" ]; then
-    echo "[info]   → connectie naar ${CAND} mislukt (geen antwoord; volgende candidate proberen)."
+    log "[info]   → connectie naar ${CAND} mislukt (geen antwoord; volgende candidate proberen)."
   else
-    echo "[info]   → onverwachte HTTP ${CAND_HTTP} via ${CAND} (volgende candidate proberen)."
+    log "[info]   → onverwachte HTTP ${CAND_HTTP} via ${CAND} (volgende candidate proberen)."
   fi
 done
 
@@ -115,31 +123,31 @@ if [ -z "${USED_URL}" ]; then
 fi
 rm -f "${RESPONSE_FILE}"
 
-echo "[info] Uiteindelijke call: ${USED_URL:-<geen endpoint bereikbaar>} → HTTP ${HTTP_CODE}"
+log "[info] Uiteindelijke call: ${USED_URL:-<geen endpoint bereikbaar>} → HTTP ${HTTP_CODE}"
 if [ -n "${BODY}" ]; then
-  echo "[info] Response body:"
+  log "[info] Response body:"
   echo "${BODY}"
 fi
 
 if [ "${HTTP_CODE}" = "000" ]; then
-  echo "[fout] Usage-sync kon GEEN ENKEL endpoint bereiken."
-  echo "[hint] Geprobeerde URL's:"
+  log "[fout] Usage-sync kon GEEN ENKEL endpoint bereiken."
+  log "[hint] Geprobeerde URL's:"
   for CAND in "${CANDIDATES[@]}"; do
     echo "       - ${CAND}${SYNC_PATH}"
   done
-  echo "[hint] Controleer: 1) docker container 'stm-app' draait? 2) poort 3000 op host is gepublished? 3) NEXT_PUBLIC_APP_URL in .env is bereikbaar vanaf deze host."
-  echo "[hint] Test handmatig: curl -v ${APP_URL_DEFAULT}/api/health --max-time 10"
+  log "[hint] Controleer: 1) docker container 'stm-app' draait? 2) poort 3000 op host is gepublished? 3) NEXT_PUBLIC_APP_URL in .env is bereikbaar vanaf deze host."
+  log "[hint] Test handmatig: curl -v ${APP_URL_DEFAULT}/api/health --max-time 10"
   exit 1
 fi
 
 if [ "${HTTP_CODE}" = "403" ]; then
-  echo "[fout] Usage-sync: 403 Forbidden. SIMHUIS_SYNC_API_TOKEN op host ≠ token in Docker container."
-  echo "[hint] Vergelijk: host-token in ${ENV_FILE} vs 'docker exec stm-app printenv SIMHUIS_SYNC_API_TOKEN'."
+  log "[fout] Usage-sync: 403 Forbidden. SIMHUIS_SYNC_API_TOKEN op host ≠ token in Docker container."
+  log "[hint] Vergelijk: host-token in ${ENV_FILE} vs 'docker exec stm-app printenv SIMHUIS_SYNC_API_TOKEN'."
   exit 1
 fi
 
 if [ "${HTTP_CODE}" != "200" ]; then
-  echo "[fout] Usage-sync mislukt (HTTP ${HTTP_CODE})."
+  log "[fout] Usage-sync mislukt (HTTP ${HTTP_CODE})."
   exit 1
 fi
 
@@ -147,12 +155,12 @@ fi
 if echo "${BODY}" | grep -q '"ok"\s*:\s*true'; then
   if echo "${BODY}" | grep -q '"skipped"\s*:\s*true'; then
     REASON="$(echo "${BODY}" | grep -o '"reason"\s*:\s*"[^"]*"' | head -n1 || true)"
-    echo "[skip] Usage-sync overgeslagen door Schedule Guard: ${REASON}"
+    log "[skip] Usage-sync overgeslagen door Schedule Guard: ${REASON}"
   else
-    echo "[ok] Usage-sync voltooid."
+    log "[ok] Usage-sync voltooid."
   fi
   exit 0
 else
-  echo "[fout] Usage-sync retourneerde ok=false."
+  log "[fout] Usage-sync retourneerde ok=false."
   exit 1
 fi

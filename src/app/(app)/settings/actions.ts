@@ -796,6 +796,7 @@ export async function triggerSyncJobAction(
       const r = await syncActiveSimsUsageFromSimhuis({
         userId: user.id,
         userRole: user.role as any,
+        triggeredBy: SyncJobTrigger.MANUAL_ADMIN,
       });
       recordsAffected = {
         totalActiveInDb: r.totalActiveInDb,

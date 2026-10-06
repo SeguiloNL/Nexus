@@ -1,6 +1,6 @@
 import { getSchedulerHealth } from "./services/sync-schedule.service";
 
-const INTERVAL_MS = 15 * 60 * 1000; // 15 min
+const INTERVAL_MS = 5 * 60 * 1000; // 5 min
 const HEALTH_WINDOW_MS = 30 * 60 * 1000; // 30 min zonder systemd runs = unhealthy
 
 let intervalRef: ReturnType<typeof setInterval> | null = null;
@@ -87,8 +87,9 @@ export function startFallbackPolling(options?: { immediate?: boolean }) {
     setTimeout(() => runFallbackCycle(), 5000);
   }
   intervalRef = setInterval(runFallbackCycle, INTERVAL_MS);
+  const minutes = INTERVAL_MS / 60000;
   console.info(
-    `[fallback-polling] Gestart, interval ${INTERVAL_MS / 60000} min.`
+    `[fallback-polling] Gestart, interval ${minutes.toFixed(1)} min.`
   );
 }
 

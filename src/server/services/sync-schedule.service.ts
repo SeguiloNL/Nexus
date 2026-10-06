@@ -113,7 +113,24 @@ export async function getSyncJobConfig(
   jobId: SyncJobId
 ): Promise<PrismaSyncConfig> {
   const row = await prisma.syncJobConfig.findUnique({ where: { jobId } });
-  if (row) return row;
+  if (row) {
+    if (row.lastAppliedAt === null) {
+      try {
+        return await prisma.syncJobConfig.update({
+          where: { jobId },
+          data: { lastAppliedAt: new Date() },
+        });
+      } catch (e: any) {
+        console.warn(
+          "[sync-schedule] Eenmalig bijwerken lastAppliedAt voor job",
+          jobId,
+          "mislukt (door naar fallback-pad):",
+          e?.message ?? String(e)
+        );
+      }
+    }
+    return row;
+  }
   const defaults = getDefaultSyncJobConfig(jobId);
   return prisma.syncJobConfig.upsert({
     where: { jobId },
@@ -127,12 +144,39 @@ export async function getSyncJobConfig(
       dayOfWeek: defaults.dayOfWeek,
       dayOfMonth: defaults.dayOfMonth,
       timezone: defaults.timezone,
+      lastAppliedAt: new Date(),
     },
   });
 }
 
 export async function listSyncJobConfigs(): Promise<PrismaSyncConfig[]> {
   const rows = await prisma.syncJobConfig.findMany();
+
+  const needLastApplied = rows.filter((r) => r.lastAppliedAt === null);
+  if (needLastApplied.length > 0) {
+    try {
+      await Promise.all(
+        needLastApplied.map((r) =>
+          prisma.syncJobConfig.update({
+            where: { id: r.id },
+            data: { lastAppliedAt: new Date() },
+          })
+        )
+      );
+      for (const r of needLastApplied) {
+        const updated = rows.find((x) => x.id === r.id);
+        if (updated) updated.lastAppliedAt = new Date();
+      }
+    } catch (e: any) {
+      console.warn(
+        "[sync-schedule] Eenmalig bijwerken lastAppliedAt voor",
+        needLastApplied.length,
+        "jobs mislukt:",
+        e?.message ?? String(e)
+      );
+    }
+  }
+
   const expectedIds = new Set(rows.map((r) => r.jobId));
   const missing = (Object.values(SyncJobId) as SyncJobId[]).filter(
     (id) => !expectedIds.has(id)
@@ -152,6 +196,7 @@ export async function listSyncJobConfigs(): Promise<PrismaSyncConfig[]> {
           dayOfWeek: d.dayOfWeek,
           dayOfMonth: d.dayOfMonth,
           timezone: d.timezone,
+          lastAppliedAt: new Date(),
         },
       });
     });
@@ -177,6 +222,15 @@ export async function saveSyncJobConfig(
 
   await validateNoOverlap(db, validated, { excludeJobId: validated.jobId });
 
+  const effectiveDayOfWeek =
+    validated.dayOfWeek !== undefined && validated.dayOfWeek !== null
+      ? validated.dayOfWeek
+      : 1;
+  const effectiveDayOfMonth =
+    validated.dayOfMonth !== undefined && validated.dayOfMonth !== null
+      ? validated.dayOfMonth
+      : 1;
+
   const oldValues = existing
     ? diffObject(
         {
@@ -184,8 +238,8 @@ export async function saveSyncJobConfig(
           frequency: existing.frequency,
           hour: existing.hour,
           minute: existing.minute,
-          dayOfWeek: existing.dayOfWeek,
-          dayOfMonth: existing.dayOfMonth,
+          dayOfWeek: existing.dayOfWeek ?? 1,
+          dayOfMonth: existing.dayOfMonth ?? 1,
           timezone: existing.timezone,
         },
         {
@@ -193,14 +247,8 @@ export async function saveSyncJobConfig(
           frequency: validated.frequency,
           hour: validated.hour,
           minute: validated.minute,
-          dayOfWeek:
-            validated.dayOfWeek === undefined || validated.dayOfWeek === null
-              ? existing?.dayOfWeek ?? null
-              : validated.dayOfWeek,
-          dayOfMonth:
-            validated.dayOfMonth === undefined || validated.dayOfMonth === null
-              ? existing?.dayOfMonth ?? null
-              : validated.dayOfMonth,
+          dayOfWeek: effectiveDayOfWeek,
+          dayOfMonth: effectiveDayOfMonth,
           timezone: validated.timezone,
         }
       )
@@ -213,14 +261,8 @@ export async function saveSyncJobConfig(
       frequency: validated.frequency,
       hour: validated.hour,
       minute: validated.minute,
-      dayOfWeek:
-        validated.dayOfWeek === undefined || validated.dayOfWeek === null
-          ? undefined
-          : validated.dayOfWeek,
-      dayOfMonth:
-        validated.dayOfMonth === undefined || validated.dayOfMonth === null
-          ? undefined
-          : validated.dayOfMonth,
+      dayOfWeek: effectiveDayOfWeek,
+      dayOfMonth: effectiveDayOfMonth,
       timezone: validated.timezone,
       updatedById: user.id,
       lastAppliedAt: new Date(),
@@ -231,41 +273,42 @@ export async function saveSyncJobConfig(
       frequency: validated.frequency,
       hour: validated.hour,
       minute: validated.minute,
-      dayOfWeek:
-        validated.dayOfWeek === undefined || validated.dayOfWeek === null
-          ? 1
-          : validated.dayOfWeek,
-      dayOfMonth:
-        validated.dayOfMonth === undefined || validated.dayOfMonth === null
-          ? 1
-          : validated.dayOfMonth,
+      dayOfWeek: effectiveDayOfWeek,
+      dayOfMonth: effectiveDayOfMonth,
       timezone: validated.timezone,
       updatedById: user.id,
       lastAppliedAt: new Date(),
     },
   });
 
-  await logAudit(db, {
-    entityType: "SyncJobConfig",
-    entityId: saved.id,
-    action: "UPDATE_SETTINGS",
-    userId: user.id,
-    oldValues,
-    newValues: {
-      jobId: saved.jobId,
-      enabled: saved.enabled,
-      frequency: saved.frequency,
-      hour: saved.hour,
-      minute: saved.minute,
-      dayOfWeek: saved.dayOfWeek,
-      dayOfMonth: saved.dayOfMonth,
-      timezone: saved.timezone,
-    },
-    metadata: {
-      scope: "sync_schedule",
-      comment: validated.comment ?? undefined,
-    },
-  });
+  try {
+    await logAudit(db, {
+      entityType: "SyncJobConfig",
+      entityId: saved.id,
+      action: "UPDATE_SETTINGS",
+      userId: user.id,
+      oldValues,
+      newValues: {
+        jobId: saved.jobId,
+        enabled: saved.enabled,
+        frequency: saved.frequency,
+        hour: saved.hour,
+        minute: saved.minute,
+        dayOfWeek: saved.dayOfWeek ?? 1,
+        dayOfMonth: saved.dayOfMonth ?? 1,
+        timezone: saved.timezone,
+      },
+      metadata: {
+        scope: "sync_schedule",
+        comment: validated.comment ?? undefined,
+      },
+    });
+  } catch (auditErr: any) {
+    console.error(
+      "[audit-faal] Audit logging SyncJobConfig kon niet geschreven worden (config wel opgeslagen):",
+      auditErr?.message ?? String(auditErr)
+    );
+  }
 
   return saved;
 }
@@ -307,15 +350,32 @@ export async function resetSyncJobConfig(
     },
   });
 
-  await logAudit(db, {
-    entityType: "SyncJobConfig",
-    entityId: saved.id,
-    action: "UPDATE_SETTINGS",
-    userId: user.id,
-    oldValues: existing,
-    newValues: saved,
-    metadata: { scope: "sync_schedule", reset: true },
-  });
+  try {
+    await logAudit(db, {
+      entityType: "SyncJobConfig",
+      entityId: saved.id,
+      action: "UPDATE_SETTINGS",
+      userId: user.id,
+      oldValues: existing
+        ? {
+            ...existing,
+            dayOfWeek: existing.dayOfWeek ?? 1,
+            dayOfMonth: existing.dayOfMonth ?? 1,
+          }
+        : null,
+      newValues: {
+        ...saved,
+        dayOfWeek: saved.dayOfWeek ?? 1,
+        dayOfMonth: saved.dayOfMonth ?? 1,
+      },
+      metadata: { scope: "sync_schedule", reset: true },
+    });
+  } catch (auditErr: any) {
+    console.error(
+      "[audit-faal] Audit logging reset SyncJobConfig kon niet geschreven worden (reset wel uitgevoerd):",
+      auditErr?.message ?? String(auditErr)
+    );
+  }
 
   return saved;
 }
@@ -329,12 +389,41 @@ export interface ShouldRunNowResult {
 
 const GRACE_MINUTES = 7;
 
-function inTZ(date: Date, timezone: string) {
-  return new Date(
-    date.toLocaleString("en-US", {
-      timeZone: timezone,
-    })
-  );
+interface TZInstant {
+  hour: number;
+  minute: number;
+  dowRaw: number;
+  dow: number;
+  dom: number;
+  lastOfMonth: number;
+  year: number;
+  monthZeroBased: number;
+}
+
+function inTZ(date: Date, timezone: string): TZInstant {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    weekday: "short",
+  });
+  const parts = formatter.formatToParts(date);
+  const getPart = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  const hour = parseInt(getPart("hour"), 10) || 0;
+  const minute = parseInt(getPart("minute"), 10) || 0;
+  const year = parseInt(getPart("year"), 10) || new Date().getFullYear();
+  const monthZeroBased = (parseInt(getPart("month"), 10) || 1) - 1;
+  const dom = parseInt(getPart("day"), 10) || 1;
+  const weekdayStr = getPart("weekday").toLowerCase();
+  const dowRaw = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"].indexOf(weekdayStr.slice(0, 3));
+  const dowSafe = dowRaw === -1 ? new Date(date.getTime()).getDay() : dowRaw;
+  const dow = dowSafe === 0 ? 7 : dowSafe;
+  const lastOfMonth = new Date(year, monthZeroBased + 1, 0).getDate();
+  return { hour, minute, dowRaw: dowSafe, dow, dom, lastOfMonth, year, monthZeroBased };
 }
 
 function isConfigUnchangedDefault(config: PrismaSyncConfig): boolean {
@@ -344,7 +433,10 @@ function isConfigUnchangedDefault(config: PrismaSyncConfig): boolean {
     config.enabled === defaults.enabled &&
     config.frequency === defaults.frequency &&
     config.hour === defaults.hour &&
-    config.minute === defaults.minute
+    config.minute === defaults.minute &&
+    (config.dayOfWeek ?? 1) === (defaults.dayOfWeek ?? 1) &&
+    (config.dayOfMonth ?? 1) === (defaults.dayOfMonth ?? 1) &&
+    (config.timezone || "Europe/Amsterdam") === (defaults.timezone || "Europe/Amsterdam")
   );
 }
 
@@ -367,13 +459,7 @@ export function shouldRunNow(
   }
 
   const tz = config.timezone || "Europe/Amsterdam";
-  const nowTz = inTZ(now, tz);
-  const hour = nowTz.getHours();
-  const minute = nowTz.getMinutes();
-  const dowRaw = nowTz.getDay();
-  const dow = dowRaw === 0 ? 7 : dowRaw;
-  const dom = nowTz.getDate();
-  const lastOfMonth = new Date(nowTz.getFullYear(), nowTz.getMonth() + 1, 0).getDate();
+  const { hour, minute, dow, dom, lastOfMonth } = inTZ(now, tz);
 
   const withinMinuteWindow = (targetMinute: number) => {
     const diff = ((minute - targetMinute) % 60 + 60) % 60;
@@ -524,6 +610,34 @@ export function shouldRunNow(
 
 /* =============================== OVERLAP VALIDATIE =============================== */
 
+type FrequencyLike = SyncFrequency | (string & {});
+
+function buildMinuteSet(frequency: FrequencyLike, configMinute: number): Set<number> {
+  const minute = ((configMinute ?? 0) % 60 + 60) % 60;
+  switch (frequency) {
+    case SyncFrequency.EVERY_15_MINUTES: {
+      const offset = minute % 15;
+      return new Set([offset, offset + 15, offset + 30, offset + 45]);
+    }
+    case SyncFrequency.EVERY_30_MINUTES: {
+      const offset = minute % 30;
+      return new Set([offset, offset + 30]);
+    }
+    case SyncFrequency.HOURLY:
+    case SyncFrequency.DAILY:
+    case SyncFrequency.WEEKLY:
+    case SyncFrequency.MONTHLY:
+    default:
+      return new Set([minute]);
+  }
+}
+
+function minuteOverlap(a: Set<number>, b: Set<number>): number[] {
+  const result: number[] = [];
+  for (const m of a) if (b.has(m)) result.push(m);
+  return result.sort((x, y) => x - y);
+}
+
 export async function validateNoOverlap(
   db: TxAware,
   candidate: SaveSyncScheduleInput,
@@ -537,19 +651,61 @@ export async function validateNoOverlap(
     },
   })) as unknown as PrismaSyncConfig[];
 
+  const candidateMinute = candidate.minute ?? 0;
+  const candidateHour = candidate.hour ?? 0;
+  const candidateDow = (candidate.dayOfWeek as number | null | undefined) ?? 1;
+  const candidateDom = (candidate.dayOfMonth as number | null | undefined) ?? 1;
+  const candidateMinuteSet = buildMinuteSet(candidate.frequency, candidateMinute);
+
   for (const other of others) {
+    const otherMinute = other.minute ?? 0;
+    const otherHour = other.hour ?? 0;
+    const otherDow = other.dayOfWeek ?? 1;
+    const otherDom = other.dayOfMonth ?? 1;
+    const otherMinuteSet = buildMinuteSet(other.frequency, otherMinute);
+
+    let clashReason: string | null = null;
+
     if (
-      other.frequency === candidate.frequency &&
-      other.hour === candidate.hour &&
-      other.minute === candidate.minute
+      candidate.frequency === SyncFrequency.EVERY_15_MINUTES ||
+      candidate.frequency === SyncFrequency.EVERY_30_MINUTES ||
+      candidate.frequency === SyncFrequency.HOURLY ||
+      other.frequency === SyncFrequency.EVERY_15_MINUTES ||
+      other.frequency === SyncFrequency.EVERY_30_MINUTES ||
+      other.frequency === SyncFrequency.HOURLY
     ) {
+      const overlap = minuteOverlap(candidateMinuteSet, otherMinuteSet);
+      if (overlap.length > 0) {
+        clashReason = `minuut-overlap op :${overlap.map((m) => String(m).padStart(2, "0")).join(", :")} (frequenties ${candidate.frequency} vs ${other.frequency})`;
+      }
+    } else if (candidate.frequency === SyncFrequency.DAILY) {
+      const overlap = minuteOverlap(candidateMinuteSet, otherMinuteSet);
+      if (candidateHour === otherHour && overlap.length > 0) {
+        clashReason = `dagelijks identiek tijdstip ${String(candidateHour).padStart(2, "0")}:${overlap.map((m) => String(m).padStart(2, "0")).join(",")}`;
+      }
+    } else if (candidate.frequency === SyncFrequency.WEEKLY) {
+      const overlap = minuteOverlap(candidateMinuteSet, otherMinuteSet);
+      if (candidateHour === otherHour && candidateDow === otherDow && overlap.length > 0) {
+        clashReason = `wekelijks identiek (dag ${candidateDow} ${String(candidateHour).padStart(2, "0")}:${overlap.map((m) => String(m).padStart(2, "0")).join(",")})`;
+      }
+    } else if (candidate.frequency === SyncFrequency.MONTHLY) {
+      const overlap = minuteOverlap(candidateMinuteSet, otherMinuteSet);
+      if (candidateHour === otherHour && candidateDom === otherDom && overlap.length > 0) {
+        clashReason = `maandelijks identiek (dag ${candidateDom} ${String(candidateHour).padStart(2, "0")}:${overlap.map((m) => String(m).padStart(2, "0")).join(",")})`;
+      }
+    } else {
+      if (
+        candidate.frequency === other.frequency &&
+        candidateHour === otherHour &&
+        candidateMinute === otherMinute
+      ) {
+        clashReason = `identiek tijdstip ${String(candidateHour).padStart(2, "0")}:${String(candidateMinute).padStart(2, "0")}`;
+      }
+    }
+
+    if (clashReason) {
       throw new Error(
-        `Schema-conflict: ${candidate.jobId} en ${other.jobId} delen hetzelfde tijdstip (${String(
-          candidate.hour
-        ).padStart(2, "0")}:${String(candidate.minute).padStart(
-          2,
-          "0"
-        )} ${candidate.frequency}). Verschuif één van beide minimaal 1 minuut.`
+        `Schema-conflict: ${candidate.jobId} en ${other.jobId} hebben ${clashReason}. Verschuif één van beide minimaal 1 minuut.`
       );
     }
   }
