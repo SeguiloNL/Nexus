@@ -79,6 +79,20 @@ export type BulkUpdateRoleInput = z.infer<typeof BulkUpdateRoleSchema>;
 
 export const SaveNotificationSettingsSchema = z.object({
   enabledEmail: z.boolean().default(true),
+  notificationEmail: z
+    .string()
+    .trim()
+    .optional()
+    .nullable()
+    .transform((v) => {
+      if (v === undefined || v === null) return null;
+      const s = String(v).trim();
+      return s === "" ? null : s;
+    })
+    .refine(
+      (v) => v === null || validateEmail(v),
+      "Ongeldig notificatie-e-mailadres. Vul een geldig e-mailadres in of laat het veld leeg om uw account-e-mail te gebruiken."
+    ),
   enabledDataThresholdAlert: z.boolean().default(true),
   dataThresholdPercent: z.coerce
     .number()

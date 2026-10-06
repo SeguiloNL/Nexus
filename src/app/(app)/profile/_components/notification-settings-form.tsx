@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -100,6 +101,7 @@ function percentForLevel(v: ThresholdLevelValue): number {
 
 type InitialSettings = {
   enabledEmail: boolean;
+  notificationEmail: string | null;
   enabledDataThresholdAlert: boolean;
   dataThresholdPercent: number;
   thresholdLevels: ThresholdLevelValue[];
@@ -142,6 +144,9 @@ export function NotificationSettingsForm({
 }: Props) {
   const [state, formAction, isPending] = useFormState(submitAction, null as FormState);
   const [enabledEmail, setEnabledEmail] = useState(initialSettings.enabledEmail);
+  const [notificationEmail, setNotificationEmail] = useState<string>(
+    initialSettings.notificationEmail ?? ""
+  );
   const [enabledThreshold, setEnabledThreshold] = useState(
     initialSettings.enabledDataThresholdAlert
   );
@@ -284,7 +289,8 @@ export function NotificationSettingsForm({
                   </Badge>
                 </div>
                 <div className="text-xs text-slate-500 mt-1">
-                  Ontvang notificaties op het e-mailadres van uw account.
+                  Ontvang notificaties per e-mail. Standaard op het e-mailadres
+                  van uw account, of op een apart notificatie-adres (zie onder).
                 </div>
               </div>
               <div
@@ -298,12 +304,69 @@ export function NotificationSettingsForm({
               </div>
             </label>
 
+            <div
+              className={`rounded-lg border border-slate-200 p-4 space-y-2 ${
+                !enabledEmail ? "opacity-60" : ""
+              }`}
+              aria-disabled={!enabledEmail}
+            >
+              <input
+                type="hidden"
+                name="notificationEmail"
+                value={notificationEmail}
+              />
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3">
+                <div className="flex-1 min-w-0">
+                  <label
+                    htmlFor="notificationEmailVisible"
+                    className="block text-sm font-medium text-slate-700 mb-1"
+                  >
+                    Afwijkend notificatie-e-mailadres
+                    <span className="ml-1 text-xs text-slate-400">
+                      (optioneel)
+                    </span>
+                  </label>
+                  <Input
+                    id="notificationEmailVisible"
+                    type="email"
+                    autoComplete="email"
+                    inputMode="email"
+                    placeholder="Laat leeg om uw account-e-mail te gebruiken"
+                    value={notificationEmail}
+                    onChange={(e) => setNotificationEmail(e.target.value)}
+                    disabled={!enabledEmail}
+                    className="w-full"
+                  />
+                </div>
+              </div>
+              <div className="text-[11px] text-slate-500 flex items-start gap-1.5">
+                <Info className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 text-slate-400" />
+                <div>
+                  Wordt dit veld leeggelaten, dan worden notificaties en
+                  testberichten verstuurd naar het e-mailadres van uw account.
+                  Sla de wijzigingen eerst op voordat u een testbericht
+                  verstuurt.
+                </div>
+              </div>
+            </div>
+
             <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-4">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div>
                   <div className="text-sm font-medium">Test e-mail verzending</div>
                   <div className="text-xs text-slate-500 mt-0.5">
-                    Verstuur een testbericht om te controleren of notificaties aankomen.
+                    Verstuur een testbericht naar{" "}
+                    <span className="font-medium text-slate-700">
+                      {initialSettings.notificationEmail
+                        ? `${initialSettings.notificationEmail} (notificatie-adres)`
+                        : "uw account-e-mailadres"}
+                    </span>
+                    {notificationEmail !== (initialSettings.notificationEmail ?? "") && (
+                      <span className="block text-amber-700 mt-0.5">
+                        Let op: u heeft het notificatie-adres gewijzigd. Sla
+                        eerst op voordat het nieuwe adres gebruikt wordt.
+                      </span>
+                    )}
                   </div>
                 </div>
                 <Button

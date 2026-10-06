@@ -660,6 +660,7 @@ model UserNotificationSettings {
   userId                          String                @unique
   user                            User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   enabledEmail                    Boolean               @default(true)
+  notificationEmail               String?
   enabledDataThresholdAlert       Boolean               @default(true)
   dataThresholdPercent            Int                   @default(80)
   thresholdLevels                 AlertThresholdLevel[]

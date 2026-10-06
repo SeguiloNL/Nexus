@@ -33,6 +33,7 @@ export async function getMyNotificationSettingsAction() {
     const interval = resolveUserCheckIntervalMinutes(row);
     return {
       enabledEmail: row.enabledEmail,
+      notificationEmail: row.notificationEmail ?? null,
       enabledDataThresholdAlert: row.enabledDataThresholdAlert,
       dataThresholdPercent: row.dataThresholdPercent,
       thresholdLevels: levels,
@@ -47,6 +48,7 @@ export async function getMyNotificationSettingsAction() {
   }
   return {
     enabledEmail: true,
+    notificationEmail: null,
     enabledDataThresholdAlert: true,
     dataThresholdPercent: 80,
     thresholdLevels: DEFAULT_THRESHOLD_LEVELS,
@@ -74,8 +76,16 @@ export async function saveNotificationSettingsAction(form: FormData) {
         ) as AlertThresholdLevelType[])
     : [];
 
+  const rawNotificationEmail = form.get("notificationEmail");
+  const notificationEmailRaw =
+    rawNotificationEmail === undefined || rawNotificationEmail === null
+      ? null
+      : String(rawNotificationEmail).trim();
+
   const payload = {
     enabledEmail: form.get("enabledEmail") === "on",
+    notificationEmail:
+      notificationEmailRaw === "" ? null : notificationEmailRaw,
     enabledDataThresholdAlert: form.get("enabledDataThresholdAlert") === "on",
     dataThresholdPercent: Number(form.get("dataThresholdPercent") ?? 80),
     thresholdLevels: parsedLevels,
@@ -154,6 +164,7 @@ export async function saveNotificationSettingsAction(form: FormData) {
     create: {
       userId: user.id,
       enabledEmail: validated.enabledEmail,
+      notificationEmail: validated.notificationEmail ?? null,
       enabledDataThresholdAlert: validated.enabledDataThresholdAlert,
       dataThresholdPercent: fallbackPercent,
       thresholdLevels: { set: finalLevels },
@@ -163,6 +174,7 @@ export async function saveNotificationSettingsAction(form: FormData) {
     },
     update: {
       enabledEmail: validated.enabledEmail,
+      notificationEmail: validated.notificationEmail ?? null,
       enabledDataThresholdAlert: validated.enabledDataThresholdAlert,
       dataThresholdPercent: fallbackPercent,
       thresholdLevels: { set: finalLevels },
@@ -176,6 +188,7 @@ export async function saveNotificationSettingsAction(form: FormData) {
     ok: true,
     settings: {
       enabledEmail: saved.enabledEmail,
+      notificationEmail: saved.notificationEmail ?? null,
       enabledDataThresholdAlert: saved.enabledDataThresholdAlert,
       dataThresholdPercent: saved.dataThresholdPercent,
       thresholdLevels: resolveUserThresholdLevels(saved),
@@ -192,11 +205,23 @@ export async function sendTestNotificationEmailAction(): Promise<{
 }> {
   const user = await requireUser();
 
-  if (!user.email) {
+  const settingsRow = await prisma.userNotificationSettings.findUnique({
+    where: { userId: user.id },
+    select: { notificationEmail: true, enabledEmail: true },
+  });
+
+  const notificationEmail =
+    settingsRow?.notificationEmail && settingsRow.notificationEmail.trim() !== ""
+      ? settingsRow.notificationEmail.trim()
+      : null;
+
+  const toEmail = notificationEmail || user.email;
+
+  if (!toEmail) {
     return {
       ok: false,
       message:
-        "Uw account heeft geen e-mailadres ingesteld. Voeg eerst een e-mailadres toe aan uw profiel.",
+        "Er is geen bestemmingsadres beschikbaar. Stel een notificatie-e-mailadres in of voeg een e-mailadres toe aan uw account.",
     };
   }
 
@@ -211,7 +236,7 @@ export async function sendTestNotificationEmailAction(): Promise<{
   }
 
   try {
-    const result = await sendTestEmail(user.email);
+    const result = await sendTestEmail(toEmail);
     if (result.dryRun) {
       return {
         ok: false,
@@ -229,7 +254,7 @@ export async function sendTestNotificationEmailAction(): Promise<{
           : "Onbekende SMTP fout.");
       const friendly = formatSmtpErrorForUser(raw, {
         ...smtpCtx,
-        to: user.email,
+        to: toEmail,
       });
       return {
         ok: false,
@@ -237,9 +262,12 @@ export async function sendTestNotificationEmailAction(): Promise<{
       };
     }
     if (result.accepted.length > 0) {
+      const sourceNote = notificationEmail
+        ? ` (notificatie-adres)`
+        : ` (account-adres)`;
       return {
         ok: true,
-        message: `Test e-mail succesvol verzonden naar ${user.email}. Controleer uw inbox (en spamfolder).`,
+        message: `Test e-mail succesvol verzonden naar ${toEmail}${sourceNote}. Controleer uw inbox (en spamfolder).`,
       };
     }
     return {
@@ -250,7 +278,7 @@ export async function sendTestNotificationEmailAction(): Promise<{
     const raw = e?.message || "Onbekende fout bij het verzenden van de test e-mail.";
     const friendly = formatSmtpErrorForUser(raw, {
       ...smtpCtx,
-      to: user.email,
+      to: toEmail,
     });
     return { ok: false, message: renderSmtpErrorPlain(friendly) };
   }

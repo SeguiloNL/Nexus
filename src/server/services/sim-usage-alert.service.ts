@@ -351,6 +351,7 @@ async function getAllEligibleUsersWithDefaults(): Promise<
         id: "virtual_" + u.id,
         userId: u.id,
         enabledEmail: true,
+        notificationEmail: null,
         enabledDataThresholdAlert: true,
         dataThresholdPercent: 80,
         thresholdLevels: DEFAULT_THRESHOLD_LEVELS,
@@ -473,7 +474,11 @@ export async function runUsageAlertNotificationCycle(
     if (processedUsers++ >= limitUsers) break;
 
     const u = row.user;
-    if (!u.email) continue;
+    const toEmail =
+      row.notificationEmail && row.notificationEmail.trim() !== ""
+        ? row.notificationEmail.trim()
+        : u.email;
+    if (!toEmail) continue;
 
     const userLevels = opts.thresholdPercentOverride
       ? [percentToThresholdLevel(opts.thresholdPercentOverride) ?? AlertThresholdLevel.WARNING_80]
@@ -496,7 +501,7 @@ export async function runUsageAlertNotificationCycle(
         report.usersSkippedInterval++;
         report.details.push({
           userId: u.id,
-          email: u.email,
+          email: toEmail,
           name: u.name,
           notifyAllSims: !!row.notifyAllSims,
           roleScope,
@@ -527,7 +532,7 @@ export async function runUsageAlertNotificationCycle(
         report.simsSkippedScope += filteredByStatus.length;
         report.details.push({
           userId: u.id,
-          email: u.email,
+          email: toEmail,
           name: u.name,
           notifyAllSims: !!row.notifyAllSims,
           roleScope,
@@ -559,7 +564,7 @@ export async function runUsageAlertNotificationCycle(
     if (simsInScope.length === 0) {
       report.details.push({
         userId: u.id,
-        email: u.email,
+        email: toEmail,
         name: u.name,
         notifyAllSims: !!row.notifyAllSims,
         roleScope,
@@ -608,7 +613,7 @@ export async function runUsageAlertNotificationCycle(
     if (simsToReport.length === 0) {
       report.details.push({
         userId: u.id,
-        email: u.email,
+        email: toEmail,
         name: u.name,
         notifyAllSims: !!row.notifyAllSims,
         roleScope,
@@ -652,7 +657,7 @@ export async function runUsageAlertNotificationCycle(
     } else {
       try {
         emailResult = await sendSimUsageThresholdEmail({
-          toEmail: u.email,
+          toEmail: toEmail,
           toName: u.name || "Gebruiker",
           thresholdPercent: overallThreshold,
           items,
@@ -661,7 +666,7 @@ export async function runUsageAlertNotificationCycle(
         emailResult = {
           dryRun: false,
           accepted: [],
-          rejected: [u.email],
+          rejected: [toEmail],
           error: e?.message ?? String(e),
         };
       }
@@ -671,7 +676,7 @@ export async function runUsageAlertNotificationCycle(
       report.usersNotifiedDryRun++;
     } else if (
       emailResult.accepted.length > 0 &&
-      !emailResult.rejected.includes(u.email) &&
+      !emailResult.rejected.includes(toEmail) &&
       !emailResult.error
     ) {
       report.usersNotified++;
@@ -683,7 +688,7 @@ export async function runUsageAlertNotificationCycle(
     const actuallySent =
       !emailResult.dryRun &&
       emailResult.accepted.length > 0 &&
-      !emailResult.rejected.includes(u.email) &&
+      !emailResult.rejected.includes(toEmail) &&
       !emailResult.error;
 
     if (actuallySent && !opts.dryRunForce) {
@@ -728,6 +733,7 @@ export async function runUsageAlertNotificationCycle(
           create: {
             userId: u.id,
             enabledEmail: row.enabledEmail,
+            notificationEmail: row.notificationEmail ?? null,
             enabledDataThresholdAlert: row.enabledDataThresholdAlert,
             dataThresholdPercent: row.dataThresholdPercent ?? 80,
             thresholdLevels: storedLevels?.set ?? DEFAULT_THRESHOLD_LEVELS,
@@ -745,7 +751,7 @@ export async function runUsageAlertNotificationCycle(
 
     report.details.push({
       userId: u.id,
-      email: u.email,
+      email: toEmail,
       name: u.name,
       notifyAllSims: !!row.notifyAllSims,
       roleScope,
