@@ -84,3 +84,27 @@ export const SaveNotificationSettingsSchema = z.object({
 });
 
 export type SaveNotificationSettingsInput = z.infer<typeof SaveNotificationSettingsSchema>;
+
+/* ========================= Wachtwoord reset ========================= */
+
+export const ForgotPasswordSchema = z.object({
+  email: z
+    .string()
+    .trim()
+    .min(1, "E-mail is verplicht")
+    .refine(validateEmail, "Ongeldig e-mailadres"),
+});
+
+export const ResetPasswordSchema = z
+  .object({
+    token: z.string().min(1, "Token is verplicht"),
+    password: z.string().min(8, "Wachtwoord moet minimaal 8 tekens bevatten"),
+    confirmPassword: z.string().min(1, "Bevestig wachtwoord is verplicht"),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "Wachtwoorden komen niet overeen",
+    path: ["confirmPassword"],
+  });
+
+export type ForgotPasswordInput = z.infer<typeof ForgotPasswordSchema>;
+export type ResetPasswordInput = z.infer<typeof ResetPasswordSchema>;

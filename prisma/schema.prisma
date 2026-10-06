@@ -244,6 +244,7 @@ model User {
   syncJobRuns              SyncJobRun[]        @relation("SyncJobRunTriggeredBy")
   notificationSettings     UserNotificationSettings?
   simUsageAlerts           SimUsageAlert[]
+  passwordResetTokens      PasswordResetToken[]
 
   @@index([roleId])
   @@index([customerId])
@@ -682,4 +683,18 @@ model SimUsageAlert {
   @@index([userId, sentAt(sort: Desc)])
   @@index([simId])
   @@map("sim_usage_alerts")
+}
+
+model PasswordResetToken {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique
+  expiresAt  DateTime @db.Timestamptz
+  usedAt     DateTime? @db.Timestamptz
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
 }

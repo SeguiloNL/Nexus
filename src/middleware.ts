@@ -23,7 +23,8 @@ export const config = {
      * - _next/image (image optimization files)
      * - favicon.ico + logo afbeeldingen in public/
      * - login pagina (publiek)
+     * - wachtwoord vergeten / reset pagina's (publiek)
      */
-    "/((?!api|_next/static|_next/image|favicon.ico|favicon-32.png|nexus-logo-full.png|nexus-logo-64.png|nexus-logo-128.png|login).*)",
+    "/((?!api|_next/static|_next/image|favicon.ico|favicon-32.png|nexus-logo-full.png|nexus-logo-64.png|nexus-logo-128.png|login|forgot-password|reset-password).*)",
   ],
 };

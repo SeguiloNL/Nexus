@@ -1,6 +1,8 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { authenticate, type State } from "../actions";
 import { useFormState } from "react-dom";
 import { Input } from "@/components/ui/input";
@@ -11,9 +13,22 @@ const initialState: State = { message: null, errors: {} };
 
 function LoginForm() {
   const [state, formAction] = useFormState(authenticate, initialState);
+  const searchParams = useSearchParams();
+  const resetSuccess = searchParams?.get("reset") === "success";
 
   return (
-    <form action={formAction} className="space-y-6">
+    <form action={formAction} className="space-y-6" noValidate>
+      {resetSuccess ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="rounded-md border border-green-200 bg-green-50 px-3 py-3 text-base text-green-700 md:text-sm md:py-2"
+        >
+          Je wachtwoord is succesvol gewijzigd. Je kunt nu inloggen met je
+          nieuwe wachtwoord.
+        </div>
+      ) : null}
+
       <div className="space-y-2">
         <Label htmlFor="email">E-mailadres</Label>
         <Input
@@ -23,13 +38,24 @@ function LoginForm() {
           autoComplete="email"
           required
           placeholder="naam@voorbeeld.nl"
+          aria-describedby={state?.errors?.email ? "email-error" : undefined}
         />
         {state?.errors?.email ? (
-          <p className="text-sm text-red-600">{state.errors.email[0]}</p>
+          <p id="email-error" className="text-sm text-red-600">
+            {state.errors.email[0]}
+          </p>
         ) : null}
       </div>
       <div className="space-y-2">
-        <Label htmlFor="password">Wachtwoord</Label>
+        <div className="flex items-center justify-between">
+          <Label htmlFor="password">Wachtwoord</Label>
+          <Link
+            href="/forgot-password"
+            className="text-xs font-medium text-blue-600 hover:text-blue-500 underline-offset-2 hover:underline"
+          >
+            Wachtwoord vergeten?
+          </Link>
+        </div>
         <Input
           id="password"
           name="password"
@@ -37,9 +63,14 @@ function LoginForm() {
           autoComplete="current-password"
           required
           placeholder="••••••••"
+          aria-describedby={
+            state?.errors?.password ? "password-error" : undefined
+          }
         />
         {state?.errors?.password ? (
-          <p className="text-sm text-red-600">{state.errors.password[0]}</p>
+          <p id="password-error" className="text-sm text-red-600">
+            {state.errors.password[0]}
+          </p>
         ) : null}
       </div>
 
@@ -52,10 +83,7 @@ function LoginForm() {
         </div>
       ) : null}
 
-      <Button
-        type="submit"
-        className="w-full"
-      >
+      <Button type="submit" className="w-full">
         Inloggen
       </Button>
     </form>

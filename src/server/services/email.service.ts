@@ -804,3 +804,146 @@ export function renderSmtpErrorPlain(
   if (info.hint) parts.push(`Hoe op te lossen:\n${info.hint}`);
   return parts.join("\n\n");
 }
+
+/* ========================= Wachtwoord reset e-mail ========================= */
+
+export interface SendPasswordResetEmailInput {
+  toEmail: string;
+  toName: string;
+  resetUrl: string;
+  expiresAt: Date;
+}
+
+function buildPasswordResetHtml(input: SendPasswordResetEmailInput): string {
+  const base = appBaseUrl();
+  const expiresStr = formatDateTime(input.expiresAt);
+  return `
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8"/>
+<title>Wachtwoord reset verzoek</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#111;background:#f6f7f9;margin:0;padding:24px;}
+.card{background:#fff;border:1px solid #e6e7ea;border-radius:12px;max-width:560px;margin:0 auto;padding:24px;}
+.h{font-size:20px;font-weight:700;margin:0 0 8px;}
+.lead{color:#444;margin:0 0 20px;line-height:1.55;}
+.btn{display:inline-block;background:#0b63d5;color:#fff;text-decoration:none;padding:12px 20px;border-radius:8px;font-weight:600;font-size:15px;margin:12px 0 20px;}
+.btn-wrap{margin:16px 0;text-align:center;}
+.url-box{background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:12px;word-break:break-all;font-size:13px;color:#374151;margin:12px 0;}
+.muted{color:#6b7280;font-size:13px;margin-top:16px;padding-top:16px;border-top:1px solid #eee;line-height:1.5;}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div style="color:#6b7280;font-size:13px;margin-bottom:8px;">${APP_NAME}</div>
+    <h1 class="h">Wachtwoord reset aangevraagd</h1>
+    <p class="lead">
+      Beste ${escapeHtml(input.toName)},<br/><br/>
+      Je hebt onlangs een verzoek gedaan om je wachtwoord voor ${APP_NAME} te herstellen.
+      Gebruik onderstaande knop om een nieuw wachtwoord in te stellen.
+    </p>
+    <div class="btn-wrap">
+      <a class="btn" href="${input.resetUrl}">Mijn wachtwoord herstellen</a>
+    </div>
+    <p class="muted">
+      Werkt de knop niet? Kopieer dan onderstaande link naar je browser:<br/>
+      <span class="url-box mono">${escapeHtml(input.resetUrl)}</span>
+      Deze link is geldig tot <strong>${escapeHtml(expiresStr)}</strong> en kan slechts één keer gebruikt worden.<br/><br/>
+      Heb je dit wachtwoord reset verzoek <strong>niet</strong> zelf gedaan? Dan kun je deze e-mail veilig negeren. Je wachtwoord blijft ongewijzigd.
+    </p>
+    <p class="muted" style="text-align:center;">
+      <a href="${base}/login" style="color:#0b63d5;text-decoration:none;">Terug naar inloggen</a>
+    </p>
+  </div>
+</body>
+</html>`;
+}
+
+function buildPasswordResetText(input: SendPasswordResetEmailInput): string {
+  const base = appBaseUrl();
+  const expiresStr = formatDateTime(input.expiresAt);
+  const lines: string[] = [];
+  lines.push(`${APP_NAME}: Wachtwoord reset verzoek`);
+  lines.push("");
+  lines.push(`Beste ${input.toName},`);
+  lines.push("");
+  lines.push(
+    "Je hebt onlangs een verzoek gedaan om je wachtwoord te herstellen. " +
+      "Gebruik onderstaande link om een nieuw wachtwoord in te stellen:"
+  );
+  lines.push("");
+  lines.push(input.resetUrl);
+  lines.push("");
+  lines.push(
+    `Deze link is geldig tot ${expiresStr} en kan slechts één keer gebruikt worden.`
+  );
+  lines.push("");
+  lines.push(
+    "Heb je dit wachtwoord reset verzoek niet zelf gedaan? Dan kun je deze e-mail veilig negeren. Je wachtwoord blijft ongewijzigd."
+  );
+  lines.push("");
+  lines.push(`Terug naar inloggen: ${base}/login`);
+  return lines.join("\n");
+}
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
+
+function formatDateTime(d: Date): string {
+  try {
+    const y = d.getFullYear();
+    const m = pad2(d.getMonth() + 1);
+    const day = pad2(d.getDate());
+    const hh = pad2(d.getHours());
+    const mm = pad2(d.getMinutes());
+    return `${day}-${m}-${y} ${hh}:${mm}`;
+  } catch {
+    return d.toISOString().replace("T", " ").slice(0, 16);
+  }
+}
+
+export async function sendPasswordResetEmail(
+  input: SendPasswordResetEmailInput
+): Promise<EmailSendResult> {
+  const subject = `${APP_NAME}: Wachtwoord herstellen`;
+  const html = buildPasswordResetHtml(input);
+  const text = buildPasswordResetText(input);
+  const { transporter, dryRun, from } = await resolveTransporter();
+
+  if (dryRun || !transporter) {
+    return {
+      dryRun: true,
+      accepted: [],
+      rejected: [],
+      error:
+        "SMTP is niet geconfigureerd — wachtwoord reset e-mail niet verzonden (dry-run). Pas SMTP-instellingen aan in Systeem → Instellingen → Notificaties.",
+    };
+  }
+
+  try {
+    const info = await transporter.sendMail({
+      from: `${APP_NAME} <${from}>`,
+      to: input.toEmail,
+      subject,
+      text,
+      html,
+    });
+    return {
+      dryRun: false,
+      accepted: (info.accepted as string[]) || [],
+      rejected: (info.rejected as string[]) || [],
+      messageId: String(info.messageId ?? ""),
+    };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    return {
+      dryRun: false,
+      accepted: [],
+      rejected: [input.toEmail],
+      error: err,
+    };
+  }
+}

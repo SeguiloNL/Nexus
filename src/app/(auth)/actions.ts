@@ -4,14 +4,29 @@ import { redirect } from "next/navigation";
 import { AuthError } from "next-auth";
 import { z } from "zod";
 import { signIn, signOut } from "@/auth";
-import { LoginSchema } from "@/server/validators/user";
+import {
+  LoginSchema,
+  ForgotPasswordSchema,
+  ResetPasswordSchema,
+} from "@/server/validators/user";
+import {
+  createAndSendPasswordResetToken,
+  consumePasswordResetToken,
+  passwordResetTokenErrorToMessage,
+} from "@/server/services/password-reset.service";
+import { prisma } from "@/lib/prisma";
+import { hashPassword } from "@/lib/auth/password";
 
 export type State = {
   errors?: {
     email?: string[];
     password?: string[];
+    confirmPassword?: string[];
+    token?: string[];
   };
   message?: string | null;
+  /** "error" | "success" | null – om styling te differentiëren */
+  messageType?: "error" | "success" | null;
 };
 
 export async function authenticate(
@@ -71,4 +86,110 @@ export async function authenticate(
 
 export async function logout() {
   await signOut({ redirectTo: "/login" });
+}
+
+export async function requestPasswordReset(
+  prevState: State,
+  formData: FormData
+): Promise<State> {
+  const validatedFields = ForgotPasswordSchema.safeParse({
+    email: formData.get("email"),
+  });
+
+  if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+      message: "Controleer je gegevens.",
+      messageType: "error",
+    };
+  }
+
+  try {
+    const result = await createAndSendPasswordResetToken(
+      validatedFields.data.email
+    );
+
+    if (result.error) {
+      console.warn(
+        `[password-reset] create token warning voor ${validatedFields.data.email}: ${result.error}`
+      );
+    }
+
+    return {
+      message: result.message,
+      messageType: "success",
+    };
+  } catch (error) {
+    const strError = String(error);
+    const isNextRedirect =
+      (error instanceof Error && "digest" in error) ||
+      strError.includes("NEXT_REDIRECT") ||
+      strError.includes("DIGEST");
+    if (isNextRedirect) {
+      throw error;
+    }
+    console.error("[password-reset] requestPasswordReset error:", error);
+    return {
+      message:
+        "Als dit e-mailadres bij ons bekend is, ontvangt u een e-mail met instructies om uw wachtwoord te herstellen.",
+      messageType: "success",
+    };
+  }
+}
+
+export async function resetPassword(
+  prevState: State,
+  formData: FormData
+): Promise<State> {
+  const validatedFields = ResetPasswordSchema.safeParse({
+    token: formData.get("token"),
+    password: formData.get("password"),
+    confirmPassword: formData.get("confirmPassword"),
+  });
+
+  if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+      message: "Controleer je gegevens.",
+      messageType: "error",
+    };
+  }
+
+  try {
+    const consumeResult = await consumePasswordResetToken(
+      validatedFields.data.token
+    );
+
+    if (!consumeResult.ok || !consumeResult.userId) {
+      return {
+        message: passwordResetTokenErrorToMessage(consumeResult.error),
+        messageType: "error",
+      };
+    }
+
+    const newHash = await hashPassword(validatedFields.data.password);
+
+    await prisma.user.update({
+      where: { id: consumeResult.userId },
+      data: { passwordHash: newHash },
+      select: { id: true },
+    });
+  } catch (error) {
+    const strError = String(error);
+    const isNextRedirect =
+      (error instanceof Error && "digest" in error) ||
+      strError.includes("NEXT_REDIRECT") ||
+      strError.includes("DIGEST");
+    if (isNextRedirect) {
+      throw error;
+    }
+    console.error("[password-reset] resetPassword error:", error);
+    return {
+      message:
+        "Er is iets misgegaan bij het wijzigen van je wachtwoord. Probeer het opnieuw of vraag een nieuwe link aan.",
+      messageType: "error",
+    };
+  }
+
+  redirect("/login?reset=success");
 }
