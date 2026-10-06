@@ -1,14 +1,24 @@
 import { requireUser, canUserRole, redirectForbidden, type SessionUser } from "@/lib/auth/session";
 import Link from "next/link";
-import { permissionsMeaningful as rbacPermissionsMeaningful } from "@/lib/rbac";
+import {
+  permissionsMeaningful as rbacPermissionsMeaningful,
+  isInternalScope,
+  hasMinRole,
+} from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import type { ResourceType, RoleScope } from "@/types/enums";
+import { UserRole } from "@/types/enums";
 import {
   CUSTOMER_SCOPE_RESOURCES,
   RESELLER_SCOPE_RESOURCES,
   PARTNER_SCOPE_RESOURCES,
   ALL_RESOURCE_TYPES,
 } from "@/types/enums";
+import { format } from "date-fns";
+import { nl } from "date-fns/locale";
+import AdminMonthlyUsageChart, {
+  type AdminTopSimUsage,
+} from "@/components/admin-monthly-usage-chart";
 import {
   Activity,
   AlertTriangle,
@@ -388,6 +398,81 @@ export default async function DashboardPage() {
   const counts: CountResults = Object.fromEntries(countPairs);
   const extras: ExtraResults = Object.fromEntries(extraPairs);
 
+  const internalScope = isInternalScope(user.roleScope);
+  const isDashboardAdmin = internalScope && (() => {
+    if (meaningful) {
+      return canUserRole(user.permissions, "edit", "sim");
+    }
+    if (user.roleId && canUserRole(user.roleId, "edit", "sim")) {
+      return true;
+    }
+    return hasMinRole(user.role ?? null, UserRole.ADMIN);
+  })();
+
+  let adminUsage: {
+    totalUsed: bigint;
+    totalLimit: bigint | null;
+    activeCount: number;
+    topSims: AdminTopSimUsage[];
+    monthLabel: string;
+  } | null = null;
+
+  if (isDashboardAdmin) {
+    const now = new Date();
+    const monthLabel = format(now, "MMMM yyyy", { locale: nl });
+
+    const [agg, activeCount, topRows] = await Promise.all([
+      prisma.sIM.aggregate({
+        where: { deletedAt: null, status: "ACTIVE" as unknown as undefined },
+        _sum: { dataUsedBytes: true, dataLimitBytes: true },
+      }),
+      prisma.sIM.count({
+        where: { deletedAt: null, status: "ACTIVE" as unknown as undefined },
+      }),
+      prisma.sIM.findMany({
+        where: {
+          deletedAt: null,
+          status: "ACTIVE" as unknown as undefined,
+          dataUsedBytes: { not: null },
+        },
+        orderBy: { dataUsedBytes: "desc" as unknown as undefined },
+        take: 10,
+        select: {
+          simName: true,
+          msisdn: true,
+          iccid: true,
+          dataUsedBytes: true,
+        },
+      }),
+    ]);
+
+    const totalUsed = (agg._sum?.dataUsedBytes as bigint | null) ?? 0n;
+    const totalLimit = (agg._sum?.dataLimitBytes as bigint | null) ?? null;
+
+    const topSims: AdminTopSimUsage[] = topRows
+      .map((r: any) => {
+        const rawBytes: bigint | null = r.dataUsedBytes;
+        if (rawBytes === null || rawBytes === undefined) return null;
+        const numBytes = Number(rawBytes);
+        if (!Number.isFinite(numBytes) || numBytes <= 0) return null;
+        const label: string =
+          (r.simName && r.simName.trim()) ||
+          (r.msisdn && r.msisdn.trim()) ||
+          (r.iccid && r.iccid.slice(-10)) ||
+          "Onbekend";
+        return { name: label, usedBytes: numBytes };
+      })
+      .filter((v): v is AdminTopSimUsage => v !== null);
+
+    adminUsage = {
+      totalUsed,
+      totalLimit,
+      activeCount,
+      topSims,
+      monthLabel,
+    };
+  }
+
   const canViewActivations = canViewResource(user, "activation_order");
 
   const recentActivations = canViewActivations
@@ -458,6 +543,29 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
       )}
+
+      {adminUsage ? (
+        <section aria-labelledby="admin-usage-heading">
+          <div className="flex items-center justify-between mb-2">
+            <h2 id="admin-usage-heading" className="text-lg font-semibold">
+              Dataverbruik alle SIMs
+            </h2>
+            <Link
+              href="/sims?status=ACTIVE"
+              className="text-sm text-slate-500 underline-offset-4 hover:underline"
+            >
+              Alle actieve SIMs →
+            </Link>
+          </div>
+          <AdminMonthlyUsageChart
+            totalUsedBytes={adminUsage.totalUsed}
+            totalLimitBytes={adminUsage.totalLimit}
+            activeSimCount={adminUsage.activeCount}
+            topSims={adminUsage.topSims}
+            monthLabel={adminUsage.monthLabel}
+          />
+        </section>
+      ) : null}
 
       {canViewActivations ? (
         <section>
