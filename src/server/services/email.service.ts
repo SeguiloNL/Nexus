@@ -382,7 +382,74 @@ export interface SmtpUserFacingError {
     | "ssl_mismatch"
     | "sender_address_rejected"
     | "recipient_rejected"
+    | "dns_host_contains_port"
+    | "dns_unknown_host"
+    | "transip_spf_unverifiable"
+    | "transip_internal_server_error"
+    | "rate_limit_throttled"
+    | "mailbox_full_quota"
+    | "content_spam_rejected"
     | "generic";
+}
+
+const HOST_SUGGESTIONS: Array<{ pattern: RegExp; suggestion: string; note?: string }> = [
+  {
+    pattern: /(^|\.|\/)vps\.transip\.email$/i,
+    suggestion: "smtp.transip.email",
+    note: "Transip's SMTP-host is doorgaans smtp.transip.email (of mail.transip.email).",
+  },
+  {
+    pattern: /(^|\.|\/)pop\.transip\.email$/i,
+    suggestion: "smtp.transip.email",
+    note: "POP is voor inkomende post; voor versturen (uitgaand) gebruik je smtp.transip.email.",
+  },
+  {
+    pattern: /(^|\.|\/)imap\.transip\.email$/i,
+    suggestion: "smtp.transip.email",
+    note: "IMAP is voor inkomende post; voor versturen (uitgaand) gebruik je smtp.transip.email.",
+  },
+  {
+    pattern: /(^|\.|\/)outlook\.office365\.com$/i,
+    suggestion: "smtp.office365.com",
+    note: "Microsoft 365 gebruikt smtp.office365.com als SMTP-host (STARTTLS, poort 587).",
+  },
+  {
+    pattern: /office365\.nl$|office365\.com$/i,
+    suggestion: "smtp.office365.com",
+    note: "Gebruik het juiste uitgaand adres voor Microsoft 365: smtp.office365.com (poort 587).",
+  },
+  {
+    pattern: /smtp\.live\.com$/i,
+    suggestion: "smtp.office365.com",
+    note: "smtp.live.com is verouderd; moderne Microsoft/Exchange tenants gebruiken smtp.office365.com.",
+  },
+];
+
+export function suggestSmtpHost(rawHost: string | undefined | null): {
+  suggestion?: string;
+  note?: string;
+  detectedPortInHost?: number;
+  cleanedHost?: string;
+} {
+  const h = (rawHost ?? "").trim();
+  if (!h) return {};
+  const withPort = /^([^:/\s]+):(\d{1,5})(?:\/.*)?$/.exec(h);
+  const cleaned = withPort ? withPort[1] : h;
+  const detectedPortInHost = withPort ? Number(withPort[2]) : undefined;
+  for (const rule of HOST_SUGGESTIONS) {
+    if (rule.pattern.test(cleaned)) {
+      return {
+        suggestion: rule.suggestion,
+        note: rule.note,
+        detectedPortInHost,
+        cleanedHost: cleaned,
+      };
+    }
+  }
+  if (detectedPortInHost) {
+    return { detectedPortInHost, cleanedHost: cleaned };
+  }
+  return { cleanedHost: cleaned };
 }
 
 export function formatSmtpErrorForUser(
@@ -391,13 +458,15 @@ export function formatSmtpErrorForUser(
 ): SmtpUserFacingError {
   const raw = (rawError ?? "").trim();
   const lowered = raw.toLowerCase();
-  const host = (ctx?.host ?? "").toLowerCase();
+  const rawHost = ctx?.host ?? "";
+  const host = rawHost.toLowerCase();
   const isMicrosoft =
     /outlook\.com|office365|exchange|smtp\.office365|outlook\.office365/.test(
       host
     ) || /outlook\.com|office365|EURP|AS4P|NAMPRD|outlook\.office365/.test(lowered);
   const isGmail =
     /smtp\.gmail\.com/.test(host) || /gmail\.com|google smtp|gsmtp/.test(lowered);
+  const suggestions = suggestSmtpHost(rawHost);
 
   if (
     isMicrosoft &&
@@ -496,19 +565,71 @@ export function formatSmtpErrorForUser(
   }
 
   if (
-    /connection refused|econnrefused|etimedout|getaddrinfo enotfound|dns|no route|host not found/.test(
+    suggestions.detectedPortInHost &&
+    (lowered.includes("ebadname") ||
+      lowered.includes("enotfound") ||
+      lowered.includes("querya") ||
+      lowered.includes("dns") ||
+      lowered.includes("getaddrinfo") ||
+      lowered.includes("host not found"))
+  ) {
+    const extra = suggestions.suggestion
+      ? `\nLet op: de hostnaam zelf lijkt ook niet juist. Wilt u in plaats van '${rawHost}' misschien '${suggestions.suggestion}' gebruiken?${
+          suggestions.note ? `\n(${suggestions.note})` : ""
+        }`
+      : "";
+    return {
+      category: "dns_host_contains_port",
+      summary:
+        "Het hostveld bevat een poort (host:poort notatie), waardoor DNS de naam niet kan oplossen.",
+      details: `Server/DNS antwoordde: ${raw}`,
+      hint:
+        `Correctie:\n` +
+        `• Vul in het veld 'SMTP-host' alleen de hostnaam in: '${suggestions.cleanedHost || "hostnaam"}'\n` +
+        `• Vul in het aparte veld 'SMTP-poort' het getal in: ${suggestions.detectedPortInHost} (vrijwel altijd 587 of 465)\n` +
+        `• Sla de instellingen opnieuw op en probeer de test daarna nogmaals.${extra}`,
+    };
+  }
+
+  if (
+    /ebadname|enotfound|getaddrinfo|querya|host not found|nxdomain|nodata/.test(
+      lowered
+    )
+  ) {
+    const suggestionHint = suggestions.suggestion
+      ? `\nHostnaam suggestie:\n` +
+        `  In plaats van '${rawHost}' wilt u misschien '${suggestions.suggestion}' proberen.${
+          suggestions.note ? `\n  ${suggestions.note}` : ""
+        }`
+      : "";
+    return {
+      category: "dns_unknown_host",
+      summary: "SMTP-hostnaam is niet vindbaar in DNS (onbekende host).",
+      details: `DNS antwoordde: ${raw}`,
+      hint:
+        `Controleer / corrigeer:\n` +
+        `• Het veld 'SMTP-host' (geen poort, geen https://, geen paden). Veelvoorkomende juiste waarden:\n` +
+        `    Microsoft 365: smtp.office365.com (poort 587)\n` +
+        `    Gmail:       smtp.gmail.com     (poort 587)\n` +
+        `    Transip:     smtp.transip.email (poort 587)\n` +
+        `• Of de Nexus-server internettoegang heeft (firewall, DNS-resolver).${suggestionHint}`,
+    };
+  }
+
+  if (
+    /connection refused|econnrefused|etimedout|no route|connect timed out/.test(
       lowered
     )
   ) {
     return {
       category: "connection_refused_or_timeout",
-      summary: "Kan geen verbinding maken met de SMTP-server.",
+      summary: "Kan geen verbinding maken met de SMTP-server (time-out of geweigerd).",
       details: `Server antwoordde: ${raw || "(geen detail)"}`,
       hint:
         "Controleer:\n" +
         "• SMTP-host en poort (veel voorkomend: 587 voor STARTTLS, 465 voor SSL)\n" +
-        "• Firewall op de Nexus-server (uitgaand TCP toegestaan)\n" +
-        "• Of de hostnaam oplost (DNS).",
+        "• Firewall op de Nexus-server (uitgaand TCP toegestaan op de gekozen poort)\n" +
+        "• Of de SMTP-dienst bereikbaar is buiten Nexus (bijv. met openssl s_client -connect host:poort -starttls smtp).",
     };
   }
 
@@ -526,6 +647,101 @@ export function formatSmtpErrorForUser(
         "Probeer de inverse instelling van 'SSL/TLS (poort 465)':\n" +
         "• Poort 587 → vink 'SSL/TLS' UIT (STARTTLS)\n" +
         "• Poort 465 → vink 'SSL/Tls' AAN (impliciete SSL)",
+    };
+  }
+
+  if (
+    /421 4\.7\.0.*spf records.*could not be verified/.test(lowered) ||
+    (/transip/.test(host) && /spf.*could not be verified/.test(lowered))
+  ) {
+    const fromMatch = /SPF records for ([a-z0-9.-]+) could not/i.exec(raw);
+    const domain = fromMatch ? fromMatch[1] : ctx?.from || "het afzender-domein";
+    return {
+      category: "transip_spf_unverifiable",
+      summary:
+        "Transip's SMTP-weigerde de verbinding omdat hij de SPF-records van het afzender-domein niet kon verifiëren.",
+      details: `Server antwoordde: ${raw}`,
+      hint:
+        `Let op: dit is (tijdelijk) probleem BINNEN Transip mailplatform, niet per se in jouw SPF-configuratie. Transip doet een uitgaande DNS-SPF-check die soms faalt op hun eigen DNS.\n` +
+        `Direct te controleren:\n` +
+        `1. Controleer of de SPF-record van domein '${domain}' valide is: kijk in de DNS naar een TXT-record die begint met 'v=spf1'. Minimaal aanbevolen:\n` +
+        `     v=spf1 include:spf.transip.email -all   (volgt de aanbeveling van Transip zelf)\n` +
+        `2. Als de SPF al correct staat: wacht 5-15 minuten en probeer de test opnieuw. Dit is vaak een tijdelijke DNS-storing bij Transip.\n` +
+        `3. Soms helpt het om het From-adres te wijzigen naar een adres op hetzelfde domein als de SMTP (bv. noreply@${domain}).\n` +
+        `4. Als het probleem aanhoudt: gebruik een hoger retry-tempo (wacht 30 sec) of overweeg externe diensten zoals SendGrid, Mailgun of Postmark.\n` +
+        `Zie ook: https://www.transip.nl/knowledgebase/350-welke-spf-record-gebruik-ik-voor-het-versturen-van-mail-eigen-domein/`,
+    };
+  }
+
+  if (
+    /transip/.test(host) &&
+    (/421 4\.7\.0/.test(raw) || /an internal server error/.test(lowered))
+  ) {
+    return {
+      category: "transip_internal_server_error",
+      summary:
+        "Transip's SMTP-server gaf een interne fout terug (421). Dit is doorgaans een tijdelijk probleem op hun platform.",
+      details: `Server antwoordde: ${raw}`,
+      hint:
+        `Dit is bijna nooit een fout in Nexus of jouw instellingen. Stappen:\n` +
+        `1. Wacht 5-10 minuten en probeer opnieuw (meestal is het een piek of tijdelijke DNS-storing bij Transip).\n` +
+        `2. Controleer de Transip statuspagina: https://www.transipstatus.nl of Transip Twitter/X.\n` +
+        `3. Controleer of de From-headers overeenkomen: Gebruikersnaam en 'Afzender e-mail' zijn bij voorkeur identiek.\n` +
+        `4. Bij aanhoudende problemen: open een ticket bij Transip met de error-ID zoals ${
+          /\([A-Za-z0-9]+\)\s*$/.exec(raw)?.[0] || "(geen ID in dit antwoord)"
+        }.`,
+    };
+  }
+
+  if (
+    /too many emails|rate limit|daily limit|message rate|4\.7\.1.*too many|450.*rate|451.*rate|452.*insufficient|550.*rate|too many messages/.test(
+      lowered
+    )
+  ) {
+    return {
+      category: "rate_limit_throttled",
+      summary: "SMTP-server weigert de verbinding wegens rate-limiting (teveel berichten).",
+      details: `Server antwoordde: ${raw}`,
+      hint:
+        `Dit is een anti-spam-maatregel. Oplossingen:\n` +
+        `1. Wacht enige tijd en probeer opnieuw (vaak per uur/dag limiet).\n` +
+        `2. Verifieer of Nexus niet onterecht continu testberichten verstuurt.\n` +
+        `3. Overleg met je e-mailprovider of de limiet verhoogd kan worden.`,
+    };
+  }
+
+  if (
+    /mailbox full|quota exceeded|over quota|storage quota|disk quota|insufficient system storage|552/.test(
+      lowered
+    )
+  ) {
+    return {
+      category: "mailbox_full_quota",
+      summary:
+        "De mailbox van de ontvanger (of verzender) is vol of heeft zijn quota bereikt.",
+      details: `Server antwoordde: ${raw}`,
+      hint:
+        `Controleer:\n` +
+        `• De ontvangende mailbox: is deze vol?\n` +
+        `• Ook de VERZENDENDE mailbox (transip postvak) — veel SMTP-diensten blokkeren verzending ook als jouw outbox vol staat.`,
+    };
+  }
+
+  if (
+    /spam|spamhaus|zen\.spamhaus|barracuda|uribl|surbl|content rejected|550.*content|message rejected as spam|554 5\.7\.1/.test(
+      lowered
+    )
+  ) {
+    return {
+      category: "content_spam_rejected",
+      summary:
+        "De inhoud van het bericht of jouw IP/domein wordt als spam beschouwd.",
+      details: `Server antwoordde: ${raw}`,
+      hint:
+        `Mogelijke oorzaken:\n` +
+        `1. Jouw verzendende IP of domein staat op een zwarte lijst (check op https://mxtoolbox.com/blacklists.aspx).\n` +
+        `2. SPF/DKIM/DMARC-records voor het From-domein ontbreken of staan verkeerd.\n` +
+        `3. De onderwerpregel of inhoud bevat woorden die spamfilters triggeren.`,
     };
   }
 

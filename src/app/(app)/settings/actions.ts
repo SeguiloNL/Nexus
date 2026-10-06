@@ -392,8 +392,28 @@ export async function saveSmtpSettingsAction(
       userId: user.id,
       userRole: user.role,
     });
+
+    const { suggestSmtpHost } = await import("@/server/services/email.service");
+    const hints = suggestSmtpHost(rawHost);
+    const warnings: string[] = [];
+    if (hints.detectedPortInHost) {
+      warnings.push(
+        `Let op: er stond een poort (${hints.detectedPortInHost}) achter de hostnaam. We hebben dit automatisch opgesplitst.`
+      );
+    }
+    if (hints.suggestion && hints.suggestion.toLowerCase() !== parsed.data.host.toLowerCase()) {
+      warnings.push(
+        `${hints.note || "De SMTP-hostnaam wijkt af van de bekende standaard."} Wilt u in plaats van '${rawHost}' niet '${hints.suggestion}' proberen?`
+      );
+    }
+
     revalidatePath("/settings");
-    return { success: true, message: "SMTP-instellingen opgeslagen." };
+    return {
+      success: true,
+      message: warnings.length
+        ? `SMTP-instellingen opgeslagen. Let op: ${warnings.join(" | ")}`
+        : "SMTP-instellingen opgeslagen.",
+    };
   } catch (e: any) {
     return {
       success: false,

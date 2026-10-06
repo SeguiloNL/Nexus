@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "./audit.service";
+import { suggestSmtpHost } from "./email.service";
 import type {
   InserveSettings,
   InserveSettingsInput,
@@ -68,6 +69,24 @@ const SMTP_KEYS = {
   password: "smtp.password",
   from: "smtp.from",
 } as const;
+
+function normalizeSmtpHostOnly(raw: string | undefined | null): string {
+  if (!raw) return "";
+  let s = raw.trim();
+  if (!s) return "";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+    try {
+      const u = new URL(s);
+      if (u.hostname) s = u.hostname;
+    } catch {
+      /* strip prefix manually */
+      s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+    }
+  }
+  const m = /^([^:/\s?#]+)(?::\d+)?(?:[\/?#].*)?$/.exec(s);
+  if (m) s = m[1];
+  return s.replace(/^\[(.*)\]$/, "$1");
+}
 
 const API_KEY_MASK_REVEAL = 4;
 
@@ -998,9 +1017,19 @@ export async function saveSmtpSettings(
     const finalPassword = validated.password ?? current?.password;
     const finalUser = validated.user ?? current?.user;
 
+    const hostCleaned = normalizeSmtpHostOnly(validated.host);
+    const portHint = suggestSmtpHost(validated.host);
+    let finalPort = validated.port;
+    if (
+      portHint.detectedPortInHost !== undefined &&
+      (finalPort === 0 || !Number.isFinite(finalPort))
+    ) {
+      finalPort = portHint.detectedPortInHost;
+    }
+
     const finalSettings: SmtpSettings = {
-      host: validated.host,
-      port: validated.port,
+      host: hostCleaned,
+      port: finalPort,
       secure: validated.secure,
       user: finalUser,
       password: finalPassword,
