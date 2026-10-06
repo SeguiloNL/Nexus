@@ -5,6 +5,7 @@ import { requireUser } from "@/lib/auth/session";
 import { SaveNotificationSettingsSchema } from "@/server/validators/user";
 import { NotificationChannel, type AlertThresholdLevel } from "@prisma/client";
 import { PermissionError } from "@/lib/rbac";
+import { sendTestEmail } from "@/server/services/email.service";
 
 export async function getMyNotificationSettingsAction() {
   const user = await requireUser();
@@ -86,6 +87,56 @@ export async function saveNotificationSettingsAction(form: FormData) {
       notifyAllSims: roleScope === "INTERNAL" ? saved.notifyAllSims : false,
     },
   };
+}
+
+export async function sendTestNotificationEmailAction(): Promise<{
+  ok: boolean;
+  message: string;
+  dryRun?: boolean;
+}> {
+  const user = await requireUser();
+
+  if (!user.email) {
+    return {
+      ok: false,
+      message:
+        "Uw account heeft geen e-mailadres ingesteld. Voeg eerst een e-mailadres toe aan uw profiel.",
+    };
+  }
+
+  try {
+    const result = await sendTestEmail(user.email);
+    if (result.dryRun) {
+      return {
+        ok: false,
+        message:
+          result.error ||
+          "SMTP is niet geconfigureerd. Stel eerst de SMTP-instellingen in via Systeem → Instellingen.",
+        dryRun: true,
+      };
+    }
+    if (result.error || result.rejected.length > 0) {
+      return {
+        ok: false,
+        message:
+          result.error ||
+          `Test e-mail kon niet worden afgeleverd bij ${result.rejected.join(", ")}.`,
+      };
+    }
+    if (result.accepted.length > 0) {
+      return {
+        ok: true,
+        message: `Test e-mail succesvol verzonden naar ${user.email}. Controleer uw inbox (en spamfolder).`,
+      };
+    }
+    return {
+      ok: false,
+      message: "Onbekende fout bij het verzenden van de test e-mail.",
+    };
+  } catch (e: any) {
+    const msg = e?.message || "Onbekende fout bij het verzenden van de test e-mail.";
+    return { ok: false, message: msg };
+  }
 }
 
 export type _AlertThresholdLevelExport = AlertThresholdLevel;

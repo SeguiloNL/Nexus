@@ -22,8 +22,12 @@ import {
   AlertTriangle,
   Loader2,
   Globe2,
+  Send,
 } from "lucide-react";
-import { saveNotificationSettingsAction } from "../actions";
+import {
+  saveNotificationSettingsAction,
+  sendTestNotificationEmailAction,
+} from "../actions";
 import { toast } from "sonner";
 
 type InitialSettings = {
@@ -75,6 +79,30 @@ export function NotificationSettingsForm({
     initialSettings.notifyAllSims
   );
   const [pct] = useState(initialSettings.dataThresholdPercent);
+  const [isTestPending, startTestTransition] = useTransition();
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
+
+  async function handleSendTestEmail() {
+    setTestResult(null);
+    startTestTransition(async () => {
+      try {
+        const res = await sendTestNotificationEmailAction();
+        setTestResult({ ok: res.ok, message: res.message });
+        if (res.ok) {
+          toast.success(res.message);
+        } else {
+          toast.error(res.message);
+        }
+      } catch (e: any) {
+        const msg = e?.message || "Er ging iets mis met de test e-mail.";
+        setTestResult({ ok: false, message: msg });
+        toast.error(msg);
+      }
+    });
+  }
 
   const scopeText = isInternal
     ? notifyAllSims
@@ -158,6 +186,56 @@ export function NotificationSettingsForm({
                 {enabledEmail ? "Aan" : "Uit"}
               </div>
             </label>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-4">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium">Test e-mail verzending</div>
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    Verstuur een testbericht om te controleren of notificaties aankomen.
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSendTestEmail}
+                  disabled={isTestPending || !enabledEmail}
+                  className="gap-2 whitespace-nowrap"
+                  aria-busy={isTestPending}
+                >
+                  {isTestPending ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Versturen…
+                    </>
+                  ) : (
+                    <>
+                      <Send className="h-3.5 w-3.5" />
+                      Verstuur test e-mail
+                    </>
+                  )}
+                </Button>
+              </div>
+              {testResult ? (
+                <div
+                  className={`mt-3 flex items-start gap-2 rounded-lg border p-3 text-xs ${
+                    testResult.ok
+                      ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                      : "bg-amber-50 border-amber-200 text-amber-800"
+                  }`}
+                  role="status"
+                  aria-live="polite"
+                >
+                  {testResult.ok ? (
+                    <CheckCircle2 className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+                  ) : (
+                    <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+                  )}
+                  <div>{testResult.message}</div>
+                </div>
+              ) : null}
+            </div>
           </div>
 
           <div className="space-y-4">
