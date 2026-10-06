@@ -174,7 +174,7 @@ export function isDataAboveThreshold(
   if (thresholdPercent >= 100) {
     return sim.dataUsedBytes >= limit;
   }
-  return sim.dataUsedBytes * 100n >= limit * pctBig;
+  return sim.dataUsedBytes * 200n + limit >= 2n * limit * pctBig;
 }
 
 export function actualUsagePercent(sim: {
