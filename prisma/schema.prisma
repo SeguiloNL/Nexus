@@ -193,17 +193,18 @@ enum InvoiceStatus {
 // ------------------------------
 
 model Role {
-  id           String           @id @default(cuid())
-  name         String
-  scope        RoleScope
-  isSystem     Boolean          @default(false)
-  isDefault    Boolean          @default(false)
-  description  String?          @db.Text
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
+  id              String           @id @default(cuid())
+  name            String
+  scope           RoleScope
+  isSystem        Boolean          @default(false)
+  isDefault       Boolean          @default(false)
+  description     String?          @db.Text
+  actionOverrides Json?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
-  permissions  RolePermission[]
-  users        User[]
+  permissions     RolePermission[]
+  users           User[]
 
   @@unique([name, scope])
   @@index([scope])

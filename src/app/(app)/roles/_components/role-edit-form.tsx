@@ -238,47 +238,82 @@ export function RoleEditForm({ role, canEdit }: Props) {
                 };
                 const Icon = meta.icon;
                 const level = permissionLevelOf(role, resource);
+                const purgeChecked = Boolean(
+                  (role as any).actionOverrides?.[resource]?.purge_network
+                );
                 return (
                   <div
                     key={resource}
-                    className="grid grid-cols-12 gap-2 px-4 py-2 items-center text-sm border-b last:border-b-0"
+                    className="border-b last:border-b-0"
                   >
-                    <div className="col-span-5 flex items-center gap-2">
-                      <Icon className="h-4 w-4 text-slate-500" />
-                      {meta.label}
+                    <div
+                      className="grid grid-cols-12 gap-2 px-4 py-2 items-center text-sm"
+                    >
+                      <div className="col-span-5 flex items-center gap-2">
+                        <Icon className="h-4 w-4 text-slate-500" />
+                        {meta.label}
+                      </div>
+                      <div className="col-span-7 grid grid-cols-3 gap-2">
+                        <label className="flex items-center justify-center gap-1.5 cursor-pointer">
+                          <input
+                            type="radio"
+                            name={`perm_${resource}`}
+                            value="NONE"
+                            className="h-3.5 w-3.5"
+                            defaultChecked={level === "NONE"}
+                            disabled={disabled}
+                          />
+                        </label>
+                        <label className="flex items-center justify-center gap-1.5 cursor-pointer">
+                          <input
+                            type="radio"
+                            name={`perm_${resource}`}
+                            value="READ"
+                            className="h-3.5 w-3.5"
+                            defaultChecked={level === "READ"}
+                            disabled={disabled}
+                          />
+                        </label>
+                        <label className="flex items-center justify-center gap-1.5 cursor-pointer">
+                          <input
+                            type="radio"
+                            name={`perm_${resource}`}
+                            value="WRITE"
+                            className="h-3.5 w-3.5"
+                            defaultChecked={level === "WRITE"}
+                            disabled={disabled}
+                          />
+                        </label>
+                      </div>
                     </div>
-                    <div className="col-span-7 grid grid-cols-3 gap-2">
-                      <label className="flex items-center justify-center gap-1.5 cursor-pointer">
-                        <input
-                          type="radio"
-                          name={`perm_${resource}`}
-                          value="NONE"
-                          className="h-3.5 w-3.5"
-                          defaultChecked={level === "NONE"}
-                          disabled={disabled}
-                        />
-                      </label>
-                      <label className="flex items-center justify-center gap-1.5 cursor-pointer">
-                        <input
-                          type="radio"
-                          name={`perm_${resource}`}
-                          value="READ"
-                          className="h-3.5 w-3.5"
-                          defaultChecked={level === "READ"}
-                          disabled={disabled}
-                        />
-                      </label>
-                      <label className="flex items-center justify-center gap-1.5 cursor-pointer">
-                        <input
-                          type="radio"
-                          name={`perm_${resource}`}
-                          value="WRITE"
-                          className="h-3.5 w-3.5"
-                          defaultChecked={level === "WRITE"}
-                          disabled={disabled}
-                        />
-                      </label>
-                    </div>
+                    {resource === "sim" ? (
+                      <div className="px-4 pb-2">
+                        <div className="grid grid-cols-12 gap-2">
+                          <div className="col-span-5 text-xs text-slate-400 italic">
+                            Specifieke acties
+                          </div>
+                          <div className="col-span-7">
+                            <label
+                              className={`inline-flex items-center gap-2 text-xs cursor-pointer ${
+                                disabled ? "opacity-50 pointer-events-none" : "text-slate-700"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                name={`act_sim_purge_network`}
+                                defaultChecked={purgeChecked}
+                                disabled={disabled}
+                                className="h-3.5 w-3.5"
+                              />
+                              Netwerkverbinding vernieuwen
+                              <span className="text-slate-400">
+                                (los toe te kennen, ook zonder Volledige toegang)
+                              </span>
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}

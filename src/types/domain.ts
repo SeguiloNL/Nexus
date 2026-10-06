@@ -11,6 +11,7 @@ import type {
   AssignmentReason,
   AuditAction,
   ResourceType,
+  ActionOverrides,
 } from "./enums";
 
 // ------------------------------
@@ -150,7 +151,11 @@ export interface RoleListItem {
 }
 
 export interface RoleDetail extends RoleListItem {
-  permissions: Record<ResourceType, { read: boolean; write: boolean }>;
+  permissions: Record<
+    ResourceType,
+    { read: boolean; write: boolean; actions?: ActionOverrides[ResourceType] }
+  >;
+  actionOverrides?: ActionOverrides;
 }
 
 export interface CreateRoleInput {
@@ -159,6 +164,7 @@ export interface CreateRoleInput {
   description?: string | null;
   isDefault?: boolean;
   permissions: PermissionMatrix;
+  actionOverrides?: ActionOverrides;
 }
 
 export interface UpdateRoleInput {
@@ -166,6 +172,7 @@ export interface UpdateRoleInput {
   description?: string | null;
   isDefault?: boolean;
   permissions?: PermissionMatrix;
+  actionOverrides?: ActionOverrides;
 }
 
 export interface CloneRoleInput {

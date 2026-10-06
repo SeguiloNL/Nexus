@@ -203,8 +203,12 @@ export function canWithBits(
   resource: ResourceType
 ): boolean {
   if (!bits) return false;
-  const bit = actionToBit(action);
   const entry = bits[resource];
+  if (entry && typeof entry === "object") {
+    const perAction = (entry as any).actions?.[action];
+    if (typeof perAction === "boolean") return perAction;
+  }
+  const bit = actionToBit(action);
   if (!entry) return false;
   if (bit === "write") return Boolean(entry.write);
   return Boolean(entry.read);

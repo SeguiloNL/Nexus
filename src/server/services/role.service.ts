@@ -8,7 +8,7 @@ import type {
   RoleListItem,
   CloneRoleInput,
 } from "@/types/domain";
-import { RoleScope, type ResourceType, AuditAction } from "@/types/enums";
+import { RoleScope, type ResourceType, type ResourceAction, type ActionOverrides, AuditAction } from "@/types/enums";
 import {
   ALL_RESOURCE_TYPES,
   CUSTOMER_SCOPE_RESOURCES,
@@ -98,6 +98,57 @@ export function defaultPermissionsForScope(
   return base;
 }
 
+function parseActionOverrides(raw: unknown): ActionOverrides {
+  if (!raw || typeof raw !== "object") return {};
+  const out: ActionOverrides = {};
+  for (const [resource, actionsMap] of Object.entries(raw as any)) {
+    if (!actionsMap || typeof actionsMap !== "object") continue;
+    const typedResource = resource as ResourceType;
+    const actionsEntry: Partial<Record<ResourceAction, boolean>> = {};
+    for (const [action, v] of Object.entries(actionsMap as any)) {
+      if (typeof v === "boolean") {
+        actionsEntry[action as ResourceAction] = v;
+      }
+    }
+    if (Object.keys(actionsEntry).length > 0) {
+      out[typedResource] = actionsEntry;
+    }
+  }
+  return out;
+}
+
+function applyActionOverridesToBits(
+  bits: Record<ResourceType, { read: boolean; write: boolean }>,
+  overrides: ActionOverrides
+): Record<ResourceType, { read: boolean; write: boolean; actions?: any }> {
+  const out = bits as Record<
+    ResourceType,
+    { read: boolean; write: boolean; actions?: Partial<Record<ResourceAction, boolean>> }
+  >;
+  for (const [resource, actions] of Object.entries(overrides)) {
+    const key = resource as ResourceType;
+    if (out[key] && actions && Object.keys(actions).length > 0) {
+      out[key] = { ...out[key], actions };
+    }
+  }
+  return out;
+}
+
+function serializeActionOverrides(overrides?: ActionOverrides | null): any {
+  if (!overrides) return null;
+  const compact: any = {};
+  for (const [resource, actions] of Object.entries(overrides)) {
+    const key = resource as ResourceType;
+    if (!actions) continue;
+    const meaningful: any = {};
+    for (const [action, v] of Object.entries(actions)) {
+      if (typeof v === "boolean") meaningful[action] = v;
+    }
+    if (Object.keys(meaningful).length > 0) compact[key] = meaningful;
+  }
+  return Object.keys(compact).length > 0 ? compact : null;
+}
+
 export async function findManyRoles(): Promise<RoleListItem[]> {
   const rows = await prisma.role.findMany({
     include: {
@@ -130,41 +181,45 @@ export async function findManyRoles(): Promise<RoleListItem[]> {
 }
 
 export async function findRoleById(id: string): Promise<RoleDetail | null> {
-  const r = await prisma.role.findUnique({
+  const role = await prisma.role.findUnique({
     where: { id },
     include: {
       _count: { select: { users: true, permissions: true } },
       permissions: { select: { resource: true, read: true, write: true } },
     },
   });
-  if (!r) return null;
+  if (!role) return null;
 
-  const perms = defaultPermissionsForScope(r.scope as RoleScope);
-  for (const p of r.permissions) {
-    if (p.resource in perms) {
-      perms[p.resource as ResourceType] = { read: p.read, write: p.write };
+  const permsBase = defaultPermissionsForScope(role.scope as RoleScope);
+  for (const p of role.permissions) {
+    if (p.resource in permsBase) {
+      permsBase[p.resource as ResourceType] = { read: p.read, write: p.write };
     }
   }
 
+  const actionOverrides = parseActionOverrides((role as any).actionOverrides);
+  const perms = applyActionOverridesToBits(permsBase, actionOverrides) as any;
+
   let readCount = 0;
   let writeCount = 0;
-  for (const key of Object.keys(perms) as ResourceType[]) {
-    if (perms[key].read) readCount++;
-    if (perms[key].write) writeCount++;
+  for (const key of Object.keys(permsBase) as ResourceType[]) {
+    if (permsBase[key].read) readCount++;
+    if (permsBase[key].write) writeCount++;
   }
 
   return {
-    id: r.id,
-    name: r.name,
-    scope: r.scope as RoleScope,
-    isSystem: r.isSystem,
-    isDefault: r.isDefault,
-    description: r.description,
-    userCount: r._count.users,
+    id: role.id,
+    name: role.name,
+    scope: role.scope as RoleScope,
+    isSystem: role.isSystem,
+    isDefault: role.isDefault,
+    description: role.description,
+    userCount: role._count.users,
     permissionCount: { read: readCount, write: writeCount },
-    createdAt: r.createdAt,
-    updatedAt: r.updatedAt,
+    createdAt: role.createdAt,
+    updatedAt: role.updatedAt,
     permissions: perms,
+    actionOverrides,
   };
 }
 
@@ -172,25 +227,26 @@ const LEGACY_ROLE_NAMES = new Set(["ADMIN", "EMPLOYEE", "VIEWER"]);
 
 export async function getPermissionsByRoleId(
   roleId: string
-): Promise<Record<ResourceType, { read: boolean; write: boolean }>> {
+): Promise<Record<ResourceType, { read: boolean; write: boolean; actions?: any }>> {
   const role = await prisma.role.findUnique({
     where: { id: roleId },
     select: {
       scope: true,
       name: true,
       isSystem: true,
+      actionOverrides: true,
       permissions: { select: { resource: true, read: true, write: true } },
     },
   });
   if (!role) {
-    return defaultPermissionsForScope(RoleScope.INTERNAL);
+    return defaultPermissionsForScope(RoleScope.INTERNAL) as any;
   }
 
   if (role.isSystem && LEGACY_ROLE_NAMES.has(role.name)) {
     return buildLegacyPermissionsForRole(
       role.name as UserRole,
       (role.scope as RoleScope) ?? RoleScope.INTERNAL
-    );
+    ) as any;
   }
 
   const base = defaultPermissionsForScope(role.scope as RoleScope);
@@ -199,7 +255,8 @@ export async function getPermissionsByRoleId(
       base[p.resource as ResourceType] = { read: p.read, write: p.write };
     }
   }
-  return base;
+  const actionOverrides = parseActionOverrides(role.actionOverrides);
+  return applyActionOverridesToBits(base, actionOverrides) as any;
 }
 
 export async function createRoleWithPermissions(
@@ -232,6 +289,7 @@ export async function createRoleWithPermissions(
         description: input.description ?? null,
         isDefault: input.isDefault ?? false,
         isSystem: false,
+        actionOverrides: serializeActionOverrides(input.actionOverrides),
         permissions: {
           create: permEntries.map((p) => ({
             resource: p.resource,
@@ -291,6 +349,9 @@ export async function updateRoleWithPermissions(
     }
     if (input.description !== undefined) data.description = input.description ?? null;
     if (input.isDefault != null) data.isDefault = input.isDefault;
+    if (input.actionOverrides !== undefined) {
+      data.actionOverrides = serializeActionOverrides(input.actionOverrides);
+    }
 
     let updated;
     if (Object.keys(data).length > 0) {
@@ -392,7 +453,10 @@ export async function cloneRole(
 
   const sourceRole = await prisma.role.findUnique({
     where: { id: sourceRoleId },
-    include: {
+    select: {
+      name: true,
+      scope: true,
+      actionOverrides: true,
       permissions: {
         select: { resource: true, read: true, write: true },
       },
@@ -421,6 +485,7 @@ export async function cloneRole(
         description: input.description ?? null,
         isSystem: false,
         isDefault: false,
+        actionOverrides: serializeActionOverrides(parseActionOverrides((sourceRole as any).actionOverrides)),
       },
       include: { permissions: true, _count: { select: { users: true, permissions: true } } },
     });
@@ -474,18 +539,21 @@ export async function cloneRole(
       throw new Error("Nieuwe rol niet gevonden na aanmaken.");
     }
 
-    const perms = defaultPermissionsForScope(withPerms.scope as RoleScope);
+    const permsBase = defaultPermissionsForScope(withPerms.scope as RoleScope);
     for (const p of withPerms.permissions) {
-      if (p.resource in perms) {
-        perms[p.resource as ResourceType] = { read: p.read, write: p.write };
+      if (p.resource in permsBase) {
+        permsBase[p.resource as ResourceType] = { read: p.read, write: p.write };
       }
     }
 
+    const actionOverrides = parseActionOverrides((withPerms as any).actionOverrides);
+    const perms = applyActionOverridesToBits(permsBase, actionOverrides) as any;
+
     let readCount = 0;
     let writeCount = 0;
-    for (const key of Object.keys(perms) as ResourceType[]) {
-      if (perms[key].read) readCount++;
-      if (perms[key].write) writeCount++;
+    for (const key of Object.keys(permsBase) as ResourceType[]) {
+      if (permsBase[key].read) readCount++;
+      if (permsBase[key].write) writeCount++;
     }
 
     return {
@@ -500,6 +568,7 @@ export async function cloneRole(
       createdAt: withPerms.createdAt,
       updatedAt: withPerms.updatedAt,
       permissions: perms,
+      actionOverrides,
     };
   });
 }

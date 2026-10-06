@@ -1,7 +1,10 @@
 import type { DefaultSession } from "next-auth";
-import type { UserRole, RoleScope, ResourceType } from "./enums";
+import type { UserRole, RoleScope, ResourceType, ActionOverrides } from "./enums";
 
-export type PermissionBits = Record<ResourceType, { read: boolean; write: boolean }>;
+export type PermissionBits = Record<
+  ResourceType,
+  { read: boolean; write: boolean; actions?: ActionOverrides[ResourceType] }
+>;
 
 declare module "next-auth" {
   interface Session {

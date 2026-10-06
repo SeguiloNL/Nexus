@@ -47,11 +47,26 @@ export async function createRoleAction(
     }
   }
 
+  const actionOverrides: Record<string, Record<string, boolean>> = {};
+  for (const [key, value] of formData.entries()) {
+    if (key.startsWith("act_")) {
+      const rest = key.slice(4);
+      const firstUnderscore = rest.indexOf("_");
+      if (firstUnderscore > 0) {
+        const resource = rest.slice(0, firstUnderscore);
+        const action = rest.slice(firstUnderscore + 1);
+        if (!actionOverrides[resource]) actionOverrides[resource] = {};
+        actionOverrides[resource][action] = value === "on";
+      }
+    }
+  }
+
   const raw: any = {
     name: formData.get("name") || undefined,
     scope: (formData.get("scope") as any) || undefined,
     description: formData.get("description") || null,
     permissions,
+    actionOverrides: Object.keys(actionOverrides).length > 0 ? actionOverrides : undefined,
   };
 
   const validated = CreateRoleSchema.safeParse(raw);
@@ -102,10 +117,25 @@ export async function updateRoleAction(
     }
   }
 
+  const actionOverrides: Record<string, Record<string, boolean>> = {};
+  for (const [key, value] of formData.entries()) {
+    if (key.startsWith("act_")) {
+      const rest = key.slice(4);
+      const firstUnderscore = rest.indexOf("_");
+      if (firstUnderscore > 0) {
+        const resource = rest.slice(0, firstUnderscore);
+        const action = rest.slice(firstUnderscore + 1);
+        if (!actionOverrides[resource]) actionOverrides[resource] = {};
+        actionOverrides[resource][action] = value === "on";
+      }
+    }
+  }
+
   const raw: any = {
     name: formData.get("name") || undefined,
     description: formData.get("description") ?? undefined,
     permissions: Object.keys(permissions).length > 0 ? permissions : undefined,
+    actionOverrides: Object.keys(actionOverrides).length > 0 ? actionOverrides : {},
   };
 
   const validated = UpdateRoleSchema.safeParse(raw);

@@ -140,6 +140,10 @@ export type ResourceAction =
   | "override_price"
   | "purge_network";
 
+export type ActionOverrides = Partial<
+  Record<ResourceType, Partial<Record<ResourceAction, boolean>>>
+>;
+
 export type ResourceType =
   | "customer"
   | "tracker"

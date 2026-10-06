@@ -106,7 +106,19 @@ export async function createAndSendPasswordResetToken(
       expiresAt,
     });
 
-    if (!emailResult.dryRun && emailResult.error) {
+    if (emailResult.dryRun) {
+      return {
+        ok: false,
+        emailSent: false,
+        message: genericMessage,
+        emailResult,
+        error:
+          emailResult.error ||
+          "SMTP is niet geconfigureerd — wachtwoord reset e-mail niet verzonden (dry-run).",
+      };
+    }
+
+    if (emailResult.error) {
       return {
         ok: false,
         emailSent: false,
@@ -118,7 +130,7 @@ export async function createAndSendPasswordResetToken(
 
     return {
       ok: true,
-      emailSent: emailResult.dryRun ? false : true,
+      emailSent: true,
       message: genericMessage,
       emailResult,
     };

@@ -7,7 +7,18 @@ import {
   PARTNER_SCOPE_RESOURCES,
 } from "@/types/enums";
 import type { PermissionLevel } from "@/types/domain";
-import type { ResourceType } from "@/types/enums";
+import type { ResourceType, ResourceAction } from "@/types/enums";
+
+const VALID_RESOURCE_ACTIONS: readonly ResourceAction[] = [
+  "view",
+  "create",
+  "edit",
+  "delete",
+  "import",
+  "export",
+  "override_price",
+  "purge_network",
+];
 
 export const PermissionLevelZod = z.enum(["NONE", "READ", "WRITE"]);
 
@@ -19,6 +30,24 @@ export const PermissionsZod = z
         (ALL_RESOURCE_TYPES as readonly string[]).includes(k)
       ),
     { message: "Ongeldige resource" }
+  );
+
+export const ActionOverridesZod = z
+  .record(
+    z.string(),
+    z.record(
+      z.string().refine((a) => VALID_RESOURCE_ACTIONS.includes(a as ResourceAction), {
+        message: "Ongeldige actie",
+      }),
+      z.boolean()
+    )
+  )
+  .refine(
+    (rec) =>
+      Object.keys(rec).every((k) =>
+        (ALL_RESOURCE_TYPES as readonly string[]).includes(k)
+      ),
+    { message: "Ongeldige resource in actie-overrides" }
   );
 
 function allowedResourcesForScope(scope: RoleScope): readonly string[] {
@@ -57,6 +86,7 @@ export const CreateRoleSchema = z
       .optional()
       .nullable(),
     permissions: PermissionsZod.optional(),
+    actionOverrides: ActionOverridesZod.optional(),
   })
   .refine(
     (d) => {
@@ -71,16 +101,43 @@ export const CreateRoleSchema = z
       message: "Deze scope staat niet toe om rechten te geven op deze functionaliteit.",
       path: ["permissions"],
     }
+  )
+  .refine(
+    (d) => {
+      if (!d.actionOverrides) return true;
+      const allowed = new Set(allowedResourcesForScope(d.scope));
+      for (const resource of Object.keys(d.actionOverrides)) {
+        if (!allowed.has(resource)) return false;
+      }
+      return true;
+    },
+    {
+      message: "Deze scope staat niet toe om acties toe te kennen op deze functionaliteit.",
+      path: ["actionOverrides"],
+    }
   ).superRefine((d, ctx) => {
-    if (!d.permissions) return;
-    const allowed = new Set(allowedResourcesForScope(d.scope));
-    for (const resource of Object.keys(d.permissions)) {
-      if (!allowed.has(resource)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["permissions", resource],
-          message: SCOPE_RESOURCE_ERROR[d.scope],
-        });
+    if (d.permissions) {
+      const allowed = new Set(allowedResourcesForScope(d.scope));
+      for (const resource of Object.keys(d.permissions)) {
+        if (!allowed.has(resource)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["permissions", resource],
+            message: SCOPE_RESOURCE_ERROR[d.scope],
+          });
+        }
+      }
+    }
+    if (d.actionOverrides) {
+      const allowed = new Set(allowedResourcesForScope(d.scope));
+      for (const resource of Object.keys(d.actionOverrides)) {
+        if (!allowed.has(resource)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["actionOverrides", resource],
+            message: SCOPE_RESOURCE_ERROR[d.scope],
+          });
+        }
       }
     }
   });
@@ -99,6 +156,7 @@ export const UpdateRoleSchema = z.object({
     .optional()
     .nullable(),
   permissions: PermissionsZod.optional(),
+  actionOverrides: ActionOverridesZod.optional(),
 });
 
 export const CloneRoleSchema = z.object({
