@@ -3,8 +3,9 @@ FROM node:20-alpine AS base
 # PRISMA_CLIENT_ENGINE_TYPE=binary (altijd!): vermijd library engine crash
 # op musl + openssl3 (geeft JSON Parse "Error load" fouten in prisma).
 # Binary engine = alles statically linked; geen shared lib issues!
+# wget + curl: VERPLICHT voor docker-compose healthcheck (IN-CONTAINER /api/health).
 ENV PRISMA_CLIENT_ENGINE_TYPE=binary
-RUN apk add --no-cache libc6-compat openssl ca-certificates
+RUN apk add --no-cache libc6-compat openssl ca-certificates wget curl
 WORKDIR /app
 
 # ----------
