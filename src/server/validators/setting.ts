@@ -311,3 +311,58 @@ export interface NavixySettingsMasked {
   source: "env" | "db" | "none";
 }
 
+/* ========================= SMTP / E-mail ========================= */
+
+export const SmtpSettingsSchema = z.object({
+  host: z
+    .string()
+    .trim()
+    .min(1, "SMTP-host is verplicht bij inschakelen"),
+  port: z.coerce
+    .number({ invalid_type_error: "Poort moet een getal zijn" })
+    .int()
+    .min(1, "Poort minimaal 1")
+    .max(65535, "Poort maximaal 65535"),
+  secure: z.boolean().default(false),
+  user: z
+    .string()
+    .trim()
+    .optional()
+    .nullable()
+    .transform((v) => (v === null || v === "" ? undefined : v)),
+  password: z
+    .string()
+    .trim()
+    .optional()
+    .nullable()
+    .transform((v) => (v === null || v === "" ? undefined : v)),
+  from: z
+    .string()
+    .trim()
+    .min(1, "Afzender e-mail is verplicht")
+    .email("Ongeldig e-mailadres voor afzender"),
+});
+
+export type SmtpSettingsInput = z.infer<typeof SmtpSettingsSchema>;
+
+export interface SmtpSettings {
+  host: string;
+  port: number;
+  secure: boolean;
+  user?: string | null;
+  password?: string | null;
+  from: string;
+}
+
+export interface SmtpSettingsMasked {
+  host: string;
+  port: number;
+  secure: boolean;
+  user?: string | null;
+  passwordMasked: string;
+  hasPassword: boolean;
+  from: string;
+  configured: boolean;
+  source: "env" | "db" | "none";
+}
+

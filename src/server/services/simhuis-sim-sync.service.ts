@@ -3,8 +3,17 @@ import { logAudit } from "./audit.service";
 import { listAllSims, getSimStatus, simhuisClient } from "@/server/integrations/simhuis/service";
 import type { SimhuisSimStatus } from "@/server/integrations/simhuis/types";
 import { SimStatus, type UserRole } from "@/types/enums";
+import {
+  runUsageAlertNotificationCycle,
+  type UsageAlertCycleReport,
+} from "./sim-usage-alert.service";
 
-type Ctx = { userId?: string; userRole?: UserRole; customerScope?: string[] };
+type Ctx = {
+  userId?: string;
+  userRole?: UserRole;
+  customerScope?: string[];
+  skipNotificationCycle?: boolean;
+};
 
 type UsageFields = {
   dataUsedBytes: bigint | null;
@@ -487,6 +496,7 @@ export interface SimhuisUsageSyncResult {
   errorMessages: string[];
   lastSyncedAt: Date;
   durationMs: number;
+  notificationReport?: UsageAlertCycleReport | null;
 }
 
 function isSimAvailableForStock(status: SimhuisSimStatus["status"]): boolean {
@@ -1628,6 +1638,26 @@ export async function syncActiveSimsUsageFromSimhuis(
 
   await Promise.all(updatePromises);
 
+  let notificationReport: UsageAlertCycleReport | null = null;
+  try {
+    if (ctx.skipNotificationCycle !== true) {
+      notificationReport = await runUsageAlertNotificationCycle({
+        thresholdPercentOverride: undefined,
+        limitUsers: undefined,
+      });
+      console.info(
+        `[simhuis-usage-sync] ✉️  Usage alert cycle: ${notificationReport.usersNotified} users notified, ` +
+          `${notificationReport.usersNotifiedDryRun} dry-run, ${notificationReport.userSendFailures} failures, ` +
+          `${notificationReport.simsReportedEmails} sims reported, ${notificationReport.simsSkippedAlreadySent} skipped (anti-spam).`
+      );
+    }
+  } catch (notifErr: any) {
+    const msg = notifErr?.message ?? String(notifErr);
+    errors.push(`[usage-alert-notify] Mislukt: ${msg}`);
+    errorCount++;
+    console.error("[simhuis-usage-sync] ❌ Usage alert notification cycle failed:", notifErr);
+  }
+
   // 5. Audit logging (apart van de grote sync)
   try {
     await prisma.$transaction(async (tx) => {
@@ -1688,6 +1718,7 @@ export async function syncActiveSimsUsageFromSimhuis(
     errorMessages: errors,
     lastSyncedAt: new Date(),
     durationMs: Date.now() - startedAt,
+    notificationReport,
   };
 }
 

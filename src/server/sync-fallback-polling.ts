@@ -8,6 +8,7 @@ let started = false;
 
 const JOBS: Array<{ id: string; path: string }> = [
   { id: "SIMHUIS_USAGE", path: "/api/integrations/simhuis/sync-usage" },
+  { id: "SIMHUIS_USAGE_ALERT_NOTIFY", path: "/api/integrations/simhuis/notify-usage-alerts" },
   { id: "SIMHUIS_SIMS", path: "/api/integrations/simhuis/sync-sims" },
   { id: "INSERVE", path: "/api/integrations/inserve/sync" },
 ];

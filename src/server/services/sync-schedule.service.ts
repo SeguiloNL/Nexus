@@ -32,6 +32,7 @@ export type AuditUser = {
 export const HISTORIC_HOURLY_WINDOWS: Record<SyncJobId, number[]> = {
   [SyncJobId.SIMHUIS_USAGE]: [0],
   [SyncJobId.SIMHUIS_SIMS]: [3, 9, 15, 21],
+  [SyncJobId.SIMHUIS_USAGE_ALERT_NOTIFY]: [5],
   [SyncJobId.INSERVE]: [2, 8, 14, 20],
 };
 
@@ -61,12 +62,38 @@ export function getDefaultSyncJobConfig(jobId: SyncJobId): SaveSyncScheduleInput
         timezone: "Europe/Amsterdam",
         comment: null,
       };
+    case SyncJobId.SIMHUIS_USAGE_ALERT_NOTIFY:
+      return {
+        jobId,
+        enabled: true,
+        frequency: SyncFrequency.HOURLY,
+        hour: 0,
+        minute: 5,
+        dayOfWeek: 1,
+        dayOfMonth: 1,
+        timezone: "Europe/Amsterdam",
+        comment:
+          "Verstuur e-mail notificaties wanneer SIMs de 80% data-drempel bereiken. " +
+          "Deze job loopt standaard 5 minuten na de hour, zodat de :00 usage-sync altijd eerst afloopt.",
+      };
     case SyncJobId.INSERVE:
       return {
         jobId,
         enabled: true,
         frequency: SyncFrequency.DAILY,
         hour: 2,
+        minute: 0,
+        dayOfWeek: 1,
+        dayOfMonth: 1,
+        timezone: "Europe/Amsterdam",
+        comment: null,
+      };
+    default:
+      return {
+        jobId,
+        enabled: false,
+        frequency: SyncFrequency.DAILY,
+        hour: 0,
         minute: 0,
         dayOfWeek: 1,
         dayOfMonth: 1,

@@ -164,6 +164,15 @@ enum SyncJobId {
   SIMHUIS_USAGE
   SIMHUIS_SIMS
   INSERVE
+  SIMHUIS_USAGE_ALERT_NOTIFY
+}
+
+enum NotificationChannel {
+  EMAIL
+}
+
+enum AlertThresholdLevel {
+  WARNING_80
 }
 
 enum InvoiceStatus {
@@ -233,6 +242,8 @@ model User {
   createdSimAssignments     SimAssignment[]     @relation("CreatedSims")
   updatedSyncConfigs       SyncJobConfig[]     @relation("SyncJobConfigUpdatedBy")
   syncJobRuns              SyncJobRun[]        @relation("SyncJobRunTriggeredBy")
+  notificationSettings     UserNotificationSettings?
+  simUsageAlerts           SimUsageAlert[]
 
   @@index([roleId])
   @@index([customerId])
@@ -453,6 +464,7 @@ model SIM {
 
   assignments       SimAssignment[]
   activationOrders  ActivationOrder[]
+  usageAlerts       SimUsageAlert[]
 
   @@index([status])
   @@index([provider])
@@ -634,4 +646,40 @@ model AuditLog {
   @@index([action])
   @@index([timestamp])
   @@map("audit_logs")
+}
+
+model UserNotificationSettings {
+  id                        String              @id @default(cuid())
+  userId                    String              @unique
+  user                      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  enabledEmail              Boolean             @default(true)
+  enabledDataThresholdAlert Boolean            @default(true)
+  dataThresholdPercent      Int                 @default(80)
+  notifyAllSims             Boolean             @default(false)
+  channels                  NotificationChannel[]
+  lastNotificationAt        DateTime?           @db.Timestamptz
+  createdAt                 DateTime            @default(now())
+  updatedAt                 DateTime            @updatedAt
+
+  @@index([userId])
+  @@map("user_notification_settings")
+}
+
+model SimUsageAlert {
+  id                String              @id @default(cuid())
+  userId            String
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  simId             String
+  sim               SIM                 @relation(fields: [simId], references: [id], onDelete: Cascade)
+  thresholdLevel    AlertThresholdLevel
+  dataUsedBytes     BigInt
+  dataLimitBytes    BigInt
+  usagePeriodStart  DateTime?           @db.Timestamptz
+  channel           NotificationChannel
+  sentAt            DateTime            @default(now()) @db.Timestamptz
+
+  @@unique([userId, simId, thresholdLevel, usagePeriodStart])
+  @@index([userId, sentAt(sort: Desc)])
+  @@index([simId])
+  @@map("sim_usage_alerts")
 }

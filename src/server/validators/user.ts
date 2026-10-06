@@ -68,3 +68,19 @@ export type LoginInput = z.infer<typeof LoginSchema>;
 export type UpdateUserCustomersInput = z.infer<typeof UpdateUserCustomersSchema>;
 export type ToggleUserActiveInput = z.infer<typeof ToggleUserActiveSchema>;
 export type BulkUpdateRoleInput = z.infer<typeof BulkUpdateRoleSchema>;
+
+/* ========================= Notificatie instellingen ========================= */
+
+export const SaveNotificationSettingsSchema = z.object({
+  enabledEmail: z.boolean().default(true),
+  enabledDataThresholdAlert: z.boolean().default(true),
+  dataThresholdPercent: z.coerce
+    .number()
+    .int()
+    .min(1, "Drempel minimaal 1%")
+    .max(99, "Drempel maximaal 99%")
+    .default(80),
+  notifyAllSims: z.boolean().default(false),
+});
+
+export type SaveNotificationSettingsInput = z.infer<typeof SaveNotificationSettingsSchema>;

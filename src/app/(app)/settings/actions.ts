@@ -10,6 +10,8 @@ import {
   getSimhuisSettingsMasked,
   saveNavixySettings,
   getNavixySettingsMasked,
+  saveSmtpSettings,
+  getSmtpSettingsMasked,
 } from "@/server/services/app-setting.service";
 import { inserveClient } from "@/server/integrations/inserve/client";
 import { simhuisClient } from "@/server/integrations/simhuis/client";
@@ -42,6 +44,8 @@ import {
   type SimhuisSettingsInput,
   NavixySettingsSchema,
   type NavixySettingsInput,
+  SmtpSettingsSchema,
+  type SmtpSettingsInput,
 } from "@/server/validators/setting";
 import {
   SaveSyncScheduleSchema,
@@ -53,6 +57,7 @@ import type {
   InserveSettingsMasked,
   SimhuisSettingsMasked,
   NavixySettingsMasked,
+  SmtpSettingsMasked,
 } from "@/server/validators/setting";
 import { prisma } from "@/lib/prisma";
 import {
@@ -92,6 +97,12 @@ export type SimhuisSettingsActionState = {
 
 export type NavixySettingsActionState = {
   errors?: Partial<Record<keyof NavixySettingsInput, string[]>>;
+  message?: string | null;
+  success?: boolean;
+};
+
+export type SmtpSettingsActionState = {
+  errors?: Partial<Record<keyof SmtpSettingsInput, string[]>>;
   message?: string | null;
   success?: boolean;
 };
@@ -331,6 +342,98 @@ export async function testNavixyConnectionAction(): Promise<ConnectionTestResult
     message: res.ok
       ? `Verbinding Navixy succesvol (${res.latencyMs}ms)`
       : res.error ?? "Verbinding Navixy mislukt.",
+  };
+}
+
+/* ========================= SMTP / E-mail notificaties ========================= */
+
+export async function getSmtpSettingsAction(): Promise<SmtpSettingsMasked | null> {
+  const user = await getCurrentUser();
+  if (!canUserRole(user.role, "view", "setting")) return null;
+  return getSmtpSettingsMasked();
+}
+
+export async function saveSmtpSettingsAction(
+  _prev: SmtpSettingsActionState,
+  formData: FormData
+): Promise<SmtpSettingsActionState> {
+  const user = await getCurrentUser();
+  await requirePermission(user.role, "edit", "setting");
+
+  const rawHost = formStr(formData.get("host")).trim();
+  const rawPort = formStr(formData.get("port")).trim();
+  const rawSecure = formStr(formData.get("secure"));
+  const rawUser = formStr(formData.get("smtpUser")).trim();
+  const rawPassword = formStr(formData.get("smtpPassword")).trim();
+  const rawFrom = formStr(formData.get("fromEmail")).trim();
+
+  const payload = {
+    host: rawHost,
+    port: rawPort,
+    secure: rawSecure === "on" || rawSecure === "true",
+    user: rawUser.length ? rawUser : undefined,
+    password: rawPassword.length ? rawPassword : undefined,
+    from: rawFrom,
+  };
+  const parsed = SmtpSettingsSchema.safeParse(payload);
+  if (!parsed.success) {
+    return {
+      errors: parsed.error.flatten().fieldErrors as Partial<
+        Record<keyof SmtpSettingsInput, string[]>
+      >,
+      message: "Controleer de invoer.",
+      success: false,
+    };
+  }
+
+  try {
+    await saveSmtpSettings(parsed.data, {
+      userId: user.id,
+      userRole: user.role,
+    });
+    revalidatePath("/settings");
+    return { success: true, message: "SMTP-instellingen opgeslagen." };
+  } catch (e: any) {
+    return {
+      success: false,
+      message: e?.message ?? "Opslaan mislukt.",
+    };
+  }
+}
+
+export async function testSmtpSendAction(): Promise<ConnectionTestResult> {
+  const user = await getCurrentUser();
+  if (!canUserRole(user.role, "edit", "setting")) {
+    return { ok: false, message: "Onvoldoende rechten." };
+  }
+  // lazy import om cirkelvormige afhankelijkheden te vermijden
+  const { sendTestEmail, resetEmailTransportCache } = await import(
+    "@/server/services/email.service"
+  );
+  resetEmailTransportCache();
+  if (!user.email) {
+    return { ok: false, message: "Uw account heeft geen geldig e-mailadres." };
+  }
+  const r = await sendTestEmail(user.email);
+  if (r.dryRun) {
+    return {
+      ok: false,
+      message:
+        r.error ??
+        "SMTP is niet geconfigureerd. Stel eerst host, poort en afzender in.",
+    };
+  }
+  if (r.rejected.length > 0 || r.error) {
+    return {
+      ok: false,
+      message: r.error ?? `Verzending mislukt: ${r.rejected.join(", ")}`,
+    };
+  }
+  return {
+    ok: true,
+    message: `Test e-mail verzonden naar ${user.email} (${
+      r.messageId ? r.messageId.slice(0, 60) + "…" : ""
+    })`,
   };
 }
 

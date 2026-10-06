@@ -223,9 +223,11 @@ export function Header({
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
-              <DropdownMenuItem disabled>
-                <UserCircle className="h-4 w-4" />
-                Profiel
+              <DropdownMenuItem asChild>
+                <Link href="/profile">
+                  <UserCircle className="h-4 w-4" />
+                  Profiel
+                </Link>
               </DropdownMenuItem>
               {userRole === "ADMIN" ? (
                 <DropdownMenuItem asChild>

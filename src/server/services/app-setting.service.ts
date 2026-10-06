@@ -10,11 +10,15 @@ import type {
   NavixySettings,
   NavixySettingsInput,
   NavixySettingsMasked,
+  SmtpSettings,
+  SmtpSettingsInput,
+  SmtpSettingsMasked,
 } from "@/server/validators/setting";
 import {
   InserveSettingsSchema,
   SimhuisSettingsSchema,
   NavixySettingsSchema,
+  SmtpSettingsSchema,
 } from "@/server/validators/setting";
 import type { UserRole } from "@/types/enums";
 
@@ -54,6 +58,15 @@ const NAVIXY_KEYS = {
   endpointUserAuth: "navixy.endpoint.userAuth",
   endpointPanelTracker: "navixy.endpoint.panelTracker",
   endpointUserTracker: "navixy.endpoint.userTracker",
+} as const;
+
+const SMTP_KEYS = {
+  host: "smtp.host",
+  port: "smtp.port",
+  secure: "smtp.secure",
+  user: "smtp.user",
+  password: "smtp.password",
+  from: "smtp.from",
 } as const;
 
 const API_KEY_MASK_REVEAL = 4;
@@ -835,6 +848,220 @@ export async function saveNavixySettings(
       oldValues,
       newValues,
       metadata: { scope: "navixy_api" },
+    });
+
+    return finalSettings;
+  });
+}
+
+/* ========================= SMTP / E-mail ========================= */
+
+function getEnvSmtpSettings(): SmtpSettings | null {
+  const host = process.env.SMTP_HOST?.trim();
+  const from = process.env.SMTP_FROM?.trim();
+  if (!host || !from) return null;
+  const portStr = process.env.SMTP_PORT?.trim();
+  const port = portStr ? Number(portStr) : 587;
+  const secure = (process.env.SMTP_SECURE ?? "false").toString().toLowerCase() === "true";
+  const user = process.env.SMTP_USER?.trim() || undefined;
+  const password = process.env.SMTP_PASSWORD?.trim() || undefined;
+  const validPort = Number.isFinite(port) && port >= 1 && port <= 65535;
+  if (!validPort) return null;
+  return { host, port, secure, user, password, from };
+}
+
+export async function getSmtpSettings(): Promise<SmtpSettings | null> {
+  const keys = Object.values(SMTP_KEYS);
+  const rows = await Promise.all(
+    keys.map((k) => prisma.appSetting.findUnique({ where: { key: k } }))
+  );
+  const map: Record<string, string | undefined> = {};
+  keys.forEach((k, i) => {
+    map[k] = rows[i]?.value?.trim();
+  });
+
+  const host = map[SMTP_KEYS.host];
+  const from = map[SMTP_KEYS.from];
+  if (host && from) {
+    const portStr = map[SMTP_KEYS.port];
+    const portNum = portStr ? Number(portStr) : 587;
+    const secure = (map[SMTP_KEYS.secure] ?? "false").toString().toLowerCase() === "true";
+    const validPort = Number.isFinite(portNum) && portNum >= 1 && portNum <= 65535;
+    if (!validPort) return getEnvSmtpSettings();
+    return {
+      host,
+      port: portNum,
+      secure,
+      user: map[SMTP_KEYS.user] || undefined,
+      password: map[SMTP_KEYS.password] || undefined,
+      from,
+    };
+  }
+  return getEnvSmtpSettings();
+}
+
+export async function getSmtpSettingsMasked(): Promise<SmtpSettingsMasked> {
+  const keys = Object.values(SMTP_KEYS);
+  const rows = await Promise.all(
+    keys.map((k) => prisma.appSetting.findUnique({ where: { key: k } }))
+  );
+  const map: Record<string, string | undefined> = {};
+  keys.forEach((k, i) => {
+    map[k] = rows[i]?.value?.trim();
+  });
+
+  const host = map[SMTP_KEYS.host];
+  const from = map[SMTP_KEYS.from];
+  const configured = !!(host && from);
+
+  if (configured) {
+    const portStr = map[SMTP_KEYS.port];
+    const portNum = portStr ? Number(portStr) : 587;
+    const secure = (map[SMTP_KEYS.secure] ?? "false").toString().toLowerCase() === "true";
+    const validPort = Number.isFinite(portNum) && portNum >= 1 && portNum <= 65535;
+    const dbConfigured = configured && validPort;
+    return {
+      host: dbConfigured ? host! : "",
+      port: dbConfigured ? portNum : 0,
+      secure,
+      user: map[SMTP_KEYS.user] || undefined,
+      passwordMasked: map[SMTP_KEYS.password] ? maskApiKey(map[SMTP_KEYS.password] ?? "") : "••••••••",
+      hasPassword: !!map[SMTP_KEYS.password],
+      from: dbConfigured ? from! : "",
+      configured: dbConfigured,
+      source: "db",
+    };
+  }
+
+  const env = getEnvSmtpSettings();
+  if (env) {
+    return {
+      host: env.host,
+      port: env.port,
+      secure: env.secure,
+      user: env.user,
+      passwordMasked: env.password ? maskApiKey(env.password) : "••••••••",
+      hasPassword: !!env.password,
+      from: env.from,
+      configured: true,
+      source: "env",
+    };
+  }
+
+  return {
+    host: "",
+    port: 0,
+    secure: false,
+    passwordMasked: "••••••••",
+    hasPassword: false,
+    from: "",
+    configured: false,
+    source: "none",
+  };
+}
+
+export async function saveSmtpSettings(
+  input: SmtpSettingsInput,
+  ctx: Ctx
+): Promise<SmtpSettings> {
+  const validated = SmtpSettingsSchema.parse(input);
+
+  return prisma.$transaction(async (tx) => {
+    const keys = Object.values(SMTP_KEYS);
+    const prevRows = await Promise.all(
+      keys.map((k) => tx.appSetting.findUnique({ where: { key: k } }))
+    );
+    const prev: Record<string, string | undefined> = {};
+    keys.forEach((k, i) => {
+      prev[k] = prevRows[i]?.value?.trim();
+    });
+
+    const current = (() => {
+      const host = prev[SMTP_KEYS.host];
+      const from = prev[SMTP_KEYS.from];
+      if (host && from) {
+        const port = prev[SMTP_KEYS.port] ? Number(prev[SMTP_KEYS.port]) : 587;
+        const secure =
+          (prev[SMTP_KEYS.secure] ?? "false").toLowerCase() === "true";
+        return {
+            host,
+            port: Number.isFinite(port) ? port : 587,
+            secure,
+            user: prev[SMTP_KEYS.user] || undefined,
+            password: prev[SMTP_KEYS.password] || undefined,
+            from,
+          } as SmtpSettings;
+      }
+      return getEnvSmtpSettings();
+    })();
+
+    const finalPassword = validated.password ?? current?.password;
+    const finalUser = validated.user ?? current?.user;
+
+    const finalSettings: SmtpSettings = {
+      host: validated.host,
+      port: validated.port,
+      secure: validated.secure,
+      user: finalUser,
+      password: finalPassword,
+      from: validated.from,
+    };
+
+    const oldValues: Record<string, unknown> = {};
+    const newValues: Record<string, unknown> = {};
+    oldValues.source = prev[SMTP_KEYS.host] ? "db" : "env/none";
+    oldValues.host = prev[SMTP_KEYS.host] ?? null;
+    oldValues.port = prev[SMTP_KEYS.port] ?? null;
+    oldValues.from = prev[SMTP_KEYS.from] ?? null;
+    oldValues.hasUser = !!prev[SMTP_KEYS.user];
+    oldValues.hasPassword = !!prev[SMTP_KEYS.password];
+
+    newValues.source = "db";
+    newValues.host = finalSettings.host;
+    newValues.port = finalSettings.port;
+    newValues.secure = finalSettings.secure;
+    newValues.from = finalSettings.from;
+    newValues.hasUser = !!finalSettings.user;
+    newValues.hasPassword = !!finalSettings.password;
+    newValues.passwordChanged = !!validated.password || !prev[SMTP_KEYS.password];
+
+    const upsertPair = (
+      key: string,
+      value: string | number | boolean | null | undefined,
+      isSecret: boolean
+    ) => {
+      const v =
+        value === null || value === undefined
+          ? ""
+          : typeof value === "boolean"
+          ? value ? "true" : "false"
+          : typeof value === "number"
+          ? String(value)
+          : value;
+      return tx.appSetting.upsert({
+        where: { key },
+        create: { key, value: v, isSecret },
+        update: { value: v },
+      });
+    };
+
+    await Promise.all([
+      upsertPair(SMTP_KEYS.host, finalSettings.host, false),
+      upsertPair(SMTP_KEYS.port, finalSettings.port, false),
+      upsertPair(SMTP_KEYS.secure, finalSettings.secure, false),
+      upsertPair(SMTP_KEYS.user, finalSettings.user, false),
+      upsertPair(SMTP_KEYS.password, finalSettings.password, true),
+      upsertPair(SMTP_KEYS.from, finalSettings.from, false),
+    ]);
+
+    await logAudit(tx, {
+      entityType: "AppSetting",
+      entityId: SMTP_KEYS.host,
+      action: "UPDATE_SETTINGS",
+      userId: ctx.userId,
+      oldValues,
+      newValues,
+      metadata: { scope: "smtp_email" },
     });
 
     return finalSettings;

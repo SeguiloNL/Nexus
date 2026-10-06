@@ -62,6 +62,10 @@ const JOB_LABELS: Record<SyncJobId, { title: string; desc: string }> = {
     title: "Simhuis Verbruiksdata",
     desc: "Verbruik per SIM (MB/SMS/Voice) automatisch importeren.",
   },
+  [SyncJobId.SIMHUIS_USAGE_ALERT_NOTIFY]: {
+    title: "SIM Datadrempel Notificaties",
+    desc: "E-mail notificaties sturen wanneer SIM(s) 80% van de data-limiet bereiken.",
+  },
   [SyncJobId.SIMHUIS_SIMS]: {
     title: "Simhuis SIM-voorraad",
     desc: "Beschikbare SIMs (inventory) automatisch bijwerken vanuit Simhuis.",
