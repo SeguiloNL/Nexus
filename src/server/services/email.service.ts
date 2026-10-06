@@ -137,7 +137,15 @@ type ThresholdVisual = {
   badgeColor: string;
   titleIntro: string;
   leadVerb: string;
+  gradient: { from: string; to: string };
 };
+
+function actualPctGradient(pct: number): { from: string; to: string } {
+  if (pct >= 100) return { from: "#b91c1c", to: "#991b1b" };
+  if (pct >= 90) return { from: "#c2410c", to: "#9a3412" };
+  if (pct >= 80) return { from: "#b45309", to: "#92400e" };
+  return { from: "#1d4ed8", to: "#1e40af" };
+}
 
 function visualForThreshold(pct: number): ThresholdVisual {
   if (pct >= 100) {
@@ -147,6 +155,7 @@ function visualForThreshold(pct: number): ThresholdVisual {
       badgeColor: "#991b1b",
       titleIntro: "Data-limiet bereikt",
       leadVerb: "heeft de data-limiet volledig verbruikt",
+      gradient: { from: "#b91c1c", to: "#991b1b" },
     };
   }
   if (pct >= 90) {
@@ -156,6 +165,7 @@ function visualForThreshold(pct: number): ThresholdVisual {
       badgeColor: "#9a3412",
       titleIntro: "Datadrempel 90%",
       leadVerb: "heeft 90% van de data-limiet verbruikt",
+      gradient: { from: "#c2410c", to: "#9a3412" },
     };
   }
   if (pct >= 80) {
@@ -165,6 +175,7 @@ function visualForThreshold(pct: number): ThresholdVisual {
       badgeColor: "#92400e",
       titleIntro: "Datadrempel 80%",
       leadVerb: "heeft 80% van de data-limiet verbruikt",
+      gradient: { from: "#b45309", to: "#92400e" },
     };
   }
   return {
@@ -173,6 +184,7 @@ function visualForThreshold(pct: number): ThresholdVisual {
     badgeColor: "#1e40af",
     titleIntro: `Datadrempel ${fmtPct(pct)}`,
     leadVerb: `heeft ${fmtPct(pct)} van de data-limiet verbruikt`,
+    gradient: { from: "#1d4ed8", to: "#1e40af" },
   };
 }
 
@@ -181,59 +193,91 @@ function buildUsageThresholdHtml(
 ): string {
   const base = appBaseUrl();
   const visual = visualForThreshold(input.thresholdPercent);
-  const rows = input.items
+
+  const cards = input.items
     .map((it) => {
       const used = fmtBytes(it.dataUsedBytes);
       const limit = fmtBytes(it.dataLimitBytes);
       const actual =
         it.dataLimitBytes > 0n
-          ? Math.round(
-              (Number(it.dataUsedBytes) / Number(it.dataLimitBytes)) * 100
+          ? Math.min(
+              100,
+              Math.round(
+                (Number(it.dataUsedBytes) / Number(it.dataLimitBytes)) * 100
+              )
             )
           : 0;
-      const label =
+      const displayName =
         it.simName?.trim() ||
         it.msisdn?.trim() ||
         (it.iccid ? it.iccid.slice(-8) : it.simId);
-      const customer = it.customerName ? ` — ${it.customerName}` : "";
       const url = it.detailUrl.startsWith("http")
         ? it.detailUrl
         : `${base}${it.detailUrl}`;
+
+      const pctColor =
+        actual >= 100
+          ? "#991b1b"
+          : actual >= 90
+          ? "#9a3412"
+          : actual >= 80
+          ? "#92400e"
+          : "#1e40af";
+      const pctBg =
+        actual >= 100
+          ? "#fee2e2"
+          : actual >= 90
+          ? "#ffedd5"
+          : actual >= 80
+          ? "#fef3c7"
+          : "#dbeafe";
+
       const thresholdBadge = it.thresholdPercent
-        ? `<span style="display:inline-block;margin-left:8px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;background:${
-            actual >= 100
-              ? "#fee2e2"
-              : actual >= 90
-              ? "#ffedd5"
-              : actual >= 80
-              ? "#fef3c7"
-              : "#dbeafe"
-          };color:${
-            actual >= 100
-              ? "#991b1b"
-              : actual >= 90
-              ? "#9a3412"
-              : actual >= 80
-              ? "#92400e"
-              : "#1e40af"
-          };">≥${fmtPct(it.thresholdPercent)}</span>`
+        ? `<span style="display:inline-block;font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;background:${pctBg};color:${pctColor};">≥${fmtPct(it.thresholdPercent)}</span>`
         : "";
+
+      const metaLines: string[] = [];
+      if (it.iccid) {
+        metaLines.push(
+          `<div style="font-size:12px;color:#4b5563;margin-top:2px;"><span style="color:#6b7280;">ICCID:</span> <span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;font-size:11.5px;letter-spacing:0.2px;">${escapeHtml(it.iccid)}</span></div>`
+        );
+      }
+      if (it.msisdn) {
+        metaLines.push(
+          `<div style="font-size:12px;color:#4b5563;margin-top:1px;"><span style="color:#6b7280;">Telefoon:</span> ${escapeHtml(it.msisdn)}</div>`
+        );
+      }
+      if (it.customerName) {
+        metaLines.push(
+          `<div style="font-size:12px;color:#4b5563;margin-top:1px;"><span style="color:#6b7280;">Klant:</span> ${escapeHtml(it.customerName)}</div>`
+        );
+      }
+
       return `
-        <tr>
-          <td style="padding:10px 12px;border-bottom:1px solid #eee;">
-            <a href="${url}" style="font-weight:600;color:#0b63d5;text-decoration:none;">${escapeHtml(label)}</a>${customer}${thresholdBadge}
-          </td>
-          <td style="padding:10px 12px;border-bottom:1px solid #eee;">${used} / ${limit}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #eee;font-weight:600;color:${
-            actual >= 100
-              ? "#991b1b"
-              : actual >= 90
-              ? "#9a3412"
-              : actual >= 80
-              ? "#92400e"
-              : "#1e40af"
-          };">${fmtPct(actual)}</td>
-        </tr>`;
+<div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;margin-bottom:12px;background:#fafafa;">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+    <div style="min-width:0;flex:1;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <a href="${url}" style="font-weight:700;color:#111;text-decoration:none;font-size:15px;">${escapeHtml(displayName)}</a>
+        ${thresholdBadge}
+      </div>
+      ${metaLines.join("")}
+    </div>
+    <div style="text-align:right;flex-shrink:0;">
+      <div style="font-size:24px;font-weight:800;color:${pctColor};line-height:1.1;">${fmtPct(actual)}</div>
+      <div style="font-size:11px;color:#6b7280;margin-top:2px;">verbruik</div>
+    </div>
+  </div>
+  <div style="margin-top:10px;">
+    <div style="display:flex;justify-content:space-between;font-size:12px;color:#374151;margin-bottom:5px;">
+      <span><strong>${used}</strong></span>
+      <span style="color:#6b7280;">van ${limit}</span>
+    </div>
+    <div style="width:100%;height:8px;background:#e5e7eb;border-radius:999px;overflow:hidden;">
+      <div style="width:${actual}%;height:100%;background:${pctColor};border-radius:999px;"></div>
+    </div>
+  </div>
+</div>`;
     })
     .join("");
 
@@ -246,44 +290,43 @@ function buildUsageThresholdHtml(
 <html lang="nl">
 <head>
 <meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>${visual.titleIntro} — ${input.items.length} SIM kaart${input.items.length === 1 ? "" : "en"}</title>
 <style>
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#111;background:#f6f7f9;margin:0;padding:24px;}
-.card{background:#fff;border:1px solid #e6e7ea;border-radius:12px;max-width:640px;margin:0 auto;padding:24px;}
-.h{font-size:20px;font-weight:700;margin:0 0 8px;}
-.lead{color:#444;margin:0 0 20px;}
-.badge{display:inline-block;font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;margin-right:8px;}
-table{width:100%;border-collapse:collapse;margin-top:12px;}
-th{background:#f3f4f6;padding:10px 12px;text-align:left;font-size:13px;color:#374151;border-bottom:1px solid #e5e7eb;}
-footer{color:#6b7280;font-size:12px;margin-top:20px;padding-top:16px;border-top:1px solid #eee;}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#111;background:#f6f7f9;margin:0;padding:20px 12px;}
+.wrap{max-width:560px;margin:0 auto;}
+.header-strip{background:linear-gradient(135deg,${visual.gradient.from},${visual.gradient.to});color:#fff;border-radius:12px 12px 0 0;padding:16px 22px;display:flex;align-items:center;justify-content:space-between;}
+.app-tag{font-size:12px;opacity:0.9;font-weight:600;letter-spacing:0.3px;}
+.card{background:#fff;border:1px solid #e6e7ea;border-top:none;border-radius:0 0 12px 12px;padding:20px 22px 22px;}
+.h{font-size:20px;font-weight:800;margin:0 0 4px;color:#111;line-height:1.25;}
+.sub{color:#6b7280;font-size:13px;margin:0 0 16px;}
+.lead{color:#374151;margin:0 0 18px;font-size:14px;line-height:1.6;}
+.lead .greet{font-weight:600;color:#111;}
+.sims{margin-top:4px;}
+footer{color:#6b7280;font-size:12px;margin-top:6px;padding-top:16px;border-top:1px solid #eef0f2;line-height:1.55;}
+.level-badge{display:inline-block;font-size:13px;font-weight:700;padding:4px 10px;border-radius:999px;background:rgba(255,255,255,0.22);color:#fff;backdrop-filter:blur(6px);}
 </style>
 </head>
 <body>
-  <div class="card">
-    <div>
-      <span class="badge" style="background:${visual.badgeBg};color:${visual.badgeColor};">${visual.badgeText}</span>
-      <span style="color:#6b7280;font-size:13px;">${APP_NAME}</span>
+  <div class="wrap">
+    <div class="header-strip">
+      <span class="level-badge">${visual.badgeText}</span>
+      <span class="app-tag">${APP_NAME}</span>
     </div>
-    <h1 class="h">${visual.titleIntro} bereikt — ${input.items.length} SIM kaart${input.items.length === 1 ? "" : "en"}</h1>
-    <p class="lead">
-      Beste ${escapeHtml(input.toName)},<br/><br/>
-      Er ${input.items.length === 1 ? "is 1 SIM-kaart" : `zijn ${input.items.length} SIM-kaarten`} in uw bereik die ${visual.leadVerb}.
-    </p>
-    <table>
-      <thead>
-        <tr>
-          <th>SIM</th>
-          <th>Verbruik / Limiet</th>
-          <th>%</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows}
-      </tbody>
-    </table>
-    <footer>
-      ${unsubscribe}
-    </footer>
+    <div class="card">
+      <h1 class="h">${visual.titleIntro} bereikt</h1>
+      <p class="sub">${input.items.length} SIM kaart${input.items.length === 1 ? "" : "en"} in uw bereik</p>
+      <p class="lead">
+        <span class="greet">Beste ${escapeHtml(input.toName)},</span><br/><br/>
+        Er ${input.items.length === 1 ? "is 1 SIM-kaart" : `zijn ${input.items.length} SIM-kaarten`} in uw bereik die ${visual.leadVerb}.
+      </p>
+      <div class="sims">
+        ${cards}
+      </div>
+      <footer>
+        ${unsubscribe}
+      </footer>
+    </div>
   </div>
 </body>
 </html>`;
@@ -296,6 +339,7 @@ function buildUsageThresholdText(input: SendSimUsageThresholdEmailInput): string
   lines.push(
     `${APP_NAME}: ${visual.titleIntro} bereikt — ${input.items.length} SIM kaart${input.items.length === 1 ? "" : "en"}`
   );
+  lines.push("=".repeat(60));
   lines.push("");
   lines.push(`Beste ${input.toName},`);
   lines.push("");
@@ -324,10 +368,21 @@ function buildUsageThresholdText(input: SendSimUsageThresholdEmailInput): string
     const thresh = it.thresholdPercent
       ? ` [drempel ≥${fmtPct(it.thresholdPercent)}]`
       : "";
-    lines.push(`- ${label}${it.customerName ? ` (${it.customerName})` : ""}: ${used} / ${limit} (${fmtPct(actual)})${thresh}`);
-    lines.push(`  ${url}`);
+    lines.push(`■ ${label}${thresh}`);
+    if (it.iccid) {
+      lines.push(`  ICCID     : ${it.iccid}`);
+    }
+    if (it.msisdn) {
+      lines.push(`  Telefoon  : ${it.msisdn}`);
+    }
+    if (it.customerName) {
+      lines.push(`  Klant     : ${it.customerName}`);
+    }
+    lines.push(`  Verbruik  : ${used} / ${limit} (${fmtPct(actual)})`);
+    lines.push(`  Details   : ${url}`);
+    lines.push("");
   }
-  lines.push("");
+  lines.push("------------------------------------------------------------");
   lines.push(
     `U kunt deze notificaties beheren in uw profiel: ${base}/profile`
   );
