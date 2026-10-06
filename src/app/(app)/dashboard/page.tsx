@@ -317,7 +317,17 @@ function canViewResource(user: SessionUser, resource: ResourceType): boolean {
 
 export default async function DashboardPage() {
   const user = await requireUser();
-  if (!canUserRole(user.permissions, "view", "dashboard")) {
+
+  const meaningful = localPermissionsMeaningful(user.permissions);
+  let canViewDashboard: boolean;
+  if (meaningful) {
+    canViewDashboard = canUserRole(user.permissions, "view", "dashboard");
+  } else if (user.roleId && canUserRole(user.roleId, "view", "dashboard")) {
+    canViewDashboard = true;
+  } else {
+    canViewDashboard = canUserRole(user.role ?? null, "view", "dashboard");
+  }
+  if (!canViewDashboard) {
     redirectForbidden();
   }
 

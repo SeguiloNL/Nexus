@@ -199,7 +199,7 @@ model Role {
   isSystem        Boolean          @default(false)
   isDefault       Boolean          @default(false)
   description     String?          @db.Text
-  actionOverrides Json?
+  actionOverrides Json?            @map("action_overrides")
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
