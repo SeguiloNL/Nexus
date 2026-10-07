@@ -139,6 +139,7 @@ export type ResourceAction =
   | "export"
   | "override_price"
   | "purge_network"
+  | "suspend_sim"
   | "view_all_sim_usage_dashboard";
 
 export type ActionOverrides = Partial<

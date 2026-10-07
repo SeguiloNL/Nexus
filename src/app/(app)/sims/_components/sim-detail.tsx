@@ -138,6 +138,7 @@ type SimDetailProps = {
   canSyncUsage: boolean;
   canDiagnostic: boolean;
   canPurgeNetwork?: boolean;
+  canSuspend?: boolean;
 };
 
 type SuspendSimDialogProps = {
@@ -923,6 +924,7 @@ export function SimDetail({
   canSyncUsage,
   canDiagnostic,
   canPurgeNetwork,
+  canSuspend = false,
 }: SimDetailProps) {
 
   const [, deleteFormAction] = useFormState(
@@ -1331,8 +1333,8 @@ export function SimDetail({
     RESUME: "Hervat",
   };
 
-  const suspendBanner = isAdmin && suspendAction ? renderActionResult(suspendState, "suspend", lastAction) : null;
-  const unsuspendBanner = isAdmin && unsuspendAction ? renderActionResult(unsuspendState, "unsuspend", lastAction) : null;
+  const suspendBanner = canSuspend && suspendAction ? renderActionResult(suspendState, "suspend", lastAction) : null;
+  const unsuspendBanner = canSuspend && unsuspendAction ? renderActionResult(unsuspendState, "unsuspend", lastAction) : null;
 
   let statusRefreshBanner: React.ReactNode = null;
   if (refreshState && (refreshState.ok || refreshState.error)) {
@@ -1842,7 +1844,7 @@ export function SimDetail({
                     <Package className="h-4 w-4 text-slate-500" /> Product
                   </CardTitle>
                   <div className="flex flex-wrap gap-2 sm:gap-3 shrink-0">
-                    {isAdmin && suspendAction && effectiveSimStatus === "ACTIVE" ? (
+                    {canSuspend && suspendAction && effectiveSimStatus === "ACTIVE" ? (
                       <SuspendSimDialog
                         sim={sim}
                         open={suspendOpen}
@@ -1852,7 +1854,7 @@ export function SimDetail({
                         hasResult={Boolean(suspendState?.ok || suspendState?.error)}
                       />
                     ) : null}
-                    {isAdmin && unsuspendAction && effectiveSimStatus === "SUSPENDED" ? (
+                    {canSuspend && unsuspendAction && effectiveSimStatus === "SUSPENDED" ? (
                       <UnsuspendSimDialog
                         sim={sim}
                         open={unsuspendOpen}

@@ -593,7 +593,14 @@ export async function suspendSimAction(
 ): Promise<SimSuspendActionState> {
   const user = await getCurrentUser();
 
-  if (user.roleScope !== RoleScope.INTERNAL || !hasMinRole(user.role, UserRole.ADMIN)) {
+  try {
+    await requirePermission(
+      user.permissions ?? user.roleId ?? user.role,
+      "suspend_sim",
+      "sim"
+    );
+  } catch (e) {
+    const isPermErr = e instanceof PermissionError;
     return {
       ok: false,
       confirmedStatus: null,
@@ -601,11 +608,24 @@ export async function suspendSimAction(
       message: "Je bent niet bevoegd deze SIM te blokkeren.",
       error: {
         kind: "PERMISSION",
-        detail: "Alleen interne beheerders (ADMIN) mogen deze actie uitvoeren.",
+        detail: isPermErr
+          ? e.message || "Ontbrekende toestemming 'suspend_sim' op SIM."
+          : "Alleen gebruikers met de 'Blokkeren / Deblokkeren' permissie mogen dit doen.",
       },
     };
   }
-  await requirePermission(user.permissions ?? user.roleId ?? user.role, "edit", "sim");
+  if (user.roleScope !== RoleScope.INTERNAL) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Je bent niet bevoegd deze SIM te blokkeren.",
+      error: {
+        kind: "PERMISSION",
+        detail: "Deze actie is alleen beschikbaar voor interne medewerkers.",
+      },
+    };
+  }
 
   const ctx = buildActionCtx(user);
   let result: SimSuspendResult;
@@ -666,7 +686,14 @@ export async function unsuspendSimAction(
 ): Promise<SimSuspendActionState> {
   const user = await getCurrentUser();
 
-  if (user.roleScope !== RoleScope.INTERNAL || !hasMinRole(user.role, UserRole.ADMIN)) {
+  try {
+    await requirePermission(
+      user.permissions ?? user.roleId ?? user.role,
+      "suspend_sim",
+      "sim"
+    );
+  } catch (e) {
+    const isPermErr = e instanceof PermissionError;
     return {
       ok: false,
       confirmedStatus: null,
@@ -674,11 +701,24 @@ export async function unsuspendSimAction(
       message: "Je bent niet bevoegd deze SIM te deblokkeren.",
       error: {
         kind: "PERMISSION",
-        detail: "Alleen interne beheerders (ADMIN) mogen deze actie uitvoeren.",
+        detail: isPermErr
+          ? e.message || "Ontbrekende toestemming 'suspend_sim' op SIM."
+          : "Alleen gebruikers met de 'Blokkeren / Deblokkeren' permissie mogen dit doen.",
       },
     };
   }
-  await requirePermission(user.permissions ?? user.roleId ?? user.role, "edit", "sim");
+  if (user.roleScope !== RoleScope.INTERNAL) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Je bent niet bevoegd deze SIM te deblokkeren.",
+      error: {
+        kind: "PERMISSION",
+        detail: "Deze actie is alleen beschikbaar voor interne medewerkers.",
+      },
+    };
+  }
 
   const ctx = buildActionCtx(user);
   let result: SimSuspendResult;

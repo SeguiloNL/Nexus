@@ -241,6 +241,9 @@ export function RoleEditForm({ role, canEdit }: Props) {
                 const purgeChecked = Boolean(
                   (role as any).actionOverrides?.[resource]?.purge_network
                 );
+                const suspendChecked = Boolean(
+                  (role as any).actionOverrides?.[resource]?.suspend_sim
+                );
                 const usageTileChecked = Boolean(
                   (role as any).actionOverrides?.[resource]
                     ?.view_all_sim_usage_dashboard
@@ -297,7 +300,7 @@ export function RoleEditForm({ role, canEdit }: Props) {
                           <div className="col-span-5 text-xs text-slate-400 italic">
                             Specifieke acties
                           </div>
-                          <div className="col-span-7">
+                          <div className="col-span-7 space-y-1.5">
                             <label
                               className={`inline-flex items-center gap-2 text-xs cursor-pointer ${
                                 disabled ? "opacity-50 pointer-events-none" : "text-slate-700"
@@ -315,6 +318,27 @@ export function RoleEditForm({ role, canEdit }: Props) {
                                 (los toe te kennen, ook zonder Volledige toegang)
                               </span>
                             </label>
+                            {isInternalScope ? (
+                              <label
+                                className={`inline-flex items-center gap-2 text-xs cursor-pointer ${
+                                  disabled
+                                    ? "opacity-50 pointer-events-none"
+                                    : "text-slate-700"
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  name={`act_sim_suspend_sim`}
+                                  defaultChecked={suspendChecked}
+                                  disabled={disabled}
+                                  className="h-3.5 w-3.5"
+                                />
+                                Blokkeren / Deblokkeren
+                                <span className="text-slate-400">
+                                  (SIM status wijzigen tussen ACTIVE en SUSPENDED, los toe te kennen)
+                                </span>
+                              </label>
+                            ) : null}
                           </div>
                         </div>
                       </div>
