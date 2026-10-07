@@ -241,6 +241,11 @@ export function RoleEditForm({ role, canEdit }: Props) {
                 const purgeChecked = Boolean(
                   (role as any).actionOverrides?.[resource]?.purge_network
                 );
+                const usageTileChecked = Boolean(
+                  (role as any).actionOverrides?.[resource]
+                    ?.view_all_sim_usage_dashboard
+                );
+                const isInternalScope = role.scope === RoleScope.INTERNAL;
                 return (
                   <div
                     key={resource}
@@ -308,6 +313,34 @@ export function RoleEditForm({ role, canEdit }: Props) {
                               Netwerkverbinding vernieuwen
                               <span className="text-slate-400">
                                 (los toe te kennen, ook zonder Volledige toegang)
+                              </span>
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                    {resource === "dashboard" && isInternalScope ? (
+                      <div className="px-4 pb-2">
+                        <div className="grid grid-cols-12 gap-2">
+                          <div className="col-span-5 text-xs text-slate-400 italic">
+                            Specifieke acties
+                          </div>
+                          <div className="col-span-7 space-y-1">
+                            <label
+                              className={`inline-flex items-center gap-2 text-xs cursor-pointer ${
+                                disabled ? "opacity-50 pointer-events-none" : "text-slate-700"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                name={`act_dashboard_view_all_sim_usage_dashboard`}
+                                defaultChecked={usageTileChecked}
+                                disabled={disabled}
+                                className="h-3.5 w-3.5"
+                              />
+                              Tegel "Dataverbruik alle SIMs" tonen
+                              <span className="text-slate-400">
+                                (totaalverbruik alle actieve SIMs, los toe te kennen)
                               </span>
                             </label>
                           </div>

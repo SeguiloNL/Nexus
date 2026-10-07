@@ -3,11 +3,9 @@ import Link from "next/link";
 import {
   permissionsMeaningful as rbacPermissionsMeaningful,
   isInternalScope,
-  hasMinRole,
 } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import type { ResourceType, RoleScope } from "@/types/enums";
-import { UserRole } from "@/types/enums";
 import {
   CUSTOMER_SCOPE_RESOURCES,
   RESELLER_SCOPE_RESOURCES,
@@ -399,15 +397,28 @@ export default async function DashboardPage() {
   const extras: ExtraResults = Object.fromEntries(extraPairs);
 
   const internalScope = isInternalScope(user.roleScope);
-  const isDashboardAdmin = internalScope && (() => {
+  let canViewAllSimUsage = false;
+  if (internalScope) {
     if (meaningful) {
-      return canUserRole(user.permissions, "edit", "sim");
+      canViewAllSimUsage = canUserRole(
+        user.permissions,
+        "view_all_sim_usage_dashboard",
+        "dashboard"
+      );
+    } else if (user.roleId) {
+      canViewAllSimUsage = canUserRole(
+        user.roleId,
+        "view_all_sim_usage_dashboard",
+        "dashboard"
+      );
+    } else {
+      canViewAllSimUsage = canUserRole(
+        user.role ?? null,
+        "view_all_sim_usage_dashboard",
+        "dashboard"
+      );
     }
-    if (user.roleId && canUserRole(user.roleId, "edit", "sim")) {
-      return true;
-    }
-    return hasMinRole(user.role ?? null, UserRole.ADMIN);
-  })();
+  }
 
   let adminUsage: {
     totalUsed: bigint;
@@ -417,7 +428,7 @@ export default async function DashboardPage() {
     monthLabel: string;
   } | null = null;
 
-  if (isDashboardAdmin) {
+  if (canViewAllSimUsage) {
     const now = new Date();
     const monthLabel = format(now, "MMMM yyyy", { locale: nl });
 

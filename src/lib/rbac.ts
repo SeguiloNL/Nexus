@@ -71,7 +71,7 @@ export function buildLegacyPermissionsForRole(
 export type PermissionActionBit = "read" | "write";
 
 export function actionToBit(action: ResourceAction): PermissionActionBit {
-  if (action === "view") return "read";
+  if (action === "view" || action === "view_all_sim_usage_dashboard") return "read";
   return "write";
 }
 

@@ -138,7 +138,8 @@ export type ResourceAction =
   | "import"
   | "export"
   | "override_price"
-  | "purge_network";
+  | "purge_network"
+  | "view_all_sim_usage_dashboard";
 
 export type ActionOverrides = Partial<
   Record<ResourceType, Partial<Record<ResourceAction, boolean>>>

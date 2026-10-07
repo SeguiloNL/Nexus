@@ -585,23 +585,19 @@ function PurgeSimDialog({
       <DialogTrigger asChild>
         <Button
           type="button"
+          size="icon"
           variant="secondary"
           disabled={combinedPending}
           aria-busy={combinedPending}
           aria-disabled={combinedPending}
-          className="gap-1.5"
+          aria-label={combinedPending ? "Bezig met netwerkverbinding vernieuwen…" : "Netwerkverbinding vernieuwen"}
+          title={combinedPending ? "Bezig met vernieuwen…" : "Netwerkverbinding vernieuwen"}
+          className="h-9 w-9 shrink-0 gap-0"
         >
-          {combinedPending ? (
-            <>
-              <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
-              Bezig met vernieuwen…
-            </>
-          ) : (
-            <>
-              <RefreshCw className="h-4 w-4" aria-hidden="true" />
-              Netwerkverbinding vernieuwen
-            </>
-          )}
+          <RefreshCw
+            className={"h-4 w-4 " + (combinedPending ? "animate-spin" : "")}
+            aria-hidden="true"
+          />
         </Button>
       </DialogTrigger>
       <DialogContent>
@@ -1609,18 +1605,20 @@ export function SimDetail({
                     <form action={diagnosticFormAction as any} onSubmit={onDiagnosticSubmit}>
                       <Button
                         type="submit"
-                        size="sm"
+                        size="icon"
                         variant="outline"
                         disabled={isDiagnosticPending}
                         aria-disabled={isDiagnosticPending}
                         aria-busy={isDiagnosticPending}
-                        className="gap-1.5"
+                        aria-label={isDiagnosticPending ? "Bezig met netwerkstatus controleren…" : "Netwerkstatus controleren"}
+                        title={isDiagnosticPending ? "Bezig met controleren…" : "Netwerkstatus controleren"}
+                        className="h-9 w-9 shrink-0"
                       >
-                        <RefreshCw
-                          className={"h-4 w-4 " + (isDiagnosticPending ? "animate-spin" : "")}
-                          aria-hidden="true"
-                        />
-                        {isDiagnosticPending ? "Bezig met controleren…" : "Netwerkstatus controleren"}
+                        {isDiagnosticPending ? (
+                          <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Activity className="h-4 w-4" aria-hidden="true" />
+                        )}
                       </Button>
                     </form>
                   ) : null}

@@ -18,6 +18,7 @@ const VALID_RESOURCE_ACTIONS: readonly ResourceAction[] = [
   "export",
   "override_price",
   "purge_network",
+  "view_all_sim_usage_dashboard",
 ];
 
 export const PermissionLevelZod = z.enum(["NONE", "READ", "WRITE"]);
