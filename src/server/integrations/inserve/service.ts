@@ -661,6 +661,23 @@ type GlobalFieldCacheEntry = {
 let _globalFieldCache: GlobalFieldCacheEntry | null = null;
 
 let _inspectDetailLoggedCompanies = 0;
+let _fullDetailJsonLoggedCompanies = 0;
+
+const _looksLikeCustomFieldItem = (item: unknown): boolean => {
+  if (!item || typeof item !== 'object') return false;
+  const o = item as Record<string, unknown>;
+  return (
+    'field_id' in o ||
+    'fieldId' in o ||
+    'field_name' in o ||
+    'fieldName' in o ||
+    ('name' in o && ('value' in o || 'option' in o)) ||
+    'option_label' in o ||
+    'optionLabel' in o ||
+    'option_value' in o ||
+    'optionValue' in o
+  );
+};
 
 export async function listCompanyCustomFields(
   companyId: number
@@ -671,16 +688,26 @@ export async function listCompanyCustomFields(
   }
 
   const extractFields = (payload: unknown): InserveCustomFieldValue[] | null => {
-    if (Array.isArray(payload)) return payload as InserveCustomFieldValue[];
     if (payload && typeof payload === 'object') {
       const r = payload as Record<string, unknown>;
-      const queue: unknown[] = [r];
+      const queue: unknown[] = Array.isArray(r) ? [...r] : [r];
       const seen = new WeakSet<object>();
       while (queue.length > 0) {
         const cur = queue.shift()!;
         if (!cur || typeof cur !== 'object') continue;
         if (seen.has(cur as object)) continue;
         seen.add(cur as object);
+
+        if (Array.isArray(cur)) {
+          if (cur.length > 0 && cur.every((it) => _looksLikeCustomFieldItem(it))) {
+            return cur as InserveCustomFieldValue[];
+          }
+          for (const item of cur) {
+            if (item && typeof item === 'object') queue.push(item);
+          }
+          continue;
+        }
+
         const obj = cur as Record<string, unknown>;
         const topLevelCandidates = [
           'data',
@@ -697,14 +724,18 @@ export async function listCompanyCustomFields(
           'free_fields',
           'freeFields',
           'customfields',
+          'values',
+          'meta',
         ];
         for (const key of topLevelCandidates) {
           const val = obj[key];
-          if (Array.isArray(val)) return val as InserveCustomFieldValue[];
+          if (Array.isArray(val) && val.length > 0 && val.every((it) => _looksLikeCustomFieldItem(it))) {
+            return val as InserveCustomFieldValue[];
+          }
         }
         for (const key of Object.keys(obj)) {
           const val = obj[key];
-          if (val && typeof val === 'object' && !Array.isArray(val)) queue.push(val);
+          if (val && typeof val === 'object') queue.push(val);
         }
       }
     }
@@ -717,11 +748,34 @@ export async function listCompanyCustomFields(
       _inspectDetailLoggedCompanies++;
       const keys = Object.keys(detailResp as Record<string, unknown>);
       const fieldKeys = keys.filter((k) => /field|custom|extra|vrij|value|option/i.test(k));
+      const arrayKeys: string[] = [];
+      const nestedKeys: string[] = [];
+      for (const k of keys) {
+        const v = (detailResp as Record<string, unknown>)[k];
+        if (Array.isArray(v)) arrayKeys.push(`${k}(${v.length})`);
+        else if (v && typeof v === 'object') nestedKeys.push(k);
+      }
       console.debug(
         `[Inserve] detail-endpoint keys voor bedrijf #${companyId} (sample ${_inspectDetailLoggedCompanies}/3):`,
         keys,
-        fieldKeys.length > 0 ? `→ veld-achtige keys: [${fieldKeys.join(', ')}]` : '→ geen veld-achtige keys op top-level'
+        fieldKeys.length > 0 ? `→ veld-achtige keys: [${fieldKeys.join(', ')}]` : '→ geen veld-achtige keys op top-level',
+        `→ array keys: [${arrayKeys.join(', ') || '(geen)'}]`,
+        `→ nested object keys: [${nestedKeys.join(', ') || '(geen)'}]`
       );
+    }
+    if (detailResp && _fullDetailJsonLoggedCompanies < 1) {
+      _fullDetailJsonLoggedCompanies++;
+      try {
+        const safeJson = JSON.stringify(detailResp, (k, v) => {
+          if (typeof v === 'string' && v.length > 300) return `${v.slice(0, 300)}…[len=${v.length}]`;
+          return v;
+        }, 2);
+        console.debug(
+          `[Inserve] Volledige detail-response JSON sample bedrijf #${companyId} (1/1, afgekapt per key >300 tekens):\n${safeJson}`
+        );
+      } catch (jsonErr: any) {
+        console.debug(`[Inserve] Detail-response JSON serializeren mislukt: ${String(jsonErr?.message ?? jsonErr)}`);
+      }
     }
     const embeddedFields = extractFields(detailResp);
     if (embeddedFields && embeddedFields.length > 0) return embeddedFields;
