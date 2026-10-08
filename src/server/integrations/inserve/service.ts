@@ -474,8 +474,12 @@ export async function listAllCompanies(
     { label: 'kale-bedrijven', withRelations: [], enrichLater: true },
     { label: 'kale-bedrijven-zonder-builder', withRelations: [], enrichLater: true, useBuilder: false },
     { label: '1-relatie-custom_fields', withRelations: ['custom_fields'], enrichLater: true },
+    { label: '1-relatie-customFields-camelcase', withRelations: ['customFields'], enrichLater: true },
     { label: '1-relatie-company_fields', withRelations: ['company_fields'], enrichLater: true },
+    { label: '1-relatie-companyFields-camelcase', withRelations: ['companyFields'], enrichLater: true },
     { label: '1-relatie-fields', withRelations: ['fields'], enrichLater: true },
+    { label: '1-relatie-free_fields', withRelations: ['free_fields'], enrichLater: true },
+    { label: '1-relatie-freeFields-camelcase', withRelations: ['freeFields'], enrichLater: true },
     { label: '4-relaties-alles', withRelations: requestedRelations, enrichLater: false },
   ];
 
@@ -608,21 +612,115 @@ export async function listCompanyCustomFields(
   if (!client) {
     throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
   }
-  const candidates = [
+
+  const extractFields = (payload: unknown): InserveCustomFieldValue[] | null => {
+    if (Array.isArray(payload)) return payload as InserveCustomFieldValue[];
+    if (payload && typeof payload === 'object') {
+      const r = payload as Record<string, unknown>;
+      for (const key of [
+        'data',
+        'items',
+        'rows',
+        'result',
+        'custom_fields',
+        'customFields',
+        'company_fields',
+        'companyFields',
+        'extra_fields',
+        'extraFields',
+        'fields',
+        'free_fields',
+        'freeFields',
+      ]) {
+        const val = r[key];
+        if (Array.isArray(val)) return val as InserveCustomFieldValue[];
+      }
+    }
+    return null;
+  };
+
+  const perCompanyCandidates = [
     `${INSERVE_COMPANY_ENDPOINT}/${companyId}/custom_fields`,
+    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/customfields`,
     `${INSERVE_COMPANY_ENDPOINT}/${companyId}/fields`,
     `${INSERVE_COMPANY_ENDPOINT}/${companyId}/company_fields`,
+    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/free_fields`,
+    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/extra_fields`,
   ];
   let lastErr: unknown;
-  for (const path of candidates) {
+
+  for (const path of perCompanyCandidates) {
     try {
       const resp = await client.request(path, { method: 'GET' });
-      if (Array.isArray(resp)) return resp as InserveCustomFieldValue[];
-      if (resp && Array.isArray((resp as any).data)) return (resp as any).data as InserveCustomFieldValue[];
+      const found = extractFields(resp);
+      if (found && found.length > 0) return found;
     } catch (e) {
       lastErr = e;
     }
   }
+
+  try {
+    const detailResp = await client.request(`${INSERVE_COMPANY_ENDPOINT}/${companyId}`, { method: 'GET' });
+    const embeddedFields = extractFields(detailResp);
+    if (embeddedFields && embeddedFields.length > 0) return embeddedFields;
+    if (detailResp && typeof detailResp === 'object') {
+      const r = detailResp as Record<string, unknown>;
+      for (const k of Object.keys(r)) {
+        const v = r[k];
+        if (Array.isArray(v) && v.length > 0) {
+          const first = v[0];
+          if (
+            first &&
+            typeof first === 'object' &&
+            ('field_id' in first ||
+              'fieldId' in first ||
+              'field_name' in first ||
+              'fieldName' in first ||
+              'name' in first ||
+              'option' in first ||
+              'value' in first)
+          ) {
+            return v as InserveCustomFieldValue[];
+          }
+        }
+      }
+    }
+  } catch (e) {
+    if (!lastErr) lastErr = e;
+  }
+
+  const globalCandidates = [
+    'custom_fields',
+    'company_fields',
+    'fields',
+    'free_fields',
+    'extra_fields',
+    'customfields',
+  ];
+  for (const path of globalCandidates) {
+    try {
+      const resp = await client.request(path, { method: 'GET' });
+      const all = extractFields(resp);
+      if (Array.isArray(all)) {
+        const filtered = all.filter((f: any) => {
+          if (f && typeof f === 'object') {
+            const anyF = f as Record<string, unknown>;
+            return (
+              anyF.company_id === companyId ||
+              anyF.companyId === companyId ||
+              (anyF.company &&
+                typeof anyF.company === 'object' &&
+                ((anyF.company as any).id === companyId))
+            );
+          }
+          return false;
+        });
+        if (filtered.length > 0) return filtered;
+      }
+    } catch {
+    }
+  }
+
   if (lastErr) throw lastErr;
   return [];
 }
