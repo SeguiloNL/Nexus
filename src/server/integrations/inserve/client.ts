@@ -1,8 +1,11 @@
+export type BuilderParamsStyle = 'json' | 'nested';
+
 export interface InserveRequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   query?: Record<string, string | number | boolean | undefined>;
   builder?: unknown[];
+  builderParamsStyle?: BuilderParamsStyle;
   signal?: AbortSignal;
 }
 
@@ -80,11 +83,31 @@ async function resolveInserveCredentials(): Promise<ResolvedCredentials | null> 
   return null;
 }
 
+function appendNestedParams(
+  params: URLSearchParams,
+  prefix: string,
+  value: unknown
+): void {
+  if (value === null || value === undefined) return;
+  if (Array.isArray(value)) {
+    value.forEach((item, idx) => {
+      appendNestedParams(params, `${prefix}[${idx}]`, item);
+    });
+  } else if (typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      appendNestedParams(params, `${prefix}[${k}]`, v);
+    }
+  } else {
+    params.append(prefix, String(value));
+  }
+}
+
 function buildUrl(
   baseUrl: string,
   path: string,
   query?: Record<string, string | number | boolean | undefined>,
-  builder?: unknown[]
+  builder?: unknown[],
+  builderParamsStyle: BuilderParamsStyle = 'json'
 ): string {
   const cleanPath = path.startsWith('/') ? path.slice(1) : path;
   let url = baseUrl.endsWith('/') ? `${baseUrl}${cleanPath}` : `${baseUrl}/${cleanPath}`;
@@ -100,7 +123,13 @@ function buildUrl(
   }
 
   if (builder && builder.length > 0) {
-    params.append('builder', JSON.stringify(builder));
+    if (builderParamsStyle === 'nested') {
+      builder.forEach((item, idx) => {
+        appendNestedParams(params, `builder[${idx}]`, item);
+      });
+    } else {
+      params.append('builder', JSON.stringify(builder));
+    }
   }
 
   const search = params.toString();
@@ -153,11 +182,11 @@ export class InserveClient {
   }
 
   async request<T = unknown>(path: string, options: InserveRequestOptions = {}): Promise<T> {
-    const { method = 'GET', body, query, builder, signal } = options;
+    const { method = 'GET', body, query, builder, builderParamsStyle = 'json', signal } = options;
 
     await InserveClient.throttleAndCount();
 
-    const url = buildUrl(this.baseUrl, path, query, builder);
+    const url = buildUrl(this.baseUrl, path, query, builder, builderParamsStyle);
 
     const controller = new AbortController();
     const timeoutSignal =
@@ -285,6 +314,7 @@ export class InserveClient {
       withRelations?: string[];
       extraBuilder?: unknown[];
       maxPages?: number;
+      builderParamsStyle?: BuilderParamsStyle;
     } = {}
   ): Promise<{
     items: T[];
@@ -293,7 +323,16 @@ export class InserveClient {
     pagesProcessed: number;
     responses: any[];
   }> {
-    const { perPage = 25, withRelations = [], extraBuilder = [], maxPages, method, body, signal } = options;
+    const {
+      perPage = 25,
+      withRelations = [],
+      extraBuilder = [],
+      maxPages,
+      method,
+      body,
+      signal,
+      builderParamsStyle = 'json',
+    } = options;
     const items: T[] = [];
     const responses: any[] = [];
     let currentPage = 1;
@@ -318,6 +357,7 @@ export class InserveClient {
         signal,
         query,
         builder: pageBuilder,
+        builderParamsStyle,
       });
 
       responses.push(resp);

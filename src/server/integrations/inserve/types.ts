@@ -34,6 +34,7 @@ export interface InserveCompany {
   btw_nr?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  customValues?: InserveCustomFieldValue[] | null;
   custom_fields?: InserveCustomFieldValue[] | null;
   company_fields?: InserveCustomFieldValue[] | null;
   extra_fields?: InserveCustomFieldValue[] | null;
@@ -41,6 +42,7 @@ export interface InserveCompany {
 }
 
 export interface InserveCompanyWithFields extends InserveCompany {
+  customValues?: InserveCustomFieldValue[] | null;
   custom_fields?: InserveCustomFieldValue[] | null;
   company_fields?: InserveCustomFieldValue[] | null;
   extra_fields?: InserveCustomFieldValue[] | null;

@@ -426,6 +426,7 @@ export interface ListCompaniesOptions {
   perPage?: number;
   withRelations?: string[];
   builder?: unknown[];
+  builderParamsStyle?: 'json' | 'nested';
 }
 
 export async function listCompanies(
@@ -435,7 +436,7 @@ export async function listCompanies(
   if (!client) {
     throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
   }
-  const { page = 1, perPage = 25, withRelations = [], builder = [] } = opts;
+  const { page = 1, perPage = 25, withRelations = [], builder = [], builderParamsStyle } = opts;
   const fullBuilder: unknown[] = [
     ...(withRelations.length > 0 ? [{ with: withRelations }] : []),
     { paginate: { page, per_page: perPage } },
@@ -444,6 +445,7 @@ export async function listCompanies(
   return (await client.request(INSERVE_COMPANY_ENDPOINT, {
     method: 'GET',
     builder: fullBuilder,
+    ...(builderParamsStyle ? { builderParamsStyle } : {}),
   })) as InserveListResponse<InserveCompany>;
 }
 
@@ -460,17 +462,39 @@ export async function listAllCompanies(
   if (!client) {
     throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
   }
-  const { maxPages, perPage = 25, withRelations = [], builder = [] } = opts;
+  const { maxPages, perPage = 25, withRelations = [], builder = [], builderParamsStyle } = opts;
 
   const requestedRelations =
     withRelations.length > 0 ? withRelations : ['custom_fields', 'company_fields', 'extra_fields', 'fields'];
 
-  const strategies: Array<{
+  type Strat = {
     label: string;
     withRelations: string[];
     enrichLater: boolean;
     useBuilder?: boolean;
-  }> = [
+    builderParamsStyle?: 'json' | 'nested';
+    extraQueryParams?: Record<string, string | number | boolean | undefined>;
+  };
+  const strategies: Strat[] = [
+    {
+      label: '1-customValues-nested-builder',
+      withRelations: ['customValues'],
+      enrichLater: false,
+      builderParamsStyle: 'nested',
+    },
+    {
+      label: '1-customValues-json-builder',
+      withRelations: ['customValues'],
+      enrichLater: false,
+      builderParamsStyle: 'json',
+    },
+    {
+      label: '1-customValues-with-query-zonder-builder',
+      withRelations: [],
+      enrichLater: false,
+      useBuilder: false,
+      extraQueryParams: { 'with[]': 'customValues' },
+    },
     { label: 'kale-bedrijven', withRelations: [], enrichLater: true },
     { label: 'kale-bedrijven-zonder-builder', withRelations: [], enrichLater: true, useBuilder: false },
     { label: '1-relatie-custom_fields', withRelations: ['custom_fields'], enrichLater: true },
@@ -484,6 +508,7 @@ export async function listAllCompanies(
   ];
 
   const errors: Array<{ label: string; error: unknown }> = [];
+  let customValuesSampleLogged = 0;
 
   for (const strat of strategies) {
     try {
@@ -492,6 +517,7 @@ export async function listAllCompanies(
       const pageQuery: Record<string, string | number | boolean | undefined> = {
         page: 1,
         per_page: perPage,
+        ...(strat.extraQueryParams ?? {}),
       };
 
       if (strat.useBuilder === false) {
@@ -549,6 +575,17 @@ export async function listAllCompanies(
               firstDetailKeys,
               hasFieldLike ? '(bevat veld-achtige keys!)' : '(geen veld-keys zichtbaar in list)'
             );
+            if (firstDetailKeys.includes('customValues') || firstDetailKeys.some((k) => k === 'customValues')) {
+              const firstWith = allItems.find((c) => Array.isArray((c as any).customValues) && (c as any).customValues.length > 0);
+              if (firstWith && customValuesSampleLogged < 1) {
+                customValuesSampleLogged++;
+                const cv = (firstWith as any).customValues;
+                const preview = cv.slice(0, 2).map((f: any) => ({ keys: Object.keys(f), raw: f }));
+                console.debug(
+                  `[Inserve] [listAll] customValues sample structuur (bedrijf #${(firstWith as any).id}, ${cv.length} velden, preview 2): ${JSON.stringify(preview, null, 2)}`
+                );
+              }
+            }
           } catch {
           }
         }
@@ -567,6 +604,7 @@ export async function listAllCompanies(
           extraBuilder: builder,
           maxPages,
           method: 'GET',
+          builderParamsStyle: builderParamsStyle ?? strat.builderParamsStyle,
         });
         if (result.items.length > 0 && result.items[0] && typeof result.items[0] === 'object') {
           try {
@@ -577,6 +615,17 @@ export async function listAllCompanies(
               keys,
               hasFieldLike ? '(bevat veld-achtige keys!)' : '(geen veld-keys zichtbaar in list)'
             );
+            if (keys.includes('customValues')) {
+              const firstWith = result.items.find((c) => Array.isArray((c as any).customValues) && (c as any).customValues.length > 0);
+              if (firstWith && customValuesSampleLogged < 1) {
+                customValuesSampleLogged++;
+                const cv = (firstWith as any).customValues;
+                const preview = cv.slice(0, 2).map((f: any) => ({ keys: Object.keys(f), raw: f }));
+                console.debug(
+                  `[Inserve] [listAll] customValues sample structuur (bedrijf #${(firstWith as any).id}, ${cv.length} velden, preview 2): ${JSON.stringify(preview, null, 2)}`
+                );
+              }
+            }
           } catch {
           }
         }
@@ -588,6 +637,7 @@ export async function listAllCompanies(
         for (const item of result.items) {
           sampleIdx++;
           const hasFields =
+            Array.isArray((item as any).customValues) ||
             Array.isArray((item as any).custom_fields) ||
             Array.isArray((item as any).customFields) ||
             Array.isArray((item as any).company_fields) ||
@@ -680,7 +730,8 @@ const _looksLikeCustomFieldItem = (item: unknown): boolean => {
 };
 
 export async function listCompanyCustomFields(
-  companyId: number
+  companyId: number,
+  sourceCompany?: Partial<InserveCompany> | null
 ): Promise<InserveCustomFieldValue[]> {
   const client = await inserveClient.getClient();
   if (!client) {
@@ -714,6 +765,7 @@ export async function listCompanyCustomFields(
           'items',
           'rows',
           'result',
+          'customValues',
           'custom_fields',
           'customFields',
           'company_fields',
@@ -741,6 +793,11 @@ export async function listCompanyCustomFields(
     }
     return null;
   };
+
+  if (sourceCompany) {
+    const inline = extractFields(sourceCompany);
+    if (inline && inline.length > 0) return inline;
+  }
 
   try {
     const detailResp = await client.request(`${INSERVE_COMPANY_ENDPOINT}/${companyId}`, { method: 'GET' });
@@ -892,10 +949,11 @@ export function fieldNameMatches(
 }
 
 export function findCustomField(
-  company: Pick<InserveCompany, 'custom_fields' | 'company_fields' | 'extra_fields' | 'fields'> | InserveCompany,
+  company: Pick<InserveCompany, 'customValues' | 'custom_fields' | 'company_fields' | 'extra_fields' | 'fields'> | InserveCompany,
   targetName: string
 ): InserveCustomFieldValue | null {
   const arrays: (InserveCustomFieldValue[] | null | undefined)[] = [
+    (company as any).customValues,
     company.custom_fields,
     company.company_fields,
     company.extra_fields,
