@@ -167,6 +167,95 @@ export function InserveCustomerImportClient() {
                 <StatCard title="API-totaal (volgens Inserve)" value={summary.totalExpected} icon={<Database className="h-4 w-4" />} tone="neutral" />
               </div>
 
+              <div className="mt-4">
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <AlertCircle className="h-4 w-4 text-slate-600" /> Diagnostiek
+                      {summary.status === "SUCCESS" ? (
+                        <Badge variant="outline" className="ml-2 bg-emerald-50 text-emerald-700 border-emerald-200">Geslaagd</Badge>
+                      ) : summary.status === "SKIPPED" ? (
+                        <Badge variant="outline" className="ml-2 bg-amber-50 text-amber-700 border-amber-200">Overgeslagen</Badge>
+                      ) : (
+                        <Badge variant="destructive" className="ml-2">Mislukt</Badge>
+                      )}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-0 space-y-3">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
+                        <p className="font-semibold mb-2 text-slate-700">Inserve configuratie</p>
+                        <ul className="space-y-1 text-slate-600">
+                          <li className="flex items-center justify-between">
+                            <span>Status:</span>
+                            <span className={`font-semibold ${summary.inserveCredentials?.configured ? "text-emerald-600" : "text-red-600"}`}>
+                              {summary.inserveCredentials?.configured ? "✅ Geconfigureerd" : "❌ Niet geconfigureerd"}
+                            </span>
+                          </li>
+                          <li className="flex items-center justify-between">
+                            <span>Bron:</span>
+                            <span className="font-mono">
+                              {summary.inserveCredentials?.source === "db"
+                                ? "Database (AppSetting)"
+                                : summary.inserveCredentials?.source === "env"
+                                ? "Omgevingsvariabelen"
+                                : "Geen"}
+                            </span>
+                          </li>
+                          <li className="flex items-center justify-between">
+                            <span>Subdomein key:</span>
+                            <span className={summary.inserveCredentials?.subdomainSet ? "text-emerald-600" : "text-red-600"}>
+                              {summary.inserveCredentials?.subdomainSet ? "Aanwezig" : "Ontbreekt"}
+                            </span>
+                          </li>
+                          <li className="flex items-center justify-between">
+                            <span>API-key:</span>
+                            <span className={summary.inserveCredentials?.apiKeySet ? "text-emerald-600" : "text-red-600"}>
+                              {summary.inserveCredentials?.apiKeySet ? "Aanwezig" : "Ontbreekt"}
+                            </span>
+                          </li>
+                          {summary.inserveCredentials?.configured && "subdomainPrefix" in summary.inserveCredentials && summary.inserveCredentials.subdomainPrefix && (
+                            <li className="flex items-center justify-between">
+                              <span>Subdomein prefix:</span>
+                              <span className="font-mono">{summary.inserveCredentials.subdomainPrefix}…</span>
+                            </li>
+                          )}
+                        </ul>
+                      </div>
+
+                      <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
+                        <p className="font-semibold mb-2 text-slate-700">Timing per fase (ms) — 0ms = mogelijke short-circuit</p>
+                        <ul className="space-y-1 text-slate-600 font-mono">
+                          {[
+                            { label: "RoleScope check", key: "roleScopeCheck" as const },
+                            { label: "Mutex check", key: "mutexCheck" as const },
+                            { label: "Config + SyncJobRun aanmaken", key: "createConfigAndRun" as const },
+                            { label: "Inserve client initialisatie", key: "inserveInit" as const },
+                            { label: "Bedrijven ophalen (API)", key: "fetchCompanies" as const },
+                            { label: "Bestaande klanten laden", key: "fetchPreExisting" as const },
+                            { label: "Records verwerken", key: "processRecords" as const },
+                            { label: "Ongekoppelde matches zoeken", key: "findMatches" as const },
+                            { label: "Afronden (audit + DB)", key: "finalize" as const },
+                            { label: "Totaal", key: "total" as const },
+                          ].map(({ label, key }) => {
+                            const value = summary.timingMs?.[key] ?? 0;
+                            const isSuspicious = value === 0 && key !== "finalize" && key !== "findMatches" && key !== "fetchPreExisting";
+                            return (
+                              <li key={key} className="flex items-center justify-between">
+                                <span className={isSuspicious ? "text-red-600 font-semibold" : ""}>{label}:</span>
+                                <span className={isSuspicious ? "text-red-600 font-bold" : "text-slate-900 font-semibold"}>
+                                  {value}{isSuspicious ? " ⚠️" : ""}
+                                </span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
               <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                 <div className="rounded-md border p-3">
                   <p className="font-semibold mb-1 text-slate-700">Redenen overgeslagen</p>

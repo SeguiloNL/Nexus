@@ -61,6 +61,25 @@ export interface ImportSummary {
   errorMessage?: string | null;
   pagesProcessed: number;
   totalExpected: number;
+  inserveCredentials: {
+    configured: boolean;
+    source: "db" | "env" | "none";
+    subdomainSet: boolean;
+    apiKeySet: boolean;
+    subdomainPrefix?: string;
+  };
+  timingMs: {
+    total: number;
+    roleScopeCheck: number;
+    mutexCheck: number;
+    createConfigAndRun: number;
+    inserveInit: number;
+    fetchCompanies: number;
+    fetchPreExisting: number;
+    processRecords: number;
+    findMatches: number;
+    finalize: number;
+  };
   possibleUnlinkedMatches?: Array<{
     inserveCompanyId: number;
     inserveName: string;
@@ -275,17 +294,56 @@ async function findPossibleUnlinkedMatches(
   return matches.slice(0, 200);
 }
 
+const ZERO_TIMING: ImportSummary["timingMs"] = {
+  total: 0,
+  roleScopeCheck: 0,
+  mutexCheck: 0,
+  createConfigAndRun: 0,
+  inserveInit: 0,
+  fetchCompanies: 0,
+  fetchPreExisting: 0,
+  processRecords: 0,
+  findMatches: 0,
+  finalize: 0,
+};
+
+const ZERO_SKIPPED: ImportSummary["skipped"] = {
+  inactive_or_missing_nexus_field: 0,
+  missing_required_fields: 0,
+  fetch_error_nexus: 0,
+  other: 0,
+};
+
+const DEFAULT_UNCONFIGURED_CREDS: ImportSummary["inserveCredentials"] = {
+  configured: false,
+  source: "none",
+  subdomainSet: false,
+  apiKeySet: false,
+};
+
 export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<ImportSummary> {
   const startedAt = new Date();
+  const t0 = Date.now();
 
-  if (ctx.roleScope && ctx.roleScope !== RoleScope.INTERNAL) {
-    return makeFailedSummary(
-      startedAt,
-      "Import is alleen toegestaan voor interne gebruikers (scope INTERNAL).",
-      null
-    );
+  const roleScopePass = !(ctx.roleScope && ctx.roleScope !== RoleScope.INTERNAL);
+  const timing = { ...ZERO_TIMING };
+  timing.roleScopeCheck = Date.now() - t0;
+  if (!roleScopePass) {
+    const finalTiming = { ...timing, total: Date.now() - t0 };
+    return {
+      ...makeFailedSummary(
+        startedAt,
+        "Import is alleen toegestaan voor interne gebruikers (scope INTERNAL).",
+        null
+      ),
+      timingMs: finalTiming,
+      inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
+    };
   }
 
+  let credsInfo: ImportSummary["inserveCredentials"] = DEFAULT_UNCONFIGURED_CREDS;
+
+  const t1 = Date.now();
   const existing = await prisma.syncJobRun.findFirst({
     where: {
       jobId: SyncJobId.INSERVE_CUSTOMER_IMPORT,
@@ -293,32 +351,32 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
     },
     select: { id: true, startedAt: true },
   });
+  timing.mutexCheck = Date.now() - t1;
   if (existing) {
+    const finalTiming = { ...timing, total: Date.now() - t0 };
     return {
       runId: existing.id,
       status: "SKIPPED",
       startedAt,
       endedAt: new Date(),
-      durationMs: 0,
+      durationMs: Date.now() - t0,
       fetched: 0,
       activeFilterPassed: 0,
       created: 0,
       updated: 0,
       unchanged: 0,
-      skipped: {
-        inactive_or_missing_nexus_field: 0,
-        missing_required_fields: 0,
-        fetch_error_nexus: 0,
-        other: 0,
-      },
+      skipped: { ...ZERO_SKIPPED },
       failed: 0,
       pagesProcessed: 0,
       totalExpected: 0,
       errorMessage:
         "Er is reeds een import bezig of gequeued. Wacht tot de vorige is afgerond.",
+      timingMs: finalTiming,
+      inserveCredentials: credsInfo,
     };
   }
 
+  const t2 = Date.now();
   const syncJobConfig = await getSyncJobConfig(SyncJobId.INSERVE_CUSTOMER_IMPORT);
   const syncJobRun = await createSyncJobRun(prisma, {
     configId: syncJobConfig.id,
@@ -327,6 +385,7 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
     userId: ctx.userId ?? undefined,
     status: SyncJobStatus.RUNNING,
   });
+  timing.createConfigAndRun = Date.now() - t2;
 
   let finalStatus: SyncJobStatus = SyncJobStatus.SUCCESS;
   let finalErrorMessage: string | null = null;
@@ -343,15 +402,12 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
     created: 0,
     updated: 0,
     unchanged: 0,
-    skipped: {
-      inactive_or_missing_nexus_field: 0,
-      missing_required_fields: 0,
-      fetch_error_nexus: 0,
-      other: 0,
-    },
+    skipped: { ...ZERO_SKIPPED },
     failed: 0,
     pagesProcessed: 0,
     totalExpected: 0,
+    inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
+    timingMs: { ...ZERO_TIMING },
     skippedDetails: [],
     failedDetails: [],
     possibleUnlinkedMatches: [],
@@ -367,10 +423,16 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
   };
 
   try {
+    const t3 = Date.now();
+    credsInfo = await inserveClient.inspectCredentials(true);
+    summary.inserveCredentials = credsInfo;
+    timing.inserveInit = Date.now() - t3;
+
     if (!(await inserveClient.isConfigured())) {
       markPartialFailed(
         "Inserve is niet geconfigureerd. Stel INSERVE_SUBDOMAIN en INSERVE_API_KEY in, of configureer via Instellingen → Inserve."
       );
+      summary.timingMs = { ...timing, finalize: 0, total: Date.now() - t0 };
       return finalizeSummary(
         summary,
         syncJobRun.id,
@@ -381,7 +443,9 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
     }
 
     let fetchedCompanies: InserveCompany[] = [];
+    let t4 = Date.now();
     try {
+      t4 = Date.now();
       const res = await listAllCompanies({
         withRelations: [
           "custom_fields",
@@ -391,6 +455,7 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
         ],
         perPage: 50,
       });
+      timing.fetchCompanies = Date.now() - t4;
       fetchedCompanies = res.items;
       summary.fetched = res.totalFetched;
       summary.pagesProcessed = res.pagesProcessed;
@@ -401,11 +466,13 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
         );
       }
     } catch (e: any) {
+      timing.fetchCompanies = Math.max(timing.fetchCompanies, Date.now() - t4);
       if (e instanceof InserveApiError) {
         if (e.statusCode === 401 || e.statusCode === 403) {
           markPartialFailed(
             `Inserve authenticatie mislukt (status ${e.statusCode}). Controleer de API-key en rechten.`
           );
+          summary.timingMs = { ...timing, finalize: 0, total: Date.now() - t0 };
           return finalizeSummary(
             summary,
             syncJobRun.id,
@@ -419,6 +486,7 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
         `Kon bedrijven niet ophalen bij Inserve: ${e?.message ?? String(e)}`,
         { statusCode: (e as any)?.statusCode ?? null }
       );
+      summary.timingMs = { ...timing, finalize: 0, total: Date.now() - t0 };
       return finalizeSummary(
         summary,
         syncJobRun.id,
@@ -428,11 +496,13 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
       );
     }
 
+    const t5 = Date.now();
     const previouslyLinkedIds = new Map<number, { id: string; companyName: string }>();
     const preExistingLinked = await prisma.customer.findMany({
       where: { inserveCompanyId: { not: null }, deletedAt: null },
       select: { id: true, inserveCompanyId: true, companyName: true },
     });
+    timing.fetchPreExisting = Date.now() - t5;
     for (const c of preExistingLinked) {
       if (c.inserveCompanyId) {
         previouslyLinkedIds.set(c.inserveCompanyId, {
@@ -443,6 +513,7 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
     }
     const nowProcessedLinked = new Map<number, string>();
 
+    const tProcess = Date.now();
     for (const rawCompany of fetchedCompanies) {
       const companyId = rawCompany.id;
       let company: InserveCompany = rawCompany;
@@ -627,6 +698,7 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
         });
       }
     }
+    timing.processRecords = Date.now() - tProcess;
 
     try {
       await prisma.$transaction(async (tx) => {
@@ -670,10 +742,12 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
     }
 
     try {
+      const tFind = Date.now();
       summary.possibleUnlinkedMatches = await findPossibleUnlinkedMatches(
         fetchedCompanies,
         nowProcessedLinked
       );
+      timing.findMatches = Date.now() - tFind;
     } catch (_) {
       summary.possibleUnlinkedMatches = [];
     }
@@ -682,6 +756,11 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
       code: (topErr as any)?.code ?? null,
     });
   }
+
+  const tFinalize = Date.now();
+  timing.finalize = Date.now() - tFinalize;
+  timing.total = Date.now() - t0;
+  summary.timingMs = { ...timing };
 
   return finalizeSummary(
     summary,
@@ -706,8 +785,13 @@ function finalizeSummary(
     endedAt.getTime() - summary.startedAt.getTime()
   );
   summary.runId = runId;
-  summary.status =
-    status === SyncJobStatus.SUCCESS ? "SUCCESS" : "FAILED";
+  if (status === SyncJobStatus.SUCCESS) {
+    summary.status = "SUCCESS";
+  } else if (status === SyncJobStatus.SKIPPED) {
+    summary.status = "SKIPPED";
+  } else {
+    summary.status = "FAILED";
+  }
   summary.errorMessage = errorMessage;
 
   const recordsAffected = {
@@ -753,12 +837,13 @@ function makeFailedSummary(
   runId: string | null
 ): ImportSummary {
   const endedAt = new Date();
+  const durationMs = Math.max(0, endedAt.getTime() - startedAt.getTime());
   return {
     runId,
     status: "FAILED",
     startedAt,
     endedAt,
-    durationMs: Math.max(0, endedAt.getTime() - startedAt.getTime()),
+    durationMs,
     fetched: 0,
     activeFilterPassed: 0,
     created: 0,
@@ -774,6 +859,8 @@ function makeFailedSummary(
     errorMessage: message,
     pagesProcessed: 0,
     totalExpected: 0,
+    inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
+    timingMs: { ...ZERO_TIMING, total: durationMs },
     possibleUnlinkedMatches: [],
     previouslyActiveNowInactive: [],
     skippedDetails: [],

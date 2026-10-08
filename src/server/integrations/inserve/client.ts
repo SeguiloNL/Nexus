@@ -315,10 +315,60 @@ export class InserveClient {
   }
 }
 
+export interface CredentialInfo {
+  configured: boolean;
+  source: "db" | "env" | "none";
+  subdomainSet: boolean;
+  apiKeySet: boolean;
+  subdomainPrefix?: string;
+}
+
 class InserveClientSingleton {
   private instance: InserveClient | undefined;
   private cacheLoadedAt: number = 0;
   private initPromise: Promise<InserveClient | undefined> | undefined;
+  private lastCredentialInfo: CredentialInfo | undefined;
+
+  async inspectCredentials(force = false): Promise<CredentialInfo> {
+    try {
+      if (force) this.reset();
+      const creds = await resolveInserveCredentials();
+      if (!creds) {
+        const info: CredentialInfo = {
+          configured: false,
+          source: "none",
+          subdomainSet: false,
+          apiKeySet: false,
+        };
+        this.lastCredentialInfo = info;
+        return info;
+      }
+      const info: CredentialInfo = {
+        configured: true,
+        source: creds.source,
+        subdomainSet: true,
+        apiKeySet: true,
+        subdomainPrefix: creds.subdomain.length >= 3
+          ? creds.subdomain.slice(0, 3) + "…"
+          : creds.subdomain,
+      };
+      this.lastCredentialInfo = info;
+      return info;
+    } catch (e: any) {
+      const info: CredentialInfo = {
+        configured: false,
+        source: "none",
+        subdomainSet: false,
+        apiKeySet: false,
+      };
+      this.lastCredentialInfo = info;
+      return info;
+    }
+  }
+
+  getLastCredentialInfo(): CredentialInfo | undefined {
+    return this.lastCredentialInfo;
+  }
 
   private async init(): Promise<InserveClient | undefined> {
     const now = Date.now();
