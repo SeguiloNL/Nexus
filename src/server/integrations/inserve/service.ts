@@ -499,6 +499,7 @@ export async function listAllCompanies(
         const allItems: InserveCompany[] = [];
         let totalExpected = 0;
         let pagesProcessed = 0;
+        let firstDetailKeys: string[] | null = null;
         for (let page = 1; page <= maxLoop; page++) {
           pageQuery.page = page;
           const chunk = (await client.request<any>(INSERVE_COMPANY_ENDPOINT, {
@@ -521,7 +522,13 @@ export async function listAllCompanies(
             pageMeta = (rAny.meta ?? rAny.pagination ?? rAny._meta ?? {}) as any;
           }
 
-          allItems.push(...pageItems);
+          if (pageItems.length > 0) {
+            allItems.push(...pageItems);
+            if (!firstDetailKeys && pageItems[0] && typeof pageItems[0] === 'object') {
+              firstDetailKeys = Object.keys(pageItems[0] as unknown as Record<string, unknown>);
+            }
+          }
+
           const metaTotal = pageMeta?.total ?? pageMeta?.count ?? pageMeta?.total_items;
           if (typeof metaTotal === 'number') totalExpected = metaTotal;
 
@@ -530,6 +537,20 @@ export async function listAllCompanies(
           if (typeof lastPage === 'number' && page >= lastPage) break;
           if (typeof totalExpected === 'number' && allItems.length >= totalExpected) break;
           if (pageItems.length < perPage) break;
+        }
+
+        if (firstDetailKeys && allItems.length > 0) {
+          try {
+            const hasFieldLike = firstDetailKeys.some((k) =>
+              /field|custom|extra|vrij/i.test(k)
+            );
+            console.debug(
+              `[Inserve] listCompanies strategie [${strat.label}] eerste item keys (${allItems.length} items):`,
+              firstDetailKeys,
+              hasFieldLike ? '(bevat veld-achtige keys!)' : '(geen veld-keys zichtbaar in list)'
+            );
+          } catch {
+          }
         }
 
         result = {
@@ -547,6 +568,18 @@ export async function listAllCompanies(
           maxPages,
           method: 'GET',
         });
+        if (result.items.length > 0 && result.items[0] && typeof result.items[0] === 'object') {
+          try {
+            const keys = Object.keys(result.items[0] as unknown as Record<string, unknown>);
+            const hasFieldLike = keys.some((k) => /field|custom|extra|vrij/i.test(k));
+            console.debug(
+              `[Inserve] listCompanies strategie [${strat.label}] eerste item keys (${result.items.length} items):`,
+              keys,
+              hasFieldLike ? '(bevat veld-achtige keys!)' : '(geen veld-keys zichtbaar in list)'
+            );
+          } catch {
+          }
+        }
       }
 
       if (strat.enrichLater && result.items.length > 0) {
@@ -605,6 +638,13 @@ export async function getCompanyById(
   })) as InserveCompany;
 }
 
+const GLOBAL_FIELD_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
+type GlobalFieldCacheEntry = {
+  fetchedAt: number;
+  values: InserveCustomFieldValue[];
+};
+let _globalFieldCache: GlobalFieldCacheEntry | null = null;
+
 export async function listCompanyCustomFields(
   companyId: number
 ): Promise<InserveCustomFieldValue[]> {
@@ -617,47 +657,42 @@ export async function listCompanyCustomFields(
     if (Array.isArray(payload)) return payload as InserveCustomFieldValue[];
     if (payload && typeof payload === 'object') {
       const r = payload as Record<string, unknown>;
-      for (const key of [
-        'data',
-        'items',
-        'rows',
-        'result',
-        'custom_fields',
-        'customFields',
-        'company_fields',
-        'companyFields',
-        'extra_fields',
-        'extraFields',
-        'fields',
-        'free_fields',
-        'freeFields',
-      ]) {
-        const val = r[key];
-        if (Array.isArray(val)) return val as InserveCustomFieldValue[];
+      const queue: unknown[] = [r];
+      const seen = new WeakSet<object>();
+      while (queue.length > 0) {
+        const cur = queue.shift()!;
+        if (!cur || typeof cur !== 'object') continue;
+        if (seen.has(cur as object)) continue;
+        seen.add(cur as object);
+        const obj = cur as Record<string, unknown>;
+        const topLevelCandidates = [
+          'data',
+          'items',
+          'rows',
+          'result',
+          'custom_fields',
+          'customFields',
+          'company_fields',
+          'companyFields',
+          'extra_fields',
+          'extraFields',
+          'fields',
+          'free_fields',
+          'freeFields',
+          'customfields',
+        ];
+        for (const key of topLevelCandidates) {
+          const val = obj[key];
+          if (Array.isArray(val)) return val as InserveCustomFieldValue[];
+        }
+        for (const key of Object.keys(obj)) {
+          const val = obj[key];
+          if (val && typeof val === 'object' && !Array.isArray(val)) queue.push(val);
+        }
       }
     }
     return null;
   };
-
-  const perCompanyCandidates = [
-    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/custom_fields`,
-    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/customfields`,
-    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/fields`,
-    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/company_fields`,
-    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/free_fields`,
-    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/extra_fields`,
-  ];
-  let lastErr: unknown;
-
-  for (const path of perCompanyCandidates) {
-    try {
-      const resp = await client.request(path, { method: 'GET' });
-      const found = extractFields(resp);
-      if (found && found.length > 0) return found;
-    } catch (e) {
-      lastErr = e;
-    }
-  }
 
   try {
     const detailResp = await client.request(`${INSERVE_COMPANY_ENDPOINT}/${companyId}`, { method: 'GET' });
@@ -667,7 +702,8 @@ export async function listCompanyCustomFields(
       const r = detailResp as Record<string, unknown>;
       for (const k of Object.keys(r)) {
         const v = r[k];
-        if (Array.isArray(v) && v.length > 0) {
+        if (Array.isArray(v)) {
+          if (v.length === 0) continue;
           const first = v[0];
           if (
             first &&
@@ -685,40 +721,72 @@ export async function listCompanyCustomFields(
         }
       }
     }
-  } catch (e) {
-    if (!lastErr) lastErr = e;
+  } catch {
   }
 
-  const globalCandidates = [
-    'custom_fields',
-    'company_fields',
-    'fields',
-    'free_fields',
-    'extra_fields',
-    'customfields',
+  const perCompanyCandidates = [
+    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/custom_fields`,
+    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/customfields`,
+    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/fields`,
+    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/company_fields`,
+    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/free_fields`,
+    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/extra_fields`,
   ];
-  for (const path of globalCandidates) {
+  let lastErr: unknown;
+  for (const path of perCompanyCandidates) {
     try {
       const resp = await client.request(path, { method: 'GET' });
-      const all = extractFields(resp);
-      if (Array.isArray(all)) {
-        const filtered = all.filter((f: any) => {
-          if (f && typeof f === 'object') {
-            const anyF = f as Record<string, unknown>;
-            return (
-              anyF.company_id === companyId ||
-              anyF.companyId === companyId ||
-              (anyF.company &&
-                typeof anyF.company === 'object' &&
-                ((anyF.company as any).id === companyId))
-            );
-          }
-          return false;
-        });
-        if (filtered.length > 0) return filtered;
-      }
-    } catch {
+      const found = extractFields(resp);
+      if (found && found.length > 0) return found;
+    } catch (e) {
+      lastErr = e;
     }
+  }
+
+  try {
+    const now = Date.now();
+    if (!_globalFieldCache || now - _globalFieldCache.fetchedAt > GLOBAL_FIELD_CACHE_MAX_AGE_MS) {
+      const globalCandidates = [
+        'custom_fields',
+        'company_fields',
+        'fields',
+        'free_fields',
+        'extra_fields',
+        'customfields',
+      ];
+      let globalValues: InserveCustomFieldValue[] = [];
+      for (const path of globalCandidates) {
+        try {
+          const resp = await client.request(path, { method: 'GET' });
+          const all = extractFields(resp);
+          if (Array.isArray(all) && all.length > 0) {
+            globalValues = all;
+            break;
+          }
+        } catch {
+        }
+      }
+      _globalFieldCache = { fetchedAt: now, values: globalValues };
+    }
+
+    const values = _globalFieldCache.values;
+    if (values.length > 0) {
+      const filtered = values.filter((f: any) => {
+        if (f && typeof f === 'object') {
+          const anyF = f as Record<string, unknown>;
+          return (
+            anyF.company_id === companyId ||
+            anyF.companyId === companyId ||
+            (anyF.company &&
+              typeof anyF.company === 'object' &&
+              ((anyF.company as any).id === companyId))
+          );
+        }
+        return false;
+      });
+      if (filtered.length > 0) return filtered;
+    }
+  } catch {
   }
 
   if (lastErr) throw lastErr;
