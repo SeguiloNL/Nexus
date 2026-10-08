@@ -157,6 +157,7 @@ export async function enrichCompanyWithCustomFields(
 ): Promise<InserveCompany> {
   const hasAnyFields =
     Array.isArray((company as any).customValues) ||
+    Array.isArray((company as any).custom_values) ||
     Array.isArray(company.custom_fields) ||
     Array.isArray(company.company_fields) ||
     Array.isArray(company.extra_fields) ||

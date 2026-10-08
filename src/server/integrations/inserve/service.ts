@@ -474,8 +474,25 @@ export async function listAllCompanies(
     useBuilder?: boolean;
     builderParamsStyle?: 'json' | 'nested';
     extraQueryParams?: Record<string, string | number | boolean | undefined>;
+    perPage?: number;
+    nestedBuilderIndexFromOne?: boolean;
+    separateLimitPage?: boolean;
   };
   const strategies: Strat[] = [
+    {
+      label: '1-customValues-postman-flat-params',
+      withRelations: [],
+      enrichLater: false,
+      useBuilder: false,
+      perPage: 25,
+      extraQueryParams: {
+        // Exact Postman docs stijl: builder[1][with]=customValues ; builder[2][limit]=N ; builder[3][page]=P
+        // Wordt in de lus per page ingevuld (pagina-P wordt dynamisch gezet).
+        // We initialiseren hier de fixed delen (with + limit); page wordt in de loop per iteratie overschreven.
+      },
+      separateLimitPage: true,
+      nestedBuilderIndexFromOne: true,
+    },
     {
       label: '1-customValues-nested-builder',
       withRelations: ['customValues'],
@@ -521,6 +538,7 @@ export async function listAllCompanies(
       };
 
       if (strat.useBuilder === false) {
+        const effectivePerPage = strat.perPage ?? perPage;
         const maxLoop = maxPages ?? 50;
         const allItems: InserveCompany[] = [];
         let totalExpected = 0;
@@ -528,9 +546,22 @@ export async function listAllCompanies(
         let firstDetailKeys: string[] | null = null;
         for (let page = 1; page <= maxLoop; page++) {
           pageQuery.page = page;
+          pageQuery.per_page = effectivePerPage;
+          const customQuery: Record<string, string | number | boolean | undefined> = {
+            ...pageQuery,
+            ...(strat.extraQueryParams ?? {}),
+          };
+          if (strat.separateLimitPage && strat.nestedBuilderIndexFromOne) {
+            // Exact Postman docs structuur: builder[1][with]=customValues ; builder[2][limit]=N ; builder[3][page]=P
+            customQuery['builder[1][with]'] = 'customValues';
+            customQuery['builder[2][limit]'] = effectivePerPage;
+            customQuery['builder[3][page]'] = page;
+            delete customQuery['page'];
+            delete customQuery['per_page'];
+          }
           const chunk = (await client.request<any>(INSERVE_COMPANY_ENDPOINT, {
             method: 'GET',
-            query: { ...pageQuery },
+            query: customQuery,
             builder: undefined,
           })) as any;
 
@@ -562,7 +593,7 @@ export async function listAllCompanies(
           if (pageItems.length === 0) break;
           if (typeof lastPage === 'number' && page >= lastPage) break;
           if (typeof totalExpected === 'number' && allItems.length >= totalExpected) break;
-          if (pageItems.length < perPage) break;
+          if (pageItems.length < effectivePerPage) break;
         }
 
         if (firstDetailKeys && allItems.length > 0) {
@@ -575,15 +606,26 @@ export async function listAllCompanies(
               firstDetailKeys,
               hasFieldLike ? '(bevat veld-achtige keys!)' : '(geen veld-keys zichtbaar in list)'
             );
-            if (firstDetailKeys.includes('customValues') || firstDetailKeys.some((k) => k === 'customValues')) {
-              const firstWith = allItems.find((c) => Array.isArray((c as any).customValues) && (c as any).customValues.length > 0);
+            const hasCustomValuesKey =
+              firstDetailKeys.includes('customValues') ||
+              firstDetailKeys.includes('custom_values');
+            if (hasCustomValuesKey) {
+              const firstWith = allItems.find((c) => {
+                const v1 = (c as any).customValues;
+                const v2 = (c as any).custom_values;
+                return (Array.isArray(v1) && v1.length > 0) || (Array.isArray(v2) && v2.length > 0);
+              });
               if (firstWith && customValuesSampleLogged < 1) {
                 customValuesSampleLogged++;
-                const cv = (firstWith as any).customValues;
-                const preview = cv.slice(0, 2).map((f: any) => ({ keys: Object.keys(f), raw: f }));
-                console.debug(
-                  `[Inserve] [listAll] customValues sample structuur (bedrijf #${(firstWith as any).id}, ${cv.length} velden, preview 2): ${JSON.stringify(preview, null, 2)}`
-                );
+                const cv: any[] = (Array.isArray((firstWith as any).customValues) && (firstWith as any).customValues.length > 0)
+                  ? (firstWith as any).customValues
+                  : (firstWith as any).custom_values;
+                if (Array.isArray(cv) && cv.length > 0) {
+                  const preview = cv.slice(0, 3).map((f: any) => ({ keys: Object.keys(f), raw: f }));
+                  console.debug(
+                    `[Inserve] [listAll] customValues sample structuur (bedrijf #${(firstWith as any).id}, ${cv.length} velden, preview 3):\n${JSON.stringify(preview, null, 2)}`
+                  );
+                }
               }
             }
           } catch {
@@ -615,15 +657,26 @@ export async function listAllCompanies(
               keys,
               hasFieldLike ? '(bevat veld-achtige keys!)' : '(geen veld-keys zichtbaar in list)'
             );
-            if (keys.includes('customValues')) {
-              const firstWith = result.items.find((c) => Array.isArray((c as any).customValues) && (c as any).customValues.length > 0);
+            const hasCustomValuesKey =
+              keys.includes('customValues') || keys.includes('custom_values');
+            if (hasCustomValuesKey) {
+              const firstWith = result.items.find((c) => {
+                const v1 = (c as any).customValues;
+                const v2 = (c as any).custom_values;
+                return (Array.isArray(v1) && v1.length > 0) || (Array.isArray(v2) && v2.length > 0);
+              });
               if (firstWith && customValuesSampleLogged < 1) {
                 customValuesSampleLogged++;
-                const cv = (firstWith as any).customValues;
-                const preview = cv.slice(0, 2).map((f: any) => ({ keys: Object.keys(f), raw: f }));
-                console.debug(
-                  `[Inserve] [listAll] customValues sample structuur (bedrijf #${(firstWith as any).id}, ${cv.length} velden, preview 2): ${JSON.stringify(preview, null, 2)}`
-                );
+                const cv: any[] =
+                  Array.isArray((firstWith as any).customValues) && (firstWith as any).customValues.length > 0
+                    ? (firstWith as any).customValues
+                    : (firstWith as any).custom_values;
+                if (Array.isArray(cv) && cv.length > 0) {
+                  const preview = cv.slice(0, 3).map((f: any) => ({ keys: Object.keys(f), raw: f }));
+                  console.debug(
+                    `[Inserve] [listAll] customValues sample structuur (bedrijf #${(firstWith as any).id}, ${cv.length} velden, preview 3):\n${JSON.stringify(preview, null, 2)}`
+                  );
+                }
               }
             }
           } catch {
@@ -638,6 +691,7 @@ export async function listAllCompanies(
           sampleIdx++;
           const hasFields =
             Array.isArray((item as any).customValues) ||
+            Array.isArray((item as any).custom_values) ||
             Array.isArray((item as any).custom_fields) ||
             Array.isArray((item as any).customFields) ||
             Array.isArray((item as any).company_fields) ||
@@ -766,6 +820,7 @@ export async function listCompanyCustomFields(
           'rows',
           'result',
           'customValues',
+          'custom_values',
           'custom_fields',
           'customFields',
           'company_fields',
@@ -949,11 +1004,12 @@ export function fieldNameMatches(
 }
 
 export function findCustomField(
-  company: Pick<InserveCompany, 'customValues' | 'custom_fields' | 'company_fields' | 'extra_fields' | 'fields'> | InserveCompany,
+  company: Pick<InserveCompany, 'customValues' | 'custom_values' | 'custom_fields' | 'company_fields' | 'extra_fields' | 'fields'> | InserveCompany,
   targetName: string
 ): InserveCustomFieldValue | null {
   const arrays: (InserveCustomFieldValue[] | null | undefined)[] = [
     (company as any).customValues,
+    (company as any).custom_values,
     company.custom_fields,
     company.company_fields,
     company.extra_fields,
