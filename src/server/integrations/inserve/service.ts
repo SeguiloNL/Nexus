@@ -660,6 +660,8 @@ type GlobalFieldCacheEntry = {
 };
 let _globalFieldCache: GlobalFieldCacheEntry | null = null;
 
+let _inspectDetailLoggedCompanies = 0;
+
 export async function listCompanyCustomFields(
   companyId: number
 ): Promise<InserveCustomFieldValue[]> {
@@ -711,6 +713,16 @@ export async function listCompanyCustomFields(
 
   try {
     const detailResp = await client.request(`${INSERVE_COMPANY_ENDPOINT}/${companyId}`, { method: 'GET' });
+    if (detailResp && typeof detailResp === 'object' && _inspectDetailLoggedCompanies < 3) {
+      _inspectDetailLoggedCompanies++;
+      const keys = Object.keys(detailResp as Record<string, unknown>);
+      const fieldKeys = keys.filter((k) => /field|custom|extra|vrij|value|option/i.test(k));
+      console.debug(
+        `[Inserve] detail-endpoint keys voor bedrijf #${companyId} (sample ${_inspectDetailLoggedCompanies}/3):`,
+        keys,
+        fieldKeys.length > 0 ? `→ veld-achtige keys: [${fieldKeys.join(', ')}]` : '→ geen veld-achtige keys op top-level'
+      );
+    }
     const embeddedFields = extractFields(detailResp);
     if (embeddedFields && embeddedFields.length > 0) return embeddedFields;
     if (detailResp && typeof detailResp === 'object') {

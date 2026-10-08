@@ -16,7 +16,7 @@ export interface LogAuditInput {
   entityType: string;
   entityId: string;
   action: string;
-  userId: string;
+  userId?: string | null;
   oldValues?: Record<string, unknown> | null;
   newValues?: Record<string, unknown> | null;
   metadata?: Record<string, unknown> | null;
@@ -26,7 +26,7 @@ export interface LogAuditInput {
 export async function logAudit(
   db: AuditLogDb,
   input: LogAuditInput
-): Promise<PrismaAuditLog> {
+): Promise<PrismaAuditLog | null> {
   const effectiveTimestamp = input.timestamp
     ? (typeof input.timestamp === "string" ? new Date(input.timestamp) : input.timestamp)
     : new Date();
@@ -35,18 +35,38 @@ export async function logAudit(
     ? { ...input.metadata, timestamp: effectiveTimestamp.toISOString() }
     : { timestamp: effectiveTimestamp.toISOString() };
 
-  return db.auditLog.create({
-    data: {
-      entityType: input.entityType,
-      entityId: input.entityId,
-      action: input.action as Prisma.AuditLogUncheckedCreateInput["action"],
-      userId: input.userId,
-      oldValues: input.oldValues as Prisma.InputJsonValue | undefined,
-      newValues: input.newValues as Prisma.InputJsonValue | undefined,
-      metadata: enrichedMetadata as Prisma.InputJsonValue | undefined,
-      timestamp: effectiveTimestamp,
-    },
-  });
+  const rawUserId = input.userId ?? null;
+  const normalizedUserId: string | null =
+    rawUserId && typeof rawUserId === "string" && rawUserId !== "SYSTEM"
+      ? rawUserId
+      : null;
+
+  try {
+    return await db.auditLog.create({
+      data: {
+        entityType: input.entityType,
+        entityId: input.entityId,
+        action: input.action as Prisma.AuditLogUncheckedCreateInput["action"],
+        userId: normalizedUserId,
+        oldValues: input.oldValues as Prisma.InputJsonValue | undefined,
+        newValues: input.newValues as Prisma.InputJsonValue | undefined,
+        metadata: enrichedMetadata as Prisma.InputJsonValue | undefined,
+        timestamp: effectiveTimestamp,
+      },
+    });
+  } catch (auditErr: any) {
+    console.error(
+      "[audit-faal] Audit log kon niet geschreven worden (actie: " +
+        input.action +
+        ", entity: " +
+        input.entityType +
+        "#" +
+        input.entityId +
+        "): " +
+        (auditErr?.message ?? String(auditErr))
+    );
+    return null;
+  }
 }
 
 type AuditCtx = {
