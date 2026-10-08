@@ -893,13 +893,19 @@ export async function triggerSyncJobAction(
         errorMessage = `${report.userSendFailures} gebruikers konden geen e-mail ontvangen.`;
       }
     } else if (validated.data.jobId === SyncJobId.INSERVE_CUSTOMER_IMPORT) {
-      const r = await runInserveCustomerImport({
-        userId: user.id,
-        userRole: user.role as any,
-        roleScope: user.roleScope as any,
-        permissions: (user as any).permissions ?? null,
-        customerIds: null,
-      });
+      const r = await runInserveCustomerImport(
+        {
+          userId: user.id,
+          userRole: user.role as any,
+          roleScope: user.roleScope as any,
+          permissions: (user as any).permissions ?? null,
+          customerIds: null,
+        },
+        {
+          skipRunManagement: true,
+          preExistingRunId: run.id,
+        }
+      );
       recordsAffected = {
         fetched: r.fetched,
         activeFilterPassed: r.activeFilterPassed,

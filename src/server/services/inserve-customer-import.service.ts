@@ -321,7 +321,22 @@ const DEFAULT_UNCONFIGURED_CREDS: ImportSummary["inserveCredentials"] = {
   apiKeySet: false,
 };
 
-export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<ImportSummary> {
+export interface ImportManagementOpts {
+  /**
+   * Indien true: wordt mutex-check EN SyncJobRun aanmaken/aflossen OVERGESLAGEN.
+   * Gebruikt door buitenste callers (bv. settings handmatige sync) die zelf al
+   * een SyncJobRun RUNNING-record hebben aangemaakt en die ook zelf af zullen ronden.
+   * VEREIST: preExistingRunId moet gezet zijn.
+   */
+  skipRunManagement?: boolean;
+  /** Het run-ID van de buitenste aangemaakte SyncJobRun (wordt als summary.runId gebruikt). */
+  preExistingRunId?: string;
+}
+
+export async function runInserveCustomerImport(
+  ctx: ImportUserCtx,
+  opts: ImportManagementOpts = {}
+): Promise<ImportSummary> {
   const startedAt = new Date();
   const t0 = Date.now();
 
@@ -334,9 +349,22 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
       ...makeFailedSummary(
         startedAt,
         "Import is alleen toegestaan voor interne gebruikers (scope INTERNAL).",
-        null
+        opts.preExistingRunId ?? null
       ),
       timingMs: finalTiming,
+      inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
+    };
+  }
+
+  if (opts.skipRunManagement && !opts.preExistingRunId) {
+    timing.total = Date.now() - t0;
+    return {
+      ...makeFailedSummary(
+        startedAt,
+        "Interne fout: skipRunManagement=true zonder preExistingRunId.",
+        null
+      ),
+      timingMs: { ...timing, total: timing.total },
       inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
     };
   }
@@ -373,55 +401,68 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
     };
   }
 
-  // [P2] Pas NA credentials check: mutex (opschonen runs ouder dan 10 minuten)
-  const t1 = Date.now();
+  // [P2] Mutex + SyncJobRun: word overgeslagen indien opts.skipRunManagement (buitenste beheerder)
+  let syncJobRun: { id: string; configId?: string | null };
   const MUTEX_STALE_MS = 10 * 60 * 1000;
-  const staleCutoff = new Date(Date.now() - MUTEX_STALE_MS);
-  const existing = await prisma.syncJobRun.findFirst({
-    where: {
-      jobId: SyncJobId.INSERVE_CUSTOMER_IMPORT,
-      status: { in: [SyncJobStatus.QUEUED, SyncJobStatus.RUNNING] },
-      startedAt: { gt: staleCutoff },
-    },
-    select: { id: true, startedAt: true, status: true },
-  });
-  timing.mutexCheck = Date.now() - t1;
-  if (existing) {
-    const ageSec = Math.max(0, Math.round((Date.now() - existing.startedAt.getTime()) / 1000));
-    timing.total = Date.now() - t0;
-    return {
-      runId: existing.id,
-      status: "SKIPPED",
-      startedAt,
-      endedAt: new Date(),
-      durationMs: Date.now() - t0,
-      fetched: 0,
-      activeFilterPassed: 0,
-      created: 0,
-      updated: 0,
-      unchanged: 0,
-      skipped: { ...ZERO_SKIPPED },
-      failed: 0,
-      pagesProcessed: 0,
-      totalExpected: 0,
-      errorMessage:
-        `Er is reeds een import bezig (status: ${existing.status}, leeftijd: ${ageSec}s). Wacht tot de vorige is afgerond, of probeer het over 10 minuten opnieuw.`,
-      timingMs: { ...timing, total: timing.total },
-      inserveCredentials: credsInfo,
-    };
-  }
+  if (opts.skipRunManagement && opts.preExistingRunId) {
+    const tConfig = Date.now();
+    syncJobRun = { id: opts.preExistingRunId };
+    const syncJobConfig = await getSyncJobConfig(SyncJobId.INSERVE_CUSTOMER_IMPORT);
+    syncJobRun.configId = syncJobConfig?.id ?? null;
+    timing.createConfigAndRun = Date.now() - tConfig;
+    timing.mutexCheck = 0;
+  } else {
+    const t1 = Date.now();
+    const staleCutoff = new Date(Date.now() - MUTEX_STALE_MS);
+    const existing = await prisma.syncJobRun.findFirst({
+      where: {
+        jobId: SyncJobId.INSERVE_CUSTOMER_IMPORT,
+        status: { in: [SyncJobStatus.QUEUED, SyncJobStatus.RUNNING] },
+        startedAt: { gt: staleCutoff },
+      },
+      select: { id: true, startedAt: true, status: true },
+    });
+    timing.mutexCheck = Date.now() - t1;
+    if (existing) {
+      const ageSec = Math.max(
+        0,
+        Math.round((Date.now() - existing.startedAt.getTime()) / 1000)
+      );
+      timing.total = Date.now() - t0;
+      return {
+        runId: existing.id,
+        status: "SKIPPED",
+        startedAt,
+        endedAt: new Date(),
+        durationMs: Date.now() - t0,
+        fetched: 0,
+        activeFilterPassed: 0,
+        created: 0,
+        updated: 0,
+        unchanged: 0,
+        skipped: { ...ZERO_SKIPPED },
+        failed: 0,
+        pagesProcessed: 0,
+        totalExpected: 0,
+        errorMessage:
+          `Er is reeds een import bezig (status: ${existing.status}, leeftijd: ${ageSec}s). Wacht tot de vorige is afgerond, of probeer het over 10 minuten opnieuw.`,
+        timingMs: { ...timing, total: timing.total },
+        inserveCredentials: credsInfo,
+      };
+    }
 
-  // [P3] SyncJobConfig + RUN record aanmaken (alleen als alles OK is t/m P1/P2)
-  const t2 = Date.now();
-  const syncJobConfig = await getSyncJobConfig(SyncJobId.INSERVE_CUSTOMER_IMPORT);
-  const syncJobRun = await createSyncJobRun(prisma, {
-    configId: syncJobConfig.id,
-    jobId: SyncJobId.INSERVE_CUSTOMER_IMPORT,
-    triggeredBy: SyncJobTrigger.MANUAL_ADMIN,
-    userId: ctx.userId ?? undefined,
-    status: SyncJobStatus.RUNNING,
-  });
-  timing.createConfigAndRun = Date.now() - t2;
+    const t2 = Date.now();
+    const syncJobConfig = await getSyncJobConfig(SyncJobId.INSERVE_CUSTOMER_IMPORT);
+    const created = await createSyncJobRun(prisma, {
+      configId: syncJobConfig.id,
+      jobId: SyncJobId.INSERVE_CUSTOMER_IMPORT,
+      triggeredBy: SyncJobTrigger.MANUAL_ADMIN,
+      userId: ctx.userId ?? undefined,
+      status: SyncJobStatus.RUNNING,
+    });
+    syncJobRun = { id: created.id, configId: syncJobConfig.id };
+    timing.createConfigAndRun = Date.now() - t2;
+  }
 
   let finalStatus: SyncJobStatus = SyncJobStatus.SUCCESS;
   let finalErrorMessage: string | null = null;
@@ -799,7 +840,8 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
     syncJobRun.id,
     finalStatus,
     finalErrorMessage,
-    finalErrorDetail
+    finalErrorDetail,
+    !opts.skipRunManagement
   );
 }
 
@@ -808,7 +850,8 @@ function finalizeSummary(
   runId: string,
   status: SyncJobStatus,
   errorMessage: string | null,
-  errorDetail: unknown | undefined
+  errorDetail: unknown | undefined,
+  doUpdateRun = true
 ): ImportSummary {
   const endedAt = new Date();
   summary.endedAt = endedAt;
@@ -846,19 +889,21 @@ function finalizeSummary(
     failedSample: summary.failedDetails?.slice(0, 20),
   };
 
-  completeSyncJobRun(prisma, {
-    id: runId,
-    status,
-    startedAt: summary.startedAt,
-    recordsAffected,
-    errorMessage,
-    errorDetail,
-  }).catch((e) =>
-    console.error(
-      "[inserve-customer-import] Kon syncJobRun niet voltooien:",
-      e?.message ?? String(e)
-    )
-  );
+  if (doUpdateRun) {
+    completeSyncJobRun(prisma, {
+      id: runId,
+      status,
+      startedAt: summary.startedAt,
+      recordsAffected,
+      errorMessage,
+      errorDetail,
+    }).catch((e) =>
+      console.error(
+        "[inserve-customer-import] Kon syncJobRun niet voltooien:",
+        e?.message ?? String(e)
+      )
+    );
+  }
 
   return summary;
 }
