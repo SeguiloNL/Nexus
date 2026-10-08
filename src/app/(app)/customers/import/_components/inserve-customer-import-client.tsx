@@ -51,12 +51,48 @@ export function InserveCustomerImportClient() {
     startTransition(async () => {
       const res = (await startInserveCustomerImportAction()) as ActionResult;
       setLastResult(res);
+      const s = res.summary;
+      const cred = s?.inserveCredentials;
+      const credTag = cred
+        ? ` | Configuratie: ${cred.configured ? "OK" : "❌ NIET"} (${
+              cred.source === "db" ? "DB" : cred.source === "env" ? "ENV" : "GEEN"
+            })`
+        : "";
+      const t = s?.timingMs;
+      const zeroTag =
+        t &&
+        [
+          ["roleScope", t.roleScopeCheck],
+          ["mutex", t.mutexCheck],
+          ["config", t.createConfigAndRun],
+          ["inserveInit", t.inserveInit],
+          ["fetchCompanies", t.fetchCompanies],
+        ]
+          .filter(([, v]) => (v ?? 0) === 0)
+          .map(([k]) => k)
+          .slice(0, 2).length > 0
+          ? ` | ⚠️ 0ms fasen: ${
+                [
+                  ["roleScope", t.roleScopeCheck],
+                  ["mutex", t.mutexCheck],
+                  ["config", t.createConfigAndRun],
+                  ["inserveInit", t.inserveInit],
+                  ["fetchCompanies", t.fetchCompanies],
+                ]
+                  .filter(([, v]) => (v ?? 0) === 0)
+                  .map(([k]) => k)
+                  .slice(0, 2)
+                  .join(", ")
+              }`
+          : "";
       if (res.ok) {
-        toast.success("Inserve klantimport voltooid.");
-      } else if (res.summary?.status === "SKIPPED") {
-        toast.info(res.error ?? "Import is overgeslagen.");
+        toast.success(
+          `Inserve klantimport voltooid. Ophaalde: ${s?.fetched ?? 0}, aangemaakt: ${s?.created ?? 0}, bijgewerkt: ${s?.updated ?? 0}. Duur: ${s?.durationMs ?? 0}ms${credTag}`
+        );
+      } else if (s?.status === "SKIPPED") {
+        toast.info(`${res.error ?? "Import is overgeslagen."}${credTag}${zeroTag}`);
       } else {
-        toast.error(res.error ?? "Import is (gedeeltelijk) mislukt.");
+        toast.error(`${res.error ?? "Import is (gedeeltelijk) mislukt."}${credTag}${zeroTag}`);
       }
     });
   };

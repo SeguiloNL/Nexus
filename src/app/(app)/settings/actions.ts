@@ -918,16 +918,57 @@ export async function triggerSyncJobAction(
         r.skipped.missing_required_fields +
         r.skipped.fetch_error_nexus +
         r.skipped.other;
-      summary =
-        `Inserve klantimport afgerond. Ophaalde: ${r.fetched}, ` +
+
+      let statusLabel: string;
+      if (r.status === "SUCCESS") statusLabel = "afgerond";
+      else if (r.status === "SKIPPED") statusLabel = "overgeslagen";
+      else statusLabel = "❌ MISLUKT";
+
+      const c = r.inserveCredentials;
+      const credsLine = c
+        ? ` | Configuratie: ${c.configured ? "OK" : "❌ NIET"} (bron: ${
+              c.source === "db" ? "DB" : c.source === "env" ? "ENV" : "GEEN"
+            }; subdomain: ${c.subdomainSet ? "ja" : "nee"}; apiKey: ${c.apiKeySet ? "ja" : "nee"})`
+        : "";
+
+      const t = r.timingMs;
+      const firstZero = t
+        ? ([
+            ["roleScope", t.roleScopeCheck],
+            ["mutex", t.mutexCheck],
+            ["config", t.createConfigAndRun],
+            ["inserveInit", t.inserveInit],
+            ["fetchCompanies", t.fetchCompanies],
+            ["fetchPreExisting", t.fetchPreExisting],
+            ["processRecords", t.processRecords],
+          ] as const)
+            .filter(([k, v]) => (v ?? 0) === 0 && k !== "processRecords" && k !== "fetchPreExisting")
+            .map(([k]) => k)
+            .slice(0, 2)
+        : [];
+      const timingLine = firstZero.length > 0 ? ` | ⚠️ 0ms fasen: ${firstZero.join(", ")}` : "";
+
+      const countsLine =
+        `Ophaalde: ${r.fetched}, ` +
         `filterpass: ${r.activeFilterPassed}, aangemaakt: ${r.created}, bijgewerkt: ${r.updated}, ` +
         `ongewijzigd: ${r.unchanged}, overgeslagen: ${skippedTotal}, mislukt: ${r.failed}. ` +
         `API pagina's: ${r.pagesProcessed}, API-totaal: ${r.totalExpected}. Duur: ${r.durationMs}ms.`;
+
+      const errLine =
+        r.status === "FAILED" && r.errorMessage
+          ? ` | Fout: ${r.errorMessage}`
+          : r.status === "SKIPPED" && r.errorMessage
+          ? ` | Reden: ${r.errorMessage}`
+          : "";
+
+      summary = `Inserve klantimport ${statusLabel}. ${countsLine}${errLine}${credsLine}${timingLine}`;
       if (r.status === "FAILED" || r.failed > 0) {
         finalStatus = SyncJobStatus.FAILED;
         errorMessage =
           r.errorMessage ??
           (r.failed > 0 ? `${r.failed} records konden niet worden verwerkt.` : "Import mislukt.");
+      } else if (r.status === "SKIPPED") {
+        finalStatus = SyncJobStatus.SKIPPED;
       }
     } else {
       throw new Error(`Onbekende jobId: ${validated.data.jobId}`);
