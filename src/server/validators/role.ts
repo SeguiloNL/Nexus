@@ -20,6 +20,7 @@ const VALID_RESOURCE_ACTIONS: readonly ResourceAction[] = [
   "purge_network",
   "suspend_sim",
   "view_all_sim_usage_dashboard",
+  "import_from_inserve",
 ];
 
 export const PermissionLevelZod = z.enum(["NONE", "READ", "WRITE"]);

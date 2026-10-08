@@ -1,3 +1,24 @@
+export interface InserveCustomFieldOption {
+  id?: number | string | null;
+  label?: string | null;
+  value?: string | number | null;
+}
+
+export interface InserveCustomFieldValue {
+  id?: number | string | null;
+  field_id?: number | string | null;
+  name?: string | null;
+  slug?: string | null;
+  title?: string | null;
+  key?: string | null;
+  type?: string | null;
+  value?: string | number | boolean | null;
+  option_id?: number | string | null;
+  option?: InserveCustomFieldOption | null;
+  options?: InserveCustomFieldOption[] | null;
+  [k: string]: any;
+}
+
 export interface InserveCompany {
   id: number;
   name: string;
@@ -13,6 +34,17 @@ export interface InserveCompany {
   btw_nr?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  custom_fields?: InserveCustomFieldValue[] | null;
+  company_fields?: InserveCustomFieldValue[] | null;
+  extra_fields?: InserveCustomFieldValue[] | null;
+  fields?: InserveCustomFieldValue[] | null;
+}
+
+export interface InserveCompanyWithFields extends InserveCompany {
+  custom_fields?: InserveCustomFieldValue[] | null;
+  company_fields?: InserveCustomFieldValue[] | null;
+  extra_fields?: InserveCustomFieldValue[] | null;
+  fields?: InserveCustomFieldValue[] | null;
 }
 
 export interface InserveArticle {

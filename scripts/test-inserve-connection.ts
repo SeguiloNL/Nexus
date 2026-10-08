@@ -1,4 +1,4 @@
-import { InserveClient, InserveApiError } from "../src/server/integrations/inserve/client.js";
+import { InserveClient, InserveApiError } from "../src/server/integrations/inserve/client";
 import { readFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 
@@ -92,6 +92,76 @@ async function main() {
     } catch (sanityErr: any) {
       console.log(YELLOW + "⚠  Company listing mislukt (optioneel):" + RESET);
       console.log("   ", sanityErr?.message ?? String(sanityErr));
+    }
+
+    try {
+      console.log("\n" + YELLOW + "ℹ  Inspectie: custom fields van eerste bedrijf..." + RESET);
+      const firstPage = await client.request<any>("companies", {
+        method: "GET",
+        builder: [
+          { with: ["custom_fields", "company_fields", "extra_fields", "fields"] },
+          { paginate: { page: 1, per_page: 1 } },
+        ],
+      });
+      const list2 = (firstPage as any)?.data ?? [];
+      if (!Array.isArray(list2) || list2.length === 0) {
+        console.log(YELLOW + "   Geen bedrijven gevonden; inspection overgeslagen." + RESET);
+      } else {
+        const c = list2[0];
+        console.log(`   Bedrijf ID: ${c.id ?? "?"}`);
+        console.log(`   Naam:      ${c.name ?? "?"}`);
+        const keys = Object.keys(c);
+        const fieldCandidates = ["custom_fields", "company_fields", "extra_fields", "fields"];
+        let foundAny: any = null;
+        for (const k of fieldCandidates) {
+          if (k in c && Array.isArray((c as any)[k])) {
+            console.log(GREEN + `   ✓ ${k}: ${(c as any)[k].length} entries` + RESET);
+            foundAny = (c as any)[k];
+            for (const f of (c as any)[k]) {
+              const id = f.id ?? f.field_id ?? "?";
+              const name = f.name ?? f.slug ?? f.title ?? f.key ?? "(geen naam)";
+              const val = f.value ?? (f.option && (f.option.label ?? f.option.value ?? f.option.id));
+              const type = f.type ?? "?";
+              console.log(
+                "     - [" +
+                  id +
+                  "] " +
+                  name +
+                  " (type=" +
+                  type +
+                  ") => " +
+                  JSON.stringify(val ?? null)
+              );
+            }
+          }
+        }
+        if (!foundAny) {
+          console.log(YELLOW + "   Geen vrije-veld relatie direct opgenomen in company. Probeer aparte endpoints:" + RESET);
+          const sep = ["custom_fields", "company_fields", "extra_fields", "fields"];
+          for (const suffix of ["custom_fields", "fields", "company_fields"]) {
+            try {
+              const r = await client.request<any>(`companies/${c.id}/${suffix}`, { method: "GET" });
+              const arr = Array.isArray(r) ? r : (r?.data ?? null);
+              if (Array.isArray(arr) && arr.length > 0) {
+                console.log(GREEN + `   ✓ /companies/${c.id}/${suffix}: ${arr.length} velden` + RESET);
+                for (const f of arr.slice(0, 5)) {
+                  const id = f.id ?? f.field_id ?? "?";
+                  const name = f.name ?? f.slug ?? f.title ?? f.key ?? "(geen naam)";
+                  const val = f.value ?? (f.option && (f.option.label ?? f.option.value ?? f.option.id));
+                  console.log(
+                    "     - [" + id + "] " + name + " => " + JSON.stringify(val ?? null)
+                  );
+                }
+                break;
+              }
+            } catch (e: any) {
+              console.log("   /" + suffix + ": " + (e?.message ?? String(e)));
+            }
+          }
+        }
+      }
+    } catch (inspectErr: any) {
+      console.log(YELLOW + "⚠  Inspection mislukt (optioneel):" + RESET + " " + (inspectErr?.message ?? String(inspectErr)));
     }
 
     process.exit(0);

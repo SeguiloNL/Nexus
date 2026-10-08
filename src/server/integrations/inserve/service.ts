@@ -12,6 +12,7 @@ import type {
   CancelContractRequest,
   InserveContractCycle,
   InserveListResponse,
+  InserveCustomFieldValue,
 } from './types';
 
 function toISOString(date: Date | string | null | undefined): string | undefined {
@@ -412,3 +413,227 @@ export async function listInvoicesInInserve(
   const path = `${INSERVE_INVOICE_ENDPOINT}${qs.toString() ? `?${qs.toString()}` : ''}`;
   return (await client.request(path)) as InserveListResponse<InserveInvoice>;
 }
+
+// ============================================================================
+// COMPANIES (Inserve → Nexus import)
+// ============================================================================
+
+export const INSERVE_COMPANY_ENDPOINT = 'companies';
+
+export interface ListCompaniesOptions {
+  page?: number;
+  perPage?: number;
+  withRelations?: string[];
+  builder?: unknown[];
+}
+
+export async function listCompanies(
+  opts: ListCompaniesOptions = {}
+): Promise<InserveListResponse<InserveCompany>> {
+  const client = await inserveClient.getClient();
+  if (!client) {
+    throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
+  }
+  const { page = 1, perPage = 25, withRelations = [], builder = [] } = opts;
+  const fullBuilder: unknown[] = [
+    ...(withRelations.length > 0 ? [{ with: withRelations }] : []),
+    { paginate: { page, per_page: perPage } },
+    ...builder,
+  ];
+  return (await client.request(INSERVE_COMPANY_ENDPOINT, {
+    method: 'GET',
+    builder: fullBuilder,
+  })) as InserveListResponse<InserveCompany>;
+}
+
+export async function listAllCompanies(
+  opts: Omit<ListCompaniesOptions, 'page'> & { maxPages?: number } = {}
+): Promise<{
+  items: InserveCompany[];
+  totalFetched: number;
+  totalExpected: number;
+  pagesProcessed: number;
+}> {
+  const client = await inserveClient.getClient();
+  if (!client) {
+    throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
+  }
+  const { maxPages, perPage = 25, withRelations = [], builder = [] } = opts;
+  return await client.requestAllPages<InserveCompany>(INSERVE_COMPANY_ENDPOINT, {
+    perPage,
+    withRelations,
+    extraBuilder: builder,
+    maxPages,
+    method: 'GET',
+  });
+}
+
+export async function getCompanyById(
+  id: number,
+  withRelations: string[] = []
+): Promise<InserveCompany> {
+  const client = await inserveClient.getClient();
+  if (!client) {
+    throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
+  }
+  const builder: unknown[] = withRelations.length > 0 ? [{ with: withRelations }] : [];
+  return (await client.request(`${INSERVE_COMPANY_ENDPOINT}/${id}`, {
+    method: 'GET',
+    ...(builder.length > 0 ? { builder } : {}),
+  })) as InserveCompany;
+}
+
+export async function listCompanyCustomFields(
+  companyId: number
+): Promise<InserveCustomFieldValue[]> {
+  const client = await inserveClient.getClient();
+  if (!client) {
+    throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
+  }
+  const candidates = [
+    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/custom_fields`,
+    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/fields`,
+    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/company_fields`,
+  ];
+  let lastErr: unknown;
+  for (const path of candidates) {
+    try {
+      const resp = await client.request(path, { method: 'GET' });
+      if (Array.isArray(resp)) return resp as InserveCustomFieldValue[];
+      if (resp && Array.isArray((resp as any).data)) return (resp as any).data as InserveCustomFieldValue[];
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (lastErr) throw lastErr;
+  return [];
+}
+
+// ============================================================================
+// Custom field parsing helpers
+// ============================================================================
+
+export type FieldTextNormalized =
+  | { status: 'found'; value: string; raw: InserveCustomFieldValue }
+  | { status: 'missing' }
+  | { status: 'empty' }
+  | { status: 'parse_error'; error: string };
+
+export function resolveFieldTextValue(field: InserveCustomFieldValue | null | undefined): {
+  text: string | null;
+  optionLabel: string | null;
+  optionValue: string | number | null;
+  fieldValueText: string | null;
+} {
+  if (!field || typeof field !== 'object') {
+    return { text: null, optionLabel: null, optionValue: null, fieldValueText: null };
+  }
+  const rawValue = field.value;
+  const opt = field.option;
+  let optionLabel: string | null = null;
+  let optionValue: string | number | null = null;
+  if (opt && typeof opt === 'object') {
+    optionLabel = typeof opt.label === 'string' ? opt.label : null;
+    optionValue = (opt.value !== null && opt.value !== undefined) ? opt.value : null;
+  }
+  let text: string | null = null;
+  if (typeof rawValue === 'string') text = rawValue;
+  else if (typeof rawValue === 'number' || typeof rawValue === 'boolean') text = String(rawValue);
+  else if (rawValue === null || rawValue === undefined) text = null;
+
+  let fieldValueText: string | null = null;
+  const fv: any = (field as any).field_value;
+  if (fv && typeof fv === 'object') {
+    const fvVal = fv.value;
+    if (typeof fvVal === 'string') fieldValueText = fvVal;
+    else if (typeof fvVal === 'number' || typeof fvVal === 'boolean') fieldValueText = String(fvVal);
+  }
+
+  return { text, optionLabel, optionValue, fieldValueText };
+}
+
+export function fieldNameMatches(
+  field: InserveCustomFieldValue,
+  targetName: string
+): boolean {
+  const target = targetName.trim().toLowerCase();
+  const fieldAny = field as Record<string, unknown>;
+  const coerceStr = (v: unknown): string | null => {
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    return null;
+  };
+  const standardCandidates: (string | null)[] = [
+    coerceStr(field.name),
+    coerceStr(field.slug),
+    coerceStr(field.title),
+    coerceStr(field.key),
+    coerceStr(field.field_id),
+    coerceStr(field.id),
+    coerceStr(fieldAny.fieldName),
+    coerceStr(fieldAny.field_name),
+  ];
+  for (const c of standardCandidates) {
+    if (c === null) continue;
+    const norm = c.trim().toLowerCase();
+    if (norm === target) return true;
+    if (norm.includes(target)) return true;
+  }
+  try {
+    for (const k of Object.keys(fieldAny)) {
+      const kl = k.trim().toLowerCase();
+      if (kl === target) {
+        const v = fieldAny[k];
+        if (typeof v === 'string') return true;
+      }
+    }
+  } catch {
+    /* noop */
+  }
+  return false;
+}
+
+export function findCustomField(
+  company: Pick<InserveCompany, 'custom_fields' | 'company_fields' | 'extra_fields' | 'fields'> | InserveCompany,
+  targetName: string
+): InserveCustomFieldValue | null {
+  const arrays: (InserveCustomFieldValue[] | null | undefined)[] = [
+    company.custom_fields,
+    company.company_fields,
+    company.extra_fields,
+    company.fields,
+  ];
+  for (const arr of arrays) {
+    if (!Array.isArray(arr)) continue;
+    for (const f of arr) {
+      if (!f || typeof f !== 'object') continue;
+      if (fieldNameMatches(f, targetName)) return f;
+    }
+  }
+  return null;
+}
+
+export function resolveNexusFieldFromCompany(
+  company: InserveCompany
+): FieldTextNormalized {
+  const field = findCustomField(company, 'Nexus');
+  if (!field) return { status: 'missing' };
+  try {
+    const { text, optionLabel, optionValue, fieldValueText } = resolveFieldTextValue(field);
+    const candidate =
+      (optionLabel && optionLabel.trim() !== '' ? optionLabel : null) ??
+      (fieldValueText && fieldValueText.trim() !== '' ? fieldValueText : null) ??
+      text ??
+      (optionValue !== null ? String(optionValue) : null);
+    if (candidate === null || candidate === undefined) return { status: 'empty' };
+    if (typeof candidate === 'string' && candidate.trim() === '') return { status: 'empty' };
+    return {
+      status: 'found',
+      value: typeof candidate === 'string' ? candidate : String(candidate),
+      raw: field,
+    };
+  } catch (e: any) {
+    return { status: 'parse_error', error: e?.message ?? String(e) };
+  }
+}
+

@@ -227,6 +227,73 @@ export class InserveClient {
     }
     return c.signal;
   }
+
+  async requestAllPages<T extends { id?: number | string }>(
+    path: string,
+    options: Omit<InserveRequestOptions, 'query'> & {
+      perPage?: number;
+      withRelations?: string[];
+      extraBuilder?: unknown[];
+      maxPages?: number;
+    } = {}
+  ): Promise<{
+    items: T[];
+    totalFetched: number;
+    totalExpected: number;
+    pagesProcessed: number;
+    responses: { data: T[]; meta?: any }[];
+  }> {
+    const { perPage = 25, withRelations = [], extraBuilder = [], maxPages } = options;
+    const items: T[] = [];
+    const responses: { data: T[]; meta?: any }[] = [];
+    let currentPage = 1;
+    let totalExpected = 0;
+    let seenLastPage = false;
+
+    while (!seenLastPage && (maxPages === undefined || currentPage <= maxPages)) {
+      const pageBuilder: unknown[] = [
+        ...(withRelations.length > 0 ? [{ with: withRelations }] : []),
+        { paginate: { page: currentPage, per_page: perPage } },
+        ...extraBuilder,
+      ];
+
+      const resp = await this.request<{ data: T[]; meta?: any }>(path, {
+        ...options,
+        builder: pageBuilder,
+      });
+
+      const pageItems = resp?.data ?? [];
+      items.push(...pageItems);
+      responses.push(resp);
+      totalExpected = resp?.meta?.total ?? totalExpected;
+
+      const meta = resp?.meta ?? {};
+      const lastPage = meta.last_page as number | undefined;
+      const current = meta.current_page as number | undefined;
+      const total = meta.total as number | undefined;
+
+      if (pageItems.length === 0) {
+        seenLastPage = true;
+      } else if (typeof lastPage === 'number' && typeof current === 'number') {
+        if (current >= lastPage) {
+          seenLastPage = true;
+        }
+      } else if (typeof total === 'number' && items.length >= total) {
+        seenLastPage = true;
+      } else if (pageItems.length < perPage) {
+        seenLastPage = true;
+      }
+      currentPage++;
+    }
+
+    return {
+      items,
+      totalFetched: items.length,
+      totalExpected,
+      pagesProcessed: currentPage - 1,
+      responses,
+    };
+  }
 }
 
 class InserveClientSingleton {

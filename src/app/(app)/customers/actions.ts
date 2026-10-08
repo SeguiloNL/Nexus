@@ -19,6 +19,10 @@ import {
   bulkImportCustomers,
   type CustomerCsvImportRow,
 } from "@/server/services/customer.service";
+import { runInserveCustomerImport } from "@/server/services/inserve-customer-import.service";
+import type { ImportSummary } from "@/server/services/inserve-customer-import.service";
+import { pickAuth } from "@/lib/rbac";
+import { RoleScope } from "@/types/enums";
 
 export type CustomerActionState = {
   errors?: Partial<Record<keyof CreateCustomerInput, string[]>>;
@@ -380,3 +384,41 @@ function splitCsvLine(line: string): string[] {
   out.push(cur);
   return out;
 }
+
+export async function startInserveCustomerImportAction(): Promise<{
+  ok: boolean;
+  error?: string;
+  summary?: ImportSummary;
+}> {
+  const user = await getCurrentUser();
+  await requirePermission(pickAuth(user), "import_from_inserve", "customer");
+
+  const scope = (user.roleScope ?? "") as unknown as RoleScope;
+  if (user.roleScope && scope !== RoleScope.INTERNAL) {
+    return { ok: false, error: "Alleen interne gebruikers kunnen deze import starten." };
+  }
+
+  try {
+    const summary = await runInserveCustomerImport({
+      userId: user.id,
+      userRole: (user as any).role,
+      roleId: user.roleId,
+      roleScope: user.roleScope as any,
+      permissions: user.permissions as any,
+      customerIds: user.customerIds as any,
+    });
+    if (summary.status === "FAILED" || summary.status === "SKIPPED") {
+      return {
+        ok: false,
+        error: summary.errorMessage ?? (summary.status === "SKIPPED" ? "Import is overgeslagen." : "Import is gedeeltelijk mislukt."),
+        summary,
+      };
+    }
+    revalidatePath("/customers");
+    revalidatePath("/customers/import");
+    return { ok: true, summary };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) };
+  }
+}
+

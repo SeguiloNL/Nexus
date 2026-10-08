@@ -34,6 +34,7 @@ export const HISTORIC_HOURLY_WINDOWS: Record<SyncJobId, number[]> = {
   [SyncJobId.SIMHUIS_SIMS]: [3, 9, 15, 21],
   [SyncJobId.SIMHUIS_USAGE_ALERT_NOTIFY]: Array.from({ length: 24 }, (_, i) => i),
   [SyncJobId.INSERVE]: [2, 8, 14, 20],
+  [SyncJobId.INSERVE_CUSTOMER_IMPORT]: [1, 7, 13, 19],
 };
 
 export function getDefaultSyncJobConfig(jobId: SyncJobId): SaveSyncScheduleInput {

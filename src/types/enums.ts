@@ -128,6 +128,8 @@ export enum AuditAction {
   UNLINK_USER_CUSTOMER = "UNLINK_USER_CUSTOMER",
   TOGGLE_USER_ACTIVE = "TOGGLE_USER_ACTIVE",
   BULK_UPDATE_ROLE = "BULK_UPDATE_ROLE",
+  INSERVE_CUSTOMERS_IMPORTED = "INSERVE_CUSTOMERS_IMPORTED",
+  INSERVE_CUSTOMER_IMPORT_FAILED = "INSERVE_CUSTOMER_IMPORT_FAILED",
 }
 
 export type ResourceAction =
@@ -140,7 +142,8 @@ export type ResourceAction =
   | "override_price"
   | "purge_network"
   | "suspend_sim"
-  | "view_all_sim_usage_dashboard";
+  | "view_all_sim_usage_dashboard"
+  | "import_from_inserve";
 
 export type ActionOverrides = Partial<
   Record<ResourceType, Partial<Record<ResourceAction, boolean>>>
@@ -193,6 +196,7 @@ export enum SyncJobId {
   SIMHUIS_SIMS = "SIMHUIS_SIMS",
   SIMHUIS_USAGE_ALERT_NOTIFY = "SIMHUIS_USAGE_ALERT_NOTIFY",
   INSERVE = "INSERVE",
+  INSERVE_CUSTOMER_IMPORT = "INSERVE_CUSTOMER_IMPORT",
 }
 
 export const ALL_RESOURCE_TYPES: ResourceType[] = [

@@ -343,6 +343,39 @@ export function RoleEditForm({ role, canEdit }: Props) {
                         </div>
                       </div>
                     ) : null}
+                    {resource === "customer" && isInternalScope ? (
+                      <div className="px-4 pb-2">
+                        <div className="grid grid-cols-12 gap-2">
+                          <div className="col-span-5 text-xs text-slate-400 italic">
+                            Specifieke acties
+                          </div>
+                          <div className="col-span-7 space-y-1">
+                            <label
+                              className={`inline-flex items-center gap-2 text-xs cursor-pointer ${
+                                disabled
+                                  ? "opacity-50 pointer-events-none"
+                                  : "text-slate-700"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                name={`act_customer_import_from_inserve`}
+                                defaultChecked={Boolean(
+                                  (role as any).actionOverrides?.[resource]
+                                    ?.import_from_inserve
+                                )}
+                                disabled={disabled}
+                                className="h-3.5 w-3.5"
+                              />
+                              Klanten importeren uit Inserve
+                              <span className="text-slate-400">
+                                (los toe te kennen; importeert bedrijven uit Inserve als klanten)
+                              </span>
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                     {resource === "dashboard" && isInternalScope ? (
                       <div className="px-4 pb-2">
                         <div className="grid grid-cols-12 gap-2">
@@ -362,7 +395,7 @@ export function RoleEditForm({ role, canEdit }: Props) {
                                 disabled={disabled}
                                 className="h-3.5 w-3.5"
                               />
-                              Tegel "Dataverbruik alle SIMs" tonen
+                              Tegel &quot;Dataverbruik alle SIMs&quot; tonen
                               <span className="text-slate-400">
                                 (totaalverbruik alle actieve SIMs, los toe te kennen)
                               </span>

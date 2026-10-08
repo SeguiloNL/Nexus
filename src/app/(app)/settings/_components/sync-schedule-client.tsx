@@ -74,6 +74,10 @@ const JOB_LABELS: Record<SyncJobId, { title: string; desc: string }> = {
     title: "Inserve Abonnementen + Facturen",
     desc: "Inserve administratie synchroniseren (contracten + facturen).",
   },
+  [SyncJobId.INSERVE_CUSTOMER_IMPORT]: {
+    title: "Inserve Klantimport",
+    desc: "Klanten importeren uit Inserve (bedrijven met Nexus = Actief).",
+  },
 };
 
 function naturalLanguageSchedule(cfg: SyncJobConfig): string {
