@@ -59,32 +59,22 @@ export function InserveCustomerImportClient() {
             })`
         : "";
       const t = s?.timingMs;
+      const zeroFases =
+        t
+          ? ([
+              ["inserveInit", t.inserveInit],
+              ["fetchCompanies", t.fetchCompanies],
+              ["fetchPreExisting", t.fetchPreExisting],
+              ["processRecords", t.processRecords],
+              ["findMatches", t.findMatches],
+              ["finalize", t.finalize],
+            ] as const)
+              .filter(([, v]) => (v ?? 0) === 0)
+              .map(([k]) => k)
+              .slice(0, 2)
+          : [];
       const zeroTag =
-        t &&
-        [
-          ["roleScope", t.roleScopeCheck],
-          ["mutex", t.mutexCheck],
-          ["config", t.createConfigAndRun],
-          ["inserveInit", t.inserveInit],
-          ["fetchCompanies", t.fetchCompanies],
-        ]
-          .filter(([, v]) => (v ?? 0) === 0)
-          .map(([k]) => k)
-          .slice(0, 2).length > 0
-          ? ` | ⚠️ 0ms fasen: ${
-                [
-                  ["roleScope", t.roleScopeCheck],
-                  ["mutex", t.mutexCheck],
-                  ["config", t.createConfigAndRun],
-                  ["inserveInit", t.inserveInit],
-                  ["fetchCompanies", t.fetchCompanies],
-                ]
-                  .filter(([, v]) => (v ?? 0) === 0)
-                  .map(([k]) => k)
-                  .slice(0, 2)
-                  .join(", ")
-              }`
-          : "";
+        zeroFases.length > 0 ? ` | ⚠️ 0ms fasen: ${zeroFases.join(", ")}` : "";
       if (res.ok) {
         toast.success(
           `Inserve klantimport voltooid. Ophaalde: ${s?.fetched ?? 0}, aangemaakt: ${s?.created ?? 0}, bijgewerkt: ${s?.updated ?? 0}. Duur: ${s?.durationMs ?? 0}ms${credTag}`
@@ -263,19 +253,19 @@ export function InserveCustomerImportClient() {
                         <p className="font-semibold mb-2 text-slate-700">Timing per fase (ms) — 0ms = mogelijke short-circuit</p>
                         <ul className="space-y-1 text-slate-600 font-mono">
                           {[
-                            { label: "RoleScope check", key: "roleScopeCheck" as const },
-                            { label: "Mutex check", key: "mutexCheck" as const },
-                            { label: "Config + SyncJobRun aanmaken", key: "createConfigAndRun" as const },
-                            { label: "Inserve client initialisatie", key: "inserveInit" as const },
-                            { label: "Bedrijven ophalen (API)", key: "fetchCompanies" as const },
-                            { label: "Bestaande klanten laden", key: "fetchPreExisting" as const },
-                            { label: "Records verwerken", key: "processRecords" as const },
-                            { label: "Ongekoppelde matches zoeken", key: "findMatches" as const },
-                            { label: "Afronden (audit + DB)", key: "finalize" as const },
-                            { label: "Totaal", key: "total" as const },
-                          ].map(({ label, key }) => {
+                            { label: "RoleScope check", key: "roleScopeCheck" as const, allowZero: true },
+                            { label: "Mutex check", key: "mutexCheck" as const, allowZero: true },
+                            { label: "Config + SyncJobRun aanmaken", key: "createConfigAndRun" as const, allowZero: true },
+                            { label: "Inserve client initialisatie", key: "inserveInit" as const, allowZero: false },
+                            { label: "Bedrijven ophalen (API)", key: "fetchCompanies" as const, allowZero: false },
+                            { label: "Bestaande klanten laden", key: "fetchPreExisting" as const, allowZero: true },
+                            { label: "Records verwerken", key: "processRecords" as const, allowZero: false },
+                            { label: "Ongekoppelde matches zoeken", key: "findMatches" as const, allowZero: true },
+                            { label: "Afronden (audit + DB)", key: "finalize" as const, allowZero: true },
+                            { label: "Totaal", key: "total" as const, allowZero: false },
+                          ].map(({ label, key, allowZero }) => {
                             const value = summary.timingMs?.[key] ?? 0;
-                            const isSuspicious = value === 0 && key !== "finalize" && key !== "findMatches" && key !== "fetchPreExisting";
+                            const isSuspicious = value === 0 && !allowZero;
                             return (
                               <li key={key} className="flex items-center justify-between">
                                 <span className={isSuspicious ? "text-red-600 font-semibold" : ""}>{label}:</span>

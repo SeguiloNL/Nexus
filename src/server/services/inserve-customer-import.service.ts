@@ -341,19 +341,54 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
     };
   }
 
+  // [P1] Credentials + basic guards EERST (geen job aanmaken als het nooit kan werken)
   let credsInfo: ImportSummary["inserveCredentials"] = DEFAULT_UNCONFIGURED_CREDS;
+  try {
+    const tCredentials = Date.now();
+    credsInfo = await inserveClient.inspectCredentials(true);
+    timing.inserveInit = Date.now() - tCredentials;
 
+    if (!credsInfo.configured) {
+      timing.total = Date.now() - t0;
+      return {
+        ...makeFailedSummary(
+          startedAt,
+          "Inserve is niet geconfigureerd. Stel INSERVE_SUBDOMAIN en INSERVE_API_KEY in, of configureer via Instellingen → Inserve. (Wordt nu opgehaald uit noch DB noch omgevingsvariabelen.)",
+          null
+        ),
+        timingMs: { ...timing, total: timing.total ?? (Date.now() - t0) },
+        inserveCredentials: credsInfo,
+      };
+    }
+  } catch (credErr: any) {
+    timing.total = Date.now() - t0;
+    return {
+      ...makeFailedSummary(
+        startedAt,
+        `Fout bij controleren van Inserve-configuratie: ${credErr?.message ?? String(credErr)}`,
+        null
+      ),
+      timingMs: { ...timing, total: timing.total ?? (Date.now() - t0) },
+      inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
+    };
+  }
+
+  // [P2] Pas NA credentials check: mutex (opschonen runs ouder dan 10 minuten)
   const t1 = Date.now();
+  const MUTEX_STALE_MS = 10 * 60 * 1000;
+  const staleCutoff = new Date(Date.now() - MUTEX_STALE_MS);
   const existing = await prisma.syncJobRun.findFirst({
     where: {
       jobId: SyncJobId.INSERVE_CUSTOMER_IMPORT,
       status: { in: [SyncJobStatus.QUEUED, SyncJobStatus.RUNNING] },
+      startedAt: { gt: staleCutoff },
     },
-    select: { id: true, startedAt: true },
+    select: { id: true, startedAt: true, status: true },
   });
   timing.mutexCheck = Date.now() - t1;
   if (existing) {
-    const finalTiming = { ...timing, total: Date.now() - t0 };
+    const ageSec = Math.max(0, Math.round((Date.now() - existing.startedAt.getTime()) / 1000));
+    timing.total = Date.now() - t0;
     return {
       runId: existing.id,
       status: "SKIPPED",
@@ -370,12 +405,13 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
       pagesProcessed: 0,
       totalExpected: 0,
       errorMessage:
-        "Er is reeds een import bezig of gequeued. Wacht tot de vorige is afgerond.",
-      timingMs: finalTiming,
+        `Er is reeds een import bezig (status: ${existing.status}, leeftijd: ${ageSec}s). Wacht tot de vorige is afgerond, of probeer het over 10 minuten opnieuw.`,
+      timingMs: { ...timing, total: timing.total },
       inserveCredentials: credsInfo,
     };
   }
 
+  // [P3] SyncJobConfig + RUN record aanmaken (alleen als alles OK is t/m P1/P2)
   const t2 = Date.now();
   const syncJobConfig = await getSyncJobConfig(SyncJobId.INSERVE_CUSTOMER_IMPORT);
   const syncJobRun = await createSyncJobRun(prisma, {
@@ -406,7 +442,7 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
     failed: 0,
     pagesProcessed: 0,
     totalExpected: 0,
-    inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
+    inserveCredentials: credsInfo,
     timingMs: { ...ZERO_TIMING },
     skippedDetails: [],
     failedDetails: [],
@@ -423,11 +459,7 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
   };
 
   try {
-    const t3 = Date.now();
-    credsInfo = await inserveClient.inspectCredentials(true);
-    summary.inserveCredentials = credsInfo;
-    timing.inserveInit = Date.now() - t3;
-
+    // Credentials al gecontroleerd in [P1]; herhaal isConfigured defensief
     if (!(await inserveClient.isConfigured())) {
       markPartialFailed(
         "Inserve is niet geconfigureerd. Stel INSERVE_SUBDOMAIN en INSERVE_API_KEY in, of configureer via Instellingen → Inserve."

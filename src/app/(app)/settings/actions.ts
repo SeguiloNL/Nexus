@@ -934,15 +934,14 @@ export async function triggerSyncJobAction(
       const t = r.timingMs;
       const firstZero = t
         ? ([
-            ["roleScope", t.roleScopeCheck],
-            ["mutex", t.mutexCheck],
-            ["config", t.createConfigAndRun],
             ["inserveInit", t.inserveInit],
             ["fetchCompanies", t.fetchCompanies],
             ["fetchPreExisting", t.fetchPreExisting],
             ["processRecords", t.processRecords],
+            ["findMatches", t.findMatches],
+            ["finalize", t.finalize],
           ] as const)
-            .filter(([k, v]) => (v ?? 0) === 0 && k !== "processRecords" && k !== "fetchPreExisting")
+            .filter(([k, v]) => (v ?? 0) === 0 && k !== "findMatches")
             .map(([k]) => k)
             .slice(0, 2)
         : [];
