@@ -34,6 +34,8 @@ export class InserveApiError extends Error {
 const REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_RETRY_WAIT_MS = 1000;
 const CLIENT_CACHE_TTL_MS = 60_000;
+const MIN_INTER_REQUEST_DELAY_MS = 300;
+const MAX_REQUESTS_PER_RUN = 80;
 
 interface ResolvedCredentials {
   subdomain: string;
@@ -113,6 +115,10 @@ export class InserveClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
 
+  private static lastRequestAt: number = 0;
+  private static requestsInRun: number = 0;
+  private static currentRunResetAt: number = 0;
+
   constructor(subdomain: string, apiKey: string) {
     if (!subdomain) {
       throw new Error('[Inserve] Inserve subdomain is required');
@@ -124,8 +130,32 @@ export class InserveClient {
     this.apiKey = apiKey;
   }
 
+  private static async throttleAndCount(): Promise<void> {
+    const now = Date.now();
+    const RUN_WINDOW_MS = 10 * 60 * 1000;
+    if (now - InserveClient.currentRunResetAt > RUN_WINDOW_MS) {
+      InserveClient.requestsInRun = 0;
+      InserveClient.currentRunResetAt = now;
+    }
+    if (InserveClient.requestsInRun >= MAX_REQUESTS_PER_RUN) {
+      throw new Error(
+        `[Inserve] Rate limit: ${MAX_REQUESTS_PER_RUN} API calls reached within 10 minutes. ` +
+        `Verlaag het aantal paginas of wacht.`
+      );
+    }
+    InserveClient.requestsInRun++;
+    const since = now - InserveClient.lastRequestAt;
+    if (since < MIN_INTER_REQUEST_DELAY_MS) {
+      const wait = MIN_INTER_REQUEST_DELAY_MS - since;
+      await sleep(wait);
+    }
+    InserveClient.lastRequestAt = Date.now();
+  }
+
   async request<T = unknown>(path: string, options: InserveRequestOptions = {}): Promise<T> {
     const { method = 'GET', body, query, builder, signal } = options;
+
+    await InserveClient.throttleAndCount();
 
     const url = buildUrl(this.baseUrl, path, query, builder);
 

@@ -584,7 +584,22 @@ export async function listAllCompanies(
 
       if (strat.enrichLater && result.items.length > 0) {
         const enriched: InserveCompany[] = [];
+        let sampleIdx = 0;
         for (const item of result.items) {
+          sampleIdx++;
+          const hasFields =
+            Array.isArray((item as any).custom_fields) ||
+            Array.isArray((item as any).customFields) ||
+            Array.isArray((item as any).company_fields) ||
+            Array.isArray((item as any).companyFields) ||
+            Array.isArray((item as any).extra_fields) ||
+            Array.isArray((item as any).fields) ||
+            Array.isArray((item as any).free_fields) ||
+            Array.isArray((item as any).freeFields);
+          if (hasFields) {
+            enriched.push(item);
+            continue;
+          }
           try {
             const full = await enrichCompanyWithCustomFields(item);
             enriched.push(full);
@@ -723,73 +738,6 @@ export async function listCompanyCustomFields(
     }
   } catch {
   }
-
-  const perCompanyCandidates = [
-    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/custom_fields`,
-    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/customfields`,
-    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/fields`,
-    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/company_fields`,
-    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/free_fields`,
-    `${INSERVE_COMPANY_ENDPOINT}/${companyId}/extra_fields`,
-  ];
-  let lastErr: unknown;
-  for (const path of perCompanyCandidates) {
-    try {
-      const resp = await client.request(path, { method: 'GET' });
-      const found = extractFields(resp);
-      if (found && found.length > 0) return found;
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-
-  try {
-    const now = Date.now();
-    if (!_globalFieldCache || now - _globalFieldCache.fetchedAt > GLOBAL_FIELD_CACHE_MAX_AGE_MS) {
-      const globalCandidates = [
-        'custom_fields',
-        'company_fields',
-        'fields',
-        'free_fields',
-        'extra_fields',
-        'customfields',
-      ];
-      let globalValues: InserveCustomFieldValue[] = [];
-      for (const path of globalCandidates) {
-        try {
-          const resp = await client.request(path, { method: 'GET' });
-          const all = extractFields(resp);
-          if (Array.isArray(all) && all.length > 0) {
-            globalValues = all;
-            break;
-          }
-        } catch {
-        }
-      }
-      _globalFieldCache = { fetchedAt: now, values: globalValues };
-    }
-
-    const values = _globalFieldCache.values;
-    if (values.length > 0) {
-      const filtered = values.filter((f: any) => {
-        if (f && typeof f === 'object') {
-          const anyF = f as Record<string, unknown>;
-          return (
-            anyF.company_id === companyId ||
-            anyF.companyId === companyId ||
-            (anyF.company &&
-              typeof anyF.company === 'object' &&
-              ((anyF.company as any).id === companyId))
-          );
-        }
-        return false;
-      });
-      if (filtered.length > 0) return filtered;
-    }
-  } catch {
-  }
-
-  if (lastErr) throw lastErr;
   return [];
 }
 
