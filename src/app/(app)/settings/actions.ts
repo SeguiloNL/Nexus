@@ -910,15 +910,24 @@ export async function triggerSyncJobAction(
         failed: r.failed,
         possibleUnlinkedMatches: r.possibleUnlinkedMatches?.length ?? 0,
         previouslyActiveNowInactive: r.previouslyActiveNowInactive?.length ?? 0,
+        pagesProcessed: r.pagesProcessed,
+        totalExpected: r.totalExpected,
       };
+      const skippedTotal =
+        r.skipped.inactive_or_missing_nexus_field +
+        r.skipped.missing_required_fields +
+        r.skipped.fetch_error_nexus +
+        r.skipped.other;
       summary =
-        `Inserve klantimport afgerond. Ophaalde: ${r.fetched}, filterpass: ${r.activeFilterPassed}, ` +
-        `aangemaakt: ${r.created}, bijgewerkt: ${r.updated}, ongewijzigd: ${r.unchanged}, ` +
-        `overgeslagen: ${r.skipped.inactive_or_missing_nexus_field + r.skipped.missing_required_fields + r.skipped.fetch_error_nexus + r.skipped.other}, ` +
-        `mislukt: ${r.failed}. Duur: ${r.durationMs}ms.`;
+        `Inserve klantimport afgerond. Ophaalde: ${r.fetched}, ` +
+        `filterpass: ${r.activeFilterPassed}, aangemaakt: ${r.created}, bijgewerkt: ${r.updated}, ` +
+        `ongewijzigd: ${r.unchanged}, overgeslagen: ${skippedTotal}, mislukt: ${r.failed}. ` +
+        `API pagina's: ${r.pagesProcessed}, API-totaal: ${r.totalExpected}. Duur: ${r.durationMs}ms.`;
       if (r.status === "FAILED" || r.failed > 0) {
         finalStatus = SyncJobStatus.FAILED;
-        errorMessage = r.errorMessage ?? `${r.failed} records konden niet worden verwerkt.`;
+        errorMessage =
+          r.errorMessage ??
+          (r.failed > 0 ? `${r.failed} records konden niet worden verwerkt.` : "Import mislukt.");
       }
     } else {
       throw new Error(`Onbekende jobId: ${validated.data.jobId}`);

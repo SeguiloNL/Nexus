@@ -59,6 +59,8 @@ export interface ImportSummary {
   };
   failed: number;
   errorMessage?: string | null;
+  pagesProcessed: number;
+  totalExpected: number;
   possibleUnlinkedMatches?: Array<{
     inserveCompanyId: number;
     inserveName: string;
@@ -310,6 +312,8 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
         other: 0,
       },
       failed: 0,
+      pagesProcessed: 0,
+      totalExpected: 0,
       errorMessage:
         "Er is reeds een import bezig of gequeued. Wacht tot de vorige is afgerond.",
     };
@@ -346,6 +350,8 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
       other: 0,
     },
     failed: 0,
+    pagesProcessed: 0,
+    totalExpected: 0,
     skippedDetails: [],
     failedDetails: [],
     possibleUnlinkedMatches: [],
@@ -387,6 +393,13 @@ export async function runInserveCustomerImport(ctx: ImportUserCtx): Promise<Impo
       });
       fetchedCompanies = res.items;
       summary.fetched = res.totalFetched;
+      summary.pagesProcessed = res.pagesProcessed;
+      summary.totalExpected = res.totalExpected;
+      if (res.totalFetched === 0) {
+        markPartialFailed(
+          `Inserve API gaf 0 bedrijven terug (pagina's verwerkt: ${res.pagesProcessed}, verwachte totaal volgens API: ${res.totalExpected ?? 0}). Controleer of de API-key leesrechten heeft op bedrijven, of dat het juiste endpoint en builder-parameter worden gebruikt.`
+        );
+      }
     } catch (e: any) {
       if (e instanceof InserveApiError) {
         if (e.statusCode === 401 || e.statusCode === 403) {
@@ -759,6 +772,8 @@ function makeFailedSummary(
     },
     failed: 0,
     errorMessage: message,
+    pagesProcessed: 0,
+    totalExpected: 0,
     possibleUnlinkedMatches: [],
     previouslyActiveNowInactive: [],
     skippedDetails: [],

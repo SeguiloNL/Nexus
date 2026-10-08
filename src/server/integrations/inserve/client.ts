@@ -87,7 +87,7 @@ function buildUrl(
   }
 
   if (builder && builder.length > 0) {
-    params.append('query', JSON.stringify(builder));
+    params.append('builder', JSON.stringify(builder));
   }
 
   const search = params.toString();
@@ -241,11 +241,11 @@ export class InserveClient {
     totalFetched: number;
     totalExpected: number;
     pagesProcessed: number;
-    responses: { data: T[]; meta?: any }[];
+    responses: any[];
   }> {
-    const { perPage = 25, withRelations = [], extraBuilder = [], maxPages } = options;
+    const { perPage = 25, withRelations = [], extraBuilder = [], maxPages, method, body, signal } = options;
     const items: T[] = [];
-    const responses: { data: T[]; meta?: any }[] = [];
+    const responses: any[] = [];
     let currentPage = 1;
     let totalExpected = 0;
     let seenLastPage = false;
@@ -257,28 +257,47 @@ export class InserveClient {
         ...extraBuilder,
       ];
 
-      const resp = await this.request<{ data: T[]; meta?: any }>(path, {
-        ...options,
+      const query: Record<string, string | number | boolean | undefined> = {
+        page: currentPage,
+        per_page: perPage,
+      };
+
+      const resp = await this.request<any>(path, {
+        method: method ?? 'GET',
+        ...(body !== undefined ? { body } : {}),
+        signal,
+        query,
         builder: pageBuilder,
       });
 
-      const pageItems = resp?.data ?? [];
-      items.push(...pageItems);
       responses.push(resp);
-      totalExpected = resp?.meta?.total ?? totalExpected;
 
-      const meta = resp?.meta ?? {};
-      const lastPage = meta.last_page as number | undefined;
-      const current = meta.current_page as number | undefined;
-      const total = meta.total as number | undefined;
+      let pageItems: T[] = [];
+      let pageMeta: any = {};
+      if (Array.isArray(resp)) {
+        pageItems = resp as T[];
+      } else if (resp && typeof resp === 'object') {
+        const rAny = resp as Record<string, unknown>;
+        if (Array.isArray(rAny.data)) pageItems = rAny.data as T[];
+        else if (Array.isArray(rAny.items)) pageItems = rAny.items as T[];
+        else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as T[];
+        else if (Array.isArray(rAny.result)) pageItems = rAny.result as T[];
+        pageMeta = (rAny.meta ?? rAny.pagination ?? rAny._meta ?? {}) as any;
+      }
+
+      items.push(...pageItems);
+      const metaTotal = pageMeta?.total ?? pageMeta?.count ?? pageMeta?.total_items;
+      if (typeof metaTotal === 'number') totalExpected = metaTotal;
+
+      const lastPage = pageMeta?.last_page ?? pageMeta?.lastPage ?? pageMeta?.total_pages;
+      const current = pageMeta?.current_page ?? pageMeta?.currentPage ?? currentPage;
+      const totalVal = typeof metaTotal === 'number' ? metaTotal : undefined;
 
       if (pageItems.length === 0) {
         seenLastPage = true;
       } else if (typeof lastPage === 'number' && typeof current === 'number') {
-        if (current >= lastPage) {
-          seenLastPage = true;
-        }
-      } else if (typeof total === 'number' && items.length >= total) {
+        if (current >= lastPage) seenLastPage = true;
+      } else if (typeof totalVal === 'number' && items.length >= totalVal) {
         seenLastPage = true;
       } else if (pageItems.length < perPage) {
         seenLastPage = true;

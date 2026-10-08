@@ -16,6 +16,9 @@ import {
   Loader2,
   ShieldAlert,
   Link2,
+  Database,
+  Layers,
+  Timer,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -159,7 +162,9 @@ export function InserveCustomerImportClient() {
                   tone="warning"
                 />
                 <StatCard title="Mislukt" value={summary.failed} icon={<XCircle className="h-4 w-4 text-red-600" />} tone="error" />
-                <StatCard title="Duur (ms)" value={summary.durationMs} icon={<Users className="h-4 w-4" />} tone="neutral" />
+                <StatCard title="Duur (ms)" value={summary.durationMs} icon={<Timer className="h-4 w-4" />} tone="neutral" />
+                <StatCard title="API pagina's" value={summary.pagesProcessed} icon={<Layers className="h-4 w-4" />} tone="info" />
+                <StatCard title="API-totaal (volgens Inserve)" value={summary.totalExpected} icon={<Database className="h-4 w-4" />} tone="neutral" />
               </div>
 
               <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
