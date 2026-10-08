@@ -12,7 +12,18 @@ export class InserveApiError extends Error {
   public readonly url: string;
 
   constructor(statusCode: number, responseBody: unknown, url: string, message?: string) {
-    super(message ?? `Inserve API request failed with status ${statusCode} for ${url}`);
+    let bodyPreview = '';
+    try {
+      if (responseBody !== null && responseBody !== undefined) {
+        const raw = typeof responseBody === 'string' ? responseBody : JSON.stringify(responseBody);
+        bodyPreview = raw.length > 200 ? raw.slice(0, 200) + '…' : raw;
+      }
+    } catch {
+      bodyPreview = '';
+    }
+    const baseMsg = `Inserve API request failed with status ${statusCode} for ${url}` +
+      (bodyPreview ? `\nResponse body: ${bodyPreview}` : '');
+    super(message ?? baseMsg);
     this.name = 'InserveApiError';
     this.statusCode = statusCode;
     this.responseBody = responseBody;

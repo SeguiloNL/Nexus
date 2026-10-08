@@ -14,6 +14,7 @@ import type {
   InserveListResponse,
   InserveCustomFieldValue,
 } from './types';
+import { enrichCompanyWithCustomFields } from '@/server/services/inserve-customer-import.service';
 
 function toISOString(date: Date | string | null | undefined): string | undefined {
   if (!date) return undefined;
@@ -453,19 +454,136 @@ export async function listAllCompanies(
   totalFetched: number;
   totalExpected: number;
   pagesProcessed: number;
+  responses?: any[];
 }> {
   const client = await inserveClient.getClient();
   if (!client) {
     throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
   }
   const { maxPages, perPage = 25, withRelations = [], builder = [] } = opts;
-  return await client.requestAllPages<InserveCompany>(INSERVE_COMPANY_ENDPOINT, {
-    perPage,
-    withRelations,
-    extraBuilder: builder,
-    maxPages,
-    method: 'GET',
-  });
+
+  const requestedRelations =
+    withRelations.length > 0 ? withRelations : ['custom_fields', 'company_fields', 'extra_fields', 'fields'];
+
+  const strategies: Array<{
+    label: string;
+    withRelations: string[];
+    enrichLater: boolean;
+    useBuilder?: boolean;
+  }> = [
+    { label: 'kale-bedrijven', withRelations: [], enrichLater: true },
+    { label: 'kale-bedrijven-zonder-builder', withRelations: [], enrichLater: true, useBuilder: false },
+    { label: '1-relatie-custom_fields', withRelations: ['custom_fields'], enrichLater: true },
+    { label: '1-relatie-company_fields', withRelations: ['company_fields'], enrichLater: true },
+    { label: '1-relatie-fields', withRelations: ['fields'], enrichLater: true },
+    { label: '4-relaties-alles', withRelations: requestedRelations, enrichLater: false },
+  ];
+
+  const errors: Array<{ label: string; error: unknown }> = [];
+
+  for (const strat of strategies) {
+    try {
+      let result: Awaited<ReturnType<typeof client.requestAllPages<InserveCompany>>>;
+
+      const pageQuery: Record<string, string | number | boolean | undefined> = {
+        page: 1,
+        per_page: perPage,
+      };
+
+      if (strat.useBuilder === false) {
+        const maxLoop = maxPages ?? 50;
+        const allItems: InserveCompany[] = [];
+        let totalExpected = 0;
+        let pagesProcessed = 0;
+        for (let page = 1; page <= maxLoop; page++) {
+          pageQuery.page = page;
+          const chunk = (await client.request<any>(INSERVE_COMPANY_ENDPOINT, {
+            method: 'GET',
+            query: { ...pageQuery },
+            builder: undefined,
+          })) as any;
+
+          pagesProcessed++;
+          let pageItems: InserveCompany[] = [];
+          let pageMeta: any = {};
+          if (Array.isArray(chunk)) {
+            pageItems = chunk as InserveCompany[];
+          } else if (chunk && typeof chunk === 'object') {
+            const rAny = chunk as Record<string, unknown>;
+            if (Array.isArray(rAny.data)) pageItems = rAny.data as InserveCompany[];
+            else if (Array.isArray(rAny.items)) pageItems = rAny.items as InserveCompany[];
+            else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as InserveCompany[];
+            else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveCompany[];
+            pageMeta = (rAny.meta ?? rAny.pagination ?? rAny._meta ?? {}) as any;
+          }
+
+          allItems.push(...pageItems);
+          const metaTotal = pageMeta?.total ?? pageMeta?.count ?? pageMeta?.total_items;
+          if (typeof metaTotal === 'number') totalExpected = metaTotal;
+
+          const lastPage = pageMeta?.last_page ?? pageMeta?.lastPage ?? pageMeta?.total_pages;
+          if (pageItems.length === 0) break;
+          if (typeof lastPage === 'number' && page >= lastPage) break;
+          if (typeof totalExpected === 'number' && allItems.length >= totalExpected) break;
+          if (pageItems.length < perPage) break;
+        }
+
+        result = {
+          items: allItems,
+          totalFetched: allItems.length,
+          totalExpected,
+          pagesProcessed,
+          responses: [],
+        };
+      } else {
+        result = await client.requestAllPages<InserveCompany>(INSERVE_COMPANY_ENDPOINT, {
+          perPage,
+          withRelations: strat.withRelations,
+          extraBuilder: builder,
+          maxPages,
+          method: 'GET',
+        });
+      }
+
+      if (strat.enrichLater && result.items.length > 0) {
+        const enriched: InserveCompany[] = [];
+        for (const item of result.items) {
+          try {
+            const full = await enrichCompanyWithCustomFields(item);
+            enriched.push(full);
+          } catch {
+            enriched.push(item);
+          }
+        }
+        result.items = enriched;
+      }
+      return {
+        items: result.items,
+        totalFetched: result.totalFetched,
+        totalExpected: result.totalExpected,
+        pagesProcessed: result.pagesProcessed,
+      };
+    } catch (e) {
+      errors.push({ label: strat.label, error: e });
+      const is5xx =
+        (e instanceof InserveApiError && e.statusCode >= 500 && e.statusCode < 600) ||
+        !!(e as any)?.statusCode?.toString?.().startsWith('5');
+      if (!is5xx) break;
+    }
+  }
+
+  const messages = errors
+    .map(({ label, error }) => {
+      const msg =
+        error instanceof Error
+          ? error.message.split('\n').slice(0, 2).join(' | ')
+          : String(error);
+      return `[${label}] ${msg.slice(0, 180)}`;
+    })
+    .join('; ');
+  throw new Error(
+    `listAllCompanies faalde op alle pogingen. Laatste pogingen: ${messages || 'geen details'}`
+  );
 }
 
 export async function getCompanyById(
