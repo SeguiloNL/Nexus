@@ -217,17 +217,26 @@ export class InserveClient {
         const is5xx = response.status >= 500 && response.status < 600;
         const isGet = method === 'GET';
 
-        if (attempt < maxAttempts && (is429 || (is5xx && isGet))) {
-          let waitMs = DEFAULT_RETRY_WAIT_MS;
-          if (is429) {
-            const retryAfter = response.headers.get('Retry-After');
-            if (retryAfter) {
-              const seconds = parseInt(retryAfter, 10);
-              if (!isNaN(seconds)) {
-                waitMs = seconds * 1000;
+        if (is429) {
+          const retryAfter = response.headers.get('Retry-After');
+          let humanWait = '';
+          if (retryAfter) {
+            const seconds = parseInt(retryAfter, 10);
+            if (!isNaN(seconds)) {
+              if (seconds >= 60) {
+                humanWait = ` (wacht ~${Math.ceil(seconds / 60)} minuten, tot ${new Date(Date.now() + seconds * 1000).toLocaleTimeString('nl-NL')})`;
+              } else {
+                humanWait = ` (wacht ${seconds} seconden)`;
               }
             }
           }
+          const msg = `[Inserve] Rate limited (429) voor ${method} ${path}. Te veel API calls te snel${humanWait}. Doe a.u.b. geen nieuwe import tot dit venster voorbij is.`;
+          console.error(msg);
+          throw new InserveApiError(429, responseBody, url, msg);
+        }
+
+        if (attempt < maxAttempts && is5xx && isGet) {
+          const waitMs = DEFAULT_RETRY_WAIT_MS;
           console.error(
             `[Inserve] Retrying ${method} ${path} after ${response.status} (attempt ${attempt}, waiting ${waitMs}ms)`
           );
