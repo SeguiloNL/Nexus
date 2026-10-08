@@ -81,6 +81,9 @@ import {
   runUsageAlertNotificationCycle,
 } from "@/server/services/sim-usage-alert.service";
 import {
+  runInserveCustomerImport,
+} from "@/server/services/inserve-customer-import.service";
+import {
   SyncJobId,
   SyncJobStatus,
   SyncJobTrigger,
@@ -888,6 +891,34 @@ export async function triggerSyncJobAction(
       if (report.userSendFailures > 0) {
         finalStatus = SyncJobStatus.FAILED;
         errorMessage = `${report.userSendFailures} gebruikers konden geen e-mail ontvangen.`;
+      }
+    } else if (validated.data.jobId === SyncJobId.INSERVE_CUSTOMER_IMPORT) {
+      const r = await runInserveCustomerImport({
+        userId: user.id,
+        userRole: user.role as any,
+        roleScope: user.roleScope as any,
+        permissions: (user as any).permissions ?? null,
+        customerIds: null,
+      });
+      recordsAffected = {
+        fetched: r.fetched,
+        activeFilterPassed: r.activeFilterPassed,
+        created: r.created,
+        updated: r.updated,
+        unchanged: r.unchanged,
+        skipped: r.skipped,
+        failed: r.failed,
+        possibleUnlinkedMatches: r.possibleUnlinkedMatches?.length ?? 0,
+        previouslyActiveNowInactive: r.previouslyActiveNowInactive?.length ?? 0,
+      };
+      summary =
+        `Inserve klantimport afgerond. Ophaalde: ${r.fetched}, filterpass: ${r.activeFilterPassed}, ` +
+        `aangemaakt: ${r.created}, bijgewerkt: ${r.updated}, ongewijzigd: ${r.unchanged}, ` +
+        `overgeslagen: ${r.skipped.inactive_or_missing_nexus_field + r.skipped.missing_required_fields + r.skipped.fetch_error_nexus + r.skipped.other}, ` +
+        `mislukt: ${r.failed}. Duur: ${r.durationMs}ms.`;
+      if (r.status === "FAILED" || r.failed > 0) {
+        finalStatus = SyncJobStatus.FAILED;
+        errorMessage = r.errorMessage ?? `${r.failed} records konden niet worden verwerkt.`;
       }
     } else {
       throw new Error(`Onbekende jobId: ${validated.data.jobId}`);
