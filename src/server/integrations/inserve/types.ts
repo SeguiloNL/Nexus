@@ -98,6 +98,57 @@ export interface InserveArticle {
   updated_at?: string | null;
 }
 
+export interface InserveAsset {
+  id: number | string;
+  name?: string | null;
+  title?: string | null;
+  label?: string | null;
+  code?: string | null;
+  serial?: string | null;
+  serial_number?: string | null;
+  identifier?: string | null;
+  identification_number?: string | null;
+  iccid?: string | null;
+  eid?: string | null;
+  imsi?: string | null;
+  msisdn?: string | null;
+  phone?: string | null;
+  telephone?: string | null;
+  subscriber_id?: string | null;
+  subscriberId?: string | null;
+  type?: string | number | null;
+  category?: string | number | null;
+  category_name?: string | null;
+  categoryName?: string | null;
+  category_title?: string | null;
+  category_id?: string | number | null;
+  categoryId?: string | number | null;
+  asset_category?: string | number | { id?: string | number; name?: string | null; title?: string | null } | null;
+  assetCategory?: string | number | { id?: string | number; name?: string | null; title?: string | null } | null;
+  company_id?: number | string | null;
+  companyId?: number | string | null;
+  customer_id?: number | string | null;
+  customerId?: number | string | null;
+  owner_id?: number | string | null;
+  relation_id?: number | string | null;
+  company?:
+    | number
+    | string
+    | { id?: number | string; company_id?: number | string; name?: string | null; [k: string]: any }
+    | null;
+  relation?: number | string | { id?: number | string; [k: string]: any } | null;
+  owner?: number | string | { id?: number | string; [k: string]: any } | null;
+  customValues?: InserveCustomFieldValue[] | null;
+  custom_values?: InserveCustomFieldValue[] | null;
+  custom_fields?: InserveCustomFieldValue[] | null;
+  asset_fields?: InserveCustomFieldValue[] | null;
+  extra_fields?: InserveCustomFieldValue[] | null;
+  fields?: InserveCustomFieldValue[] | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  [k: string]: any;
+}
+
 export type InserveContractCycle = 'monthly' | 'quarterly' | 'yearly';
 
 export interface InserveContract {

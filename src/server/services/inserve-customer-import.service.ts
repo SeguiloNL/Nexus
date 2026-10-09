@@ -23,6 +23,7 @@ import {
 } from "./contact.service";
 import { logAudit, diffObject } from "./audit.service";
 import { generateCustomerNumber } from "@/lib/identifiers";
+import { runInserveSimAssetLink, EMPTY_SIM_LINK_SUMMARY, type SimLinkSummary } from "./inserve-sim-link.service";
 import {
   getSyncJobConfig,
   createSyncJobRun,
@@ -105,6 +106,7 @@ export interface ImportSummary {
     fetchPreExisting: number;
     processRecords: number;
     syncContacts: number;
+    linkSimAssets: number;
     findMatches: number;
     finalize: number;
   };
@@ -153,6 +155,7 @@ export interface ImportSummary {
     inserveFullName?: string | null;
     error: string;
   }>;
+  simLink: SimLinkSummary;
 }
 
 const MAPPED_FIELDS: Array<
@@ -383,6 +386,7 @@ const ZERO_TIMING: ImportSummary["timingMs"] = {
   fetchPreExisting: 0,
   processRecords: 0,
   syncContacts: 0,
+  linkSimAssets: 0,
   findMatches: 0,
   finalize: 0,
 };
@@ -419,6 +423,15 @@ export interface ImportManagementOpts {
   skipRunManagement?: boolean;
   /** Het run-ID van de buitenste aangemaakte SyncJobRun (wordt als summary.runId gebruikt). */
   preExistingRunId?: string;
+  /**
+   * Indien true: de SIM-koppelingsfase (inserve-sim-link) wordt alleen in proefcontrole-
+   * modus gedraaid; er worden geen SIM/klant-wijzigingen opgeslagen.
+   */
+  simLinkDryRun?: boolean;
+  /** Maximaal aantal pagina's voor de asset-ophaal (debug). */
+  simLinkMaxPages?: number;
+  /** Optionele API-endpoint hint voor assets (debug). */
+  assetEndpointHint?: string;
 }
 
 export async function runInserveCustomerImport(
@@ -547,6 +560,7 @@ export async function runInserveCustomerImport(
         skippedDetails: [],
         failedDetails: [],
         contactFailedDetails: [],
+        simLink: { ...EMPTY_SIM_LINK_SUMMARY, dryRun: false },
         inserveCredentials: credsInfo,
       };
     }
@@ -597,6 +611,7 @@ export async function runInserveCustomerImport(
     previouslyActiveNowInactive: [],
     previouslyInactiveNowActive: [],
     contactFailedDetails: [],
+    simLink: { ...EMPTY_SIM_LINK_SUMMARY, dryRun: !!opts.simLinkDryRun },
   };
 
   const markPartialFailed = (msg: string, detail?: unknown, asPartialSuccess = false) => {
@@ -1268,6 +1283,38 @@ export async function runInserveCustomerImport(
     } catch (_) {
       summary.possibleUnlinkedMatches = [];
     }
+
+    try {
+      const tSimLink = Date.now();
+      const simLinkResult = await runInserveSimAssetLink({
+        dryRun: !!opts.simLinkDryRun,
+        auditUserId: ctx.userId ?? undefined,
+        maxPages: opts.simLinkMaxPages,
+        endpointHint: opts.assetEndpointHint,
+      });
+      summary.simLink = simLinkResult;
+      timing.linkSimAssets = Date.now() - tSimLink;
+      if (simLinkResult.errors > 0 && (finalStatus === SyncJobStatus.SUCCESS || finalErrorMessage == null)) {
+        markPartialFailed(
+          `SIM-koppelingsfase bevat ${simLinkResult.errors} fout(en). Zie simLink.errorMessages.`,
+          { source: "sim_link" },
+          true
+        );
+      }
+    } catch (simErr: any) {
+      summary.simLink = {
+        ...EMPTY_SIM_LINK_SUMMARY,
+        dryRun: !!opts.simLinkDryRun,
+        errors: 1,
+        errorMessages: [`SIM-link top-level error: ${simErr?.message ?? String(simErr)}`.slice(0, 400)],
+      };
+      timing.linkSimAssets = 0;
+      markPartialFailed(
+        `SIM-koppelingsfase onverwachts mislukt: ${simErr?.message ?? String(simErr)}`,
+        { source: "sim_link" },
+        true
+      );
+    }
   } catch (topErr: any) {
     markPartialFailed(`Import mislukt: ${topErr?.message ?? String(topErr)}`, {
       code: (topErr as any)?.code ?? null,
@@ -1338,6 +1385,26 @@ function finalizeSummary(
     skippedSample: summary.skippedDetails?.slice(0, 20),
     failedSample: summary.failedDetails?.slice(0, 20),
     contactFailedSample: summary.contactFailedDetails?.slice(0, 40),
+    simLink: summary.simLink
+      ? {
+          totalAssetsExamined: summary.simLink.totalAssetsExamined,
+          totalAssetsFetched: summary.simLink.totalAssetsFetched,
+          newlyLinked: summary.simLink.newlyLinked,
+          reassignedInserveManaged: summary.simLink.reassignedInserveManaged,
+          unchanged: summary.simLink.unchanged,
+          notMatched: summary.simLink.notMatched,
+          conflicts: summary.simLink.conflicts,
+          skipped: summary.simLink.skipped,
+          errors: summary.simLink.errors,
+          dryRun: summary.simLink.dryRun,
+          endpointUsed: summary.simLink.endpointUsed,
+          pagesProcessed: summary.simLink.pagesProcessed,
+          skippedSample: summary.simLink.skippedDetails?.slice?.(0, 20),
+          conflictSample: summary.simLink.conflictDetails?.slice?.(0, 20),
+          notMatchedSample: summary.simLink.notMatchedDetails?.slice?.(0, 20),
+          errorSample: summary.simLink.errorMessages?.slice?.(0, 20),
+        }
+      : undefined,
   };
 
   if (doUpdateRun) {
@@ -1362,7 +1429,8 @@ function finalizeSummary(
 function makeFailedSummary(
   startedAt: Date,
   message: string,
-  runId: string | null
+  runId: string | null,
+  extra?: { simLinkDryRun?: boolean }
 ): ImportSummary {
   const endedAt = new Date();
   const durationMs = Math.max(0, endedAt.getTime() - startedAt.getTime());
@@ -1396,5 +1464,6 @@ function makeFailedSummary(
     skippedDetails: [],
     failedDetails: [],
     contactFailedDetails: [],
+    simLink: { ...EMPTY_SIM_LINK_SUMMARY, dryRun: !!extra?.simLinkDryRun },
   };
 }

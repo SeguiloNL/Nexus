@@ -33,6 +33,35 @@ export async function POST(req: Request) {
     const envToken = (process.env[REQ_TOKEN_VAR] ?? "").trim();
     const bearer = bearerTokenFromHeader(authHeader);
 
+    const contentType = (req.headers.get("content-type") ?? "").toLowerCase();
+    let body: any = null;
+    try {
+      if (contentType.includes("application/json")) {
+        body = await req.clone().json();
+      }
+    } catch {
+      body = null;
+    }
+    const simLinkDryRunRaw =
+      body?.simLinkDryRun ?? body?.dry_run ?? body?.dryRun ??
+      new URL(req.url).searchParams.get("simLinkDryRun") ??
+      new URL(req.url).searchParams.get("dry_run");
+    const simLinkMaxPagesRaw =
+      body?.simLinkMaxPages ??
+      new URL(req.url).searchParams.get("simLinkMaxPages");
+    const assetEndpointHint =
+      body?.assetEndpointHint ??
+      new URL(req.url).searchParams.get("assetEndpointHint");
+    const simLinkDryRun =
+      simLinkDryRunRaw === true ||
+      simLinkDryRunRaw === "true" ||
+      simLinkDryRunRaw === "1" ||
+      simLinkDryRunRaw === "on";
+    const simLinkMaxPages =
+      simLinkMaxPagesRaw != null && Number.isFinite(Number(simLinkMaxPagesRaw))
+        ? Number(simLinkMaxPagesRaw)
+        : undefined;
+
     let principal: {
       userId?: string;
       userRole?: unknown | null;
@@ -95,15 +124,22 @@ export async function POST(req: Request) {
     }
 
     const triggeredBy = determineTriggeredBy(req, principal.via);
-    const summary: ImportSummary = await runInserveCustomerImport({
-      userId: principal.userId!,
-      userRole: principal.userRole ?? null,
-      roleId: principal.roleId ?? null,
-      roleScope: (principal.roleScope as RoleScope) ?? null,
-      permissions: (principal.permissions as any) ?? null,
-      customerIds: (principal.customerIds as any) ?? null,
-      triggeredBy,
-    } as any);
+    const summary: ImportSummary = await runInserveCustomerImport(
+      {
+        userId: principal.userId!,
+        userRole: principal.userRole ?? null,
+        roleId: principal.roleId ?? null,
+        roleScope: (principal.roleScope as RoleScope) ?? null,
+        permissions: (principal.permissions as any) ?? null,
+        customerIds: (principal.customerIds as any) ?? null,
+        triggeredBy,
+      } as any,
+      {
+        simLinkDryRun,
+        simLinkMaxPages,
+        assetEndpointHint: assetEndpointHint ?? undefined,
+      }
+    );
 
     const ok = summary.status !== "FAILED" && summary.status !== "SKIPPED";
     return NextResponse.json({
@@ -111,6 +147,11 @@ export async function POST(req: Request) {
       summary,
       authenticatedVia: principal.via,
       triggeredBy,
+      opts: {
+        simLinkDryRun,
+        simLinkMaxPages: simLinkMaxPages ?? null,
+        assetEndpointHint: assetEndpointHint ?? null,
+      },
     });
   } catch (e: any) {
     console.error("[api/inserve-customer-import] POST failed:", e);

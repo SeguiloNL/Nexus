@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { CustomerStatusBadge, TrackerStatusBadge, SimStatusBadge, ActivationOrderStatusBadge } from "@/components/ui/status-badges";
+import { CustomerStatusBadge, TrackerStatusBadge, SimStatusBadge, ActivationOrderStatusBadge, CustomerLinkSourceBadge } from "@/components/ui/status-badges";
 import { CustomerForm } from "./customer-form";
 import { formatDate, formatImei, formatIccid, formatMsisdn } from "@/lib/formatters";
 import { canUserRole } from "@/lib/auth/session";
@@ -127,6 +127,18 @@ type DetailCustomer = Customer & {
     } | null;
   }>;
   contacts: ContactPerson[];
+  directSims: Array<{
+    id: string;
+    iccid: string;
+    msisdn: string | null;
+    provider: string;
+    status: string;
+    simName: string | null;
+    customerLinkSource: string | null;
+    customerLinkedAt: Date | null;
+    inserveAssetId: number | string | null;
+    inserveAssetLinkedAt: Date | null;
+  }>;
 };
 
 type AuditLogForDetail = Array<{
@@ -298,7 +310,7 @@ export function CustomerDetail({
           </TabsTrigger>
           <TabsTrigger value="sims">
             <CreditCard className="mr-1.5 h-4 w-4" />
-            SIM-kaarten ({uniqueSims.length})
+            SIM-kaarten ({uniqueSims.length + customer.directSims.length})
           </TabsTrigger>
           <TabsTrigger value="vehicles">
             <Car className="mr-1.5 h-4 w-4" />
@@ -554,10 +566,74 @@ export function CustomerDetail({
           </Card>
         </TabsContent>
 
-        <TabsContent value="sims" className="mt-6">
+        <TabsContent value="sims" className="mt-6 space-y-6">
+          {customer.directSims.length > 0 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Direct gekoppelde SIM-kaarten</CardTitle>
+                <CardDescription>
+                  SIM-kaarten die rechtstreeks aan deze klant zijn gekoppeld (via
+                  Inserve, handmatig of afgeleid van een abonnement).
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="overflow-hidden rounded-md border">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2">Provider</th>
+                        <th className="px-3 py-2">ICCID</th>
+                        <th className="px-3 py-2">MSISDN</th>
+                        <th className="px-3 py-2">Status</th>
+                        <th className="px-3 py-2">Bron</th>
+                        <th className="px-3 py-2">Inserve Asset</th>
+                        <th className="px-3 py-2">Gekoppeld op</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {customer.directSims.map((s) => (
+                        <tr
+                          key={s.id}
+                          className="border-t hover:bg-slate-50"
+                        >
+                          <td className="px-3 py-2">
+                            <Link
+                              href={`/sims/${s.id}`}
+                              className="font-medium underline-offset-4 hover:underline"
+                            >
+                              {s.provider}
+                            </Link>
+                          </td>
+                          <td className="px-3 py-2 font-mono text-xs">
+                            {formatIccid(s.iccid)}
+                          </td>
+                          <td className="px-3 py-2 font-mono text-xs">
+                            {s.msisdn ? formatMsisdn(s.msisdn) : "—"}
+                          </td>
+                          <td className="px-3 py-2">
+                            <SimStatusBadge status={s.status as any} />
+                          </td>
+                          <td className="px-3 py-2">
+                            <CustomerLinkSourceBadge source={s.customerLinkSource as any} />
+                          </td>
+                          <td className="px-3 py-2 font-mono text-xs text-slate-600">
+                            {s.inserveAssetId ? String(s.inserveAssetId) : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-600">
+                            {s.customerLinkedAt ? formatDate(s.customerLinkedAt) : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
+
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">SIM-kaarten</CardTitle>
+              <CardTitle className="text-base">SIM-kaarten via abonnementen / activaties</CardTitle>
               <CardDescription>
                 Unieke SIM-kaarten die via abonnementen of activaties aan deze
                 klant zijn gekoppeld.
@@ -566,7 +642,7 @@ export function CustomerDetail({
             <CardContent>
               <EmptyOrList
                 rows={uniqueSims}
-                emptyTitle="Nog geen SIM-kaarten"
+                emptyTitle={customer.directSims.length === 0 ? "Nog geen SIM-kaarten" : "Geen SIM-kaarten via abonnementen"}
               >
                 <div className="overflow-hidden rounded-md border">
                   <table className="w-full text-sm">

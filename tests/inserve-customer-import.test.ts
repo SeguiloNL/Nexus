@@ -13,6 +13,7 @@ import * as auditSvc from "@/server/services/audit.service";
 import * as syncSchedSvc from "@/server/services/sync-schedule.service";
 import * as contactSvc from "@/server/services/contact.service";
 import * as identifiers from "@/lib/identifiers";
+import * as simLinkSvc from "@/server/services/inserve-sim-link.service";
 import { inserveClient } from "@/server/integrations/inserve/client";
 import type { InserveCompany, InserveContact } from "@/server/integrations/inserve/types";
 import { SyncJobId, SyncJobStatus, SyncJobTrigger, RoleScope, CustomerType } from "@/types/enums";
@@ -402,6 +403,29 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
       totalExpected: 0,
       pagesProcessed: 0,
       responses: [],
+    } as any);
+    vi.spyOn(simLinkSvc, "runInserveSimAssetLink").mockResolvedValue({
+      ...(simLinkSvc.EMPTY_SIM_LINK_SUMMARY ?? {
+        totalAssetsExamined: 0,
+        totalAssetsFetched: 0,
+        newlyLinked: 0,
+        reassignedInserveManaged: 0,
+        unchanged: 0,
+        notMatched: 0,
+        conflicts: 0,
+        skipped: 0,
+        errors: 0,
+        dryRun: false,
+        endpointUsed: null,
+        pagesProcessed: 0,
+        totalExpectedAssets: 0,
+        skippedDetails: [],
+        conflictDetails: [],
+        notMatchedDetails: [],
+        errorMessages: [],
+      }),
+      dryRun: false,
+      errors: 0,
     } as any);
     logAuditSpy = vi.spyOn(auditSvc, "logAudit").mockImplementation(vi.fn() as any);
     genCustNrSpy = vi.spyOn(identifiers, "generateCustomerNumber").mockImplementation(async () => "CUST-GEN-1");
@@ -978,6 +1002,29 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       totalExpected: 0,
       pagesProcessed: 0,
       responses: [],
+    } as any);
+    vi.spyOn(simLinkSvc, "runInserveSimAssetLink").mockResolvedValue({
+      ...(simLinkSvc.EMPTY_SIM_LINK_SUMMARY ?? {
+        totalAssetsExamined: 0,
+        totalAssetsFetched: 0,
+        newlyLinked: 0,
+        reassignedInserveManaged: 0,
+        unchanged: 0,
+        notMatched: 0,
+        conflicts: 0,
+        skipped: 0,
+        errors: 0,
+        dryRun: false,
+        endpointUsed: null,
+        pagesProcessed: 0,
+        totalExpectedAssets: 0,
+        skippedDetails: [],
+        conflictDetails: [],
+        notMatchedDetails: [],
+        errorMessages: [],
+      }),
+      dryRun: false,
+      errors: 0,
     } as any);
     logAuditSpy = vi.spyOn(auditSvc, "logAudit").mockImplementation(vi.fn() as any);
     genCustNrSpy = vi.spyOn(identifiers, "generateCustomerNumber").mockImplementation(async () => "CUST-GEN-1");

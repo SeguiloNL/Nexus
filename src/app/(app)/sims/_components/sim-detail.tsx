@@ -44,7 +44,7 @@ import {
   DialogTrigger,
   DialogClose,
 } from "@/components/ui/dialog";
-import { SimStatusBadge, AssignmentReasonLabel } from "@/components/ui/status-badges";
+import { SimStatusBadge, AssignmentReasonLabel, CustomerLinkSourceBadge } from "@/components/ui/status-badges";
 import { SimForm } from "./sim-form";
 import {
   formatDate,
@@ -63,6 +63,12 @@ import type { SIM, SimStatus, AssignmentReason } from "@prisma/client";
 import type { SimUsageSyncState, SimSuspendActionState, SimStatusRefreshActionState, SimDiagnosticActionState, SimPurgeActionState } from "../actions";
 
 type DetailSim = SIM & {
+  customer: {
+    id: string;
+    companyName: string;
+    customerNumber: string;
+    status: string;
+  } | null;
   assignments: Array<{
     id: string;
     startAt: Date;
@@ -1786,6 +1792,47 @@ export function SimDetail({
                 <CardDescription>Metadata</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
+                {sim.customerId || sim.customer ? (
+                  <>
+                    <div className="flex flex-col gap-1 border-b pb-3 sm:flex-row sm:items-center sm:justify-between">
+                      <span className="text-slate-500">Klantkoppeling</span>
+                      <div className="flex flex-col items-end gap-0.5">
+                        {sim.customer ? (
+                          <Link
+                            href={`/customers/${sim.customer.id}`}
+                            className="font-medium underline-offset-4 hover:underline"
+                          >
+                            {sim.customer.companyName}{" "}
+                            <span className="text-slate-500 font-normal">
+                              ({sim.customer.customerNumber})
+                            </span>
+                          </Link>
+                        ) : (
+                          <span className="text-slate-500 text-xs">
+                            Klant-id: {sim.customerId ?? "—"} (details niet geladen)
+                          </span>
+                        )}
+                        <div className="flex items-center gap-2 text-xs text-slate-500">
+                          <span>Bron:</span>
+                          <CustomerLinkSourceBadge source={sim.customerLinkSource as any} />
+                        </div>
+                        {sim.customerLinkedAt ? (
+                          <div className="text-xs text-slate-500">
+                            Gekoppeld op: {formatDateTime(sim.customerLinkedAt)}
+                          </div>
+                        ) : null}
+                        {sim.inserveAssetId ? (
+                          <div className="text-xs text-slate-500">
+                            Inserve asset-id: <span className="font-mono">{String(sim.inserveAssetId)}</span>
+                            {sim.inserveAssetLinkedAt
+                              ? ` · gekoppeld op ${formatDate(sim.inserveAssetLinkedAt)}`
+                              : ""}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </>
+                ) : null}
                 <div className="flex justify-between gap-2">
                   <span className="text-slate-500">Aangemaakt</span>
                   <span className="text-right">{formatDate(sim.createdAt)}</span>

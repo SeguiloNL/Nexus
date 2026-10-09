@@ -146,6 +146,23 @@ function includeDetail(): Prisma.CustomerInclude {
         { firstName: "asc" as const },
       ],
     },
+    directSims: {
+      where: { deletedAt: null },
+      orderBy: { createdAt: "desc" as const },
+      take: 50,
+      select: {
+        id: true,
+        iccid: true,
+        msisdn: true,
+        provider: true,
+        status: true,
+        simName: true,
+        customerLinkSource: true,
+        customerLinkedAt: true,
+        inserveAssetId: true,
+        inserveAssetLinkedAt: true,
+      },
+    },
   };
 }
 

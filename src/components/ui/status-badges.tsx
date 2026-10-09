@@ -230,3 +230,20 @@ export function AssignmentReasonLabel({
   if (!reason) return <span className="text-slate-400">—</span>;
   return <span>{ASSIGNMENT_REASON_LABEL[reason] ?? reason}</span>;
 }
+
+const CUSTOMER_LINK_SOURCE: StatusMap<string> = {
+  INSERVE_ASSET: { label: "Inserve", variant: "info" },
+  MANUAL: { label: "Handmatig", variant: "secondary" },
+  SUBSCRIPTION_DERIVED: { label: "Abonnement", variant: "default" },
+  UNKNOWN: { label: "Onbekend", variant: "muted" },
+};
+
+export function CustomerLinkSourceBadge({ source }: { source: string | null | undefined }) {
+  if (!source) return <span className="text-slate-400">—</span>;
+  const s = CUSTOMER_LINK_SOURCE[source] ?? { label: source, variant: "muted" as const };
+  return (
+    <Badge variant={s.variant} className="inline-flex items-center gap-1 text-[11px]">
+      {s.label}
+    </Badge>
+  );
+}

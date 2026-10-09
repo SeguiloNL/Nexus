@@ -14,9 +14,34 @@ import type {
   InserveListResponse,
   InserveCustomFieldValue,
   InserveContact,
+  InserveAsset,
 } from './types';
 
+export const INSERVE_COMPANY_ENDPOINT = 'companies';
 export const INSERVE_CLIENT_ENDPOINT = 'clients';
+export const INSERVE_ASSET_ENDPOINT_CANDIDATES: ReadonlyArray<string> = [
+  'assets',
+  'asset',
+  'assets-cards',
+  'asset-cards',
+  'assetcards',
+  'product-assets',
+  'productassets',
+  'articles',
+  'simcards',
+  'sim-cards',
+  'simkaarten',
+  'assets/simcards',
+];
+
+export interface ListAssetsOptions {
+  page?: number;
+  perPage?: number;
+  withRelations?: string[];
+  builder?: unknown[];
+  builderParamsStyle?: 'json' | 'nested';
+  extraQueryParams?: Record<string, string | number | boolean | undefined>;
+}
 
 export interface ListClientsOptions {
   page?: number;
@@ -551,8 +576,6 @@ export async function listInvoicesInInserve(
 // ============================================================================
 // COMPANIES (Inserve → Nexus import)
 // ============================================================================
-
-export const INSERVE_COMPANY_ENDPOINT = 'companies';
 
 export interface ListCompaniesOptions {
   page?: number;
@@ -1527,5 +1550,386 @@ export function resolveNexusFieldFromCompany(
   } catch (e: any) {
     return { status: 'parse_error', error: e?.message ?? String(e) };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Assets (SIM-kaarten, overige bedrijfsmiddelen)
+// ---------------------------------------------------------------------------
+
+export function resolveAssetCategoryName(asset: InserveAsset): string | null {
+  if (!asset || typeof asset !== 'object') return null;
+  const a = asset as Record<string, unknown>;
+  const candidates: unknown[] = [
+    asset.category_name,
+    asset.categoryName,
+    asset.category_title,
+    asset.category,
+    a.asset_category_name,
+    a.assetCategoryName,
+    a.asset_category_title,
+    a.cat_name,
+    a.cat,
+  ];
+  for (const v of candidates) {
+    if (typeof v === 'string' && v.trim() !== '') return v.trim();
+    if (typeof v === 'number') return String(v);
+  }
+  const nestedObjs: unknown[] = [asset.asset_category, asset.assetCategory, a.category, a.Category];
+  for (const obj of nestedObjs) {
+    if (!obj || typeof obj !== 'object') continue;
+    const o = obj as Record<string, unknown>;
+    for (const key of ['name', 'title', 'label', 'category_name', 'categoryName', 'naam']) {
+      const v = o[key];
+      if (typeof v === 'string' && v.trim() !== '') return v.trim();
+      if (typeof v === 'number') return String(v);
+    }
+  }
+  return null;
+}
+
+export function assetIsSimkaart(asset: InserveAsset): boolean {
+  const name = resolveAssetCategoryName(asset);
+  if (!name) return false;
+  const n = name.toLowerCase();
+  if (n === 'simkaart' || n === 'sim kaart' || n === 'sim-kaart' || n === 'simcard' || n === 'sim card' || n === 'sim-card' || n === 'simkaarten' || n === 'sim') return true;
+  if (n.includes('sim') && (n.includes('kaart') || n.includes('card'))) return true;
+  return false;
+}
+
+export function extractAssetCompanyId(asset: InserveAsset): number | null {
+  if (!asset) return null;
+  const direct: unknown[] = [
+    asset.company_id,
+    asset.companyId,
+    asset.customer_id,
+    asset.customerId,
+    asset.owner_id,
+    asset.relation_id,
+    asset.relationId,
+    asset.organization_id,
+    asset.organizationId,
+  ];
+  for (const v of direct) {
+    if (typeof v === 'number' && Number.isFinite(v) && Number.isInteger(v)) return v;
+    if (typeof v === 'string') {
+      const n = Number(v);
+      if (Number.isFinite(n) && Number.isInteger(n)) return n;
+    }
+  }
+  const nestedObj: unknown[] = [asset.company, asset.relation, asset.owner, asset.organization, asset.customer];
+  for (const obj of nestedObj) {
+    if (!obj || typeof obj !== 'object') continue;
+    if (typeof obj === 'number' && Number.isFinite(obj) && Number.isInteger(obj)) return obj;
+    const o = obj as Record<string, unknown>;
+    const candidates: unknown[] = [o.id, o.company_id, o.companyId, o.customer_id, o.customerId, o.relation_id, o.owner_id];
+    for (const v of candidates) {
+      if (typeof v === 'number' && Number.isFinite(v) && Number.isInteger(v)) return v;
+      if (typeof v === 'string') {
+        const n = Number(v);
+        if (Number.isFinite(n) && Number.isInteger(n)) return n;
+      }
+    }
+  }
+  return null;
+}
+
+export interface AssetIdentifiers {
+  iccid: string | null;
+  eid: string | null;
+  msisdn: string | null;
+  imsi: string | null;
+  allFound: Array<{ key: string; raw: string | number | boolean | null }>;
+}
+
+export function extractAssetIdentifiers(asset: InserveAsset): AssetIdentifiers {
+  const result: AssetIdentifiers = { iccid: null, eid: null, msisdn: null, imsi: null, allFound: [] };
+  if (!asset || typeof asset !== 'object') return result;
+  const a = asset as Record<string, unknown>;
+
+  const topLevel: Array<{ key: string; norm: (v: unknown) => string | null; dest: keyof AssetIdentifiers }> = [
+    { key: 'iccid', norm: (v) => v && typeof v === 'string' ? v : typeof v === 'number' ? String(v) : null, dest: 'iccid' },
+    { key: 'ICC_ID', norm: (v) => typeof v === 'string' ? v : null, dest: 'iccid' },
+    { key: 'sim_iccid', norm: (v) => typeof v === 'string' ? v : null, dest: 'iccid' },
+    { key: 'eid', norm: (v) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : null, dest: 'eid' },
+    { key: 'imsi', norm: (v) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : null, dest: 'imsi' },
+    { key: 'msisdn', norm: (v) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : null, dest: 'msisdn' },
+    { key: 'phone', norm: (v) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : null, dest: 'msisdn' },
+    { key: 'telephone', norm: (v) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : null, dest: 'msisdn' },
+    { key: 'mobile', norm: (v) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : null, dest: 'msisdn' },
+    { key: 'serial', norm: (v) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : null, dest: 'iccid' },
+    { key: 'serial_number', norm: (v) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : null, dest: 'iccid' },
+    { key: 'serialNumber', norm: (v) => typeof v === 'string' ? v : null, dest: 'iccid' },
+    { key: 'identifier', norm: (v) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : null, dest: 'iccid' },
+    { key: 'identification_number', norm: (v) => typeof v === 'string' ? v : null, dest: 'iccid' },
+    { key: 'asset_code', norm: (v) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : null, dest: 'iccid' },
+    { key: 'assetCode', norm: (v) => typeof v === 'string' ? v : null, dest: 'iccid' },
+    { key: 'code', norm: (v) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : null, dest: 'iccid' },
+    { key: 'subscriberId', norm: (v) => typeof v === 'string' ? v : null, dest: 'imsi' },
+    { key: 'subscriber_id', norm: (v) => typeof v === 'string' ? v : null, dest: 'imsi' },
+  ];
+
+  const foundRaw: Record<string, unknown[]> = { iccid: [], eid: [], msisdn: [], imsi: [] };
+
+  for (const { key, norm, dest } of topLevel) {
+    const lowerKey = key.toLowerCase();
+    let value: unknown = undefined;
+    for (const k of Object.keys(a)) {
+      if (k.toLowerCase() === lowerKey) { value = a[k]; break; }
+    }
+    if (value === undefined) continue;
+    const normed = norm(value);
+    if (normed !== null && typeof normed === 'string' && normed.trim() !== '') {
+      result.allFound.push({ key, raw: normed });
+      foundRaw[dest].push(normed.trim());
+    }
+  }
+
+  // Custom fields: scan via findCustomField pattern
+  const customScans: Array<{ target: string; dest: keyof AssetIdentifiers }> = [
+    { target: 'iccid', dest: 'iccid' },
+    { target: 'simkaartnummer', dest: 'iccid' },
+    { target: 'simkaart nummer', dest: 'iccid' },
+    { target: 'simkaart', dest: 'iccid' },
+    { target: 'chipnummer', dest: 'iccid' },
+    { target: 'chip nummer', dest: 'iccid' },
+    { target: 'serial iccid', dest: 'iccid' },
+    { target: 'eid', dest: 'eid' },
+    { target: 'eid nummer', dest: 'eid' },
+    { target: 'imsi', dest: 'imsi' },
+    { target: 'msisdn', dest: 'msisdn' },
+    { target: 'telefoonnummer', dest: 'msisdn' },
+    { target: 'mobiel nummer', dest: 'msisdn' },
+    { target: 'mobiel', dest: 'msisdn' },
+    { target: 'telefoon', dest: 'msisdn' },
+  ];
+
+  for (const { target, dest } of customScans) {
+    const field = findCustomField(asset as any, target);
+    if (!field) continue;
+    try {
+      const { text, optionLabel, optionValue, fieldValueText } = resolveFieldTextValue(field);
+      const candidates: Array<string | number | null | undefined> = [optionLabel, fieldValueText, text, optionValue as any];
+      for (const raw of candidates) {
+        if (raw === null || raw === undefined) continue;
+        const s = typeof raw === 'string' ? raw.trim() : String(raw);
+        if (s === '') continue;
+        result.allFound.push({ key: `custom:${target}`, raw: s });
+        foundRaw[dest].push(s);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Kies de beste waarde per identifier: de langste niet-numeric-only string als ICCID, anders eerst voorkomend
+  const pickBest = (arr: string[]): string | null => {
+    if (arr.length === 0) return null;
+    let best = arr[0];
+    for (const s of arr) {
+      if (s.length > best.length) best = s;
+    }
+    return best;
+  };
+  result.iccid = pickBest(foundRaw.iccid as string[]);
+  result.eid = pickBest(foundRaw.eid as string[]);
+  result.msisdn = pickBest(foundRaw.msisdn as string[]);
+  result.imsi = pickBest(foundRaw.imsi as string[]);
+  return result;
+}
+
+export async function listAllAssets(
+  opts: ListAssetsOptions & { maxPages?: number; endpointHint?: string } = {}
+): Promise<{
+  items: InserveAsset[];
+  totalFetched: number;
+  totalExpected: number;
+  pagesProcessed: number;
+  endpointUsed: string | null;
+  responses?: any[];
+}> {
+  const client = await inserveClient.getClient();
+  if (!client) {
+    throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
+  }
+  const { maxPages, perPage = 25, withRelations = [], builder = [], builderParamsStyle, extraQueryParams, endpointHint } = opts;
+
+  const candidates = endpointHint ? [endpointHint, ...INSERVE_ASSET_ENDPOINT_CANDIDATES.filter((e) => e !== endpointHint)] : INSERVE_ASSET_ENDPOINT_CANDIDATES;
+
+  type Strat = {
+    label: string;
+    endpoint: string;
+    withRelations: string[];
+    useBuilder?: boolean;
+    builderParamsStyle?: 'json' | 'nested';
+    extraQueryParams?: Record<string, string | number | boolean | undefined>;
+    perPage?: number;
+    nestedBuilderIndexFromOne?: boolean;
+    separateLimitPage?: boolean;
+  };
+  const strategies: Strat[] = [];
+  for (const ep of candidates) {
+    strategies.push({
+      label: `asset-${ep}-postman-flat`,
+      endpoint: ep,
+      withRelations: [],
+      useBuilder: false,
+      perPage,
+      extraQueryParams: {},
+      separateLimitPage: true,
+      nestedBuilderIndexFromOne: true,
+    });
+    strategies.push({
+      label: `asset-${ep}-json-builder`,
+      endpoint: ep,
+      withRelations: withRelations.length > 0 ? withRelations : ['company', 'customValues'],
+      useBuilder: true,
+      builderParamsStyle: 'json',
+    });
+    strategies.push({
+      label: `asset-${ep}-zonder-builder`,
+      endpoint: ep,
+      withRelations: [],
+      useBuilder: false,
+    });
+  }
+
+  for (const strat of strategies) {
+    try {
+      const effectivePerPage = strat.perPage ?? perPage;
+      const maxLoop = maxPages ?? 120;
+      const allItems: InserveAsset[] = [];
+      let totalExpected = 0;
+      let pagesProcessed = 0;
+      let emptyStreak = 0;
+      let firstKeys: string[] | null = null;
+      let stratMetaLogged = false;
+
+      for (let page = 1; page <= maxLoop; page++) {
+        const customQuery: Record<string, string | number | boolean | undefined> = {
+          page,
+          per_page: effectivePerPage,
+          ...(strat.extraQueryParams ?? {}),
+          ...(extraQueryParams ?? {}),
+        };
+        if (strat.separateLimitPage && strat.nestedBuilderIndexFromOne) {
+          const rels = strat.withRelations && strat.withRelations.length > 0 ? strat.withRelations : ['company', 'customValues'];
+          customQuery['builder[1][with]'] = rels.join(',');
+          customQuery['builder[2][limit]'] = effectivePerPage;
+          customQuery['builder[3][page]'] = page;
+          delete customQuery['page'];
+          delete customQuery['per_page'];
+        }
+
+        let chunk: any;
+        if (strat.useBuilder === false) {
+          chunk = await client.request<any>(strat.endpoint, {
+            method: 'GET',
+            query: customQuery,
+            builder: undefined,
+          });
+        } else {
+          const fullBuilder: unknown[] = [
+            ...(strat.withRelations.length > 0 ? [{ with: strat.withRelations }] : []),
+            { paginate: { page, per_page: effectivePerPage } },
+            ...builder,
+          ];
+          chunk = await client.request<any>(strat.endpoint, {
+            method: 'GET',
+            builder: fullBuilder,
+            query: extraQueryParams,
+            builderParamsStyle: builderParamsStyle ?? strat.builderParamsStyle,
+          });
+        }
+
+        pagesProcessed++;
+        let pageItems: InserveAsset[] = [];
+        let pageMeta: any = {};
+        if (Array.isArray(chunk)) {
+          pageItems = chunk as InserveAsset[];
+        } else if (chunk && typeof chunk === 'object') {
+          const rAny = chunk as Record<string, unknown>;
+          if (Array.isArray(rAny.data)) pageItems = rAny.data as InserveAsset[];
+          else if (Array.isArray(rAny.items)) pageItems = rAny.items as InserveAsset[];
+          else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as InserveAsset[];
+          else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveAsset[];
+          else if (Array.isArray(rAny.assets)) pageItems = rAny.assets as InserveAsset[];
+          pageMeta = (rAny.meta ?? rAny.pagination ?? rAny._meta ?? rAny._pagination ?? {}) as any;
+          if (typeof rAny.total === 'number' && totalExpected === 0) totalExpected = rAny.total as number;
+          if (typeof (rAny as any).last_page === 'number' || typeof (rAny as any).lastPage === 'number') {
+            pageMeta.last_page = (rAny as any).last_page ?? (rAny as any).lastPage;
+          }
+          if (page === 1 && !stratMetaLogged) {
+            stratMetaLogged = true;
+            try {
+              console.debug(
+                `[Inserve] listAssets strategie [${strat.label}] endpoint=${strat.endpoint} | P1: ${pageItems.length} assets | chunk keys: [${Object.keys(rAny).join(', ')}] | last_page=${pageMeta.last_page ?? '-'} total=${rAny.total ?? '-'}`
+              );
+            } catch {
+              /* noop */
+            }
+          }
+          if (!firstKeys && pageItems.length > 0 && typeof pageItems[0] === 'object') {
+            firstKeys = Object.keys(pageItems[0] as unknown as Record<string, unknown>);
+          }
+        }
+
+        if (pageItems.length > 0) {
+          allItems.push(...pageItems);
+          emptyStreak = 0;
+        } else {
+          emptyStreak++;
+        }
+
+        const metaTotal = pageMeta?.total ?? pageMeta?.count ?? pageMeta?.total_items ?? pageMeta?.totalItems;
+        if (typeof metaTotal === 'number') totalExpected = metaTotal;
+
+        const lastPage = pageMeta?.last_page ?? pageMeta?.lastPage ?? pageMeta?.total_pages ?? pageMeta?.totalPages;
+        if (emptyStreak >= 2) break;
+        if (typeof lastPage === 'number' && page >= lastPage) break;
+        if (typeof totalExpected === 'number' && totalExpected > 0 && allItems.length >= totalExpected) break;
+        if (pageItems.length === 0 && emptyStreak >= 1 && allItems.length > 0) break;
+      }
+
+      if (firstKeys) {
+        try {
+          console.debug(
+            `[Inserve] listAssets endpoint=[${strat.endpoint}] firstKeys (${allItems.length} items): [${firstKeys.join(', ')}]`
+          );
+        } catch {
+          /* noop */
+        }
+      }
+
+      if (allItems.length > 0) {
+        return {
+          items: allItems,
+          totalFetched: allItems.length,
+          totalExpected,
+          pagesProcessed,
+          endpointUsed: strat.endpoint,
+        };
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const notFoundLike =
+        msg.includes('404') || msg.includes('not found') || msg.includes('ENOTFOUND') || /\b4\d\d\b/.test(msg);
+      if (!notFoundLike) {
+        try {
+          console.debug(`[Inserve] listAssets strategie [${strat?.label}] endpoint=${strat?.endpoint} fout (non-404): ${msg.slice(0, 250)}`);
+        } catch {
+          /* noop */
+        }
+      }
+      continue;
+    }
+  }
+
+  return {
+    items: [],
+    totalFetched: 0,
+    totalExpected: 0,
+    pagesProcessed: 0,
+    endpointUsed: null,
+  };
 }
 

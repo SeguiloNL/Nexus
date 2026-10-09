@@ -22,6 +22,14 @@ type Ctx = {
 
 function includeDetail(): Prisma.SIMInclude {
   return {
+    customer: {
+      select: {
+        id: true,
+        companyName: true,
+        customerNumber: true,
+        status: true,
+      },
+    },
     assignments: {
       where: { endAt: null },
       orderBy: { startAt: "desc" as const },
@@ -62,9 +70,16 @@ export async function findManySims(
   const where: Prisma.SIMWhereInput = { deletedAt: null };
 
   if (customerScope && customerScope.length > 0) {
-    where.assignments = {
-      some: { subscription: { customerId: { in: customerScope } } },
+    const viaAssignment: Prisma.SIMWhereInput = {
+      assignments: { some: { subscription: { customerId: { in: customerScope } } } },
     };
+    const viaDirect: Prisma.SIMWhereInput = { customerId: { in: customerScope } };
+    if (where.OR) {
+      where.AND = [{ OR: [viaAssignment, viaDirect] }, { OR: where.OR }];
+      delete where.OR;
+    } else {
+      where.OR = [viaAssignment, viaDirect];
+    }
   }
 
   if (status) (where.status as any) = status;
@@ -72,12 +87,20 @@ export async function findManySims(
 
   if (search) {
     const s = search.trim();
-    where.OR = [
-      { iccid: { contains: s } },
-      { msisdn: { contains: s } },
-      { imsi: { contains: s } },
-      { provider: { contains: s, mode: "insensitive" } },
-    ];
+    const searchClause: Prisma.SIMWhereInput = {
+      OR: [
+        { iccid: { contains: s } },
+        { msisdn: { contains: s } },
+        { imsi: { contains: s } },
+        { provider: { contains: s, mode: "insensitive" } },
+      ],
+    };
+    if (where.OR) {
+      where.AND = [{ OR: where.OR }, searchClause];
+      delete where.OR;
+    } else {
+      where.OR = searchClause.OR;
+    }
   }
 
   const sortKey: keyof Prisma.SIMOrderByWithRelationInput =
@@ -115,9 +138,10 @@ export async function findManySims(
 export async function findSimById(id: string, customerScope?: string[]) {
   const where: Prisma.SIMWhereInput = { id, deletedAt: null };
   if (customerScope && customerScope.length > 0) {
-    where.assignments = {
-      some: { subscription: { customerId: { in: customerScope } } },
-    };
+    where.OR = [
+      { assignments: { some: { subscription: { customerId: { in: customerScope } } } } },
+      { customerId: { in: customerScope } },
+    ];
   }
   return prisma.sIM.findFirst({
     where,
@@ -172,17 +196,20 @@ export async function updateSim(
     });
 
     if (ctx.customerScope && ctx.customerScope.length > 0) {
-      const inScopeCount = await tx.simAssignment.count({
+      const inScopeViaAssignment = await tx.simAssignment.count({
         where: {
           simId: id,
           endAt: null,
           subscription: { customerId: { in: ctx.customerScope } },
         },
       });
+      const simForScope = await tx.sIM.findUnique({ where: { id }, select: { customerId: true } });
+      const inScopeViaDirect = simForScope?.customerId && ctx.customerScope.includes(simForScope.customerId) ? 1 : 0;
       const hasAnyActive = await tx.simAssignment.count({
         where: { simId: id, endAt: null },
       });
-      if (hasAnyActive > 0 && inScopeCount === 0) {
+      const hasDirectCustomer = simForScope?.customerId != null;
+      if ((hasAnyActive > 0 || hasDirectCustomer) && inScopeViaAssignment === 0 && inScopeViaDirect === 0) {
         throw new Error("SIM valt niet binnen je toegang");
       }
     }
@@ -229,17 +256,20 @@ export async function softDeleteSim(
     });
 
     if (ctx.customerScope && ctx.customerScope.length > 0) {
-      const inScopeCount = await tx.simAssignment.count({
+      const inScopeViaAssignment = await tx.simAssignment.count({
         where: {
           simId: id,
           endAt: null,
           subscription: { customerId: { in: ctx.customerScope } },
         },
       });
+      const simForScope = await tx.sIM.findUnique({ where: { id }, select: { customerId: true } });
+      const inScopeViaDirect = simForScope?.customerId && ctx.customerScope.includes(simForScope.customerId) ? 1 : 0;
       const hasAnyActive = await tx.simAssignment.count({
         where: { simId: id, endAt: null },
       });
-      if (hasAnyActive > 0 && inScopeCount === 0) {
+      const hasDirectCustomer = simForScope?.customerId != null;
+      if ((hasAnyActive > 0 || hasDirectCustomer) && inScopeViaAssignment === 0 && inScopeViaDirect === 0) {
         throw new Error("SIM valt niet binnen je toegang");
       }
     }
@@ -270,9 +300,10 @@ export async function bulkSoftDeleteSims(
   return prisma.$transaction(async (tx) => {
     const where: Prisma.SIMWhereInput = { id: { in: ids }, deletedAt: null };
     if (ctx.customerScope && ctx.customerScope.length > 0) {
-      where.assignments = {
-        some: { subscription: { customerId: { in: ctx.customerScope } } },
-      };
+      where.OR = [
+        { assignments: { some: { subscription: { customerId: { in: ctx.customerScope } } } } },
+        { customerId: { in: ctx.customerScope } },
+      ];
     }
     const rows = await tx.sIM.findMany({ where });
     if (!rows.length) return { count: 0, ids: [] };

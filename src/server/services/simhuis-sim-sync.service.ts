@@ -4,6 +4,13 @@ import { listAllSims, getSimStatus, simhuisClient } from "@/server/integrations/
 import type { SimhuisSimStatus } from "@/server/integrations/simhuis/types";
 import { SimStatus, SyncJobTrigger, SyncJobStatus, SyncJobId, type UserRole } from "@/types/enums";
 import {
+  normalizeIccid,
+  normalizeMsisdn,
+  normalizeImsi,
+  normalizeEid,
+  isPlaceholderIdentifier,
+} from "@/lib/identifiers";
+import {
   runUsageAlertNotificationCycle,
   type UsageAlertCycleReport,
 } from "./sim-usage-alert.service";
@@ -404,18 +411,6 @@ const INVALID_IDENTIFIER_PLACEHOLDERS: ReadonlySet<string> = new Set<string>([
   "usage", "quota", "allowance", "limit", "used",
 ]);
 
-function isNotPlaceholder(s: string): boolean {
-  const rawLower = s.toLowerCase().trim();
-  if (!rawLower) return false;
-  if (INVALID_IDENTIFIER_PLACEHOLDERS.has(rawLower)) return false;
-  if (rawLower === "null" || rawLower === "undefined") return false;
-  // Extra normalizatie: alle separators eruit halen en opnieuw checken
-  const stripped = rawLower.replace(/[\s_./\-()]+/g, "");
-  if (!stripped) return false;
-  if (INVALID_IDENTIFIER_PLACEHOLDERS.has(stripped)) return false;
-  return true;
-}
-
 // ============================================================
 // Aggressieve logging counters voor health-check van sync-batch
 // (tijdens hersynchronisatie na leegmaken DB willen we direct
@@ -438,36 +433,6 @@ type ExtractHealthCounters = {
   skippedReasonNoChanges: number;
   skippedReasonPlaceholderIccid: number;
 };
-
-function normIccid(v: string | null | undefined): string | null {
-  if (v === null || v === undefined) return null;
-  const s = String(v).replace(/\s+/g, "").trim();
-  if (!s || !isNotPlaceholder(s)) return null;
-  return s.length > 40 ? s.slice(0, 40) : s;
-}
-
-function normMsisdn(v: string | null | undefined): string | null {
-  if (v === null || v === undefined) return null;
-  const raw = String(v).replace(/\s+/g, "").trim();
-  if (!raw || !isNotPlaceholder(raw)) return null;
-  const s = raw.replace(/[^\d+]/g, "").trim();
-  if (!s || !isNotPlaceholder(s)) return null;
-  return s.length > 30 ? s.slice(0, 30) : s;
-}
-
-function normImsi(v: string | null | undefined): string | null {
-  if (v === null || v === undefined) return null;
-  const s = String(v).replace(/\s+/g, "").trim();
-  if (!s || !isNotPlaceholder(s)) return null;
-  return s.length > 20 ? s.slice(0, 20) : s;
-}
-
-function normEid(v: string | null | undefined): string | null {
-  if (v === null || v === undefined) return null;
-  const s = String(v).replace(/\s+/g, "").trim();
-  if (!s || !isNotPlaceholder(s)) return null;
-  return s.length > 40 ? s.slice(0, 40) : s;
-}
 
 function buildSimNotes(simhuis: SimhuisSimStatus): string | null {
   const parts: string[] = [];
@@ -617,7 +582,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
     const rawMsisdn = typeof s.msisdn === "string" ? s.msisdn : "";
 
     if (rawIccid) {
-      if (isNotPlaceholder(rawIccid)) {
+      if (!isPlaceholderIdentifier(rawIccid)) {
         h.withValidIccid++;
       } else {
         h.withIccidPlaceholder++;
@@ -627,7 +592,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
       }
     }
     if (rawEid) {
-      if (isNotPlaceholder(rawEid)) {
+      if (!isPlaceholderIdentifier(rawEid)) {
         h.withValidEid++;
       } else {
         h.withEidPlaceholder++;
@@ -637,7 +602,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
       }
     }
     if (rawMsisdn) {
-      if (isNotPlaceholder(rawMsisdn)) {
+      if (!isPlaceholderIdentifier(rawMsisdn)) {
         h.withValidMsisdn++;
       } else {
         h.withMsisdnPlaceholder++;
@@ -649,7 +614,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
   }
 
   // Eligible = sims MET een (ruwe) iccid truthy. Daarna doen we
-  // binnen de lus nog een normIccid + placeholder-check!
+  // binnen de lus nog een normalizeIccid + placeholder-check!
   const eligible = allSimsFromSimhuis.filter((s) => s.iccid);
 
   // Log de pre-scan health: direct zichtbaar in server logs
@@ -802,12 +767,12 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
 
   for (const simhuis of eligible) {
     const rawIccid = simhuis.iccid;
-    const iccid = normIccid(rawIccid);
+    const iccid = normalizeIccid(rawIccid);
     if (!iccid) {
       skipped++;
       // Als de rawIccid (voor normalisatie) nog steeds truthy was →
       // placeholder of anderszins ongeldig.
-      if (rawIccid && !isNotPlaceholder(String(rawIccid))) {
+      if (rawIccid && !!isPlaceholderIdentifier(String(rawIccid))) {
         h.skippedReasonPlaceholderIccid++;
       } else {
         h.skippedReasonNoIccid++;
@@ -833,9 +798,9 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
       const rawNetwork = simhuis.network;
       const rawPlanName = simhuis.planName;
       const rawProductType = simhuis.productType;
-      const msisdnValRaw = normMsisdn(rawMsisdn);
-      const imsiVal = normImsi(rawImsi);
-      const eidValRaw = normEid(rawEid);
+      const msisdnValRaw = normalizeMsisdn(rawMsisdn);
+      const imsiVal = normalizeImsi(rawImsi);
+      const eidValRaw = normalizeEid(rawEid);
 
       // Unique-key conflict resolutie VOORAF (voorkomt Prisma unique constraint fouten)
       // - Bij bestaande SIM: gebruik existing.id als eigen-sim-identiteit
@@ -918,6 +883,13 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           subscriptionDate: (existing as any).subscriptionDate ?? null,
         };
         const newData: Record<string, any> = { ...oldData };
+        // 🔒 Bescherm Inserve-klantkoppelvelden: Simhuis sync mag deze NOOIT
+        //    wijzigen, wissen of overschrijven (ook niet met null).
+        delete newData.customerId;
+        delete newData.customerLinkSource;
+        delete newData.customerLinkedAt;
+        delete newData.inserveAssetId;
+        delete newData.inserveAssetLinkedAt;
         let changed = wasSoftDeleted;
         if (wasSoftDeleted) {
           newData.deletedAt = null;
@@ -1371,7 +1343,7 @@ export async function syncActiveSimsUsageFromSimhuis(
     simhuis: SimhuisSimStatus;
   }> = [];
   for (const s of allSimsFromSimhuis) {
-    const n = normIccid(s.iccid);
+    const n = normalizeIccid(s.iccid);
     if (!n) continue;
     if (byIccid.has(n)) {
       matchedFromSimhuis.push({ iccid: n, simhuis: s });
@@ -1947,7 +1919,7 @@ export async function syncUsageForSingleSim(
   if (!sim.iccid) {
     throw new Error(`SIM heeft geen ICCID — kan Simhuis niet opvragen.`);
   }
-  const normalizedIccid = normIccid(sim.iccid);
+  const normalizedIccid = normalizeIccid(sim.iccid);
   if (!normalizedIccid) {
     throw new Error(`SIM ICCID ongeldig: ${sim.iccid}`);
   }
@@ -1982,7 +1954,7 @@ export async function syncUsageForSingleSim(
     try {
       const all = await listAllSims();
       const match = all.find(
-        (s) => normIccid(s.iccid) === normalizedIccid
+        (s) => normalizeIccid(s.iccid) === normalizedIccid
       );
       if (match) {
         // Merge: neem de beste van beide (behoud velden die WEL gevonden waren in P1)

@@ -132,6 +132,10 @@ enum AuditAction {
   CREATE_CONTACT
   UPDATE_CONTACT
   DELETE_CONTACT
+  INSERVE_SIM_LINKED
+  INSERVE_SIM_REASSIGNED
+  INSERVE_SIM_LINK_CONFLICT
+  INSERVE_SIM_LINKED_BATCH
 }
 
 enum InserveSyncStatus {
@@ -192,6 +196,13 @@ enum InvoiceStatus {
   PAID
   OVERDUE
   CANCELLED
+}
+
+enum CustomerLinkSource {
+  INSERVE_ASSET
+  MANUAL
+  SUBSCRIPTION_DERIVED
+  UNKNOWN
 }
 
 // ------------------------------
@@ -297,6 +308,7 @@ model Customer {
   users             User[]           @relation("CustomerUsers")
   userLinks         UserCustomer[]
   contacts          ContactPerson[]
+  directSims        SIM[]            @relation("SimDirectCustomer")
 
   @@index([status])
   @@index([parentCustomerId])
@@ -456,25 +468,25 @@ model Tracker {
 }
 
 model SIM {
-  id                       String    @id @default(cuid())
-  iccid                    String    @unique @db.VarChar(40)
-  eid                      String?   @unique @db.VarChar(40)
-  msisdn                   String?   @unique @db.VarChar(30)
-  imsi                     String?   @db.VarChar(20)
-  subscriberId             String?   @db.VarChar(100)
-  simName                  String?   @db.VarChar(200)
-  simGroup                 String?   @db.VarChar(100)
-  product                  String?   @db.VarChar(200)
-  productType              String?   @db.VarChar(150)
-  provider                 String    @db.VarChar(150)
-  simType                  String?   @db.VarChar(100)
-  apn                      String?   @db.VarChar(200)
-  status                   SimStatus @default(IN_STOCK)
-  providerActivationDate   DateTime? @db.Date
-  providerDeactivationDate DateTime? @db.Date
-  activationDate           DateTime? @db.Timestamptz
-  reactivationDate         DateTime? @db.Timestamptz
-  subscriptionDate         DateTime? @db.Timestamptz
+  id                       String              @id @default(cuid())
+  iccid                    String              @unique @db.VarChar(40)
+  eid                      String?             @unique @db.VarChar(40)
+  msisdn                   String?             @unique @db.VarChar(30)
+  imsi                     String?             @db.VarChar(20)
+  subscriberId             String?             @db.VarChar(100)
+  simName                  String?             @db.VarChar(200)
+  simGroup                 String?             @db.VarChar(100)
+  product                  String?             @db.VarChar(200)
+  productType              String?             @db.VarChar(150)
+  provider                 String              @db.VarChar(150)
+  simType                  String?             @db.VarChar(100)
+  apn                      String?             @db.VarChar(200)
+  status                   SimStatus           @default(IN_STOCK)
+  providerActivationDate   DateTime?           @db.Date
+  providerDeactivationDate DateTime?           @db.Date
+  activationDate           DateTime?           @db.Timestamptz
+  reactivationDate         DateTime?           @db.Timestamptz
+  subscriptionDate         DateTime?           @db.Timestamptz
   dataUsedBytes            BigInt?
   dataLimitBytes           BigInt?
   lowestDataLimitBytes     BigInt?
@@ -482,20 +494,26 @@ model SIM {
   smsLimitCount            Int?
   lowestSmsLimitCount      Int?
   lastUsageSyncAt          DateTime?
-  usageSource              String?   @db.VarChar(30)
-  usageBundleId            String?   @db.VarChar(200)
-  usageLocalProductId      String?   @db.VarChar(200)
-  usageLocalProductName    String?   @db.VarChar(300)
-  usagePeriodStart         DateTime? @db.Timestamptz
-  usagePeriodEnd           DateTime? @db.Timestamptz
-  usageRetrievedAt         DateTime? @db.Timestamptz
-  usageCdrQueryStart       DateTime? @db.Timestamptz
-  usageCdrQueryEnd         DateTime? @db.Timestamptz
+  usageSource              String?             @db.VarChar(30)
+  usageBundleId            String?             @db.VarChar(200)
+  usageLocalProductId      String?             @db.VarChar(200)
+  usageLocalProductName    String?             @db.VarChar(300)
+  usagePeriodStart         DateTime?           @db.Timestamptz
+  usagePeriodEnd           DateTime?           @db.Timestamptz
+  usageRetrievedAt         DateTime?           @db.Timestamptz
+  usageCdrQueryStart       DateTime?           @db.Timestamptz
+  usageCdrQueryEnd         DateTime?           @db.Timestamptz
   usageBundleUsages        Json?
-  usageSelectionNote       String?   @db.Text
-  notes                    String?   @db.Text
-  createdAt                DateTime  @default(now())
-  updatedAt                DateTime  @updatedAt
+  usageSelectionNote       String?             @db.Text
+  notes                    String?             @db.Text
+  customerId               String?
+  customer                 Customer?           @relation("SimDirectCustomer", fields: [customerId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  customerLinkSource       CustomerLinkSource?
+  customerLinkedAt         DateTime?           @db.Timestamptz
+  inserveAssetId           Int?                @unique
+  inserveAssetLinkedAt     DateTime?           @db.Timestamptz
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
   deletedAt                DateTime?
 
   assignments       SimAssignment[]
@@ -504,6 +522,7 @@ model SIM {
 
   @@index([status])
   @@index([provider])
+  @@index([customerId])
   @@map("sims")
 }
 

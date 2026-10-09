@@ -927,6 +927,7 @@ export async function triggerSyncJobAction(
 
       let statusLabel: string;
       if (r.status === "SUCCESS") statusLabel = "afgerond";
+      else if (r.status === "PARTIAL_SUCCESS") statusLabel = "gedeeltelijk geslaagd";
       else if (r.status === "SKIPPED") statusLabel = "overgeslagen";
       else statusLabel = "❌ MISLUKT";
 
@@ -960,7 +961,7 @@ export async function triggerSyncJobAction(
         `API pagina's: ${r.pagesProcessed}, API-totaal: ${r.totalExpected}. Duur: ${r.durationMs}ms.`;
 
       const errLine =
-        r.status === "FAILED" && r.errorMessage
+        (r.status === "FAILED" || r.status === "PARTIAL_SUCCESS") && r.errorMessage
           ? ` | Fout: ${r.errorMessage}`
           : r.status === "SKIPPED" && r.errorMessage
           ? ` | Reden: ${r.errorMessage}`
@@ -974,6 +975,11 @@ export async function triggerSyncJobAction(
           (r.failed > 0 ? `${r.failed} records konden niet worden verwerkt.` : "Import mislukt.");
       } else if (r.status === "SKIPPED") {
         finalStatus = SyncJobStatus.SKIPPED;
+      } else if (r.status === "PARTIAL_SUCCESS") {
+        finalStatus = SyncJobStatus.SUCCESS;
+        if (r.errorMessage && !errorMessage) {
+          errorMessage = r.errorMessage;
+        }
       }
     } else {
       throw new Error(`Onbekende jobId: ${validated.data.jobId}`);
