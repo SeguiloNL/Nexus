@@ -10,6 +10,7 @@ import {
   extractAssetIdentifiers,
 } from "@/server/integrations/inserve/service";
 import type { InserveAsset } from "@/server/integrations/inserve/types";
+import { InserveClient, InserveRateLimitExceededError, isInserveRateLimitError } from "@/server/integrations/inserve/client";
 import { normalizeIccid, normalizeMsisdn, normalizeEid, normalizeImsi, maskIccid, isPlaceholderIdentifier } from "@/lib/identifiers";
 
 export type SimLinkSkipReason =
@@ -79,6 +80,10 @@ export interface SimLinkSummary {
   conflictDetails: SimLinkConflictDetail[];
   notMatchedDetails: SimLinkNoMatchDetail[];
   errorMessages: string[];
+  rateLimitBreached?: boolean;
+  skippedDueToLowBudget?: boolean;
+  budgetRemainingAtStart?: number;
+  budgetUsedAtStart?: number;
 }
 
 export interface RunSimLinkOptions {
@@ -107,6 +112,8 @@ export const EMPTY_SIM_LINK_SUMMARY: SimLinkSummary = {
   conflictDetails: [],
   notMatchedDetails: [],
   errorMessages: [],
+  rateLimitBreached: false,
+  skippedDueToLowBudget: false,
 };
 
 type CompanyInfo = { customerId: string; companyName: string; customerNumber: string | null; status: CustomerStatus };
@@ -129,6 +136,24 @@ function pushLimited<T>(arr: T[], v: T, limit = 500): void {
 export async function runInserveSimAssetLink(opts: RunSimLinkOptions = {}): Promise<SimLinkSummary> {
   const { dryRun = false, maxPages, endpointHint, perPage, auditUserId } = opts;
   const summary: SimLinkSummary = { ...EMPTY_SIM_LINK_SUMMARY, dryRun };
+
+  // Budget snapshot (voor debug/rapportage)
+  const snap = InserveClient.getBudget();
+  summary.budgetRemainingAtStart = snap.remaining;
+  summary.budgetUsedAtStart = snap.used;
+
+  // [RC5] Budget onder de drempel — skip de gehele SIM-koppelingsfase.
+  //     (We willen geen 39 strategy-trial calls opeten als er al < 15
+  //      calls over zijn, dat verspilt alleen budget voor de eerstvolgende
+  //      run.)
+  const MIN_BUDGET_FOR_SIM_LINK = 15;
+  if (InserveClient.isBudgetBelow(MIN_BUDGET_FOR_SIM_LINK)) {
+    summary.skippedDueToLowBudget = true;
+    summary.errorMessages.push(
+      `SIM-link overgeslagen: resterend API-budget ${snap.remaining}/${snap.max} < ${MIN_BUDGET_FOR_SIM_LINK}. Wacht tot het rolling-window bijvult.`
+    );
+    return summary;
+  }
 
   try {
     // [1] Actieve, Inserve-gekoppelde bedrijven
@@ -156,6 +181,16 @@ export async function runInserveSimAssetLink(opts: RunSimLinkOptions = {}): Prom
     try {
       listResult = await listAllAssets({ maxPages, endpointHint, perPage });
     } catch (e: any) {
+      const rl = isInserveRateLimitError(e);
+      if (rl) {
+        summary.rateLimitBreached = true;
+        summary.errors++;
+        summary.errorMessages.push(
+          `Rate limit bereikt tijdens listAllAssets (${rl.usedCount}/${rl.maxCount}). ` +
+          `SIM-koppeling onderbroken; probeer over ${Math.ceil(rl.remainingMs / 1000)}s opnieuw.`
+        );
+        return summary;
+      }
       summary.errors++;
       summary.errorMessages.push(`listAllAssets failed: ${e?.message ?? String(e)}`.slice(0, 400));
       return summary;

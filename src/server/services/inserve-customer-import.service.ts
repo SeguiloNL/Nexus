@@ -1,7 +1,12 @@
 import { prisma } from "@/lib/prisma";
 import type { Customer, ContactPerson } from "@prisma/client";
 import type { InserveCompany, InserveContact } from "../integrations/inserve/types";
-import { inserveClient, InserveApiError } from "../integrations/inserve/client";
+import {
+  inserveClient,
+  InserveApiError,
+  InserveRateLimitExceededError,
+  isInserveRateLimitError,
+} from "../integrations/inserve/client";
 import {
   listAllCompanies,
   listAllClients,
@@ -75,6 +80,7 @@ export interface ImportSummary {
     updated: number;
     skipped: number;
     failed: number;
+    rateLimitBreached?: boolean;
   };
   skipped: {
     inactive_or_missing_nexus_field: number;
@@ -703,14 +709,27 @@ export async function runInserveCustomerImport(
       contactsByCompanyId = groupContactsByCompanyId(fetchedContacts);
     } catch (ce: any) {
       timing.fetchClients = Math.max(timing.fetchClients, Date.now() - tClients);
-      summary.contactFailedDetails!.push({
-        error: `Ophalen contactpersonen mislukt: ${(ce?.message ?? String(ce)).slice(0, 400)}`,
-      });
-      markPartialFailed(
-        `Contactpersonen konden niet worden opgehaald: ${(ce?.message ?? String(ce)).slice(0, 200)}. Bedrijven worden wel verwerkt.`,
-        undefined,
-        true
-      );
+      const rl = isInserveRateLimitError(ce);
+      summary.contacts.rateLimitBreached = !!rl;
+      if (rl) {
+        summary.contactFailedDetails!.push({
+          error: `Rate limit bereikt (${rl.usedCount}/${rl.maxCount} calls, wacht ${Math.ceil(rl.remainingMs / 1000)}s). Contactpersonen overgeslagen.`,
+        });
+        markPartialFailed(
+          `Rate limit bereikt tijdens contactpersonen-import (${rl.usedCount}/${rl.maxCount}). Bedrijven zijn wel verwerkt; contacten SIM-koppeling later proberen.`,
+          { source: "contacts_rate_limit", remainingMs: rl.remainingMs, usedCount: rl.usedCount, maxCount: rl.maxCount },
+          true
+        );
+      } else {
+        summary.contactFailedDetails!.push({
+          error: `Ophalen contactpersonen mislukt: ${(ce?.message ?? String(ce)).slice(0, 400)}`,
+        });
+        markPartialFailed(
+          `Contactpersonen konden niet worden opgehaald: ${(ce?.message ?? String(ce)).slice(0, 200)}. Bedrijven worden wel verwerkt.`,
+          undefined,
+          true
+        );
+      }
     }
 
     const t5 = Date.now();

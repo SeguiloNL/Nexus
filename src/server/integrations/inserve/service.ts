@@ -1,4 +1,10 @@
-import { inserveClient, InserveClient, InserveApiError } from './client';
+import {
+  inserveClient,
+  InserveClient,
+  InserveApiError,
+  InserveRateLimitExceededError,
+  isInserveRateLimitError,
+} from './client';
 import type {
   InserveCompany,
   InserveArticle,
@@ -1158,11 +1164,26 @@ export async function listAllClients(
       };
     } catch (e) {
       errors.push({ label: strat.label, error: e });
+      // Rate limit bereikt: stop verder strategie-onderzoek onmiddellijk
+      // (geen 4 × 1e-pagina verspillen).
+      if (isInserveRateLimitError(e)) {
+        break;
+      }
       const is5xx =
         (e instanceof InserveApiError && e.statusCode >= 500 && e.statusCode < 600) ||
         !!(e as any)?.statusCode?.toString?.().startsWith('5');
       if (!is5xx) break;
     }
+  }
+
+  // Als een rate limit fout de stop veroorzaakte: re-throw die specifieke
+  // fout zodat service-layer het als soft-failure kan afhandelen (geen
+  // generieke "faalde op alle pogingen"-wrap).
+  const rlErr = errors
+    .map((e) => isInserveRateLimitError(e.error))
+    .find((v): v is InserveRateLimitExceededError => v !== null && v !== undefined);
+  if (rlErr) {
+    throw rlErr;
   }
 
   const messages = errors
@@ -1793,6 +1814,8 @@ export async function listAllAssets(
     });
   }
 
+  const errors: Array<{ label: string; error: unknown }> = [];
+
   for (const strat of strategies) {
     try {
       const effectivePerPage = strat.perPage ?? perPage;
@@ -1910,6 +1933,12 @@ export async function listAllAssets(
         };
       }
     } catch (err) {
+      errors.push({ label: strat.label, error: err });
+      // Rate limit: stop strategie-loop onmiddellijk (geen 39 × verspilde
+      // pogingen). 404/endpoint-bestaat-niet mag gewoon verder.
+      if (isInserveRateLimitError(err)) {
+        break;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       const notFoundLike =
         msg.includes('404') || msg.includes('not found') || msg.includes('ENOTFOUND') || /\b4\d\d\b/.test(msg);
@@ -1923,6 +1952,13 @@ export async function listAllAssets(
       continue;
     }
   }
+
+  // Als de strategy-loop stopte door rate-limit: re-throw direct (geen
+  // generieke "lege return" van listAllAssets, dan verliest caller context).
+  const rlErr = errors
+    .map((e) => isInserveRateLimitError(e.error))
+    .find((v): v is InserveRateLimitExceededError => v !== null && v !== undefined);
+  if (rlErr) throw rlErr;
 
   return {
     items: [],

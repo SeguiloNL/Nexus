@@ -37,8 +37,42 @@ export class InserveApiError extends Error {
 const REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_RETRY_WAIT_MS = 1000;
 const CLIENT_CACHE_TTL_MS = 60_000;
-const MIN_INTER_REQUEST_DELAY_MS = 300;
-const MAX_REQUESTS_PER_RUN = 80;
+const MIN_INTER_REQUEST_DELAY_MS = 500;
+const MAX_REQUESTS_PER_WINDOW = 500;
+const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 min rolling window
+
+export class InserveRateLimitExceededError extends Error {
+  public readonly remainingMs: number;
+  public readonly usedCount: number;
+  public readonly maxCount: number;
+  constructor(
+    message: string,
+    opts: { remainingMs: number; usedCount: number; maxCount: number }
+  ) {
+    super(message);
+    this.name = 'InserveRateLimitExceededError';
+    this.remainingMs = opts.remainingMs;
+    this.usedCount = opts.usedCount;
+    this.maxCount = opts.maxCount;
+  }
+}
+
+export function isInserveRateLimitError(err: unknown): InserveRateLimitExceededError | null {
+  if (err instanceof InserveRateLimitExceededError) return err;
+  if (err instanceof Error) {
+    const m = err.message;
+    if (
+      m.includes('Rate limit:') ||
+      m.includes('429') ||
+      m.includes('too many requests') ||
+      m.includes('Too Many Requests')
+    ) {
+      // Best effort — class members unknown (0/0 default)
+      return new InserveRateLimitExceededError(m, { remainingMs: 0, usedCount: 0, maxCount: MAX_REQUESTS_PER_WINDOW });
+    }
+  }
+  return null;
+}
 
 interface ResolvedCredentials {
   subdomain: string;
@@ -145,8 +179,7 @@ export class InserveClient {
   private readonly apiKey: string;
 
   private static lastRequestAt: number = 0;
-  private static requestsInRun: number = 0;
-  private static currentRunResetAt: number = 0;
+  private static requestTimestamps: number[] = [];
 
   constructor(subdomain: string, apiKey: string) {
     if (!subdomain) {
@@ -159,26 +192,80 @@ export class InserveClient {
     this.apiKey = apiKey;
   }
 
+  /**
+   * Returns rolling-window budget info for the Inserve API key.
+   * - `remaining`: calls left within the window
+   * - `used`: calls made inside the current window
+   * - `windowElapsedMs`: ms since oldest request in window
+   * - `untilOldestLeavesMs`: ms until the oldest call (if at cap) ages out
+   */
+  public static getBudget(): {
+    remaining: number;
+    used: number;
+    max: number;
+    windowMs: number;
+    untilOldestLeavesMs: number;
+  } {
+    const now = Date.now();
+    const cutoff = now - RATE_LIMIT_WINDOW_MS;
+    const fresh = InserveClient.requestTimestamps.filter((t) => t > cutoff);
+    InserveClient.requestTimestamps = fresh; // side-effect free shrink
+    const used = fresh.length;
+    const remaining = Math.max(0, MAX_REQUESTS_PER_WINDOW - used);
+    const untilOldestLeavesMs = fresh.length > 0 ? Math.max(0, (fresh[0] + RATE_LIMIT_WINDOW_MS) - now) : 0;
+    return {
+      remaining,
+      used,
+      max: MAX_REQUESTS_PER_WINDOW,
+      windowMs: RATE_LIMIT_WINDOW_MS,
+      untilOldestLeavesMs,
+    };
+  }
+
+  /**
+   * Whether fewer than `minCalls` calls remain in the rolling window.
+   * Used by service-layer to skip expensive discovery phases gracefully.
+   */
+  public static isBudgetBelow(minCalls: number): boolean {
+    return InserveClient.getBudget().remaining < minCalls;
+  }
+
+  /** Returns true if error message indicates a rate limit breach (429 or local MAX). */
+  public static errorLooksLikeRateLimit(err: unknown): boolean {
+    return isInserveRateLimitError(err) !== null;
+  }
+
   private static async throttleAndCount(): Promise<void> {
     const now = Date.now();
-    const RUN_WINDOW_MS = 10 * 60 * 1000;
-    if (now - InserveClient.currentRunResetAt > RUN_WINDOW_MS) {
-      InserveClient.requestsInRun = 0;
-      InserveClient.currentRunResetAt = now;
-    }
-    if (InserveClient.requestsInRun >= MAX_REQUESTS_PER_RUN) {
-      throw new Error(
-        `[Inserve] Rate limit: ${MAX_REQUESTS_PER_RUN} API calls reached within 10 minutes. ` +
-        `Verlaag het aantal paginas of wacht.`
+    const cutoff = now - RATE_LIMIT_WINDOW_MS;
+    // Rolling window: keep only timestamps within last WINDOW_MS
+    const fresh = InserveClient.requestTimestamps.filter((t) => t > cutoff);
+    InserveClient.requestTimestamps = fresh;
+
+    if (fresh.length >= MAX_REQUESTS_PER_WINDOW) {
+      const oldest = fresh[0];
+      const waitMs = Math.max(1000, (oldest + RATE_LIMIT_WINDOW_MS) - now);
+      throw new InserveRateLimitExceededError(
+        `[Inserve] Rate limit: ${MAX_REQUESTS_PER_WINDOW} API calls reached within 15 minutes (rolling window). ` +
+          `Wacht ${Math.ceil(waitMs / 1000)}s of verlaag het aantal pagina's.`,
+        {
+          remainingMs: waitMs,
+          usedCount: fresh.length,
+          maxCount: MAX_REQUESTS_PER_WINDOW,
+        }
       );
     }
-    InserveClient.requestsInRun++;
+
+    // Inter-request delay to smooth burst traffic
     const since = now - InserveClient.lastRequestAt;
     if (since < MIN_INTER_REQUEST_DELAY_MS) {
       const wait = MIN_INTER_REQUEST_DELAY_MS - since;
       await sleep(wait);
     }
-    InserveClient.lastRequestAt = Date.now();
+
+    const countedAt = Date.now();
+    InserveClient.lastRequestAt = countedAt;
+    InserveClient.requestTimestamps.push(countedAt);
   }
 
   async request<T = unknown>(path: string, options: InserveRequestOptions = {}): Promise<T> {
