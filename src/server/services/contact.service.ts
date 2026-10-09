@@ -81,21 +81,21 @@ export async function createContactService(
     throw new Error(`Klant (${parsed.customerId}) bestaat niet.`);
   }
 
-  return prisma.$transaction(async (tx) => {
-    const created = await tx.contactPerson.create({
-      data: {
-        customerId: parsed.customerId,
-        firstName: parsed.firstName ?? null,
-        lastName: parsed.lastName,
-        email: parsed.email ?? null,
-        phone: parsed.phone ?? null,
-        mobile: parsed.mobile ?? null,
-        functionTitle: parsed.functionTitle ?? null,
-        inserveContactId: parsed.inserveContactId ?? null,
-      },
-    });
+  const created = await prisma.contactPerson.create({
+    data: {
+      customerId: parsed.customerId,
+      firstName: parsed.firstName ?? null,
+      lastName: parsed.lastName,
+      email: parsed.email ?? null,
+      phone: parsed.phone ?? null,
+      mobile: parsed.mobile ?? null,
+      functionTitle: parsed.functionTitle ?? null,
+      inserveContactId: parsed.inserveContactId ?? null,
+    },
+  });
 
-    await logAudit(tx as any, {
+  try {
+    await logAudit(prisma as any, {
       entityType: "contact_person",
       entityId: created.id,
       action: "CREATE_CONTACT",
@@ -103,9 +103,10 @@ export async function createContactService(
       newValues: { ...created },
       metadata: { customerId: created.customerId },
     });
+  } catch (_auditErr) {
+  }
 
-    return created;
-  });
+  return created;
 }
 
 export async function updateContactService(
@@ -133,18 +134,18 @@ export async function updateContactService(
   if (parsed.functionTitle !== undefined) newValues.functionTitle = parsed.functionTitle ?? null;
   if (parsed.inserveContactId !== undefined) newValues.inserveContactId = parsed.inserveContactId ?? null;
 
-  return prisma.$transaction(async (tx) => {
-    const updated = await tx.contactPerson.update({
-      where: { id: parsed.id },
-      data: newValues,
-    });
+  const updated = await prisma.contactPerson.update({
+    where: { id: parsed.id },
+    data: newValues,
+  });
 
-    const { oldValues, newValues: newValuesDiff } = diffObject(
-      existing as unknown as Record<string, unknown>,
-      updated as unknown as Record<string, unknown>
-    );
+  const { oldValues, newValues: newValuesDiff } = diffObject(
+    existing as unknown as Record<string, unknown>,
+    updated as unknown as Record<string, unknown>
+  );
 
-    await logAudit(tx as any, {
+  try {
+    await logAudit(prisma as any, {
       entityType: "contact_person",
       entityId: updated.id,
       action: "UPDATE_CONTACT",
@@ -153,9 +154,10 @@ export async function updateContactService(
       newValues: newValuesDiff,
       metadata: { customerId: updated.customerId },
     });
+  } catch (_auditErr) {
+  }
 
-    return updated;
-  });
+  return updated;
 }
 
 export async function deleteContactService(
@@ -174,15 +176,15 @@ export async function deleteContactService(
   }
   await validateCustomerScope(existing.customerId, ctx);
 
-  return prisma.$transaction(async (tx) => {
-    const result = softDelete
-      ? await tx.contactPerson.update({
-          where: { id },
-          data: { deletedAt: new Date() },
-        })
-      : await tx.contactPerson.delete({ where: { id } });
+  const result = softDelete
+    ? await prisma.contactPerson.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      })
+    : await prisma.contactPerson.delete({ where: { id } });
 
-    await logAudit(tx as any, {
+  try {
+    await logAudit(prisma as any, {
       entityType: "contact_person",
       entityId: id,
       action: "DELETE_CONTACT",
@@ -190,20 +192,21 @@ export async function deleteContactService(
       oldValues: { ...existing },
       metadata: { customerId: existing.customerId, softDelete },
     });
+  } catch (_auditErr) {
+  }
 
-    return result;
-  });
+  return result;
 }
 
 export async function findContactByInserveId(
   inserveContactId: number,
   opts: { includeDeleted?: boolean } = {}
 ): Promise<PrismaContactPerson | null> {
-  const where: Prisma.ContactPersonWhereUniqueInput & Prisma.ContactPersonWhereInput = {
+  const where: Prisma.ContactPersonWhereInput = {
     inserveContactId,
   };
   if (!opts.includeDeleted) where.deletedAt = null;
-  return prisma.contactPerson.findUnique({ where });
+  return prisma.contactPerson.findFirst({ where });
 }
 
 export async function findSimilarContactsByCustomer(

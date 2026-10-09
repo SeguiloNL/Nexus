@@ -767,7 +767,7 @@ export async function runInserveCustomerImport(
                 continue;
               }
               try {
-                await updateContactService(existingByInserve.id, newVals, { userId: ctx.userId } as any);
+                await updateContactService(existingByInserve.id, newVals, ctx as any);
                 summary.contacts.updated++;
               } catch {
                 summary.contacts.failed++;
@@ -809,7 +809,7 @@ export async function runInserveCustomerImport(
                   mobile: mobile ?? undefined,
                   functionTitle: functionTitle ?? undefined,
                   inserveContactId: insId,
-                }, { userId: ctx.userId } as any);
+                }, ctx as any);
                 summary.contacts.created++;
               } catch {
                 summary.contacts.failed++;
@@ -1010,7 +1010,7 @@ export async function runInserveCustomerImport(
           ? await prisma.customer.findUnique({
               where: { id: previouslyLinkedIds.get(companyId)!.id },
             })
-          : await prisma.customer.findUnique({
+          : await prisma.customer.findFirst({
               where: { inserveCompanyId: companyId },
             });
 
@@ -1098,7 +1098,7 @@ export async function runInserveCustomerImport(
             const prismaCode = createErr?.code ?? (createErr as any)?.errorCode ?? null;
             const isUniqueViolation = prismaCode === "P2002" || /unique constraint|duplicate key/i.test(createErr?.message ?? "");
             if (!isUniqueViolation) throw createErr;
-            const existingViaUnique = await prisma.customer.findUnique({
+            const existingViaUnique = await prisma.customer.findFirst({
               where: { inserveCompanyId: companyId },
             });
             if (!existingViaUnique) throw createErr;
@@ -1238,11 +1238,7 @@ export async function runInserveCustomerImport(
   }
 
   const tFinalize = Date.now();
-  timing.finalize = Date.now() - tFinalize;
-  timing.total = Date.now() - t0;
-  summary.timingMs = { ...timing };
-
-  return finalizeSummary(
+  const finalized = finalizeSummary(
     summary,
     syncJobRun.id,
     finalStatus,
@@ -1250,6 +1246,10 @@ export async function runInserveCustomerImport(
     finalErrorDetail,
     !opts.skipRunManagement
   );
+  timing.finalize = Date.now() - tFinalize;
+  timing.total = Math.max(timing.total, Date.now() - t0);
+  finalized.timingMs = { ...timing };
+  return finalized;
 }
 
 function finalizeSummary(

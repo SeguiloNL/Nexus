@@ -20,6 +20,7 @@ import { SyncJobId, SyncJobStatus, SyncJobTrigger, RoleScope, CustomerType } fro
 vi.mock("@/lib/prisma", () => {
   const makeSharedMethods = () => ({
     findUnique: vi.fn(),
+    findFirst: vi.fn(),
     findMany: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
@@ -444,14 +445,86 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
       }
       return base;
     });
+    (prisma.customer.findFirst as any).mockImplementation(async (q: any) => {
+      if (!q || !q.where) return null;
+      let base: Customer | null = null;
+      if (typeof q.where.id === "string") base = __CID.get(q.where.id) ?? null;
+      else if (typeof q.where.inserveCompanyId === "number") base = __CINS.get(q.where.inserveCompanyId) ?? null;
+      if (!base) return null;
+      if (q.select) {
+        const out: any = {};
+        for (const k of Object.keys(q.select)) if (k in base) out[k] = (base as any)[k];
+        return out;
+      }
+      return base;
+    });
     (prisma.customer.findMany as any).mockResolvedValue([]);
+    (prisma.customer.create as any).mockImplementation(async (d: any) => {
+      const id = d.data?.id ?? `cust-${(d.data?.inserveCompanyId ?? Math.random().toString(36).slice(2, 7))}`;
+      const created = {
+        id,
+        name: d.data?.name ?? "Onbekend",
+        companyName: d.data?.companyName ?? d.data?.name ?? "Onbekend",
+        parentCustomerId: d.data?.parentCustomerId ?? null,
+        kvkNr: d.data?.kvkNr ?? d.data?.chamberOfCommerce ?? null,
+        btwNr: d.data?.btwNr ?? d.data?.vatNumber ?? null,
+        status: d.data?.status ?? "PROSPECT",
+        type: d.data?.type ?? "CUSTOMER",
+        customerNumber: d.data?.customerNumber ?? null,
+        debtorCode: d.data?.debtorCode ?? null,
+        inserveCompanyId: d.data?.inserveCompanyId ?? null,
+        simOnlyCustomerId: d.data?.simOnlyCustomerId ?? null,
+        externalId: d.data?.externalId ?? null,
+        email: d.data?.email ?? null,
+        phone: d.data?.phone ?? null,
+        address: d.data?.address ?? null,
+        postalCode: d.data?.postalCode ?? null,
+        city: d.data?.city ?? null,
+        country: d.data?.country ?? null,
+        chamberOfCommerce: d.data?.chamberOfCommerce ?? d.data?.kvkNr ?? null,
+        vatNumber: d.data?.vatNumber ?? d.data?.btwNr ?? null,
+        contactPerson: d.data?.contactPerson ?? null,
+        notes: d.data?.notes ?? null,
+        createdById: d.data?.createdById ?? null,
+        createdAt: d.data?.createdAt ?? new Date(),
+        updatedAt: new Date(),
+        deletedAt: d.data?.deletedAt ?? null,
+      } as unknown as Customer;
+      __CID.set(id, created);
+      if ((created as any).inserveCompanyId) __CINS.set((created as any).inserveCompanyId, created);
+      return created;
+    });
+    (prisma.customer.update as any).mockImplementation(async (d: any) => {
+      let base: Customer | null = null;
+      if (d.where?.id) base = __CID.get(d.where.id) ?? null;
+      else if (d.where?.inserveCompanyId) base = __CINS.get(d.where.inserveCompanyId) ?? null;
+      if (!base) base = { id: d.where?.id ?? `cust-update-${Math.random().toString(36).slice(2,7)}` } as unknown as Customer;
+      const updated = {
+        ...(base as any),
+        ...(d.data ?? {}),
+        updatedAt: new Date(),
+      } as unknown as Customer;
+      __CID.set((updated as any).id, updated);
+      if ((updated as any).inserveCompanyId) __CINS.set((updated as any).inserveCompanyId, updated);
+      return updated;
+    });
     (prisma.contactPerson?.findUnique as any ?? vi.fn()).mockResolvedValue(null);
+    (prisma.contactPerson?.findFirst as any ?? vi.fn()).mockResolvedValue(null);
     (prisma.contactPerson?.findMany as any ?? vi.fn()).mockResolvedValue([]);
-    (prisma.customer.create as any).mockImplementation(async (d: any) => ({
-      id: `cust-${d.data.inserveCompanyId ?? d.data.inceveCompanyId ?? "new"}`,
-      ...d.data,
+    (prisma.contactPerson?.create as any ?? vi.fn()).mockImplementation(async (d: any) => ({
+      id: `cp-${(d.data?.inserveContactId ?? Math.random().toString(36).slice(2, 7))}`,
+      ...(d.data ?? {}),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      deletedAt: null,
     }));
-    (prisma.customer.update as any).mockImplementation(async (d: any) => ({ id: d.where.id, ...d.data }));
+    (prisma.contactPerson?.update as any ?? vi.fn()).mockImplementation(async (d: any) => ({
+      id: d.where?.id,
+      ...(d.data ?? {}),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      deletedAt: null,
+    }));
   });
 
   afterEach(() => {
@@ -565,7 +638,7 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
       responses: [],
     });
 
-    (prisma.customer.findUnique as any).mockImplementation(async (q: any) => {
+    (prisma.customer.findFirst as any).mockImplementation(async (q: any) => {
       if (q.where.inserveCompanyId === 99) {
         return mkCustomer({
           id: "cust-99",
@@ -618,7 +691,7 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
       type: (CustomerType.DIRECT as unknown) as PrismaCustomerType,
       status: "ACTIVE",
     });
-    (prisma.customer.findUnique as any).mockResolvedValueOnce(existing);
+    (prisma.customer.findFirst as any).mockResolvedValueOnce(existing);
 
     let capturedUpdate: any = null;
     (prisma.customer.update as any).mockImplementation(async (o: any) => {
@@ -794,8 +867,8 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
   it("TR-7.1: Tellingen correct: opgehaald, filterpass, aangemaakt, bijgewerkt, ongewijzigd, overgeslagen, mislukt", async () => {
     (prisma.customer.findMany as any).mockResolvedValueOnce([]);
 
-    const findUniqueMock = prisma.customer.findUnique as any;
-    findUniqueMock.mockImplementation(async (q: any) => {
+    const findFirstMock = prisma.customer.findFirst as any;
+    findFirstMock.mockImplementation(async (q: any) => {
       if (q.where.inserveCompanyId === 3) {
         return mkCustomer({
           id: "cust-3",
