@@ -1038,27 +1038,37 @@ export function resolveFieldTextValue(field: InserveCustomFieldValue | null | un
     else if (typeof fvVal === 'number' || typeof fvVal === 'boolean') fieldValueText = String(fvVal);
   }
 
-  if ((optionLabel === null || optionLabel === '') && (text === null || text === '')) {
-    for (const o of optionsFromCfo) {
-      const oId = o.id;
-      const oLabel = typeof o.label === 'string' ? o.label : (typeof o.name === 'string' ? o.name : null);
-      const oValue = o.value;
-      const matchesId =
-        (typeof oId === 'number' && typeof rawValue === 'number' && oId === rawValue) ||
-        (String(oId ?? '') !== '' && String(rawValue ?? '') === String(oId));
-      const matchesValue =
-        (oValue !== null && oValue !== undefined) &&
-        (String(oValue) === String(rawValue ?? ''));
-      if ((matchesId || matchesValue) && oLabel) {
-        optionLabel = oLabel;
-        optionValue = oValue ?? (oId as any);
-        break;
-      }
-    }
-  }
-
   void cfoName;
   void cfoTitle;
+
+  const coerceEq = (a: unknown, b: unknown): boolean => {
+    if (a === null || a === undefined || b === null || b === undefined) return false;
+    const sa = typeof a === 'string' ? a.trim().toLowerCase() : String(a).trim().toLowerCase();
+    const sb = typeof b === 'string' ? b.trim().toLowerCase() : String(b).trim().toLowerCase();
+    return sa === sb && sa !== '' && sb !== '';
+  };
+
+  for (const o of optionsFromCfo) {
+    const oId = o.id;
+    const oLabel = typeof o.label === 'string' ? o.label : (typeof o.name === 'string' ? o.name : null);
+    const oValue = o.value;
+    const oName = typeof o.name === 'string' ? o.name : null;
+    if (!oLabel) continue;
+    const matchesDirect =
+      coerceEq(oId, rawValue) ||
+      coerceEq(oValue, rawValue) ||
+      coerceEq(oName, rawValue) ||
+      coerceEq(oLabel, rawValue) ||
+      coerceEq(text, oName) ||
+      coerceEq(text, oLabel) ||
+      coerceEq(fieldValueText, oName) ||
+      coerceEq(fieldValueText, oLabel);
+    if (matchesDirect) {
+      optionLabel = oLabel;
+      optionValue = oValue ?? (oName as any) ?? (oId as any);
+      break;
+    }
+  }
 
   return { text, optionLabel, optionValue, fieldValueText };
 }

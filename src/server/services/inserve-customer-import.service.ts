@@ -148,7 +148,35 @@ export function resolveNexusFieldValue(
     return { status: "parse_error", errorMessage: res.error };
   }
   const val = res.value.trim().toLowerCase();
-  if (val === "actief") return { status: "active", rawValue: res.value };
+  if (val === "actief" || val === "ja" || val === "active" || val === "yes" || val === "1" || val === "true") {
+    return { status: "active", rawValue: res.value };
+  }
+  if (val === "inactief" || val === "nee" || val === "inactive" || val === "no" || val === "0" || val === "false") {
+    return { status: "inactive", rawValue: res.value };
+  }
+  if (res.raw && typeof res.raw === "object") {
+    try {
+      const cfo = (res.raw as any).custom_field_object;
+      if (cfo && Array.isArray(cfo.options)) {
+        for (const opt of cfo.options) {
+          const optLabel = typeof opt.label === "string" ? opt.label.trim().toLowerCase() : "";
+          const optName = typeof opt.name === "string" ? opt.name.trim().toLowerCase() : "";
+          const matchVal =
+            val === String(opt.id ?? "").toLowerCase() ||
+            val === (String(opt.value ?? "").toLowerCase()) ||
+            val === optName ||
+            val === optLabel;
+          if (matchVal) {
+            if (optLabel === "actief" || optName === "ja") return { status: "active", rawValue: res.value };
+            if (optLabel === "inactief" || optName === "inactief" || optName === "nee") {
+              return { status: "inactive", rawValue: res.value };
+            }
+          }
+        }
+      }
+    } catch {
+    }
+  }
   return { status: "inactive", rawValue: res.value };
 }
 
