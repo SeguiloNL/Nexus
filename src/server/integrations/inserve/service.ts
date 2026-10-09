@@ -799,23 +799,6 @@ export async function listAllCompanies(
               firstDetailKeys.includes('customValues') ||
               firstDetailKeys.includes('custom_values');
             if (hasCustomValuesKey) {
-              const firstWith = allItems.find((c) => {
-                const v1 = (c as any).customValues;
-                const v2 = (c as any).custom_values;
-                return (Array.isArray(v1) && v1.length > 0) || (Array.isArray(v2) && v2.length > 0);
-              });
-              if (firstWith && customValuesSampleLogged < 1) {
-                customValuesSampleLogged++;
-                const cv: any[] = (Array.isArray((firstWith as any).customValues) && (firstWith as any).customValues.length > 0)
-                  ? (firstWith as any).customValues
-                  : (firstWith as any).custom_values;
-                if (Array.isArray(cv) && cv.length > 0) {
-                  const preview = cv.slice(0, 3).map((f: any) => ({ keys: Object.keys(f), raw: f }));
-                  console.debug(
-                    `[Inserve] [listAll] customValues sample structuur (bedrijf #${(firstWith as any).id}, ${cv.length} velden, preview 3):\n${JSON.stringify(preview, null, 2)}`
-                  );
-                }
-              }
               let nexusSampleLogged = (globalThis as any).__nexusSampleLogged === true;
               if (!nexusSampleLogged) {
                 for (const c of allItems) {
@@ -825,8 +808,8 @@ export async function listAllCompanies(
                     if (fieldNameMatches(f, 'Nexus')) {
                       const { text, optionLabel, optionValue, fieldValueText } = resolveFieldTextValue(f);
                       const cfo = (f as any).custom_field_object;
-                      console.debug(
-                        `[Inserve] ✅ Nexus-veld GEVONDEN in list! Bedrijf #${(c as any).id} | raw.value = ${JSON.stringify((f as any).value)} | resolved: text=${JSON.stringify(text)} optionLabel=${JSON.stringify(optionLabel)} optionValue=${JSON.stringify(optionValue)} fieldValueText=${JSON.stringify(fieldValueText)} | cfo.name=${cfo?.name ?? '-'} cfo.title=${cfo?.title ?? '-'} | cfo.options[0-3] = ${JSON.stringify(Array.isArray(cfo?.options) ? cfo.options.slice(0, 3) : [])}`
+                      console.info(
+                        `[Inserve] Nexus-veld (slug nexus) correct gedetecteerd. Options[0..3] = ${JSON.stringify(Array.isArray(cfo?.options) ? cfo.options.slice(0, 3).map((o: any) => ({ label: o.label, name: o.name })) : [])}`
                       );
                       (globalThis as any).__nexusSampleLogged = true;
                       nexusSampleLogged = true;
@@ -834,9 +817,6 @@ export async function listAllCompanies(
                     }
                   }
                   if (nexusSampleLogged) break;
-                }
-                if (!nexusSampleLogged) {
-                  console.debug(`[Inserve] ⚠️ Nexus-veld NIET GEVONDEN in eerste ${allItems.length} list items (${pagesProcessed} pagina's). Veldnaam of waarde-herkenning mogelijk nog onjuist.`);
                 }
               }
             }
@@ -872,24 +852,6 @@ export async function listAllCompanies(
             const hasCustomValuesKey =
               keys.includes('customValues') || keys.includes('custom_values');
             if (hasCustomValuesKey) {
-              const firstWith = result.items.find((c) => {
-                const v1 = (c as any).customValues;
-                const v2 = (c as any).custom_values;
-                return (Array.isArray(v1) && v1.length > 0) || (Array.isArray(v2) && v2.length > 0);
-              });
-              if (firstWith && customValuesSampleLogged < 1) {
-                customValuesSampleLogged++;
-                const cv: any[] =
-                  Array.isArray((firstWith as any).customValues) && (firstWith as any).customValues.length > 0
-                    ? (firstWith as any).customValues
-                    : (firstWith as any).custom_values;
-                if (Array.isArray(cv) && cv.length > 0) {
-                  const preview = cv.slice(0, 3).map((f: any) => ({ keys: Object.keys(f), raw: f }));
-                  console.debug(
-                    `[Inserve] [listAll] customValues sample structuur (bedrijf #${(firstWith as any).id}, ${cv.length} velden, preview 3):\n${JSON.stringify(preview, null, 2)}`
-                  );
-                }
-              }
               let nexusSampleLogged = (globalThis as any).__nexusSampleLogged === true;
               if (!nexusSampleLogged) {
                 for (const c of result.items) {
@@ -897,20 +859,12 @@ export async function listAllCompanies(
                   if (!Array.isArray(cv)) continue;
                   for (const f of cv) {
                     if (fieldNameMatches(f, 'Nexus')) {
-                      const { text, optionLabel, optionValue, fieldValueText } = resolveFieldTextValue(f);
-                      const cfo = (f as any).custom_field_object;
-                      console.debug(
-                        `[Inserve] ✅ Nexus-veld GEVONDEN in list! Bedrijf #${(c as any).id} | raw.value = ${JSON.stringify((f as any).value)} | resolved: text=${JSON.stringify(text)} optionLabel=${JSON.stringify(optionLabel)} optionValue=${JSON.stringify(optionValue)} fieldValueText=${JSON.stringify(fieldValueText)} | cfo.name=${cfo?.name ?? '-'} cfo.title=${cfo?.title ?? '-'} | cfo.options[0-3] = ${JSON.stringify(Array.isArray(cfo?.options) ? cfo.options.slice(0, 3) : [])}`
-                      );
-                      (globalThis as any).__nexusSampleLogged = true;
                       nexusSampleLogged = true;
+                      (globalThis as any).__nexusSampleLogged = true;
                       break;
                     }
                   }
                   if (nexusSampleLogged) break;
-                }
-                if (!nexusSampleLogged) {
-                  console.debug(`[Inserve] ⚠️ Nexus-veld NIET GEVONDEN in eerste ${result.items.length} list items (${result.pagesProcessed} pagina's). Veldnaam of waarde-herkenning mogelijk nog onjuist.`);
                 }
               }
             }
