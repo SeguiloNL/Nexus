@@ -1016,10 +1016,7 @@ export async function runInserveCustomerImport(
 
         if (!existingCustomer) {
           const secondaryWhere: any = { OR: [] as any[] };
-          if (mapped.customerNumber) {
-            secondaryWhere.OR.push({ customerNumber: mapped.customerNumber });
-            secondaryWhere.OR.push({ debtorCode: mapped.customerNumber });
-          }
+          if (mapped.customerNumber) secondaryWhere.OR.push({ customerNumber: mapped.customerNumber });
           if (mapped.kvkNr) secondaryWhere.OR.push({ kvkNr: mapped.kvkNr });
           if (mapped.btwNr) secondaryWhere.OR.push({ btwNr: mapped.btwNr });
           if (secondaryWhere.OR.length > 0) {
@@ -1131,7 +1128,6 @@ export async function runInserveCustomerImport(
               }
               if (p2002Where.OR.length === 0 && mapped.customerNumber) {
                 p2002Where.OR.push({ customerNumber: mapped.customerNumber });
-                p2002Where.OR.push({ debtorCode: mapped.customerNumber });
               }
               if (p2002Where.OR.length > 0) {
                 existingViaUnique = await prisma.customer.findFirst({ where: p2002Where });

@@ -1467,7 +1467,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       if (q.where?.inserveCompanyId === 8001) return null;
       if (Array.isArray(q.where?.OR)) {
         for (const cond of q.where.OR) {
-          if (cond.customerNumber === "000649" || cond.debtorCode === "000649") return existing;
+          if (cond.customerNumber === "000649") return existing;
         }
       }
       if (q.where?.customerNumber === "000649") return existing;
@@ -1513,7 +1513,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       if (q.where?.inserveCompanyId === 8002) return null;
       if (Array.isArray(q.where?.OR)) {
         for (const cond of q.where.OR) {
-          if (cond.customerNumber === "000078" || cond.debtorCode === "000078") return existing;
+          if (cond.customerNumber === "000078") return existing;
         }
       }
       if (q.where?.customerNumber === "000078") return existing;
