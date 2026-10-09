@@ -57,7 +57,7 @@ export type NexusFieldResolution =
 
 export interface ImportSummary {
   runId: string | null;
-  status: "SUCCESS" | "FAILED" | "SKIPPED";
+  status: "SUCCESS" | "PARTIAL_SUCCESS" | "FAILED" | "SKIPPED";
   startedAt: Date;
   endedAt: Date;
   durationMs: number;
@@ -599,12 +599,30 @@ export async function runInserveCustomerImport(
     contactFailedDetails: [],
   };
 
-  const markPartialFailed = (msg: string, detail?: unknown) => {
+  const markPartialFailed = (msg: string, detail?: unknown, asPartialSuccess = false) => {
     finalStatus = SyncJobStatus.FAILED;
     finalErrorMessage = msg;
     finalErrorDetail = detail;
-    summary.status = "FAILED";
+    summary.status = asPartialSuccess ? "PARTIAL_SUCCESS" : "FAILED";
     summary.errorMessage = msg;
+  };
+
+  const doFinalize = (overrideSummaryStatus?: ImportSummary["status"]): ImportSummary => {
+    const sStatus = overrideSummaryStatus ?? (summary.status as ImportSummary["status"]);
+    const tFin = Date.now();
+    const finished = finalizeSummary(
+      summary,
+      syncJobRun.id,
+      finalStatus,
+      finalErrorMessage,
+      finalErrorDetail,
+      !opts.skipRunManagement,
+      sStatus
+    );
+    timing.finalize = Date.now() - tFin;
+    timing.total = Math.max(timing.total, Date.now() - t0);
+    finished.timingMs = { ...timing };
+    return finished;
   };
 
   try {
@@ -613,14 +631,7 @@ export async function runInserveCustomerImport(
       markPartialFailed(
         "Inserve is niet geconfigureerd. Stel INSERVE_SUBDOMAIN en INSERVE_API_KEY in, of configureer via Instellingen → Inserve."
       );
-      summary.timingMs = { ...timing, finalize: 0, total: Date.now() - t0 };
-      return finalizeSummary(
-        summary,
-        syncJobRun.id,
-        finalStatus,
-        finalErrorMessage,
-        finalErrorDetail
-      );
+      return doFinalize();
     }
 
     let fetchedCompanies: InserveCompany[] = [];
@@ -653,28 +664,14 @@ export async function runInserveCustomerImport(
           markPartialFailed(
             `Inserve authenticatie mislukt (status ${e.statusCode}). Controleer de API-key en rechten.`
           );
-          summary.timingMs = { ...timing, finalize: 0, total: Date.now() - t0 };
-          return finalizeSummary(
-            summary,
-            syncJobRun.id,
-            finalStatus,
-            finalErrorMessage,
-            finalErrorDetail
-          );
+          return doFinalize();
         }
       }
       markPartialFailed(
         `Kon bedrijven niet ophalen bij Inserve: ${e?.message ?? String(e)}`,
         { statusCode: (e as any)?.statusCode ?? null }
       );
-      summary.timingMs = { ...timing, finalize: 0, total: Date.now() - t0 };
-      return finalizeSummary(
-        summary,
-        syncJobRun.id,
-        finalStatus,
-        finalErrorMessage,
-        finalErrorDetail
-      );
+      return doFinalize();
     }
 
     let fetchedContacts: InserveContact[] = [];
@@ -695,7 +692,9 @@ export async function runInserveCustomerImport(
         error: `Ophalen contactpersonen mislukt: ${(ce?.message ?? String(ce)).slice(0, 400)}`,
       });
       markPartialFailed(
-        `Contactpersonen konden niet worden opgehaald: ${(ce?.message ?? String(ce)).slice(0, 200)}. Bedrijven worden wel verwerkt.`
+        `Contactpersonen konden niet worden opgehaald: ${(ce?.message ?? String(ce)).slice(0, 200)}. Bedrijven worden wel verwerkt.`,
+        undefined,
+        true
       );
     }
 
@@ -1275,19 +1274,7 @@ export async function runInserveCustomerImport(
     });
   }
 
-  const tFinalize = Date.now();
-  const finalized = finalizeSummary(
-    summary,
-    syncJobRun.id,
-    finalStatus,
-    finalErrorMessage,
-    finalErrorDetail,
-    !opts.skipRunManagement
-  );
-  timing.finalize = Date.now() - tFinalize;
-  timing.total = Math.max(timing.total, Date.now() - t0);
-  finalized.timingMs = { ...timing };
-  return finalized;
+  return doFinalize();
 }
 
 function finalizeSummary(
@@ -1296,7 +1283,8 @@ function finalizeSummary(
   status: SyncJobStatus,
   errorMessage: string | null,
   errorDetail: unknown | undefined,
-  doUpdateRun = true
+  doUpdateRun = true,
+  overrideSummaryStatus?: ImportSummary["status"]
 ): ImportSummary {
   const endedAt = new Date();
   summary.endedAt = endedAt;
@@ -1305,7 +1293,9 @@ function finalizeSummary(
     endedAt.getTime() - summary.startedAt.getTime()
   );
   summary.runId = runId;
-  if (status === SyncJobStatus.SUCCESS) {
+  if (overrideSummaryStatus) {
+    summary.status = overrideSummaryStatus;
+  } else if (status === SyncJobStatus.SUCCESS) {
     summary.status = "SUCCESS";
   } else if (status === SyncJobStatus.SKIPPED) {
     summary.status = "SKIPPED";

@@ -1371,7 +1371,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(createContactServiceSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("SM-10: API call listAllClients THROWS → import wordt PARTIAL FAILED; contactFailedDetails gevuld; bedrijven verwerking WEL doorloopt", async () => {
+  it("SM-10: API call listAllClients THROWS → import wordt PARTIAL_SUCCESS; contactFailedDetails gevuld; bedrijven verwerking WEL doorloopt", async () => {
     listAllCompaniesSpy.mockResolvedValueOnce({
       items: [
         makeCompany({
@@ -1384,10 +1384,16 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     } as any);
     listAllClientsSpy.mockRejectedValueOnce(new Error("502 Bad Gateway: clients endpoint down"));
     const s = await runInserveCustomerImport(defaultCtx);
-    expect(s.status).toBe("FAILED");
+    expect(s.status).toBe("PARTIAL_SUCCESS");
     expect(s.created).toBe(1);
+    expect(s.failed).toBe(0);
     expect(s.contacts.failed).toBeGreaterThanOrEqual(0);
     expect(s.contactFailedDetails).toBeDefined();
+    expect(s.contactFailedDetails!.length).toBeGreaterThan(0);
+    expect(s.timingMs).toBeDefined();
+    expect(typeof s.timingMs!.finalize).toBe("number");
+    expect(typeof s.timingMs!.total).toBe("number");
+    expect(s.errorMessage).toMatch(/502 Bad Gateway|contactpersonen konden niet worden opgehaald/i);
   });
 
   it("SM-11: Multi-page contacten (listAllClients pagesProcessed=3) → alle pagina's verwerkt; pagination tellingen correct", async () => {

@@ -77,9 +77,15 @@ export function InserveCustomerImportClient() {
         zeroFases.length > 0 ? ` | ⚠️ 0ms fasen: ${zeroFases.join(", ")}` : "";
       if (res.ok) {
         const contacts = s?.contacts;
-        toast.success(
-          `Inserve import voltooid. Bedrijven: ${s?.fetched ?? 0} | Nieuw: ${s?.created ?? 0}, Bijgewerkt: ${s?.updated ?? 0} | Deact: ${s?.customersDeactivated ?? 0} | Heract: ${s?.customersReactivated ?? 0}. Contacten: ${contacts?.fetched ?? 0} | Nieuw: ${contacts?.created ?? 0} | Bijgewerkt: ${contacts?.updated ?? 0}. Duur: ${s?.durationMs ?? 0}ms${credTag}`
-        );
+        const isPartial = s?.status === "PARTIAL_SUCCESS";
+        const statusMsg = isPartial
+          ? `Inserve import gedeeltelijk geslaagd (let op: ${s?.errorMessage ?? "contactpersonen konden niet worden opgehaald"}). Bedrijven: ${s?.fetched ?? 0} | Nieuw: ${s?.created ?? 0}, Bijgewerkt: ${s?.updated ?? 0} | Deact: ${s?.customersDeactivated ?? 0} | Heract: ${s?.customersReactivated ?? 0}. Contacten: ${contacts?.fetched ?? 0} | Nieuw: ${contacts?.created ?? 0} | Bijgewerkt: ${contacts?.updated ?? 0}. Duur: ${s?.durationMs ?? 0}ms${credTag}`
+          : `Inserve import voltooid. Bedrijven: ${s?.fetched ?? 0} | Nieuw: ${s?.created ?? 0}, Bijgewerkt: ${s?.updated ?? 0} | Deact: ${s?.customersDeactivated ?? 0} | Heract: ${s?.customersReactivated ?? 0}. Contacten: ${contacts?.fetched ?? 0} | Nieuw: ${contacts?.created ?? 0} | Bijgewerkt: ${contacts?.updated ?? 0}. Duur: ${s?.durationMs ?? 0}ms${credTag}`;
+        if (isPartial) {
+          toast.warning(statusMsg);
+        } else {
+          toast.success(statusMsg);
+        }
       } else if (s?.status === "SKIPPED") {
         toast.info(`${res.error ?? "Import is overgeslagen."}${credTag}${zeroTag}`);
       } else {
@@ -158,18 +164,29 @@ export function InserveCustomerImportClient() {
               <CardTitle className="flex items-center gap-2 text-base">
                 {summary.status === "SUCCESS" ? (
                   <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+                ) : summary.status === "PARTIAL_SUCCESS" ? (
+                  <AlertTriangle className="h-5 w-5 text-amber-600" />
                 ) : summary.status === "SKIPPED" ? (
                   <AlertCircle className="h-5 w-5 text-amber-600" />
                 ) : (
                   <XCircle className="h-5 w-5 text-red-600" />
                 )}
                 Resultaat
-                {summary.status !== "SUCCESS" && summary.status !== "SKIPPED" && (
-                  <Badge variant="destructive" className="ml-2">Gedeeltelijk mislukt</Badge>
+                {summary.status === "PARTIAL_SUCCESS" && (
+                  <Badge variant="outline" className="ml-2 bg-amber-50 text-amber-800 border-amber-200">Gedeeltelijk geslaagd</Badge>
+                )}
+                {summary.status === "FAILED" && (
+                  <Badge variant="destructive" className="ml-2">Mislukt</Badge>
                 )}
               </CardTitle>
               {summary.errorMessage && (
-                <CardDescription className="text-red-600">
+                <CardDescription
+                  className={
+                    summary.status === "PARTIAL_SUCCESS"
+                      ? "text-amber-800"
+                      : "text-red-600"
+                  }
+                >
                   {summary.errorMessage}
                 </CardDescription>
               )}
@@ -238,6 +255,8 @@ export function InserveCustomerImportClient() {
                       <AlertCircle className="h-4 w-4 text-slate-600" /> Diagnostiek
                       {summary.status === "SUCCESS" ? (
                         <Badge variant="outline" className="ml-2 bg-emerald-50 text-emerald-700 border-emerald-200">Geslaagd</Badge>
+                      ) : summary.status === "PARTIAL_SUCCESS" ? (
+                        <Badge variant="outline" className="ml-2 bg-amber-50 text-amber-800 border-amber-200">Gedeeltelijk</Badge>
                       ) : summary.status === "SKIPPED" ? (
                         <Badge variant="outline" className="ml-2 bg-amber-50 text-amber-700 border-amber-200">Overgeslagen</Badge>
                       ) : (
