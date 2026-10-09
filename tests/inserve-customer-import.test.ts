@@ -1443,4 +1443,100 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(s.customersReactivated).toBe(0);
     expect(prisma.customer.update).not.toHaveBeenCalled();
   });
+
+  it("SM-13: Secondary match bestaande klant (customerNumber/debtor_code) → BESTAAND gevonden via pre-check; UPDATE + inserveCompanyId SETTEN; created=0", async () => {
+    listAllCompaniesSpy.mockResolvedValueOnce({
+      items: [
+        makeCompany({
+          id: 8001,
+          name: "Debiteur Match B.V.",
+          debtor_code: "000649",
+          custom_fields: [{ name: "Nexus", value: "Actief" }] as any,
+        }),
+      ],
+      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
+    });
+    const existing = mkCustomer({
+      id: "cust-649",
+      companyName: "OUDE NAAM (Match op debnr)",
+      customerNumber: "000649",
+      inserveCompanyId: null as any,
+      status: "PROSPECT",
+    });
+    (prisma.customer.findFirst as any).mockImplementation(async (q: any) => {
+      if (q.where?.inserveCompanyId === 8001) return null;
+      if (Array.isArray(q.where?.OR)) {
+        for (const cond of q.where.OR) {
+          if (cond.customerNumber === "000649" || cond.debtorCode === "000649") return existing;
+        }
+      }
+      if (q.where?.customerNumber === "000649") return existing;
+      return null;
+    });
+    let capturedUpdate: any = null;
+    (prisma.customer.update as any).mockImplementation(async (o: any) => {
+      capturedUpdate = o;
+      return { id: o.where.id, ...o.data, updatedAt: new Date() };
+    });
+    const s = await runInserveCustomerImport(defaultCtx);
+    expect(s.created).toBe(0);
+    expect(s.updated).toBe(1);
+    expect(s.failed).toBe(0);
+    expect(capturedUpdate).not.toBeNull();
+    expect(capturedUpdate.data.inserveCompanyId).toBe(8001);
+    expect(capturedUpdate.data.status).toBe("ACTIVE");
+    expect(capturedUpdate.data.companyName).toBe("Debiteur Match B.V.");
+  });
+
+  it("SM-14: P2002 collision customerNumber → fallback vind bestaand record; UPDATE+link inserveCompanyId; created=0; failed=0", async () => {
+    listAllCompaniesSpy.mockResolvedValueOnce({
+      items: [
+        makeCompany({
+          id: 8002,
+          name: "Debiteur Na Collision B.V.",
+          debtor_code: "000078",
+          custom_fields: [{ name: "Nexus", value: "Actief" }] as any,
+        }),
+      ],
+      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
+    });
+    const existing = mkCustomer({
+      id: "cust-78",
+      companyName: "Collision (Oud)",
+      customerNumber: "000078",
+      inserveCompanyId: null as any,
+      status: "PROSPECT",
+    });
+    let findFirstCalls = 0;
+    (prisma.customer.findFirst as any).mockImplementation(async (q: any) => {
+      findFirstCalls++;
+      if (q.where?.inserveCompanyId === 8002) return null;
+      if (Array.isArray(q.where?.OR)) {
+        for (const cond of q.where.OR) {
+          if (cond.customerNumber === "000078" || cond.debtorCode === "000078") return existing;
+        }
+      }
+      if (q.where?.customerNumber === "000078") return existing;
+      return null;
+    });
+    (prisma.customer.create as any).mockImplementation(async () => {
+      const err: any = new Error("Unique constraint failed on the fields: (`customerNumber`)");
+      err.code = "P2002";
+      err.meta = { target: ["customerNumber"] };
+      throw err;
+    });
+    let capturedUpdate: any = null;
+    (prisma.customer.update as any).mockImplementation(async (o: any) => {
+      capturedUpdate = o;
+      return { id: o.where.id, ...o.data, updatedAt: new Date() };
+    });
+    const s = await runInserveCustomerImport(defaultCtx);
+    expect(s.created).toBe(0);
+    expect(s.updated).toBe(1);
+    expect(s.failed).toBe(0);
+    expect(s.status).toBe("SUCCESS");
+    expect(capturedUpdate).not.toBeNull();
+    expect(capturedUpdate.data.inserveCompanyId).toBe(8002);
+    expect(capturedUpdate.data.status).toBe("ACTIVE");
+  });
 });

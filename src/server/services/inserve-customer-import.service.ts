@@ -1006,7 +1006,7 @@ export async function runInserveCustomerImport(
       try {
         const mapped = mapCompanyToCustomerFields(company);
         let currentCustomerId: string | null = null;
-        const existingCustomer = previouslyLinkedIds.has(companyId)
+        let existingCustomer: Customer | null = previouslyLinkedIds.has(companyId)
           ? await prisma.customer.findUnique({
               where: { id: previouslyLinkedIds.get(companyId)!.id },
             })
@@ -1014,12 +1014,31 @@ export async function runInserveCustomerImport(
               where: { inserveCompanyId: companyId },
             });
 
+        if (!existingCustomer) {
+          const secondaryWhere: any = { OR: [] as any[] };
+          if (mapped.customerNumber) {
+            secondaryWhere.OR.push({ customerNumber: mapped.customerNumber });
+            secondaryWhere.OR.push({ debtorCode: mapped.customerNumber });
+          }
+          if (mapped.kvkNr) secondaryWhere.OR.push({ kvkNr: mapped.kvkNr });
+          if (mapped.btwNr) secondaryWhere.OR.push({ btwNr: mapped.btwNr });
+          if (secondaryWhere.OR.length > 0) {
+            existingCustomer = await prisma.customer.findFirst({
+              where: secondaryWhere,
+              orderBy: { createdAt: "asc" },
+            });
+          }
+        }
+
         if (existingCustomer) {
           nowProcessedLinked.set(companyId, existingCustomer.id);
           const needsRestore = existingCustomer.deletedAt !== null;
           const wasNotActive = (existingCustomer.status as CustomerStatus | string) !== CustomerStatus.ACTIVE;
           const diff = diffCustomerFields(existingCustomer, mapped);
           const finalDiff: any = { ...(diff ?? {}) };
+          if (existingCustomer.inserveCompanyId !== companyId) {
+            finalDiff.inserveCompanyId = companyId;
+          }
           if (needsRestore) finalDiff.deletedAt = null;
           if (wasNotActive) finalDiff.status = CustomerStatus.ACTIVE;
           const hasAnyChanges = Object.keys(finalDiff).length > 0;
@@ -1098,15 +1117,38 @@ export async function runInserveCustomerImport(
             const prismaCode = createErr?.code ?? (createErr as any)?.errorCode ?? null;
             const isUniqueViolation = prismaCode === "P2002" || /unique constraint|duplicate key/i.test(createErr?.message ?? "");
             if (!isUniqueViolation) throw createErr;
-            const existingViaUnique = await prisma.customer.findFirst({
+            const targets: string[] = Array.isArray(createErr?.meta?.target) ? (createErr.meta.target as string[]) : [];
+            let existingViaUnique: Customer | null = await prisma.customer.findFirst({
               where: { inserveCompanyId: companyId },
             });
+            if (!existingViaUnique && targets.length > 0) {
+              const p2002Where: any = { OR: [] as any[] };
+              for (const t of targets) {
+                const mVal = (mapped as any)[t];
+                if (typeof mVal === "string" || typeof mVal === "number") {
+                  p2002Where.OR.push({ [t]: mVal });
+                }
+              }
+              if (p2002Where.OR.length === 0 && mapped.customerNumber) {
+                p2002Where.OR.push({ customerNumber: mapped.customerNumber });
+                p2002Where.OR.push({ debtorCode: mapped.customerNumber });
+              }
+              if (p2002Where.OR.length > 0) {
+                existingViaUnique = await prisma.customer.findFirst({ where: p2002Where });
+              }
+            }
+            if (!existingViaUnique && mapped.customerNumber) {
+              existingViaUnique = await prisma.customer.findFirst({ where: { customerNumber: mapped.customerNumber } });
+            }
             if (!existingViaUnique) throw createErr;
             nowProcessedLinked.set(companyId, existingViaUnique.id);
             const needsRestore = existingViaUnique.deletedAt !== null;
             const wasNotActive = (existingViaUnique.status as CustomerStatus | string) !== CustomerStatus.ACTIVE;
             const diff = diffCustomerFields(existingViaUnique, mapped);
             const finalDiff: any = { ...(diff ?? {}) };
+            if (existingViaUnique.inserveCompanyId !== companyId) {
+              finalDiff.inserveCompanyId = companyId;
+            }
             if (needsRestore) finalDiff.deletedAt = null;
             if (wasNotActive) finalDiff.status = CustomerStatus.ACTIVE;
             const hasAnyChanges = Object.keys(finalDiff).length > 0;
