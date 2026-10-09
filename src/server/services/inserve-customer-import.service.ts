@@ -600,10 +600,10 @@ export async function runInserveCustomerImport(
     }
 
     const t5 = Date.now();
-    const previouslyLinkedIds = new Map<number, { id: string; companyName: string }>();
+    const previouslyLinkedIds = new Map<number, { id: string; companyName: string; deletedAt: Date | null }>();
     const preExistingLinked = await prisma.customer.findMany({
-      where: { inserveCompanyId: { not: null }, deletedAt: null },
-      select: { id: true, inserveCompanyId: true, companyName: true },
+      where: { inserveCompanyId: { not: null } },
+      select: { id: true, inserveCompanyId: true, companyName: true, deletedAt: true },
     });
     timing.fetchPreExisting = Date.now() - t5;
     for (const c of preExistingLinked) {
@@ -611,6 +611,7 @@ export async function runInserveCustomerImport(
         previouslyLinkedIds.set(c.inserveCompanyId, {
           id: c.id,
           companyName: c.companyName,
+          deletedAt: c.deletedAt,
         });
       }
     }
@@ -728,64 +729,112 @@ export async function runInserveCustomerImport(
 
         if (existingCustomer) {
           nowProcessedLinked.set(companyId, existingCustomer.id);
+          const needsRestore = existingCustomer.deletedAt !== null;
           const diff = diffCustomerFields(existingCustomer, mapped);
-          if (!diff) {
+          const finalDiff: any = { ...(diff ?? {}) };
+          if (needsRestore) finalDiff.deletedAt = null;
+          const hasAnyChanges = Object.keys(finalDiff).length > 0;
+          if (!hasAnyChanges) {
             summary.unchanged++;
             continue;
           }
           await prisma.$transaction(async (tx) => {
             const updated = await tx.customer.update({
               where: { id: existingCustomer.id },
-              data: diff,
+              data: finalDiff,
             });
             await logAudit(tx as any, {
               entityType: "customer",
               entityId: updated.id,
-              action: AuditAction.UPDATE,
+              action: needsRestore ? AuditAction.ACTIVATE : AuditAction.UPDATE,
               userId: ctx.userId,
-              oldValues: diff as any,
-              newValues: diff as any,
+              oldValues: { ...(diff ?? {}), ...(needsRestore ? { deletedAt: existingCustomer.deletedAt } : {}) } as any,
+              newValues: finalDiff as any,
               metadata: {
                 source: "inserve_customer_import",
                 inserveCompanyId: companyId,
+                restored: needsRestore,
               },
             });
           });
           summary.updated++;
         } else {
-          const created = await prisma.$transaction(async (tx) => {
-            const customerNumber =
-              mapped.customerNumber ||
-              (await generateCustomerNumber(tx as any));
-            const c = await tx.customer.create({
-              data: {
-                companyName: mapped.companyName,
-                inserveCompanyId: mapped.inserveCompanyId,
-                customerNumber,
-                address: mapped.address,
-                postalCode: mapped.postalCode,
-                city: mapped.city,
-                country: mapped.country,
-                phone: mapped.phone,
-                email: mapped.email,
-                kvkNr: mapped.kvkNr,
-                btwNr: mapped.btwNr,
-                status: "ACTIVE" as any,
-              },
+          let created: Customer;
+          try {
+            created = await prisma.$transaction(async (tx) => {
+              const customerNumber =
+                mapped.customerNumber ||
+                (await generateCustomerNumber(tx as any));
+              const c = await tx.customer.create({
+                data: {
+                  companyName: mapped.companyName,
+                  inserveCompanyId: mapped.inserveCompanyId,
+                  customerNumber,
+                  address: mapped.address,
+                  postalCode: mapped.postalCode,
+                  city: mapped.city,
+                  country: mapped.country,
+                  phone: mapped.phone,
+                  email: mapped.email,
+                  kvkNr: mapped.kvkNr,
+                  btwNr: mapped.btwNr,
+                  status: "ACTIVE" as any,
+                },
+              });
+              await logAudit(tx as any, {
+                entityType: "customer",
+                entityId: c.id,
+                action: AuditAction.CREATE,
+                userId: ctx.userId,
+                newValues: c as unknown as Record<string, unknown>,
+                metadata: {
+                  source: "inserve_customer_import",
+                  inserveCompanyId: companyId,
+                },
+              });
+              return c;
             });
-            await logAudit(tx as any, {
-              entityType: "customer",
-              entityId: c.id,
-              action: AuditAction.CREATE,
-              userId: ctx.userId,
-              newValues: c as unknown as Record<string, unknown>,
-              metadata: {
-                source: "inserve_customer_import",
-                inserveCompanyId: companyId,
-              },
+          } catch (createErr: any) {
+            const prismaCode = createErr?.code ?? (createErr as any)?.errorCode ?? null;
+            const isUniqueViolation = prismaCode === "P2002" || /unique constraint|duplicate key/i.test(createErr?.message ?? "");
+            if (!isUniqueViolation) throw createErr;
+            const existingViaUnique = await prisma.customer.findUnique({
+              where: { inserveCompanyId: companyId },
             });
-            return c;
-          });
+            if (!existingViaUnique) throw createErr;
+            nowProcessedLinked.set(companyId, existingViaUnique.id);
+            const needsRestore = existingViaUnique.deletedAt !== null;
+            const diff = diffCustomerFields(existingViaUnique, mapped);
+            const finalDiff: any = { ...(diff ?? {}) };
+            if (needsRestore) finalDiff.deletedAt = null;
+            const hasAnyChanges = Object.keys(finalDiff).length > 0;
+            if (hasAnyChanges) {
+              await prisma.$transaction(async (tx) => {
+                const updated = await tx.customer.update({
+                  where: { id: existingViaUnique.id },
+                  data: finalDiff,
+                });
+                await logAudit(tx as any, {
+                  entityType: "customer",
+                  entityId: updated.id,
+                  action: needsRestore ? AuditAction.ACTIVATE : AuditAction.UPDATE,
+                  userId: ctx.userId,
+                  oldValues: { ...(diff ?? {}), ...(needsRestore ? { deletedAt: existingViaUnique.deletedAt } : {}) } as any,
+                  newValues: finalDiff as any,
+                  metadata: {
+                    source: "inserve_customer_import",
+                    inserveCompanyId: companyId,
+                    restored: needsRestore,
+                    recovery: "P2002_unique_conflict",
+                  },
+                });
+              });
+              summary.updated++;
+            } else {
+              summary.unchanged++;
+            }
+            continue;
+          }
           nowProcessedLinked.set(companyId, created.id);
           summary.created++;
         }
