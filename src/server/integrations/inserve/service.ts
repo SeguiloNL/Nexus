@@ -539,11 +539,13 @@ export async function listAllCompanies(
 
       if (strat.useBuilder === false) {
         const effectivePerPage = strat.perPage ?? perPage;
-        const maxLoop = maxPages ?? 50;
+        const maxLoop = maxPages ?? 80;
         const allItems: InserveCompany[] = [];
         let totalExpected = 0;
         let pagesProcessed = 0;
         let firstDetailKeys: string[] | null = null;
+        let emptyStreak = 0;
+        let stratPageMetaLogged = false;
         for (let page = 1; page <= maxLoop; page++) {
           pageQuery.page = page;
           pageQuery.per_page = effectivePerPage;
@@ -552,7 +554,6 @@ export async function listAllCompanies(
             ...(strat.extraQueryParams ?? {}),
           };
           if (strat.separateLimitPage && strat.nestedBuilderIndexFromOne) {
-            // Exact Postman docs structuur: builder[1][with]=customValues ; builder[2][limit]=N ; builder[3][page]=P
             customQuery['builder[1][with]'] = 'customValues';
             customQuery['builder[2][limit]'] = effectivePerPage;
             customQuery['builder[3][page]'] = page;
@@ -576,24 +577,40 @@ export async function listAllCompanies(
             else if (Array.isArray(rAny.items)) pageItems = rAny.items as InserveCompany[];
             else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as InserveCompany[];
             else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveCompany[];
-            pageMeta = (rAny.meta ?? rAny.pagination ?? rAny._meta ?? {}) as any;
+            pageMeta = (rAny.meta ?? rAny.pagination ?? rAny._meta ?? rAny._pagination ?? {}) as any;
+            if (typeof rAny.total === 'number' && totalExpected === 0) totalExpected = rAny.total as number;
+            if (typeof (rAny as any).last_page === 'number' || typeof (rAny as any).lastPage === 'number') {
+              pageMeta.last_page = (rAny as any).last_page ?? (rAny as any).lastPage;
+            }
+            if (page === 1 && !stratPageMetaLogged) {
+              stratPageMetaLogged = true;
+              try {
+                console.debug(
+                  `[Inserve] Pagina-1 debug strategie [${strat.label}] | pageItems.length=${pageItems.length} | chunk top-level keys: [${Object.keys(rAny).join(', ')}] | pageMeta raw: ${JSON.stringify(pageMeta).slice(0, 400)} | direct total/last_page: total=${(rAny as any).total} last_page=${(rAny as any).last_page} lastPage=${(rAny as any).lastPage}`
+                );
+              } catch {
+              }
+            }
           }
 
           if (pageItems.length > 0) {
             allItems.push(...pageItems);
+            emptyStreak = 0;
             if (!firstDetailKeys && pageItems[0] && typeof pageItems[0] === 'object') {
               firstDetailKeys = Object.keys(pageItems[0] as unknown as Record<string, unknown>);
             }
+          } else {
+            emptyStreak++;
           }
 
-          const metaTotal = pageMeta?.total ?? pageMeta?.count ?? pageMeta?.total_items;
+          const metaTotal = pageMeta?.total ?? pageMeta?.count ?? pageMeta?.total_items ?? pageMeta?.totalItems;
           if (typeof metaTotal === 'number') totalExpected = metaTotal;
 
-          const lastPage = pageMeta?.last_page ?? pageMeta?.lastPage ?? pageMeta?.total_pages;
-          if (pageItems.length === 0) break;
+          const lastPage = pageMeta?.last_page ?? pageMeta?.lastPage ?? pageMeta?.total_pages ?? pageMeta?.totalPages;
+          if (emptyStreak >= 2) break;
           if (typeof lastPage === 'number' && page >= lastPage) break;
-          if (typeof totalExpected === 'number' && allItems.length >= totalExpected) break;
-          if (pageItems.length < effectivePerPage) break;
+          if (typeof totalExpected === 'number' && totalExpected > 0 && allItems.length >= totalExpected) break;
+          if (pageItems.length === 0 && emptyStreak >= 1 && allItems.length > 0) break;
         }
 
         if (firstDetailKeys && allItems.length > 0) {
@@ -602,7 +619,7 @@ export async function listAllCompanies(
               /field|custom|extra|vrij/i.test(k)
             );
             console.debug(
-              `[Inserve] listCompanies strategie [${strat.label}] eerste item keys (${allItems.length} items):`,
+              `[Inserve] listCompanies strategie [${strat.label}] eerste item keys (${allItems.length} items, ${pagesProcessed} pagina's):`,
               firstDetailKeys,
               hasFieldLike ? '(bevat veld-achtige keys!)' : '(geen veld-keys zichtbaar in list)'
             );
@@ -625,6 +642,29 @@ export async function listAllCompanies(
                   console.debug(
                     `[Inserve] [listAll] customValues sample structuur (bedrijf #${(firstWith as any).id}, ${cv.length} velden, preview 3):\n${JSON.stringify(preview, null, 2)}`
                   );
+                }
+              }
+              let nexusSampleLogged = (globalThis as any).__nexusSampleLogged === true;
+              if (!nexusSampleLogged) {
+                for (const c of allItems) {
+                  const cv: any[] = Array.isArray((c as any).customValues) ? (c as any).customValues : (c as any).custom_values;
+                  if (!Array.isArray(cv)) continue;
+                  for (const f of cv) {
+                    if (fieldNameMatches(f, 'Nexus')) {
+                      const { text, optionLabel, optionValue, fieldValueText } = resolveFieldTextValue(f);
+                      const cfo = (f as any).custom_field_object;
+                      console.debug(
+                        `[Inserve] ✅ Nexus-veld GEVONDEN in list! Bedrijf #${(c as any).id} | raw.value = ${JSON.stringify((f as any).value)} | resolved: text=${JSON.stringify(text)} optionLabel=${JSON.stringify(optionLabel)} optionValue=${JSON.stringify(optionValue)} fieldValueText=${JSON.stringify(fieldValueText)} | cfo.name=${cfo?.name ?? '-'} cfo.title=${cfo?.title ?? '-'} | cfo.options[0-3] = ${JSON.stringify(Array.isArray(cfo?.options) ? cfo.options.slice(0, 3) : [])}`
+                      );
+                      (globalThis as any).__nexusSampleLogged = true;
+                      nexusSampleLogged = true;
+                      break;
+                    }
+                  }
+                  if (nexusSampleLogged) break;
+                }
+                if (!nexusSampleLogged) {
+                  console.debug(`[Inserve] ⚠️ Nexus-veld NIET GEVONDEN in eerste ${allItems.length} list items (${pagesProcessed} pagina's). Veldnaam of waarde-herkenning mogelijk nog onjuist.`);
                 }
               }
             }
@@ -653,7 +693,7 @@ export async function listAllCompanies(
             const keys = Object.keys(result.items[0] as unknown as Record<string, unknown>);
             const hasFieldLike = keys.some((k) => /field|custom|extra|vrij/i.test(k));
             console.debug(
-              `[Inserve] listCompanies strategie [${strat.label}] eerste item keys (${result.items.length} items):`,
+              `[Inserve] listCompanies strategie [${strat.label}] eerste item keys (${result.items.length} items, ${result.pagesProcessed} pagina's):`,
               keys,
               hasFieldLike ? '(bevat veld-achtige keys!)' : '(geen veld-keys zichtbaar in list)'
             );
@@ -676,6 +716,29 @@ export async function listAllCompanies(
                   console.debug(
                     `[Inserve] [listAll] customValues sample structuur (bedrijf #${(firstWith as any).id}, ${cv.length} velden, preview 3):\n${JSON.stringify(preview, null, 2)}`
                   );
+                }
+              }
+              let nexusSampleLogged = (globalThis as any).__nexusSampleLogged === true;
+              if (!nexusSampleLogged) {
+                for (const c of result.items) {
+                  const cv: any[] = Array.isArray((c as any).customValues) ? (c as any).customValues : (c as any).custom_values;
+                  if (!Array.isArray(cv)) continue;
+                  for (const f of cv) {
+                    if (fieldNameMatches(f, 'Nexus')) {
+                      const { text, optionLabel, optionValue, fieldValueText } = resolveFieldTextValue(f);
+                      const cfo = (f as any).custom_field_object;
+                      console.debug(
+                        `[Inserve] ✅ Nexus-veld GEVONDEN in list! Bedrijf #${(c as any).id} | raw.value = ${JSON.stringify((f as any).value)} | resolved: text=${JSON.stringify(text)} optionLabel=${JSON.stringify(optionLabel)} optionValue=${JSON.stringify(optionValue)} fieldValueText=${JSON.stringify(fieldValueText)} | cfo.name=${cfo?.name ?? '-'} cfo.title=${cfo?.title ?? '-'} | cfo.options[0-3] = ${JSON.stringify(Array.isArray(cfo?.options) ? cfo.options.slice(0, 3) : [])}`
+                      );
+                      (globalThis as any).__nexusSampleLogged = true;
+                      nexusSampleLogged = true;
+                      break;
+                    }
+                  }
+                  if (nexusSampleLogged) break;
+                }
+                if (!nexusSampleLogged) {
+                  console.debug(`[Inserve] ⚠️ Nexus-veld NIET GEVONDEN in eerste ${result.items.length} list items (${result.pagesProcessed} pagina's). Veldnaam of waarde-herkenning mogelijk nog onjuist.`);
                 }
               }
             }
@@ -938,26 +1001,64 @@ export function resolveFieldTextValue(field: InserveCustomFieldValue | null | un
   if (!field || typeof field !== 'object') {
     return { text: null, optionLabel: null, optionValue: null, fieldValueText: null };
   }
-  const rawValue = field.value;
-  const opt = field.option;
+  const fieldAny = field as Record<string, unknown>;
+  const rawValue = fieldAny.value;
+  const opt = fieldAny.option;
   let optionLabel: string | null = null;
   let optionValue: string | number | null = null;
   if (opt && typeof opt === 'object') {
-    optionLabel = typeof opt.label === 'string' ? opt.label : null;
-    optionValue = (opt.value !== null && opt.value !== undefined) ? opt.value : null;
+    const optAny = opt as Record<string, unknown>;
+    optionLabel = typeof optAny.label === 'string' ? optAny.label : null;
+    optionValue = (optAny.value !== null && optAny.value !== undefined) ? (optAny.value as string | number) : null;
+    if (optionLabel === null && typeof optAny.name === 'string') optionLabel = optAny.name;
+    if (optionValue === null && typeof optAny.id === 'number') optionValue = optAny.id;
   }
+
+  const customFieldObj = fieldAny.custom_field_object;
+  let optionsFromCfo: Array<Record<string, unknown>> = [];
+  let cfoName: string | null = null;
+  let cfoTitle: string | null = null;
+  if (customFieldObj && typeof customFieldObj === 'object') {
+    const cfo = customFieldObj as Record<string, unknown>;
+    cfoName = typeof cfo.name === 'string' ? cfo.name : null;
+    cfoTitle = typeof cfo.title === 'string' ? cfo.title : null;
+    if (Array.isArray(cfo.options)) optionsFromCfo = cfo.options as Array<Record<string, unknown>>;
+  }
+
   let text: string | null = null;
   if (typeof rawValue === 'string') text = rawValue;
   else if (typeof rawValue === 'number' || typeof rawValue === 'boolean') text = String(rawValue);
   else if (rawValue === null || rawValue === undefined) text = null;
 
   let fieldValueText: string | null = null;
-  const fv: any = (field as any).field_value;
+  const fv: any = fieldAny.field_value;
   if (fv && typeof fv === 'object') {
     const fvVal = fv.value;
     if (typeof fvVal === 'string') fieldValueText = fvVal;
     else if (typeof fvVal === 'number' || typeof fvVal === 'boolean') fieldValueText = String(fvVal);
   }
+
+  if ((optionLabel === null || optionLabel === '') && (text === null || text === '')) {
+    for (const o of optionsFromCfo) {
+      const oId = o.id;
+      const oLabel = typeof o.label === 'string' ? o.label : (typeof o.name === 'string' ? o.name : null);
+      const oValue = o.value;
+      const matchesId =
+        (typeof oId === 'number' && typeof rawValue === 'number' && oId === rawValue) ||
+        (String(oId ?? '') !== '' && String(rawValue ?? '') === String(oId));
+      const matchesValue =
+        (oValue !== null && oValue !== undefined) &&
+        (String(oValue) === String(rawValue ?? ''));
+      if ((matchesId || matchesValue) && oLabel) {
+        optionLabel = oLabel;
+        optionValue = oValue ?? (oId as any);
+        break;
+      }
+    }
+  }
+
+  void cfoName;
+  void cfoTitle;
 
   return { text, optionLabel, optionValue, fieldValueText };
 }
@@ -982,12 +1083,30 @@ export function fieldNameMatches(
     coerceStr(field.id),
     coerceStr(fieldAny.fieldName),
     coerceStr(fieldAny.field_name),
+    coerceStr(fieldAny.custom_field),
   ];
   for (const c of standardCandidates) {
     if (c === null) continue;
     const norm = c.trim().toLowerCase();
     if (norm === target) return true;
     if (norm.includes(target)) return true;
+  }
+  const cfo = fieldAny.custom_field_object;
+  if (cfo && typeof cfo === 'object') {
+    const cfoAny = cfo as Record<string, unknown>;
+    const cfoCandidates: (string | null)[] = [
+      coerceStr(cfoAny.name),
+      coerceStr(cfoAny.title),
+      coerceStr(cfoAny.slug),
+      coerceStr(cfoAny.key),
+      coerceStr(cfoAny.id),
+    ];
+    for (const c of cfoCandidates) {
+      if (c === null) continue;
+      const norm = c.trim().toLowerCase();
+      if (norm === target) return true;
+      if (norm.includes(target)) return true;
+    }
   }
   try {
     for (const k of Object.keys(fieldAny)) {
