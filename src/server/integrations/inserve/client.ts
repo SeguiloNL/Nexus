@@ -306,7 +306,16 @@ export class InserveClient {
     }
 
     let attempt = 0;
+    // Get-methods met discovery-fasen (listAllClients/Assets) lopen veel
+    // strategieën af. Een 500 is vaak een "endpoint bestaat niet onder
+    // deze params / niet in dit tenant-model". 2x retry per call ×
+    // ~39 strategieën = onnodig veel belasting én extra budgetverbruik.
+    // We houden daarom 1 retry ALLEEN voor echte transient fouten
+    // (429 en netwerk), en laten 500/404/4xx direct falen (caller handelt
+    // dit strategy-per-strategy af).
     const maxAttempts = 2;
+    const shouldRetryOn5xx = (options as any).retry5xx !== false ? 1 : 0;
+    let retry5xxUsed = 0;
 
     while (attempt < maxAttempts) {
       attempt++;
@@ -351,13 +360,24 @@ export class InserveClient {
           throw new InserveApiError(429, responseBody, url, msg);
         }
 
-        if (attempt < maxAttempts && is5xx && isGet) {
-          const waitMs = DEFAULT_RETRY_WAIT_MS;
-          console.error(
-            `[Inserve] Retrying ${method} ${path} after ${response.status} (attempt ${attempt}, waiting ${waitMs}ms)`
-          );
-          await sleep(waitMs);
-          continue;
+        if (attempt < maxAttempts && isGet) {
+          if (is429) {
+            const waitMs = DEFAULT_RETRY_WAIT_MS * 3;
+            console.error(
+              `[Inserve] Retrying ${method} ${path} after 429 (attempt ${attempt}, waiting ${waitMs}ms)`
+            );
+            await sleep(waitMs);
+            continue;
+          }
+          if (is5xx && retry5xxUsed < shouldRetryOn5xx) {
+            retry5xxUsed++;
+            const waitMs = DEFAULT_RETRY_WAIT_MS;
+            console.error(
+              `[Inserve] Retrying ${method} ${path} after ${response.status} (attempt ${attempt}, waiting ${waitMs}ms)`
+            );
+            await sleep(waitMs);
+            continue;
+          }
         }
 
         console.error(`[Inserve] Request failed: ${method} ${url} → status ${response.status}`);

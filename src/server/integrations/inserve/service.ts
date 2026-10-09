@@ -26,18 +26,28 @@ import type {
 export const INSERVE_COMPANY_ENDPOINT = 'companies';
 export const INSERVE_CLIENT_ENDPOINT = 'clients';
 export const INSERVE_ASSET_ENDPOINT_CANDIDATES: ReadonlyArray<string> = [
+  // Meest waarschijnlijk eerst
   'assets',
-  'asset',
-  'assets-cards',
-  'asset-cards',
-  'assetcards',
-  'product-assets',
-  'productassets',
-  'articles',
   'simcards',
   'sim-cards',
   'simkaarten',
   'assets/simcards',
+  // Product- / relationele endpoints
+  'product-assets',
+  'productassets',
+  'articles',
+  'products',
+  'relations',
+  'cards',
+  'asset-cards',
+  'assets-cards',
+  'assetcards',
+  'asset',
+  // Sub-paden (per-company subresources)
+  'company/assets',
+  'companies/assets',
+  'tenant/assets',
+  'simcards/company',
 ];
 
 export interface ListAssetsOptions {
@@ -1015,6 +1025,36 @@ export async function listAllClients(
     separateLimitPage?: boolean;
   };
   const strategies: Strat[] = [
+    // Eerst: zonder builder, zonder with-relations. Dit voorkomt 500's op
+    // endpoints die geen 'with' of nested-builder accepteren (komt vaak
+    // voor op /clients en /assets; bedrijf-ID zit vaak in het record zelf).
+    {
+      label: 'clients-zonder-builder-eerst',
+      withRelations: [],
+      useBuilder: false,
+      perPage: 50,
+    },
+    {
+      label: 'clients-postman-flat-json-builder-geen-with',
+      withRelations: [],
+      useBuilder: false,
+      perPage: 50,
+      extraQueryParams: {},
+      separateLimitPage: true,
+      nestedBuilderIndexFromOne: true,
+      // Geen builder[1][with]! Alleen limit + page (flat-qs).
+      onlyLimitPageSeparateNoWith: true,
+    } as any,
+    {
+      label: 'clients-postman-flat-met-customers',
+      withRelations: [],
+      useBuilder: false,
+      perPage: 25,
+      extraQueryParams: {},
+      separateLimitPage: true,
+      nestedBuilderIndexFromOne: true,
+      separateWithValue: 'customers',
+    } as any,
     {
       label: 'clients-postman-flat',
       withRelations: [],
@@ -1035,11 +1075,6 @@ export async function listAllClients(
       withRelations: [],
       useBuilder: true,
       builderParamsStyle: 'json',
-    },
-    {
-      label: 'clients-zonder-builder',
-      withRelations: [],
-      useBuilder: false,
     },
   ];
 
@@ -1062,9 +1097,23 @@ export async function listAllClients(
           ...(extraQueryParams ?? {}),
         };
         if (strat.separateLimitPage && strat.nestedBuilderIndexFromOne) {
-          customQuery['builder[1][with]'] = 'company';
-          customQuery['builder[2][limit]'] = effectivePerPage;
-          customQuery['builder[3][page]'] = page;
+          const withValue: string | undefined =
+            (strat as any).onlyLimitPageSeparateNoWith
+              ? undefined
+              : ((strat as any).separateWithValue as string) ??
+                (strat.withRelations && strat.withRelations.length > 0
+                  ? strat.withRelations.join(',')
+                  : strat.label.includes('company') || strat.label.includes('clients-postman-flat')
+                    ? 'company'
+                    : undefined);
+          if (withValue) {
+            customQuery['builder[1][with]'] = withValue;
+            customQuery['builder[2][limit]'] = effectivePerPage;
+            customQuery['builder[3][page]'] = page;
+          } else {
+            customQuery['builder[1][limit]'] = effectivePerPage;
+            customQuery['builder[2][page]'] = page;
+          }
           delete customQuery['page'];
           delete customQuery['per_page'];
         }
@@ -1789,6 +1838,40 @@ export async function listAllAssets(
   };
   const strategies: Strat[] = [];
   for (const ep of candidates) {
+    // 1) zonder builder — meteen zonder side-loads (geen 500 risico)
+    strategies.push({
+      label: `asset-${ep}-zonder-builder-eerst`,
+      endpoint: ep,
+      withRelations: [],
+      useBuilder: false,
+      perPage: 50,
+    } as Strat);
+    // 2) flat-builder ALLEEN limit+page zonder with (geen side-loads)
+    strategies.push({
+      label: `asset-${ep}-postman-flat-no-with`,
+      endpoint: ep,
+      withRelations: [],
+      useBuilder: false,
+      perPage: 50,
+      extraQueryParams: {},
+      separateLimitPage: true,
+      nestedBuilderIndexFromOne: true,
+      onlyLimitPageSeparateNoWith: true as any,
+    } as Strat);
+    // 3) flat-builder snake_case relations (custom_fields, companies) —
+    //    komt het meest voor bij Inserve Laravel APIs
+    strategies.push({
+      label: `asset-${ep}-postman-flat-snake-case`,
+      endpoint: ep,
+      withRelations: [],
+      useBuilder: false,
+      perPage,
+      extraQueryParams: {},
+      separateLimitPage: true,
+      nestedBuilderIndexFromOne: true,
+      separateWithValue: 'companies,custom_fields' as any,
+    } as Strat);
+    // 4) Oude bekende: flat-builder met company,customValues
     strategies.push({
       label: `asset-${ep}-postman-flat`,
       endpoint: ep,
@@ -1798,19 +1881,23 @@ export async function listAllAssets(
       extraQueryParams: {},
       separateLimitPage: true,
       nestedBuilderIndexFromOne: true,
+      separateWithValue: 'company,customValues' as any,
+    } as Strat);
+    // 5) json builder snake_case
+    strategies.push({
+      label: `asset-${ep}-json-builder-snake-case`,
+      endpoint: ep,
+      withRelations: ['companies', 'custom_fields'],
+      useBuilder: true,
+      builderParamsStyle: 'json',
     });
+    // 6) json builder camelCase (originele fallback)
     strategies.push({
       label: `asset-${ep}-json-builder`,
       endpoint: ep,
       withRelations: withRelations.length > 0 ? withRelations : ['company', 'customValues'],
       useBuilder: true,
       builderParamsStyle: 'json',
-    });
-    strategies.push({
-      label: `asset-${ep}-zonder-builder`,
-      endpoint: ep,
-      withRelations: [],
-      useBuilder: false,
     });
   }
 
@@ -1835,10 +1922,23 @@ export async function listAllAssets(
           ...(extraQueryParams ?? {}),
         };
         if (strat.separateLimitPage && strat.nestedBuilderIndexFromOne) {
-          const rels = strat.withRelations && strat.withRelations.length > 0 ? strat.withRelations : ['company', 'customValues'];
-          customQuery['builder[1][with]'] = rels.join(',');
-          customQuery['builder[2][limit]'] = effectivePerPage;
-          customQuery['builder[3][page]'] = page;
+          const onlyNoWith: boolean = (strat as any).onlyLimitPageSeparateNoWith === true;
+          const overrideWith: string | undefined = (strat as any).separateWithValue;
+          if (onlyNoWith) {
+            customQuery['builder[1][limit]'] = effectivePerPage;
+            customQuery['builder[2][page]'] = page;
+          } else if (overrideWith) {
+            customQuery['builder[1][with]'] = overrideWith;
+            customQuery['builder[2][limit]'] = effectivePerPage;
+            customQuery['builder[3][page]'] = page;
+          } else {
+            const rels = strat.withRelations && strat.withRelations.length > 0
+              ? strat.withRelations
+              : ['company', 'customValues'];
+            customQuery['builder[1][with]'] = rels.join(',');
+            customQuery['builder[2][limit]'] = effectivePerPage;
+            customQuery['builder[3][page]'] = page;
+          }
           delete customQuery['page'];
           delete customQuery['per_page'];
         }
