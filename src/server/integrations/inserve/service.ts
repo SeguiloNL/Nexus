@@ -757,9 +757,12 @@ export async function listAllCompanies(
             if (page === 1 && !stratPageMetaLogged) {
               stratPageMetaLogged = true;
               try {
-                console.debug(
-                  `[Inserve] Pagina-1 debug strategie [${strat.label}] | pageItems.length=${pageItems.length} | chunk top-level keys: [${Object.keys(rAny).join(', ')}] | pageMeta raw: ${JSON.stringify(pageMeta).slice(0, 400)} | direct total/last_page: total=${(rAny as any).total} last_page=${(rAny as any).last_page} lastPage=${(rAny as any).lastPage}`
-                );
+                const t = (rAny as any).total;
+                const lp = (rAny as any).last_page ?? (rAny as any).lastPage;
+                if (typeof t === 'number' && typeof lp === 'number') {
+                  pageMeta.last_page = lp;
+                  pageMeta.total = t;
+                }
               } catch {
               }
             }
@@ -787,14 +790,6 @@ export async function listAllCompanies(
 
         if (firstDetailKeys && allItems.length > 0) {
           try {
-            const hasFieldLike = firstDetailKeys.some((k) =>
-              /field|custom|extra|vrij/i.test(k)
-            );
-            console.debug(
-              `[Inserve] listCompanies strategie [${strat.label}] eerste item keys (${allItems.length} items, ${pagesProcessed} pagina's):`,
-              firstDetailKeys,
-              hasFieldLike ? '(bevat veld-achtige keys!)' : '(geen veld-keys zichtbaar in list)'
-            );
             const hasCustomValuesKey =
               firstDetailKeys.includes('customValues') ||
               firstDetailKeys.includes('custom_values');
@@ -843,12 +838,6 @@ export async function listAllCompanies(
         if (result.items.length > 0 && result.items[0] && typeof result.items[0] === 'object') {
           try {
             const keys = Object.keys(result.items[0] as unknown as Record<string, unknown>);
-            const hasFieldLike = keys.some((k) => /field|custom|extra|vrij/i.test(k));
-            console.debug(
-              `[Inserve] listCompanies strategie [${strat.label}] eerste item keys (${result.items.length} items, ${result.pagesProcessed} pagina's):`,
-              keys,
-              hasFieldLike ? '(bevat veld-achtige keys!)' : '(geen veld-keys zichtbaar in list)'
-            );
             const hasCustomValuesKey =
               keys.includes('customValues') || keys.includes('custom_values');
             if (hasCustomValuesKey) {
