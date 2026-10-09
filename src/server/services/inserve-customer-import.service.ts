@@ -643,6 +643,18 @@ export async function runInserveCustomerImport(
     timing.finalize = Date.now() - tFin;
     timing.total = Math.max(timing.total, Date.now() - t0);
     finished.timingMs = { ...timing };
+    try {
+      const statStr = (sStatus === "SUCCESS") ? "SUCCES" : (sStatus === "PARTIAL_SUCCESS") ? "GESLAAGD (partieel)" : (sStatus === "SKIPPED") ? "OVERGESLAGEN" : "MISLUKT";
+      const cSum = finished.contacts.created + finished.contacts.updated + (finished.contacts as any).unchanged ?? 0;
+      console.info(
+        `[Inserve] Import ${statStr}. Ophaalde=${finished.fetched} filterpass=${finished.activeFilterPassed} aangemaakt=${finished.created} bijgewerkt=${finished.updated} ongewijzigd=${finished.unchanged} overgeslagen=${finished.skipped.other + finished.skipped.inactive_or_missing_nexus_field + finished.skipped.fetch_error_nexus + finished.skipped.missing_required_fields} mislukt=${finished.failed} | contacten: OK=${cSum} nieuw=${finished.contacts.created} falen=${finished.contacts.failed} | duur=${finished.timingMs.total}ms (API-bedrijven:${finished.pagesProcessed}p, contacten:${finished.clientsPagesProcessed}p)`
+      );
+      if (finished.errorMessage) {
+        const lvl = (sStatus === "SUCCESS" || sStatus === "PARTIAL_SUCCESS" || sStatus === "SKIPPED") ? console.warn : console.error;
+        lvl(`[Inserve]   Bericht: ${finished.errorMessage}`);
+      }
+    } catch {
+    }
     return finished;
   };
 
