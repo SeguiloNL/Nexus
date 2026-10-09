@@ -19,6 +19,16 @@ import {
   bulkImportCustomers,
   type CustomerCsvImportRow,
 } from "@/server/services/customer.service";
+import {
+  createContactService,
+  deleteContactService,
+  updateContactService,
+} from "@/server/services/contact.service";
+import type {
+  CreateContactInput,
+  UpdateContactInput,
+} from "@/server/validators/contact";
+import { CreateContactSchema, UpdateContactSchema, DeleteContactSchema } from "@/server/validators/contact";
 import { runInserveCustomerImport } from "@/server/services/inserve-customer-import.service";
 import type { ImportSummary } from "@/server/services/inserve-customer-import.service";
 import { pickAuth } from "@/lib/rbac";
@@ -421,4 +431,142 @@ export async function startInserveCustomerImportAction(): Promise<{
     return { ok: false, error: e?.message ?? String(e) };
   }
 }
+
+// ---------------- Contactpersonen actions ----------------
+
+export type ContactActionState = {
+  errors?: Partial<Record<string, string[]>>;
+  message?: string | null;
+  contactId?: string;
+};
+
+function formStr(formData: FormData, key: string): string | undefined {
+  const v = formData.get(key);
+  if (v === null || v === undefined || typeof v !== "string") return undefined;
+  const s = v.trim();
+  return s.length > 0 ? s : undefined;
+}
+
+function formNum(formData: FormData, key: string): number | undefined {
+  const s = formStr(formData, key);
+  if (!s) return undefined;
+  const n = Number(s);
+  return Number.isFinite(n) && Number.isInteger(n) ? n : undefined;
+}
+
+function readContactForm(
+  formData: FormData,
+  overrides: Partial<Record<string, unknown>> = {}
+): CreateContactInput & { id?: string } {
+  return {
+    id: (overrides.id as string | undefined) ?? formStr(formData, "id"),
+    customerId: (overrides.customerId as string | undefined) ?? formStr(formData, "customerId")!,
+    firstName: formStr(formData, "firstName"),
+    lastName: formStr(formData, "lastName")!,
+    email: formStr(formData, "email"),
+    phone: formStr(formData, "phone"),
+    mobile: formStr(formData, "mobile"),
+    functionTitle: formStr(formData, "functionTitle"),
+    inserveContactId:
+      (overrides.inserveContactId as number | undefined) ?? formNum(formData, "inserveContactId"),
+  };
+}
+
+export async function createContactAction(
+  customerId: string,
+  _prev: ContactActionState,
+  formData: FormData
+): Promise<ContactActionState> {
+  const user = await getCurrentUser();
+  await requirePermission(pickAuth(user), "create", "customer");
+
+  const data = readContactForm(formData, { customerId });
+  const parsed = CreateContactSchema.safeParse(data);
+  if (!parsed.success) {
+    return {
+      errors: parsed.error.flatten().fieldErrors as ContactActionState["errors"],
+      message: "Controleer de invoer.",
+    };
+  }
+
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
+  try {
+    const created = await createContactService(parsed.data, ctx as any);
+    revalidatePath(`/customers/${customerId}`);
+    revalidatePath(`/customers`);
+    return { contactId: created.id, message: "Contactpersoon toegevoegd." };
+  } catch (e: any) {
+    return { message: e?.message ?? String(e) };
+  }
+}
+
+export async function updateContactAction(
+  customerId: string,
+  contactId: string,
+  _prev: ContactActionState,
+  formData: FormData
+): Promise<ContactActionState> {
+  const user = await getCurrentUser();
+  await requirePermission(pickAuth(user), "edit", "customer");
+
+  const data = readContactForm(formData, { customerId, id: contactId });
+  const parsed = UpdateContactSchema.safeParse({ ...data, id: contactId });
+  if (!parsed.success) {
+    return {
+      errors: parsed.error.flatten().fieldErrors as ContactActionState["errors"],
+      message: "Controleer de invoer.",
+    };
+  }
+
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
+  try {
+    const updated = await updateContactService(contactId, parsed.data, ctx as any);
+    revalidatePath(`/customers/${customerId}`);
+    revalidatePath(`/customers`);
+    return { contactId: updated.id, message: "Contactpersoon bijgewerkt." };
+  } catch (e: any) {
+    return { message: e?.message ?? String(e) };
+  }
+}
+
+export async function deleteContactAction(customerId: string, contactId: string) {
+  const user = await getCurrentUser();
+  await requirePermission(pickAuth(user), "delete", "customer");
+  DeleteContactSchema.parse({ id: contactId });
+
+  const ctx = {
+    userId: user.id,
+    userRole: user.role,
+    roleId: user.roleId,
+    roleScope: user.roleScope,
+    customerId: user.customerId,
+    customerScope: user.customerIds,
+    permissions: user.permissions,
+  };
+  try {
+    await deleteContactService(contactId, ctx as any);
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) };
+  }
+  revalidatePath(`/customers/${customerId}`);
+  revalidatePath(`/customers`);
+  return { ok: true };
+}
+
 

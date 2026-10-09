@@ -76,13 +76,17 @@ export function InserveCustomerImportClient() {
       const zeroTag =
         zeroFases.length > 0 ? ` | ⚠️ 0ms fasen: ${zeroFases.join(", ")}` : "";
       if (res.ok) {
+        const contacts = s?.contacts;
         toast.success(
-          `Inserve klantimport voltooid. Ophaalde: ${s?.fetched ?? 0}, aangemaakt: ${s?.created ?? 0}, bijgewerkt: ${s?.updated ?? 0}. Duur: ${s?.durationMs ?? 0}ms${credTag}`
+          `Inserve import voltooid. Bedrijven: ${s?.fetched ?? 0} | Nieuw: ${s?.created ?? 0}, Bijgewerkt: ${s?.updated ?? 0} | Deact: ${s?.customersDeactivated ?? 0} | Heract: ${s?.customersReactivated ?? 0}. Contacten: ${contacts?.fetched ?? 0} | Nieuw: ${contacts?.created ?? 0} | Bijgewerkt: ${contacts?.updated ?? 0}. Duur: ${s?.durationMs ?? 0}ms${credTag}`
         );
       } else if (s?.status === "SKIPPED") {
         toast.info(`${res.error ?? "Import is overgeslagen."}${credTag}${zeroTag}`);
       } else {
-        toast.error(`${res.error ?? "Import is (gedeeltelijk) mislukt."}${credTag}${zeroTag}`);
+        const contacts = s?.contacts;
+        toast.error(
+          `${res.error ?? "Import is (gedeeltelijk) mislukt."}${credTag}${zeroTag}${contacts && contacts.failed > 0 ? ` | Contactfouten: ${contacts.failed}` : ""}`
+        );
       }
     });
   };
@@ -108,10 +112,11 @@ export function InserveCustomerImportClient() {
               <div>
                 <p className="font-semibold">Let op</p>
                 <ul className="list-disc list-inside space-y-0.5 mt-1 text-amber-700">
-                  <li>Alleen bedrijven met <code>Nexus = Actief</code> worden geïmporteerd.</li>
-                  <li>Eerder gekoppelde klanten worden alleen bijgewerkt op Inserve-velden; lokale notities, status en type blijven behouden.</li>
-                  <li>Bedrijven die later <em>Inactief</em> worden of ontbreken, worden NIET automatisch verwijderd of gedeactiveerd.</li>
-                  <li>Bestaande Nexus-klanten worden NIET automatisch gekoppeld op alleen bedrijfsnaam; mogelijke overeenkomsten worden achteraf gerapporteerd.</li>
+                  <li>Bedrijven met <code>Nexus = Actief</code> worden geïmporteerd met bijbehorende contactpersonen.</li>
+                  <li>Eerder gekoppelde klanten met <code>Nexus = Inactief</code> krijgen uitsluitend status <em>Inactief</em>; overige velden en contactpersonen blijven ongemoeid.</li>
+                  <li>Eerder gekoppelde klanten worden alleen op Inserve-velden bijgewerkt; lokale notities, status en type blijven daarbuiten behouden.</li>
+                  <li>Ontbrekende bedrijven of API-fouten wijzigen nooit automatisch de bestaande klantstatus niet.</li>
+                  <li>Bestaande Nexus-klanten worden NIET automatisch gekoppeld op alleen naam of e‑mail; mogelijke overeenkomsten worden achteraf gerapporteerd.</li>
                 </ul>
               </div>
             </div>
@@ -170,12 +175,15 @@ export function InserveCustomerImportClient() {
               )}
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <StatCard title="Opgehaald" value={summary.fetched} icon={<FileText className="h-4 w-4" />} tone="neutral" />
-                <StatCard title="Voldoet aan Nexus = Actief" value={summary.activeFilterPassed} icon={<CheckCircle2 className="h-4 w-4 text-sky-600" />} tone="info" />
-                <StatCard title="Aangemaakt" value={summary.created} icon={<PlusCircle className="h-4 w-4 text-emerald-600" />} tone="success" />
-                <StatCard title="Bijgewerkt" value={summary.updated} icon={<RefreshCw className="h-4 w-4 text-blue-600" />} tone="info" />
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <StatCard title="Bedrijven opgehaald" value={summary.fetched} icon={<FileText className="h-4 w-4" />} tone="neutral" />
+                <StatCard title="Voldoet aan Actief" value={summary.activeFilterPassed} icon={<CheckCircle2 className="h-4 w-4 text-sky-600" />} tone="info" />
+                <StatCard title="Klanten aangemaakt" value={summary.created} icon={<PlusCircle className="h-4 w-4 text-emerald-600" />} tone="success" />
+                <StatCard title="Klanten bijgewerkt" value={summary.updated} icon={<RefreshCw className="h-4 w-4 text-blue-600" />} tone="info" />
                 <StatCard title="Ongewijzigd" value={summary.unchanged} icon={<MinusCircle className="h-4 w-4 text-slate-500" />} tone="neutral" />
+
+                <StatCard title="Klanten gedeactiveerd" value={summary.customersDeactivated} icon={<XCircle className="h-4 w-4 text-rose-600" />} tone="error" />
+                <StatCard title="Klanten geheractiveerd" value={summary.customersReactivated} icon={<CheckCircle2 className="h-4 w-4 text-emerald-600" />} tone="success" />
                 <StatCard
                   title="Overgeslagen"
                   value={
@@ -187,11 +195,41 @@ export function InserveCustomerImportClient() {
                   icon={<AlertTriangle className="h-4 w-4 text-amber-600" />}
                   tone="warning"
                 />
-                <StatCard title="Mislukt" value={summary.failed} icon={<XCircle className="h-4 w-4 text-red-600" />} tone="error" />
+                <StatCard title="Mislukt (bedrijven)" value={summary.failed} icon={<XCircle className="h-4 w-4 text-red-600" />} tone="error" />
                 <StatCard title="Duur (ms)" value={summary.durationMs} icon={<Timer className="h-4 w-4" />} tone="neutral" />
-                <StatCard title="API pagina's" value={summary.pagesProcessed} icon={<Layers className="h-4 w-4" />} tone="info" />
-                <StatCard title="API-totaal (volgens Inserve)" value={summary.totalExpected} icon={<Database className="h-4 w-4" />} tone="neutral" />
               </div>
+
+              <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-3">
+                <StatCard title="Contacten opgehaald" value={summary.contacts?.fetched ?? 0} icon={<Users className="h-4 w-4" />} tone="neutral" />
+                <StatCard title="Contacten aangemaakt" value={summary.contacts?.created ?? 0} icon={<PlusCircle className="h-4 w-4 text-emerald-600" />} tone="success" />
+                <StatCard title="Contacten bijgewerkt" value={summary.contacts?.updated ?? 0} icon={<RefreshCw className="h-4 w-4 text-blue-600" />} tone="info" />
+                <StatCard title="Contacten overgeslagen" value={summary.contacts?.skipped ?? 0} icon={<AlertTriangle className="h-4 w-4 text-amber-600" />} tone="warning" />
+                <StatCard title="Contacten mislukt" value={summary.contacts?.failed ?? 0} icon={<XCircle className="h-4 w-4 text-red-600" />} tone="error" />
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
+                <StatCard title="Bedrijven-pagina's" value={summary.pagesProcessed} icon={<Layers className="h-4 w-4" />} tone="info" />
+                <StatCard title="Contacten-pagina's" value={summary.clientsPagesProcessed ?? 0} icon={<Layers className="h-4 w-4 text-indigo-600" />} tone="info" />
+                <StatCard title="API-totaal bedrijven" value={summary.totalExpected} icon={<Database className="h-4 w-4" />} tone="neutral" />
+                <StatCard title="API-totaal contacten" value={summary.clientsTotalExpected ?? 0} icon={<Database className="h-4 w-4 text-indigo-600" />} tone="neutral" />
+              </div>
+
+              {(summary.possibleUnlinkedMatches && summary.possibleUnlinkedMatches.length > 0) || (summary.possibleContactMatches && summary.possibleContactMatches.length > 0) ? (
+                <div className="mt-3 grid grid-cols-2 md:grid-cols-2 gap-3">
+                  <StatCard
+                    title="Mogelijke ongekppelde bedrijf-matches"
+                    value={summary.possibleUnlinkedMatches?.length ?? 0}
+                    icon={<Link2 className="h-4 w-4 text-blue-600" />}
+                    tone="info"
+                  />
+                  <StatCard
+                    title="Mogelijke contact-matches (handmatig beoordelen)"
+                    value={summary.possibleContactMatches?.length ?? 0}
+                    icon={<Link2 className="h-4 w-4 text-indigo-600" />}
+                    tone="info"
+                  />
+                </div>
+              ) : null}
 
               <div className="mt-4">
                 <Card>
@@ -258,13 +296,15 @@ export function InserveCustomerImportClient() {
                             { label: "Config + SyncJobRun aanmaken", key: "createConfigAndRun" as const, allowZero: true },
                             { label: "Inserve client initialisatie", key: "inserveInit" as const, allowZero: false },
                             { label: "Bedrijven ophalen (API)", key: "fetchCompanies" as const, allowZero: false },
+                            { label: "Contactpersonen ophalen (API)", key: "fetchClients" as const, allowZero: true },
                             { label: "Bestaande klanten laden", key: "fetchPreExisting" as const, allowZero: true },
                             { label: "Records verwerken", key: "processRecords" as const, allowZero: false },
+                            { label: "Contactpersonen synchroniseren", key: "syncContacts" as const, allowZero: true },
                             { label: "Ongekoppelde matches zoeken", key: "findMatches" as const, allowZero: true },
                             { label: "Afronden (audit + DB)", key: "finalize" as const, allowZero: true },
                             { label: "Totaal", key: "total" as const, allowZero: false },
                           ].map(({ label, key, allowZero }) => {
-                            const value = summary.timingMs?.[key] ?? 0;
+                            const value = (summary.timingMs as any)?.[key] ?? 0;
                             const isSuspicious = value === 0 && !allowZero;
                             return (
                               <li key={key} className="flex items-center justify-between">
@@ -282,9 +322,9 @@ export function InserveCustomerImportClient() {
                 </Card>
               </div>
 
-              <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
                 <div className="rounded-md border p-3">
-                  <p className="font-semibold mb-1 text-slate-700">Redenen overgeslagen</p>
+                  <p className="font-semibold mb-1 text-slate-700">Redenen overgeslagen bedrijven</p>
                   <ul className="space-y-0.5 text-slate-600">
                     <li>Nexus veld niet Actief / ontbreekt: <span className="font-mono">{summary.skipped.inactive_or_missing_nexus_field}</span></li>
                     <li>Verplichte velden ontbreken: <span className="font-mono">{summary.skipped.missing_required_fields}</span></li>
@@ -293,16 +333,25 @@ export function InserveCustomerImportClient() {
                   </ul>
                 </div>
                 <div className="rounded-md border p-3">
-                  <p className="font-semibold mb-1 text-slate-700">Eerder actief, nu Inactief</p>
+                  <p className="font-semibold mb-1 text-slate-700">Statuswijzigingen klanten</p>
+                  <ul className="space-y-0.5 text-slate-600">
+                    <li>Van Actief → Inactief: <span className="font-mono text-rose-700">{summary.customersDeactivated ?? 0}</span></li>
+                    <li>Van Inactief/Opgeschort → Actief: <span className="font-mono text-emerald-700">{summary.customersReactivated ?? 0}</span></li>
+                    <li>Eerder Actief, nu Inactief (lijst): <span className="font-mono">{summary.previouslyActiveNowInactive?.length ?? 0}</span></li>
+                    <li>Eerder Inactief, nu Actief (lijst): <span className="font-mono">{summary.previouslyInactiveNowActive?.length ?? 0}</span></li>
+                  </ul>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="font-semibold mb-1 text-slate-700">Mogelijke bedrijf-matches (ongekoppeld)</p>
                   <p className="text-slate-600">
-                    <span className="font-mono text-lg">{summary.previouslyActiveNowInactive?.length ?? 0}</span>
-                    {" "}klanten overgeslagen (geen automatische deactivering).
+                    <span className="font-mono text-lg">{summary.possibleUnlinkedMatches?.length ?? 0}</span>
+                    {" "}overeenkomsten voor handmatige beoordeling.
                   </p>
                 </div>
                 <div className="rounded-md border p-3">
-                  <p className="font-semibold mb-1 text-slate-700">Mogelijke ongekoppelde matches</p>
+                  <p className="font-semibold mb-1 text-slate-700">Mogelijke contact-matches (geen automerge)</p>
                   <p className="text-slate-600">
-                    <span className="font-mono text-lg">{summary.possibleUnlinkedMatches?.length ?? 0}</span>
+                    <span className="font-mono text-lg">{summary.possibleContactMatches?.length ?? 0}</span>
                     {" "}overeenkomsten voor handmatige beoordeling.
                   </p>
                 </div>
@@ -340,21 +389,35 @@ export function InserveCustomerImportClient() {
 
           {summary.previouslyActiveNowInactive && summary.previouslyActiveNowInactive.length > 0 && (
             <DetailsCard
-              title={`Eerder actief, nu Inactief (${summary.previouslyActiveNowInactive.length})`}
-              icon={<Link2 className="h-4 w-4 text-slate-600" />}
+              title={`Eerder actief, nu Inactief (${summary.previouslyActiveNowInactive.length}) — status op Inactief gezet`}
+              icon={<XCircle className="h-4 w-4 text-rose-600" />}
               rows={summary.previouslyActiveNowInactive.slice(0, 200).map((d) => ({
                 id: d.customerId,
                 title: `${d.companyName} (Inserve #${d.inserveCompanyId})`,
-                subtitle: `Nexus klant ID: ${d.customerId} — handmatig controleren.`,
+                subtitle: `Nexus klant ID: ${d.customerId} — status op Inactief gezet.`,
               }))}
               total={summary.previouslyActiveNowInactive.length}
-              tone="neutral"
+              tone="error"
+            />
+          )}
+
+          {summary.previouslyInactiveNowActive && summary.previouslyInactiveNowActive.length > 0 && (
+            <DetailsCard
+              title={`Eerder Inactief/Opgeschort, nu Actief (${summary.previouslyInactiveNowActive.length}) — geheractiveerd`}
+              icon={<CheckCircle2 className="h-4 w-4 text-emerald-600" />}
+              rows={summary.previouslyInactiveNowActive.slice(0, 200).map((d) => ({
+                id: d.customerId,
+                title: `${d.companyName} (Inserve #${d.inserveCompanyId})`,
+                subtitle: `Nexus klant ID: ${d.customerId} — status terug op Actief gezet + synchronisatie hervat.`,
+              }))}
+              total={summary.previouslyInactiveNowActive.length}
+              tone="success"
             />
           )}
 
           {summary.possibleUnlinkedMatches && summary.possibleUnlinkedMatches.length > 0 && (
             <DetailsCard
-              title={`Mogelijke ongekppelde overeenkomsten (${summary.possibleUnlinkedMatches.length})`}
+              title={`Mogelijke ongekppelde bedrijf-overeenkomsten (${summary.possibleUnlinkedMatches.length})`}
               icon={<Link2 className="h-4 w-4 text-blue-600" />}
               rows={summary.possibleUnlinkedMatches.slice(0, 200).map((d) => ({
                 id: `${d.inserveCompanyId}-${d.reason}-${d.nexusCustomerId ?? "?"}`,
@@ -365,24 +428,51 @@ export function InserveCustomerImportClient() {
               tone="info"
             />
           )}
+
+          {summary.possibleContactMatches && summary.possibleContactMatches.length > 0 && (
+            <DetailsCard
+              title={`Mogelijke contact-overeenkomsten (geen automerge!) (${summary.possibleContactMatches.length})`}
+              icon={<Link2 className="h-4 w-4 text-indigo-600" />}
+              rows={summary.possibleContactMatches.slice(0, 200).map((d) => ({
+                id: `${d.inserveContactId}-${d.customerId}-${d.reason}`,
+                title: `${d.inserveFullName ?? `Contact #${d.inserveContactId}`} (Inserve #${d.inserveContactId}, Bedrijf #${d.inserveCompanyId})`,
+                subtitle: `Reden: ${d.reason}${d.inserveEmail ? ` | E-mail: ${d.inserveEmail}` : ""} | Bestaande Nexus contacten: ${(d.existingContactIds ?? []).slice(0, 5).join(", ")}${(d.existingContactIds?.length ?? 0) > 5 ? ` (+${(d.existingContactIds?.length ?? 0) - 5})` : ""}`,
+              }))}
+              total={summary.possibleContactMatches.length}
+              tone="info"
+            />
+          )}
+
+          {summary.contactFailedDetails && summary.contactFailedDetails.length > 0 && (
+            <DetailsCard
+              title={`Mislukte contactpersoon-records (${summary.contactFailedDetails.length})`}
+              icon={<XCircle className="h-4 w-4 text-red-600" />}
+              rows={summary.contactFailedDetails.slice(0, 200).map((d) => ({
+                id: `${d.companyId ?? "?"}-${d.inserveContactId ?? "?"}-${d.error}`,
+                title: d.inserveFullName ?? `Contact #${d.inserveContactId ?? "?"} (Bedrijf #${d.companyId ?? "?"})`,
+                subtitle: d.error,
+              }))}
+              total={summary.contactFailedDetails.length}
+              tone="error"
+            />
+          )}
         </div>
       )}
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Inserve klantimport starten?</DialogTitle>
+            <DialogTitle>Inserve klant- en contactimport starten?</DialogTitle>
             <DialogDescription className="space-y-2">
               <p>
-                Je staat op het punt om bedrijven uit Inserve te importeren. Alleen bedrijven met het vrije veld
-                {" "}<code className="bg-slate-100 px-1 rounded">Nexus = Actief</code>{" "}
-                worden verwerkt.
+                Je staat op het punt om bedrijven en bijbehorende contactpersonen uit Inserve te importeren.
               </p>
               <ul className="list-disc list-inside text-slate-600">
-                <li>Nieuwe klanten worden aangemaakt.</li>
-                <li>Gekoppelde klanten worden alleen op Inserve-velden bijgewerkt.</li>
-                <li>Lokale gegevens (notities, status, type) blijven behouden.</li>
-                <li>Er vindt GEEN automatische verwijdering of deactivering plaats.</li>
+                <li><strong>Nexus = Actief</strong>: nieuwe klanten worden aangemaakt met contactpersonen; reeds gekoppelde klanten en contacten worden op Inserve-velden bijgewerkt.</li>
+                <li><strong>Nexus = Inactief</strong> (en reeds gekoppeld): uitsluitend de Nexus-klantstatus wordt op <em>Inactief</em> gezet; bedrijfsgegevens en contactpersonen blijven ongewijzigd.</li>
+                <li><strong>Nexus = Inactief</strong> (en nog niet gekoppeld): het bedrijf wordt volledig overgeslagen.</li>
+                <li>Lokale gegevens (notities, status buiten de Inserve-velden, type) blijven altijd behouden.</li>
+                <li>Er vindt GEEN automatische verwijdering plaats; API-fouten wijzigen nooit de bestaande klantstatus.</li>
               </ul>
             </DialogDescription>
           </DialogHeader>

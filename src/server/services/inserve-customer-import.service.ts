@@ -1,13 +1,27 @@
 import { prisma } from "@/lib/prisma";
-import type { Customer } from "@prisma/client";
-import type { InserveCompany } from "../integrations/inserve/types";
+import type { Customer, ContactPerson } from "@prisma/client";
+import type { InserveCompany, InserveContact } from "../integrations/inserve/types";
 import { inserveClient, InserveApiError } from "../integrations/inserve/client";
 import {
   listAllCompanies,
+  listAllClients,
   resolveNexusFieldFromCompany,
   listCompanyCustomFields,
+  groupContactsByCompanyId,
+  getContactCompanyIds,
+  resolveContactName,
+  resolveContactEmail,
+  resolveContactPhoneLandline,
+  resolveContactPhoneMobile,
+  resolveContactFunction,
 } from "../integrations/inserve/service";
-import { logAudit } from "./audit.service";
+import {
+  findContactByInserveId,
+  findSimilarContactsByCustomer,
+  createContactService,
+  updateContactService,
+} from "./contact.service";
+import { logAudit, diffObject } from "./audit.service";
 import { generateCustomerNumber } from "@/lib/identifiers";
 import {
   getSyncJobConfig,
@@ -20,6 +34,7 @@ import {
   SyncJobTrigger,
   RoleScope,
   AuditAction,
+  CustomerStatus,
 } from "@/types/enums";
 import type { PermissionBits } from "@/types/next-auth";
 
@@ -51,6 +66,15 @@ export interface ImportSummary {
   created: number;
   updated: number;
   unchanged: number;
+  customersReactivated: number;
+  customersDeactivated: number;
+  contacts: {
+    fetched: number;
+    created: number;
+    updated: number;
+    skipped: number;
+    failed: number;
+  };
   skipped: {
     inactive_or_missing_nexus_field: number;
     missing_required_fields: number;
@@ -60,7 +84,9 @@ export interface ImportSummary {
   failed: number;
   errorMessage?: string | null;
   pagesProcessed: number;
+  clientsPagesProcessed: number;
   totalExpected: number;
+  clientsTotalExpected: number;
   inserveCredentials: {
     configured: boolean;
     source: "db" | "env" | "none";
@@ -75,8 +101,10 @@ export interface ImportSummary {
     createConfigAndRun: number;
     inserveInit: number;
     fetchCompanies: number;
+    fetchClients: number;
     fetchPreExisting: number;
     processRecords: number;
+    syncContacts: number;
     findMatches: number;
     finalize: number;
   };
@@ -90,7 +118,21 @@ export interface ImportSummary {
     nexusCompanyName?: string | null;
     reason: "kvk" | "email" | "name_postcode";
   }>;
+  possibleContactMatches?: Array<{
+    inserveContactId: number;
+    inserveCompanyId: number;
+    customerId: string;
+    inserveFullName?: string | null;
+    inserveEmail?: string | null;
+    existingContactIds: string[];
+    reason: "name_email" | "email_only" | "name_only";
+  }>;
   previouslyActiveNowInactive?: Array<{
+    customerId: string;
+    inserveCompanyId: number;
+    companyName: string;
+  }>;
+  previouslyInactiveNowActive?: Array<{
     customerId: string;
     inserveCompanyId: number;
     companyName: string;
@@ -103,6 +145,12 @@ export interface ImportSummary {
   failedDetails?: Array<{
     companyId?: number | null;
     companyName?: string | null;
+    error: string;
+  }>;
+  contactFailedDetails?: Array<{
+    companyId?: number | null;
+    inserveContactId?: number | null;
+    inserveFullName?: string | null;
     error: string;
   }>;
 }
@@ -331,8 +379,10 @@ const ZERO_TIMING: ImportSummary["timingMs"] = {
   createConfigAndRun: 0,
   inserveInit: 0,
   fetchCompanies: 0,
+  fetchClients: 0,
   fetchPreExisting: 0,
   processRecords: 0,
+  syncContacts: 0,
   findMatches: 0,
   finalize: 0,
 };
@@ -342,6 +392,14 @@ const ZERO_SKIPPED: ImportSummary["skipped"] = {
   missing_required_fields: 0,
   fetch_error_nexus: 0,
   other: 0,
+};
+
+const ZERO_CONTACTS: ImportSummary["contacts"] = {
+  fetched: 0,
+  created: 0,
+  updated: 0,
+  skipped: 0,
+  failed: 0,
 };
 
 const DEFAULT_UNCONFIGURED_CREDS: ImportSummary["inserveCredentials"] = {
@@ -470,13 +528,25 @@ export async function runInserveCustomerImport(
         created: 0,
         updated: 0,
         unchanged: 0,
+        customersReactivated: 0,
+        customersDeactivated: 0,
+        contacts: { ...ZERO_CONTACTS },
         skipped: { ...ZERO_SKIPPED },
         failed: 0,
         pagesProcessed: 0,
+        clientsPagesProcessed: 0,
         totalExpected: 0,
+        clientsTotalExpected: 0,
         errorMessage:
           `Er is reeds een import bezig (status: ${existing.status}, leeftijd: ${ageSec}s). Wacht tot de vorige is afgerond, of probeer het over 10 minuten opnieuw.`,
         timingMs: { ...timing, total: timing.total },
+        possibleUnlinkedMatches: [],
+        possibleContactMatches: [],
+        previouslyActiveNowInactive: [],
+        previouslyInactiveNowActive: [],
+        skippedDetails: [],
+        failedDetails: [],
+        contactFailedDetails: [],
         inserveCredentials: credsInfo,
       };
     }
@@ -509,16 +579,24 @@ export async function runInserveCustomerImport(
     created: 0,
     updated: 0,
     unchanged: 0,
+    customersReactivated: 0,
+    customersDeactivated: 0,
+    contacts: { ...ZERO_CONTACTS },
     skipped: { ...ZERO_SKIPPED },
     failed: 0,
     pagesProcessed: 0,
+    clientsPagesProcessed: 0,
     totalExpected: 0,
+    clientsTotalExpected: 0,
     inserveCredentials: credsInfo,
     timingMs: { ...ZERO_TIMING },
     skippedDetails: [],
     failedDetails: [],
     possibleUnlinkedMatches: [],
+    possibleContactMatches: [],
     previouslyActiveNowInactive: [],
+    previouslyInactiveNowActive: [],
+    contactFailedDetails: [],
   };
 
   const markPartialFailed = (msg: string, detail?: unknown) => {
@@ -599,11 +677,33 @@ export async function runInserveCustomerImport(
       );
     }
 
+    let fetchedContacts: InserveContact[] = [];
+    let contactsByCompanyId: Record<number, InserveContact[]> = {};
+    let tClients = Date.now();
+    try {
+      tClients = Date.now();
+      const cRes = await listAllClients({ perPage: 50 });
+      timing.fetchClients = Date.now() - tClients;
+      fetchedContacts = cRes.items;
+      summary.contacts.fetched = cRes.totalFetched;
+      summary.clientsPagesProcessed = cRes.pagesProcessed;
+      summary.clientsTotalExpected = cRes.totalExpected;
+      contactsByCompanyId = groupContactsByCompanyId(fetchedContacts);
+    } catch (ce: any) {
+      timing.fetchClients = Math.max(timing.fetchClients, Date.now() - tClients);
+      summary.contactFailedDetails!.push({
+        error: `Ophalen contactpersonen mislukt: ${(ce?.message ?? String(ce)).slice(0, 400)}`,
+      });
+      markPartialFailed(
+        `Contactpersonen konden niet worden opgehaald: ${(ce?.message ?? String(ce)).slice(0, 200)}. Bedrijven worden wel verwerkt.`
+      );
+    }
+
     const t5 = Date.now();
-    const previouslyLinkedIds = new Map<number, { id: string; companyName: string; deletedAt: Date | null }>();
+    const previouslyLinkedIds = new Map<number, { id: string; companyName: string; deletedAt: Date | null; status?: CustomerStatus | string | null }>();
     const preExistingLinked = await prisma.customer.findMany({
       where: { inserveCompanyId: { not: null } },
-      select: { id: true, inserveCompanyId: true, companyName: true, deletedAt: true },
+      select: { id: true, inserveCompanyId: true, companyName: true, deletedAt: true, status: true },
     });
     timing.fetchPreExisting = Date.now() - t5;
     for (const c of preExistingLinked) {
@@ -612,10 +712,133 @@ export async function runInserveCustomerImport(
           id: c.id,
           companyName: c.companyName,
           deletedAt: c.deletedAt,
+          status: c.status,
         });
       }
     }
     const nowProcessedLinked = new Map<number, string>();
+
+    async function syncContactsForCustomer(
+      customerId: string,
+      companyId: number
+    ): Promise<void> {
+      const tSync0 = Date.now();
+      try {
+        const contactsForCo = contactsByCompanyId[companyId] ?? [];
+        if (contactsForCo.length === 0) {
+          timing.syncContacts += (Date.now() - tSync0);
+          return;
+        }
+        for (const insContact of contactsForCo) {
+          try {
+            const insId = insContact.id;
+            const name = resolveContactName(insContact);
+            const firstName = name.firstName;
+            const rawLastName = name.lastName;
+            const lastName = rawLastName ?? "Onbekend";
+            const email = resolveContactEmail(insContact);
+            const phone = resolveContactPhoneLandline(insContact);
+            const mobile = resolveContactPhoneMobile(insContact);
+            const functionTitle = resolveContactFunction(insContact);
+            const existingByInserve = await findContactByInserveId(insId);
+            if (existingByInserve) {
+              if (existingByInserve.customerId !== customerId) {
+                summary.contacts.skipped++;
+                continue;
+              }
+              const oldRec = existingByInserve as any;
+              const newVals: any = {};
+              if (firstName !== null && oldRec.firstName !== firstName) newVals.firstName = firstName;
+              if (oldRec.lastName !== lastName) newVals.lastName = lastName;
+              const emailComp = (email ?? null) ?? null;
+              const oldEmailComp = oldRec.email ?? null;
+              if (emailComp !== oldEmailComp) newVals.email = emailComp;
+              const phoneComp = (phone ?? null) ?? null;
+              const oldPhoneComp = oldRec.phone ?? null;
+              if (phoneComp !== oldPhoneComp) newVals.phone = phoneComp;
+              const mobileComp = (mobile ?? null) ?? null;
+              const oldMobileComp = oldRec.mobile ?? null;
+              if (mobileComp !== oldMobileComp) newVals.mobile = mobileComp;
+              const fnComp = (functionTitle ?? null) ?? null;
+              const oldFnComp = oldRec.functionTitle ?? null;
+              if (fnComp !== oldFnComp) newVals.functionTitle = fnComp;
+              if (Object.keys(newVals).length === 0) {
+                summary.contacts.skipped++;
+                continue;
+              }
+              try {
+                await updateContactService(existingByInserve.id, newVals, { userId: ctx.userId } as any);
+                summary.contacts.updated++;
+              } catch {
+                summary.contacts.failed++;
+                summary.contactFailedDetails!.push({
+                  companyId, inserveContactId: insId,
+                  inserveFullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
+                  error: `Update contact mislukt`,
+                });
+              }
+            } else {
+              const similar = await findSimilarContactsByCustomer(customerId, {
+                firstName: firstName ?? undefined,
+                lastName,
+                email: email ?? undefined,
+              });
+              if (similar && similar.length > 0) {
+                summary.possibleContactMatches!.push({
+                  inserveContactId: insId,
+                  inserveCompanyId: companyId,
+                  customerId,
+                  inserveFullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
+                  inserveEmail: email ?? undefined,
+                  existingContactIds: similar.map((c: any) => c.id),
+                  reason:
+                    firstName && email ? "name_email" : email ? "email_only" : "name_only",
+                });
+              }
+              if (!rawLastName || rawLastName.trim() === "") {
+                summary.contacts.skipped++;
+                continue;
+              }
+              try {
+                await createContactService({
+                  customerId,
+                  firstName: firstName ?? undefined,
+                  lastName,
+                  email: email ?? undefined,
+                  phone: phone ?? undefined,
+                  mobile: mobile ?? undefined,
+                  functionTitle: functionTitle ?? undefined,
+                  inserveContactId: insId,
+                }, { userId: ctx.userId } as any);
+                summary.contacts.created++;
+              } catch {
+                summary.contacts.failed++;
+                summary.contactFailedDetails!.push({
+                  companyId, inserveContactId: insId,
+                  inserveFullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
+                  error: `Create contact mislukt (duplicaat of ongeldige data)`,
+                });
+              }
+            }
+          } catch (cErr: any) {
+            summary.contacts.failed++;
+            const nameObj = resolveContactName(insContact);
+            const insFullName = nameObj
+              ? ([nameObj.firstName, nameObj.lastName]
+                  .filter(Boolean).join(" ").trim() || undefined)
+              : undefined;
+            summary.contactFailedDetails!.push({
+              companyId,
+              inserveContactId: (insContact as any).id ?? undefined,
+              inserveFullName: insFullName,
+              error: (cErr?.message ?? String(cErr)).slice(0, 400),
+            });
+          }
+        }
+      } finally {
+        timing.syncContacts += (Date.now() - tSync0);
+      }
+    }
 
     const tProcess = Date.now();
     for (const rawCompany of fetchedCompanies) {
@@ -645,59 +868,122 @@ export async function runInserveCustomerImport(
         };
       }
 
-      if (previouslyLinkedIds.has(companyId)) {
-        if (nexus.status !== "active") {
-          summary.previouslyActiveNowInactive!.push({
-            customerId: previouslyLinkedIds.get(companyId)!.id,
-            inserveCompanyId: companyId,
-            companyName:
-              (company.name as string | undefined) ??
-              previouslyLinkedIds.get(companyId)!.companyName,
-          });
+      const hasLink = previouslyLinkedIds.has(companyId);
+
+      if (nexus.status === "fetch_error" || nexus.status === "parse_error") {
+        summary.skipped.fetch_error_nexus++;
+        summary.failed++;
+        markPartialFailed(
+          "Een of meer bedrijven konden niet worden verwerkt door fouten bij het ophalen van vrije velden. Zie failedDetails."
+        );
+        summary.failedDetails!.push({
+          companyId,
+          companyName: (company.name as string | null) ?? null,
+          error: `Vrij veld Nexus: ${(nexus as any).errorMessage?.slice(0, 400)}`,
+        });
+        if (hasLink) {
+          nowProcessedLinked.set(companyId, previouslyLinkedIds.get(companyId)!.id);
+        }
+        continue;
+      }
+      if (nexus.status === "missing" || nexus.status === "empty") {
+        summary.skipped.inactive_or_missing_nexus_field++;
+        summary.skippedDetails!.push({
+          companyId,
+          companyName: (company.name as string | null) ?? null,
+          reason: nexus.status === "empty" ? `Nexus veld is leeg` : `Nexus veld ontbreekt`,
+        });
+        if (hasLink) {
+          nowProcessedLinked.set(companyId, previouslyLinkedIds.get(companyId)!.id);
+        }
+        continue;
+      }
+      if (nexus.status === "inactive") {
+        if (!hasLink) {
           summary.skipped.inactive_or_missing_nexus_field++;
           summary.skippedDetails!.push({
             companyId,
             companyName: (company.name as string | null) ?? null,
-            reason:
-              nexus.status === "fetch_error"
-                ? `Nexus-vrij-veld: ${(nexus as any).errorMessage?.slice(0, 200)}`
-                : nexus.status === "inactive"
-                ? `Nexus = ${(nexus as any).rawValue} (Actief verwacht); niet bijwerken.`
-                : `Nexus veld ontbreekt of is leeg; niet bijwerken.`,
+            reason: `Nexus = ${(nexus as any).rawValue} (Inactief en nog geen klant; overslaan).`,
           });
-          nowProcessedLinked.set(
-            companyId,
-            previouslyLinkedIds.get(companyId)!.id
-          );
           continue;
         }
-      }
-
-      if (nexus.status !== "active") {
-        if (nexus.status === "fetch_error") {
-          summary.skipped.fetch_error_nexus++;
+        const existing = previouslyLinkedIds.get(companyId)!;
+        nowProcessedLinked.set(companyId, existing.id);
+        try {
+          const current = await prisma.customer.findUnique({
+            where: { id: existing.id },
+            select: { id: true, status: true, deletedAt: true },
+          });
+          if (!current) {
+            summary.skipped.inactive_or_missing_nexus_field++;
+            continue;
+          }
+          const currentStatus = current.status as CustomerStatus | string;
+          const needsStatusChange = currentStatus !== CustomerStatus.INACTIVE;
+          const needsRestore = current.deletedAt !== null;
+          if (!needsStatusChange && !needsRestore) {
+            summary.skipped.inactive_or_missing_nexus_field++;
+            continue;
+          }
+          const updateData: any = {};
+          if (needsStatusChange) updateData.status = CustomerStatus.INACTIVE;
+          if (needsRestore) updateData.deletedAt = null;
+          const beforeSnapshot: any = { status: currentStatus };
+          if (needsRestore) beforeSnapshot.deletedAt = current.deletedAt;
+          await prisma.$transaction(async (tx) => {
+            const updated = await tx.customer.update({
+              where: { id: current.id },
+              data: updateData,
+            });
+            try {
+              await logAudit(tx as any, {
+                entityType: "customer",
+                entityId: updated.id,
+                action: AuditAction.UPDATE,
+                userId: ctx.userId,
+                oldValues: beforeSnapshot,
+                newValues: updateData,
+                metadata: {
+                  source: "inserve_customer_import",
+                  inserveCompanyId: companyId,
+                  nexusRawValue: (nexus as any).rawValue,
+                  statusChange: "deactivated",
+                  reason: "Nexus = Inactief",
+                },
+              });
+            } catch {
+              // audit failure not fatal
+            }
+          });
+          if (needsStatusChange) {
+            summary.customersDeactivated++;
+            summary.previouslyActiveNowInactive!.push({
+              customerId: existing.id,
+              inserveCompanyId: companyId,
+              companyName: (company.name as string | undefined) ?? existing.companyName,
+            });
+          }
+          continue;
+        } catch (statusErr: any) {
           summary.failed++;
-          markPartialFailed(
-            "Een of meer bedrijven konden niet worden verwerkt door fouten bij het ophalen van vrije velden. Zie failedDetails."
-          );
+          markPartialFailed("Klantstatus konden niet worden gezet. Zie failedDetails.");
           summary.failedDetails!.push({
             companyId,
             companyName: (company.name as string | null) ?? null,
-            error: `Vrij veld Nexus: ${(nexus as any).errorMessage?.slice(0, 400)}`,
+            error: `Status Inactief mislukt: ${(statusErr?.message ?? String(statusErr)).slice(0, 400)}`,
           });
-        } else {
-          summary.skipped.inactive_or_missing_nexus_field++;
-          summary.skippedDetails!.push({
-            companyId,
-            companyName: (company.name as string | null) ?? null,
-            reason:
-              nexus.status === "inactive"
-                ? `Nexus = ${(nexus as any).rawValue} (ongelijk aan Actief)`
-                : nexus.status === "empty"
-                ? `Nexus veld is leeg`
-                : `Nexus veld ontbreekt`,
-          });
+          continue;
         }
+      }
+      if (nexus.status !== "active") {
+        summary.skipped.inactive_or_missing_nexus_field++;
+        summary.skippedDetails!.push({
+          companyId,
+          companyName: (company.name as string | null) ?? null,
+          reason: `Nexus onbekende waarde: ${JSON.stringify(nexus).slice(0, 200)}`,
+        });
+        if (hasLink) nowProcessedLinked.set(companyId, previouslyLinkedIds.get(companyId)!.id);
         continue;
       }
 
@@ -719,6 +1005,7 @@ export async function runInserveCustomerImport(
 
       try {
         const mapped = mapCompanyToCustomerFields(company);
+        let currentCustomerId: string | null = null;
         const existingCustomer = previouslyLinkedIds.has(companyId)
           ? await prisma.customer.findUnique({
               where: { id: previouslyLinkedIds.get(companyId)!.id },
@@ -730,34 +1017,47 @@ export async function runInserveCustomerImport(
         if (existingCustomer) {
           nowProcessedLinked.set(companyId, existingCustomer.id);
           const needsRestore = existingCustomer.deletedAt !== null;
+          const wasNotActive = (existingCustomer.status as CustomerStatus | string) !== CustomerStatus.ACTIVE;
           const diff = diffCustomerFields(existingCustomer, mapped);
           const finalDiff: any = { ...(diff ?? {}) };
           if (needsRestore) finalDiff.deletedAt = null;
+          if (wasNotActive) finalDiff.status = CustomerStatus.ACTIVE;
           const hasAnyChanges = Object.keys(finalDiff).length > 0;
           if (!hasAnyChanges) {
             summary.unchanged++;
-            continue;
-          }
-          await prisma.$transaction(async (tx) => {
-            const updated = await tx.customer.update({
-              where: { id: existingCustomer.id },
-              data: finalDiff,
+            currentCustomerId = existingCustomer.id;
+          } else {
+            await prisma.$transaction(async (tx) => {
+              const updated = await tx.customer.update({
+                where: { id: existingCustomer.id },
+                data: finalDiff,
+              });
+              await logAudit(tx as any, {
+                entityType: "customer",
+                entityId: updated.id,
+                action: needsRestore ? AuditAction.ACTIVATE : AuditAction.UPDATE,
+                userId: ctx.userId,
+                oldValues: { ...(diff ?? {}), ...(needsRestore ? { deletedAt: existingCustomer.deletedAt } : {}), ...(wasNotActive ? { status: existingCustomer.status } : {}) } as any,
+                newValues: finalDiff as any,
+                metadata: {
+                  source: "inserve_customer_import",
+                  inserveCompanyId: companyId,
+                  restored: needsRestore,
+                  statusChange: wasNotActive ? "reactivated" : undefined,
+                },
+              });
             });
-            await logAudit(tx as any, {
-              entityType: "customer",
-              entityId: updated.id,
-              action: needsRestore ? AuditAction.ACTIVATE : AuditAction.UPDATE,
-              userId: ctx.userId,
-              oldValues: { ...(diff ?? {}), ...(needsRestore ? { deletedAt: existingCustomer.deletedAt } : {}) } as any,
-              newValues: finalDiff as any,
-              metadata: {
-                source: "inserve_customer_import",
+            if (wasNotActive) {
+              summary.customersReactivated++;
+              summary.previouslyInactiveNowActive!.push({
+                customerId: existingCustomer.id,
                 inserveCompanyId: companyId,
-                restored: needsRestore,
-              },
-            });
-          });
-          summary.updated++;
+                companyName: (company.name as string) ?? existingCustomer.companyName,
+              });
+            }
+            summary.updated++;
+            currentCustomerId = existingCustomer.id;
+          }
         } else {
           let created: Customer;
           try {
@@ -804,9 +1104,11 @@ export async function runInserveCustomerImport(
             if (!existingViaUnique) throw createErr;
             nowProcessedLinked.set(companyId, existingViaUnique.id);
             const needsRestore = existingViaUnique.deletedAt !== null;
+            const wasNotActive = (existingViaUnique.status as CustomerStatus | string) !== CustomerStatus.ACTIVE;
             const diff = diffCustomerFields(existingViaUnique, mapped);
             const finalDiff: any = { ...(diff ?? {}) };
             if (needsRestore) finalDiff.deletedAt = null;
+            if (wasNotActive) finalDiff.status = CustomerStatus.ACTIVE;
             const hasAnyChanges = Object.keys(finalDiff).length > 0;
             if (hasAnyChanges) {
               await prisma.$transaction(async (tx) => {
@@ -819,24 +1121,39 @@ export async function runInserveCustomerImport(
                   entityId: updated.id,
                   action: needsRestore ? AuditAction.ACTIVATE : AuditAction.UPDATE,
                   userId: ctx.userId,
-                  oldValues: { ...(diff ?? {}), ...(needsRestore ? { deletedAt: existingViaUnique.deletedAt } : {}) } as any,
+                  oldValues: { ...(diff ?? {}), ...(needsRestore ? { deletedAt: existingViaUnique.deletedAt } : {}), ...(wasNotActive ? { status: existingViaUnique.status } : {}) } as any,
                   newValues: finalDiff as any,
                   metadata: {
                     source: "inserve_customer_import",
                     inserveCompanyId: companyId,
                     restored: needsRestore,
                     recovery: "P2002_unique_conflict",
+                    statusChange: wasNotActive ? "reactivated" : undefined,
                   },
                 });
               });
+              if (wasNotActive) {
+                summary.customersReactivated++;
+                summary.previouslyInactiveNowActive!.push({
+                  customerId: existingViaUnique.id,
+                  inserveCompanyId: companyId,
+                  companyName: (company.name as string) ?? existingViaUnique.companyName,
+                });
+              }
               summary.updated++;
             } else {
               summary.unchanged++;
             }
+            currentCustomerId = existingViaUnique.id;
+            if (currentCustomerId) await syncContactsForCustomer(currentCustomerId, companyId);
             continue;
           }
           nowProcessedLinked.set(companyId, created.id);
           summary.created++;
+          currentCustomerId = created.id;
+        }
+        if (currentCustomerId) {
+          await syncContactsForCustomer(currentCustomerId, companyId);
         }
       } catch (recordErr: any) {
         summary.failed++;
@@ -854,16 +1171,27 @@ export async function runInserveCustomerImport(
 
     try {
       await prisma.$transaction(async (tx) => {
-        const summaryForAudit = {
+        const summaryForAudit: Record<string, any> = {
           fetched: summary.fetched,
           active: summary.activeFilterPassed,
           created: summary.created,
           updated: summary.updated,
           unchanged: summary.unchanged,
+          customersReactivated: summary.customersReactivated,
+          customersDeactivated: summary.customersDeactivated,
+          contacts: summary.contacts,
           skipped: summary.skipped,
           failed: summary.failed,
+          pagesProcessed: summary.pagesProcessed,
+          clientsPagesProcessed: summary.clientsPagesProcessed,
+          totalExpected: summary.totalExpected,
+          clientsTotalExpected: summary.clientsTotalExpected,
+          possibleUnlinkedMatches: summary.possibleUnlinkedMatches?.length ?? 0,
+          possibleContactMatches: summary.possibleContactMatches?.length ?? 0,
+          previouslyActiveNowInactive: summary.previouslyActiveNowInactive?.length ?? 0,
+          previouslyInactiveNowActive: summary.previouslyInactiveNowActive?.length ?? 0,
         };
-        if (summary.created > 0 || summary.updated > 0) {
+        if (summary.created > 0 || summary.updated > 0 || summary.customersDeactivated > 0 || summary.customersReactivated > 0) {
           await logAudit(tx as any, {
             entityType: "sync_job_run",
             entityId: syncJobRun.id,
@@ -948,24 +1276,40 @@ function finalizeSummary(
   }
   summary.errorMessage = errorMessage;
 
-  const recordsAffected = {
+  const recordsAffected: Record<string, any> = {
     fetched: summary.fetched,
     activeFilterPassed: summary.activeFilterPassed,
     created: summary.created,
     updated: summary.updated,
     unchanged: summary.unchanged,
+    customersReactivated: summary.customersReactivated,
+    customersDeactivated: summary.customersDeactivated,
+    contacts: summary.contacts,
     skipped: summary.skipped,
     failed: summary.failed,
+    pagesProcessed: summary.pagesProcessed,
+    clientsPagesProcessed: summary.clientsPagesProcessed,
+    totalExpected: summary.totalExpected,
+    clientsTotalExpected: summary.clientsTotalExpected,
     ...(summary.possibleUnlinkedMatches &&
     summary.possibleUnlinkedMatches.length > 0
       ? { possibleMatches: summary.possibleUnlinkedMatches.length }
+      : {}),
+    ...(summary.possibleContactMatches &&
+    summary.possibleContactMatches.length > 0
+      ? { possibleContactMatches: summary.possibleContactMatches.length }
       : {}),
     ...(summary.previouslyActiveNowInactive &&
     summary.previouslyActiveNowInactive.length > 0
       ? { previouslyActiveNowInactive: summary.previouslyActiveNowInactive.length }
       : {}),
+    ...(summary.previouslyInactiveNowActive &&
+    summary.previouslyInactiveNowActive.length > 0
+      ? { previouslyInactiveNowActive: summary.previouslyInactiveNowActive.length }
+      : {}),
     skippedSample: summary.skippedDetails?.slice(0, 20),
     failedSample: summary.failedDetails?.slice(0, 20),
+    contactFailedSample: summary.contactFailedDetails?.slice(0, 40),
   };
 
   if (doUpdateRun) {
@@ -1005,21 +1349,24 @@ function makeFailedSummary(
     created: 0,
     updated: 0,
     unchanged: 0,
-    skipped: {
-      inactive_or_missing_nexus_field: 0,
-      missing_required_fields: 0,
-      fetch_error_nexus: 0,
-      other: 0,
-    },
+    customersReactivated: 0,
+    customersDeactivated: 0,
+    contacts: { ...ZERO_CONTACTS },
+    skipped: { ...ZERO_SKIPPED },
     failed: 0,
     errorMessage: message,
     pagesProcessed: 0,
+    clientsPagesProcessed: 0,
     totalExpected: 0,
+    clientsTotalExpected: 0,
     inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
     timingMs: { ...ZERO_TIMING, total: durationMs },
     possibleUnlinkedMatches: [],
+    possibleContactMatches: [],
     previouslyActiveNowInactive: [],
+    previouslyInactiveNowActive: [],
     skippedDetails: [],
     failedDetails: [],
+    contactFailedDetails: [],
   };
 }

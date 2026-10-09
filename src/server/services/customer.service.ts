@@ -139,6 +139,13 @@ function includeDetail(): Prisma.CustomerInclude {
         },
       },
     },
+    contacts: {
+      where: { deletedAt: null },
+      orderBy: [
+        { lastName: "asc" as const },
+        { firstName: "asc" as const },
+      ],
+    },
   };
 }
 

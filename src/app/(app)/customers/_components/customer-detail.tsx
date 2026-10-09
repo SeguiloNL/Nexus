@@ -38,8 +38,9 @@ import { formatDate, formatImei, formatIccid, formatMsisdn } from "@/lib/formatt
 import { canUserRole } from "@/lib/auth/session";
 import { RoleScope } from "@/types/enums";
 import type { UserRole, AuditAction } from "@/types/enums";
-import type { Customer, CustomerStatus } from "@prisma/client";
+import type { Customer, CustomerStatus, ContactPerson } from "@prisma/client";
 import type { UserListItem } from "@/types/domain";
+import { CustomerContactsTable } from "./customer-contacts-table";
 
 type DetailCustomer = Customer & {
   parentCustomer: { id: string; companyName: string; customerNumber: string } | null;
@@ -125,6 +126,7 @@ type DetailCustomer = Customer & {
       licensePlate: string | null;
     } | null;
   }>;
+  contacts: ContactPerson[];
 };
 
 type AuditLogForDetail = Array<{
@@ -276,6 +278,10 @@ export function CustomerDetail({
             <Info className="mr-1.5 h-4 w-4" />
             Overzicht
           </TabsTrigger>
+          <TabsTrigger value="contacts">
+            <Users className="mr-1.5 h-4 w-4" />
+            Contactpersonen ({customer.contacts.length})
+          </TabsTrigger>
           {canEdit ? (
             <TabsTrigger value="edit">
               <Edit className="mr-1.5 h-4 w-4" />
@@ -409,6 +415,14 @@ export function CustomerDetail({
               </CardContent>
             </Card>
           ) : null}
+        </TabsContent>
+
+        <TabsContent value="contacts" className="mt-6">
+          <CustomerContactsTable
+            customerId={customerId}
+            initialContacts={customer.contacts}
+            role={role}
+          />
         </TabsContent>
 
         {canEdit ? (

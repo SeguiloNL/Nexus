@@ -13,7 +13,140 @@ import type {
   InserveContractCycle,
   InserveListResponse,
   InserveCustomFieldValue,
+  InserveContact,
 } from './types';
+
+export const INSERVE_CLIENT_ENDPOINT = 'clients';
+
+export interface ListClientsOptions {
+  page?: number;
+  perPage?: number;
+  withRelations?: string[];
+  builder?: unknown[];
+  builderParamsStyle?: 'json' | 'nested';
+  extraQueryParams?: Record<string, string | number | boolean | undefined>;
+}
+
+export function getContactCompanyIds(c: InserveContact): number[] {
+  const ids: number[] = [];
+  const direct =
+    c.company_id ??
+    c.companyId ??
+    (c as any).company?.id ??
+    (c as any).company?.company_id ??
+    null;
+  if (typeof direct === 'number' && Number.isFinite(direct) && Number.isInteger(direct)) {
+    ids.push(direct);
+  } else if (typeof direct === 'string') {
+    const n = Number(direct);
+    if (Number.isFinite(n) && Number.isInteger(n)) ids.push(n);
+  }
+  if (Array.isArray(c.companies)) {
+    for (const co of c.companies) {
+      if (typeof co === 'number' && Number.isFinite(co) && Number.isInteger(co)) {
+        ids.push(co);
+      } else if (typeof co === 'string') {
+        const n = Number(co);
+        if (Number.isFinite(n) && Number.isInteger(n)) ids.push(n);
+      } else if (co && typeof co === 'object') {
+        const anyCo = co as Record<string, unknown>;
+        const candidate = anyCo.id ?? anyCo.company_id ?? anyCo.companyId;
+        if (typeof candidate === 'number' && Number.isFinite(candidate) && Number.isInteger(candidate)) {
+          ids.push(candidate);
+        } else if (typeof candidate === 'string') {
+          const n = Number(candidate);
+          if (Number.isFinite(n) && Number.isInteger(n)) ids.push(n);
+        }
+      }
+    }
+  }
+  return Array.from(new Set(ids));
+}
+
+export function groupContactsByCompanyId(contacts: InserveContact[]): Record<number, InserveContact[]> {
+  const map: Record<number, InserveContact[]> = {};
+  for (const c of contacts) {
+    const companyIds = getContactCompanyIds(c);
+    if (companyIds.length === 0) continue;
+    for (const cid of companyIds) {
+      if (!map[cid]) map[cid] = [];
+      map[cid].push(c);
+    }
+  }
+  return map;
+}
+
+export function resolveContactName(c: InserveContact): {
+  firstName: string | null;
+  lastName: string | null;
+} {
+  let firstName =
+    c.firstName ??
+    c.first_name ??
+    null;
+  let lastName =
+    c.lastName ??
+    c.last_name ??
+    null;
+  if (!firstName && !lastName) {
+    const full = c.fullName ?? c.full_name ?? c.name ?? null;
+    if (full) {
+      const parts = full.trim().split(/\s+/);
+      if (parts.length >= 2) {
+        firstName = parts[0];
+        lastName = parts.slice(1).join(' ');
+      } else if (parts.length === 1) {
+        lastName = parts[0];
+      }
+    }
+  }
+  return {
+    firstName: firstName && firstName.trim().length > 0 ? firstName.trim() : null,
+    lastName: lastName && lastName.trim().length > 0 ? lastName.trim() : null,
+  };
+}
+
+export function resolveContactEmail(c: InserveContact): string | null {
+  const v = c.email ?? c.email_address ?? c.emailAddress ?? (c as any).mail ?? null;
+  return v && typeof v === 'string' && v.trim().length > 0 ? v.trim() : null;
+}
+
+export function resolveContactPhoneLandline(c: InserveContact): string | null {
+  const v =
+    c.telephone ??
+    c.phone ??
+    c.landline ??
+    (c as any).telephone_landline ??
+    (c as any).land_line ??
+    null;
+  return v && typeof v === 'string' && v.trim().length > 0 ? v.trim() : null;
+}
+
+export function resolveContactPhoneMobile(c: InserveContact): string | null {
+  const v =
+    c.telephoneCell ??
+    c.telephone_cell ??
+    c.mobile ??
+    c.cellphone ??
+    (c as any).mobile_phone ??
+    (c as any).cell ??
+    null;
+  return v && typeof v === 'string' && v.trim().length > 0 ? v.trim() : null;
+}
+
+export function resolveContactFunction(c: InserveContact): string | null {
+  const v =
+    c.function ??
+    c.functionTitle ??
+    c.function_title ??
+    c.title ??
+    c.position ??
+    (c as any).job ??
+    (c as any).job_title ??
+    null;
+  return v && typeof v === 'string' && v.trim().length > 0 ? v.trim() : null;
+}
+
 import { enrichCompanyWithCustomFields } from '@/server/services/inserve-customer-import.service';
 
 function toISOString(date: Date | string | null | undefined): string | undefined {
@@ -802,6 +935,224 @@ export async function listAllCompanies(
     .join('; ');
   throw new Error(
     `listAllCompanies faalde op alle pogingen. Laatste pogingen: ${messages || 'geen details'}`
+  );
+}
+
+export async function listClients(
+  opts: ListClientsOptions = {}
+): Promise<InserveListResponse<InserveContact>> {
+  const client = await inserveClient.getClient();
+  if (!client) {
+    throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
+  }
+  const { page = 1, perPage = 25, withRelations = [], builder = [], builderParamsStyle, extraQueryParams } = opts;
+  const fullBuilder: unknown[] = [
+    ...(withRelations.length > 0 ? [{ with: withRelations }] : []),
+    { paginate: { page, per_page: perPage } },
+    ...builder,
+  ];
+  return (await client.request(INSERVE_CLIENT_ENDPOINT, {
+    method: 'GET',
+    builder: fullBuilder,
+    query: extraQueryParams,
+    ...(builderParamsStyle ? { builderParamsStyle } : {}),
+  })) as InserveListResponse<InserveContact>;
+}
+
+export async function listAllClients(
+  opts: Omit<ListClientsOptions, 'page'> & { maxPages?: number } = {}
+): Promise<{
+  items: InserveContact[];
+  totalFetched: number;
+  totalExpected: number;
+  pagesProcessed: number;
+}> {
+  const client = await inserveClient.getClient();
+  if (!client) {
+    throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
+  }
+  const { maxPages, perPage = 25, withRelations = [], builder = [], builderParamsStyle, extraQueryParams } = opts;
+
+  const errors: Array<{ label: string; error: unknown }> = [];
+
+  type Strat = {
+    label: string;
+    withRelations: string[];
+    useBuilder?: boolean;
+    builderParamsStyle?: 'json' | 'nested';
+    extraQueryParams?: Record<string, string | number | boolean | undefined>;
+    perPage?: number;
+    nestedBuilderIndexFromOne?: boolean;
+    separateLimitPage?: boolean;
+  };
+  const strategies: Strat[] = [
+    {
+      label: 'clients-postman-flat',
+      withRelations: [],
+      useBuilder: false,
+      perPage: 25,
+      extraQueryParams: {},
+      separateLimitPage: true,
+      nestedBuilderIndexFromOne: true,
+    },
+    {
+      label: 'clients-nested-builder-company',
+      withRelations: ['company'],
+      useBuilder: true,
+      builderParamsStyle: 'nested',
+    },
+    {
+      label: 'clients-json-builder',
+      withRelations: [],
+      useBuilder: true,
+      builderParamsStyle: 'json',
+    },
+    {
+      label: 'clients-zonder-builder',
+      withRelations: [],
+      useBuilder: false,
+    },
+  ];
+
+  for (const strat of strategies) {
+    try {
+      const effectivePerPage = strat.perPage ?? perPage;
+      const maxLoop = maxPages ?? 120;
+      const allItems: InserveContact[] = [];
+      let totalExpected = 0;
+      let pagesProcessed = 0;
+      let emptyStreak = 0;
+      let firstKeys: string[] | null = null;
+      let stratMetaLogged = false;
+
+      for (let page = 1; page <= maxLoop; page++) {
+        const customQuery: Record<string, string | number | boolean | undefined> = {
+          page,
+          per_page: effectivePerPage,
+          ...(strat.extraQueryParams ?? {}),
+          ...(extraQueryParams ?? {}),
+        };
+        if (strat.separateLimitPage && strat.nestedBuilderIndexFromOne) {
+          customQuery['builder[1][with]'] = 'company';
+          customQuery['builder[2][limit]'] = effectivePerPage;
+          customQuery['builder[3][page]'] = page;
+          delete customQuery['page'];
+          delete customQuery['per_page'];
+        }
+
+        let chunk: any;
+        if (strat.useBuilder === false) {
+          chunk = await client.request<any>(INSERVE_CLIENT_ENDPOINT, {
+            method: 'GET',
+            query: customQuery,
+            builder: undefined,
+          });
+        } else {
+          const fullBuilder: unknown[] = [
+            ...(strat.withRelations.length > 0 ? [{ with: strat.withRelations }] : []),
+            { paginate: { page, per_page: effectivePerPage } },
+            ...builder,
+          ];
+          chunk = await client.request<any>(INSERVE_CLIENT_ENDPOINT, {
+            method: 'GET',
+            builder: fullBuilder,
+            query: extraQueryParams,
+            builderParamsStyle: builderParamsStyle ?? strat.builderParamsStyle,
+          });
+        }
+
+        pagesProcessed++;
+        let pageItems: InserveContact[] = [];
+        let pageMeta: any = {};
+        if (Array.isArray(chunk)) {
+          pageItems = chunk as InserveContact[];
+        } else if (chunk && typeof chunk === 'object') {
+          const rAny = chunk as Record<string, unknown>;
+          if (Array.isArray(rAny.data)) pageItems = rAny.data as InserveContact[];
+          else if (Array.isArray(rAny.items)) pageItems = rAny.items as InserveContact[];
+          else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as InserveContact[];
+          else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveContact[];
+          pageMeta = (rAny.meta ?? rAny.pagination ?? rAny._meta ?? rAny._pagination ?? {}) as any;
+          if (typeof rAny.total === 'number' && totalExpected === 0) totalExpected = rAny.total as number;
+          if (typeof (rAny as any).last_page === 'number' || typeof (rAny as any).lastPage === 'number') {
+            pageMeta.last_page = (rAny as any).last_page ?? (rAny as any).lastPage;
+          }
+          if (page === 1 && !stratMetaLogged) {
+            stratMetaLogged = true;
+            try {
+              console.debug(
+                `[Inserve] listClients strategie [${strat.label}] | P1: ${pageItems.length} clients | chunk keys: [${Object.keys(rAny).join(', ')}] | last_page=${pageMeta.last_page ?? '-'} total=${rAny.total ?? '-'}`
+              );
+            } catch {}
+          }
+          if (!firstKeys && pageItems.length > 0 && typeof pageItems[0] === 'object') {
+            firstKeys = Object.keys(pageItems[0] as unknown as Record<string, unknown>);
+          }
+        }
+
+        if (pageItems.length > 0) {
+          allItems.push(...pageItems);
+          emptyStreak = 0;
+        } else {
+          emptyStreak++;
+        }
+
+        const metaTotal = pageMeta?.total ?? pageMeta?.count ?? pageMeta?.total_items ?? pageMeta?.totalItems;
+        if (typeof metaTotal === 'number') totalExpected = metaTotal;
+
+        const lastPage = pageMeta?.last_page ?? pageMeta?.lastPage ?? pageMeta?.total_pages ?? pageMeta?.totalPages;
+        if (emptyStreak >= 2) break;
+        if (typeof lastPage === 'number' && page >= lastPage) break;
+        if (typeof totalExpected === 'number' && totalExpected > 0 && allItems.length >= totalExpected) break;
+        if (pageItems.length === 0 && emptyStreak >= 1 && allItems.length > 0) break;
+      }
+
+      if (firstKeys && allItems.length > 0) {
+        try {
+          const sample = allItems[0];
+          const anySample = sample as Record<string, unknown>;
+          console.debug(
+            `[Inserve] listAllClients strategie [${strat.label}] OK: ${allItems.length} clients (${pagesProcessed} pagina's). Eerste item keys: [${firstKeys.join(', ')}]`
+          );
+          const companyRelCount = allItems.filter((c) => getContactCompanyIds(c).length > 0).length;
+          console.debug(
+            `[Inserve] listAllClients: ${companyRelCount}/${allItems.length} hebben >= 1 company relatie.`
+          );
+          const withFnCount = allItems.filter((c) => resolveContactFunction(c) !== null).length;
+          const withEmailCount = allItems.filter((c) => resolveContactEmail(c) !== null).length;
+          const withMobileCount = allItems.filter((c) => resolveContactPhoneMobile(c) !== null).length;
+          console.debug(
+            `[Inserve] listAllClients coverage: email=${withEmailCount}, mobiel=${withMobileCount}, functie=${withFnCount}`
+          );
+        } catch {}
+      }
+
+      return {
+        items: allItems,
+        totalFetched: allItems.length,
+        totalExpected,
+        pagesProcessed,
+      };
+    } catch (e) {
+      errors.push({ label: strat.label, error: e });
+      const is5xx =
+        (e instanceof InserveApiError && e.statusCode >= 500 && e.statusCode < 600) ||
+        !!(e as any)?.statusCode?.toString?.().startsWith('5');
+      if (!is5xx) break;
+    }
+  }
+
+  const messages = errors
+    .map(({ label, error }) => {
+      const msg =
+        error instanceof Error
+          ? error.message.split('\n').slice(0, 2).join(' | ')
+          : String(error);
+      return `[${label}] ${msg.slice(0, 180)}`;
+    })
+    .join('; ');
+  throw new Error(
+    `listAllClients faalde op alle pogingen. Laatste pogingen: ${messages || 'geen details'}`
   );
 }
 

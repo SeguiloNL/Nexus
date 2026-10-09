@@ -51,6 +51,40 @@ export interface InserveCompanyWithFields extends InserveCompany {
   fields?: InserveCustomFieldValue[] | null;
 }
 
+export interface InserveContact {
+  id: number;
+  company_id?: number | null;
+  companyId?: number | null;
+  first_name?: string | null;
+  firstName?: string | null;
+  last_name?: string | null;
+  lastName?: string | null;
+  name?: string | null;
+  full_name?: string | null;
+  fullName?: string | null;
+  email?: string | null;
+  email_address?: string | null;
+  emailAddress?: string | null;
+  telephone?: string | null;
+  phone?: string | null;
+  landline?: string | null;
+  telephone_cell?: string | null;
+  telephoneCell?: string | null;
+  mobile?: string | null;
+  cellphone?: string | null;
+  function?: string | null;
+  function_title?: string | null;
+  functionTitle?: string | null;
+  title?: string | null;
+  position?: string | null;
+  companies?: Array<{ id?: number | string; name?: string | null; [k: string]: any } | number> | null;
+  customValues?: InserveCustomFieldValue[] | null;
+  custom_values?: InserveCustomFieldValue[] | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  [k: string]: any;
+}
+
 export interface InserveArticle {
   id: number;
   name: string;

@@ -129,6 +129,9 @@ enum AuditAction {
   BULK_UPDATE_ROLE
   INSERVE_CUSTOMERS_IMPORTED
   INSERVE_CUSTOMER_IMPORT_FAILED
+  CREATE_CONTACT
+  UPDATE_CONTACT
+  DELETE_CONTACT
 }
 
 enum InserveSyncStatus {
@@ -293,6 +296,7 @@ model Customer {
   invoices          Invoice[]
   users             User[]           @relation("CustomerUsers")
   userLinks         UserCustomer[]
+  contacts          ContactPerson[]
 
   @@index([status])
   @@index([parentCustomerId])
@@ -314,6 +318,28 @@ model UserCustomer {
   @@index([userId])
   @@index([customerId])
   @@map("user_customers")
+}
+
+model ContactPerson {
+  id               String   @id @default(cuid())
+  customerId       String
+  customer         Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  firstName        String?
+  lastName         String
+  email            String?
+  phone            String?
+  mobile           String?
+  functionTitle    String?
+  inserveContactId Int?     @unique
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  deletedAt        DateTime?
+
+  @@index([customerId])
+  @@index([inserveContactId])
+  @@index([lastName])
+  @@unique([customerId, inserveContactId])
+  @@map("contact_persons")
 }
 
 model Product {
