@@ -801,11 +801,6 @@ export async function listAllCompanies(
                   if (!Array.isArray(cv)) continue;
                   for (const f of cv) {
                     if (fieldNameMatches(f, 'Nexus')) {
-                      const { text, optionLabel, optionValue, fieldValueText } = resolveFieldTextValue(f);
-                      const cfo = (f as any).custom_field_object;
-                      console.info(
-                        `[Inserve] Nexus-veld (slug nexus) correct gedetecteerd. Options[0..3] = ${JSON.stringify(Array.isArray(cfo?.options) ? cfo.options.slice(0, 3).map((o: any) => ({ label: o.label, name: o.name })) : [])}`
-                      );
                       (globalThis as any).__nexusSampleLogged = true;
                       nexusSampleLogged = true;
                       break;
