@@ -1251,23 +1251,23 @@ export async function listClientsForCompanyIds(
     let totalExpected = 0;
     const rateLimitMaxCallsPerImport = 70; // keep 10 calls buffer inside 80/10min window
     let selectedVariant = 0; // persisted after first successful batch (index into VARIANTS)
-    const estPagesA = Math.max(1, Math.ceil(uniqueIds.length / CHUNK));
-    const estPagesB = uniqueIds.length;
 
     type BatchesDone = number;
     const batchesTotal = Math.ceil(uniqueIds.length / CHUNK) as number;
     let batchesDone: BatchesDone = 0;
+    // Always request the `company` relation so returned contacts include either
+    // `company_id` (top-level) OR `company:{id:...}` (nested) — required for
+    // getContactCompanyIds() to match them to the requested company set.
+    // Use BOTH styles to maximise compatibility (Inserve configs differ).
+    const WITH_REL_PARAMS = 'with[]=company&builder[1][with]=company';
 
     for (let i = 0; i < uniqueIds.length; i += CHUNK) {
       const idChunk = uniqueIds.slice(i, i + CHUNK);
-      const companyIdQuery: Record<string, string | number | boolean | undefined> = {
-        ...(extraQueryParams ?? {}),
-      };
       // 3 variants (Inserve accepts different param shapes):
       //   company_id[]=1&company_id[]=2     (Laravel style)
       //   company_ids=1,2,3                  (CSV)
       //   company_id=1&company_id=2          (duplicate keys, first wins usually, fallback)
-      const VARIANTS = [
+      const VARIANTS: Array<(ids: number[]) => string> = [
         (ids: number[]) => ids.map((id) => `company_id[]=${encodeURIComponent(id)}`).join('&'),
         (ids: number[]) => `company_ids=${ids.map((id) => encodeURIComponent(id)).join(',')}`,
         (ids: number[]) => `company_id=${ids.map((id) => encodeURIComponent(id)).join(',')}`,
@@ -1282,8 +1282,9 @@ export async function listClientsForCompanyIds(
         const vStr = VARIANTS[vi](idChunk);
         const effectiveMax = maxPages ?? 20;
         for (let page = 1; page <= effectiveMax; page++) {
-          const separator = (vStr && vStr.length > 0) ? '&' : '';
-          const qsExtra = vStr.length > 0 ? `${separator}page=${page}&per_page=${perPage}` : `page=${page}&per_page=${perPage}`;
+          const sep = vStr.length > 0 ? '&' : '';
+          // Inject WITH_REL_PARAMS so the company relation is always loaded.
+          const qsExtra = `${sep}${WITH_REL_PARAMS}&page=${page}&per_page=${perPage}`;
           const path = `${INSERVE_CLIENT_ENDPOINT}?${vStr}${qsExtra}`;
           try {
             const chunk = await client.request<any>(path, { method: 'GET' });
@@ -1302,14 +1303,32 @@ export async function listClientsForCompanyIds(
               else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveContact[];
               if (typeof rAny.total === 'number' && chunkTotalExpected === 0) chunkTotalExpected = rAny.total as number;
             }
-            // First chunk, first probe, first page: detect if filter works
+            // First chunk, first probe, first page: validate whether this variant
+            // produces contacts that we can actually link to the requested company IDs.
             if (batchesDone === 0 && page === 1 && !chunkSucceeded) {
-              const filterHit = pageItems.filter((c) => idChunk.includes((c as any).company_id ?? (c as any).companyId ?? -1)).length;
+              const haveItems = pageItems.length > 0;
+              // Use getContactCompanyIds — covers both snake_case/camelCase top-level
+              // fields AND nested company.id / companies[] relations.
               const anyContactRel = pageItems.filter((c) => getContactCompanyIds(c).length > 0).length;
-              // Heuristic: if 20%+ pageItems match our chunk → variant works; remember vi
-              if ((pageItems.length > 0 && filterHit > 0 && filterHit / Math.max(1, anyContactRel || pageItems.length) >= 0.2) ||
-                  (pageItems.length > 0 && anyContactRel === 0 && filterHit === 0 && uniqueIds.length === idChunk.length)) {
-                selectedVariant = vi;
+              const filterHit = pageItems.filter((c) =>
+                getContactCompanyIds(c).some((cid) => idChunk.includes(cid))
+              ).length;
+              if (haveItems) {
+                // FATAL for this variant: items returned but 0 have any company
+                // relation we can extract → impossible to match to our IDs.
+                // Abandon this variant entirely; try the next one.
+                if (anyContactRel === 0) {
+                  chunkItems = [];
+                  chunkPages = 0;
+                  chunkTotalExpected = 0;
+                  continue variantProbe;
+                }
+                // Heuristic: 20%+ of all items-with-relations match our chunk IDs.
+                // Means filter is probably working; remember this variant for
+                // subsequent chunks.
+                if (filterHit > 0 && filterHit / anyContactRel >= 0.2) {
+                  selectedVariant = vi;
+                }
               }
             }
             if (pageItems.length > 0) chunkItems.push(...pageItems);
@@ -1326,8 +1345,10 @@ export async function listClientsForCompanyIds(
             break;
           }
         }
-        // If we got page items at all → variant works for subsequent chunks
-        if (chunkItems.length > 0 || (batchesDone > 0)) {
+        // Only consider a variant "working" if we actually collected items this
+        // iteration. For chunks >1 we still need to do at least 1 page to know
+        // the endpoint responds.
+        if (chunkItems.length > 0 || (batchesDone > 0 && chunkPages > 0)) {
           chunkSucceeded = true;
           break;
         }
@@ -1346,19 +1367,42 @@ export async function listClientsForCompanyIds(
     }
     const dedup = Array.from(seen.values());
 
-    // If we got any contacts at all OR the probe did not throw rate limit / hard
-    // errors → return this result (even if empty — means these companies have 0 contacts).
-    if (dedup.length >= 0) {
-      return {
-        items: dedup,
-        totalFetched: dedup.length,
-        totalExpected: totalExpected || uniqueIds.length,
-        pagesProcessed: totalPages,
-        strategyUsed: `A-batch-filter/${selectedVariant}`,
-        rateLimitRemaining: await rateRemaining(),
-        companyIdsRequested: uniqueIds.length,
-      };
+    // ---- POST-VALIDATION -----------------------------------------------------
+    // Strategy A's biggest failure mode: Inserve IGNORES the filter params and
+    // returns the tenant-wide clients list (1000s of contacts, 0 of which are
+    // from our requested IDs). We MUST detect this and fall through to
+    // Strategy B instead of returning 1000 irrelevant contacts (which would
+    // then silently produce 0 synced contacts).
+    const uniqueIdSet = new Set(uniqueIds);
+    const matchedToIds = dedup.filter((c) =>
+      getContactCompanyIds(c).some((cid) => uniqueIdSet.has(cid))
+    );
+    const hadAnyItems = dedup.length > 0;
+    const zeroRelateable = hadAnyItems && matchedToIds.length === 0;
+
+    if (zeroRelateable) {
+      // Contacten binnengekregen MAAR 0 relateerbaar → filter params genegeerd
+      // of met verkeerd endpoint gecommuniceerd. Trigger fallback → Strategy B.
+      // We bereiken de catch hieronder; rate limit fouten blijven gepreserveerd
+      // omdat die hoger in de boom al ge-throwed zijn.
+      throw new Error(
+        `Strategy A: ${dedup.length} contacten opgehaald, 0 relateerbaar aan ${uniqueIds.length} gevraagde bedrijf-IDs. Fallback naar Strategy B.`
+      );
     }
+    // Only forward matching contacts (avoids carrying around potentially 1000s
+    // of irrelevant tenant contacts when the filter was only partially working).
+    const finalItems = matchedToIds;
+
+    // Valid result — return it.
+    return {
+      items: finalItems,
+      totalFetched: finalItems.length,
+      totalExpected: totalExpected || uniqueIds.length,
+      pagesProcessed: totalPages,
+      strategyUsed: `A-batch-filter/${selectedVariant}`,
+      rateLimitRemaining: await rateRemaining(),
+      companyIdsRequested: uniqueIds.length,
+    };
   } catch (aErr: any) {
     const rl = isInserveRateLimitError(aErr);
     if (rl) throw rl; // stop at rate limit → handled upstream

@@ -36,6 +36,19 @@ import {
   completeSyncJobRun,
 } from "./sync-schedule.service";
 import {
+  initProgress,
+  setStepActive,
+  setStepDone,
+  setStepFailed,
+  setStepSkipped,
+  setStepSubPercent,
+  finalizeProgress,
+  getCurrentState,
+  subscribe,
+  type SyncProgressState,
+  STEPS_INSERVE_CUSTOMER_IMPORT,
+} from "@/lib/progress/sync-progress-registry";
+import {
   SyncJobId,
   SyncJobStatus,
   SyncJobTrigger,
@@ -439,6 +452,17 @@ export interface ImportManagementOpts {
   simLinkMaxPages?: number;
   /** Optionele API-endpoint hint voor assets (debug). */
   assetEndpointHint?: string;
+  /**
+   * Optionele progress callback. Wordt per stap-wijziging en maximaal 20x per
+   * run voor sub-percentages (elke 5%) aangeroepen zodat UI of SSE-stream de
+   * voortgang realtime kan weergeven.
+   */
+  onProgress?: (state: SyncProgressState) => void;
+  /**
+   * Hoe vaak sub-percentages gerapporteerd moeten worden voor langlopende stappen
+   * als processRecords. Default = 5 → elke 5% (max 20 extra events per run).
+   */
+  progressSubPercentStep?: number;
 }
 
 export async function runInserveCustomerImport(
@@ -448,37 +472,109 @@ export async function runInserveCustomerImport(
   const startedAt = new Date();
   const t0 = Date.now();
 
+  const subStep = opts.progressSubPercentStep ?? 5;
+  const onProgress: ((state: SyncProgressState) => void) | undefined = opts.onProgress;
+
+  // Resolve run-id as soon as possible so progress can be written even when
+  // preExistingRunId is not set until after step-3 (createSyncJobRun).
+  let runId: string | null = opts.preExistingRunId ?? null;
+  // Progress enabled? Either explicit onProgress or preExistingRunId provided
+  // (in the latter case, write to the in-memory registry so SSE subscribers
+  // can follow along without opts.onProgress needing to be threaded).
+  const progressEnabled = !!onProgress || !!runId;
+
+  function pushProgress(state: SyncProgressState) {
+    if (onProgress) {
+      try {
+        onProgress(state);
+      } catch {
+        /* listener errors must never break the sync */
+      }
+    }
+  }
+  function doSetStepActive(idx: number, detail?: Record<string, unknown>) {
+    if (!progressEnabled || !runId) return;
+    setStepActive(runId, idx, detail);
+    // registry subscriber already emits; also mirror to explicit callback if
+    // caller used opts.onProgress (via subscribe mirror below).
+  }
+  function doSetStepDone(idx: number, detail?: Record<string, unknown>) {
+    if (!progressEnabled || !runId) return;
+    setStepDone(runId, idx, detail);
+  }
+  function doSetStepFailed(idx: number, error: string, errorDetail?: unknown) {
+    if (!progressEnabled || !runId) return;
+    setStepFailed(runId, idx, error, errorDetail);
+  }
+  function doSetStepSkipped(idx: number, reason?: string) {
+    if (!progressEnabled || !runId) return;
+    setStepSkipped(runId, idx, reason);
+  }
+  function doSetStepSub(sub0_1: number, idxHint?: number) {
+    if (!progressEnabled || !runId) return;
+    setStepSubPercent(runId, sub0_1, idxHint);
+  }
+
+  function doFinalizeProgress(
+    status: Exclude<SyncProgressState["overallStatus"], "PENDING" | "RUNNING">,
+    finalSummary: ImportSummary,
+    errorMsg?: string
+  ) {
+    if (!progressEnabled || !runId) return;
+    finalizeProgress(runId, status, {
+      errorMessage: errorMsg,
+      summary: finalSummary,
+    });
+  }
+
+  // STEP 0: roleScopeCheck
+  try { doSetStepActive(0); } catch { /* noop */ }
   const roleScopePass = !(ctx.roleScope && ctx.roleScope !== RoleScope.INTERNAL);
   const timing = { ...ZERO_TIMING };
   timing.roleScopeCheck = Date.now() - t0;
   if (!roleScopePass) {
     const finalTiming = { ...timing, total: Date.now() - t0 };
-    return {
+    const summary: ImportSummary = {
       ...makeFailedSummary(
         startedAt,
         "Import is alleen toegestaan voor interne gebruikers (scope INTERNAL).",
-        opts.preExistingRunId ?? null
+        runId ?? opts.preExistingRunId ?? null
       ),
       timingMs: finalTiming,
       inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
     };
+    try {
+      if (!runId && summary.runId) runId = summary.runId;
+      if (progressEnabled && runId) {
+        initProgress(runId, STEPS_INSERVE_CUSTOMER_IMPORT);
+        setStepActive(runId, 0);
+        setStepFailed(runId, 0, summary.errorMessage!);
+      }
+      doFinalizeProgress("FAILED", summary, summary.errorMessage ?? undefined);
+      pushProgress({} as any);
+    } catch { /* noop */ }
+    return summary;
   }
+  try { doSetStepDone(0); } catch { /* noop */ }
 
   if (opts.skipRunManagement && !opts.preExistingRunId) {
     timing.total = Date.now() - t0;
-    return {
+    const summary: ImportSummary = {
       ...makeFailedSummary(
         startedAt,
         "Interne fout: skipRunManagement=true zonder preExistingRunId.",
-        null
+        runId ?? null
       ),
       timingMs: { ...timing, total: timing.total },
       inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
     };
+    try { doFinalizeProgress("FAILED", summary, summary.errorMessage ?? undefined); } catch { /* noop */ }
+    return summary;
   }
 
-  // [P1] Credentials + basic guards EERST (geen job aanmaken als het nooit kan werken)
+  // STEP 1: Credentials + basic guards
   let credsInfo: ImportSummary["inserveCredentials"] = DEFAULT_UNCONFIGURED_CREDS;
+  try { doSetStepActive(1); } catch { /* noop */ }
   try {
     const tCredentials = Date.now();
     credsInfo = await inserveClient.inspectCredentials(true);
@@ -486,30 +582,44 @@ export async function runInserveCustomerImport(
 
     if (!credsInfo.configured) {
       timing.total = Date.now() - t0;
-      return {
+      const summary: ImportSummary = {
         ...makeFailedSummary(
           startedAt,
           "Inserve is niet geconfigureerd. Stel INSERVE_SUBDOMAIN en INSERVE_API_KEY in, of configureer via Instellingen → Inserve. (Wordt nu opgehaald uit noch DB noch omgevingsvariabelen.)",
-          null
+          runId ?? null
         ),
         timingMs: { ...timing, total: timing.total ?? (Date.now() - t0) },
         inserveCredentials: credsInfo,
       };
+      try {
+        if (progressEnabled && runId) {
+          setStepActive(runId, 1);
+          setStepFailed(runId, 1, summary.errorMessage!);
+        }
+        doFinalizeProgress("FAILED", summary, summary.errorMessage ?? undefined);
+      } catch { /* noop */ }
+      return summary;
     }
   } catch (credErr: any) {
     timing.total = Date.now() - t0;
-    return {
+    const summary: ImportSummary = {
       ...makeFailedSummary(
         startedAt,
         `Fout bij controleren van Inserve-configuratie: ${credErr?.message ?? String(credErr)}`,
-        null
+        runId ?? null
       ),
       timingMs: { ...timing, total: timing.total ?? (Date.now() - t0) },
       inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
     };
+    try {
+      if (progressEnabled && runId) setStepFailed(runId, 1, summary.errorMessage!);
+      doFinalizeProgress("FAILED", summary, summary.errorMessage ?? undefined);
+    } catch { /* noop */ }
+    return summary;
   }
+  try { doSetStepDone(1, { configured: credsInfo.configured, source: credsInfo.source }); } catch { /* noop */ }
 
-  // [P2] Mutex + SyncJobRun: word overgeslagen indien opts.skipRunManagement (buitenste beheerder)
+  // STEP 2+3: Mutex + SyncJobRun
   let syncJobRun: { id: string; configId?: string | null };
   const MUTEX_STALE_MS = 10 * 60 * 1000;
   if (opts.skipRunManagement && opts.preExistingRunId) {
@@ -519,7 +629,29 @@ export async function runInserveCustomerImport(
     syncJobRun.configId = syncJobConfig?.id ?? null;
     timing.createConfigAndRun = Date.now() - tConfig;
     timing.mutexCheck = 0;
+    try {
+      doSetStepSkipped(2, "skipRunManagement=true (buitenste beheerder)");
+      doSetStepSkipped(3, "skipRunManagement=true; run reeds aangemaakt.");
+    } catch { /* noop */ }
+    if (progressEnabled && runId) {
+      // Init now — runId was preExistingRunId, so before we emit step 4 we
+      // must have a state in the registry.
+      initProgress(runId, STEPS_INSERVE_CUSTOMER_IMPORT);
+      // Re-fire the step closes above so registry state matches.
+      setStepSkipped(runId, 2, "skipRunManagement=true");
+      setStepSkipped(runId, 3, "skipRunManagement=true; run reeds aangemaakt.");
+      // Registry → explicit onProgress mirror (if user passed callback).
+      if (onProgress) {
+        try {
+          subscribe(runId, (s) => {
+            try { onProgress(s); } catch { /* noop */ }
+          });
+        } catch { /* noop */ }
+      }
+    }
   } else {
+    // STEP 2: mutex check
+    try { doSetStepActive(2); } catch { /* noop */ }
     const t1 = Date.now();
     const staleCutoff = new Date(Date.now() - MUTEX_STALE_MS);
     const existing = await prisma.syncJobRun.findFirst({
@@ -537,7 +669,7 @@ export async function runInserveCustomerImport(
         Math.round((Date.now() - existing.startedAt.getTime()) / 1000)
       );
       timing.total = Date.now() - t0;
-      return {
+      const skippedSummary: ImportSummary = {
         runId: existing.id,
         status: "SKIPPED",
         startedAt,
@@ -570,8 +702,21 @@ export async function runInserveCustomerImport(
         simLink: { ...EMPTY_SIM_LINK_SUMMARY, dryRun: false },
         inserveCredentials: credsInfo,
       };
+      try {
+        if (progressEnabled) {
+          if (!runId) runId = existing.id;
+          initProgress(runId, STEPS_INSERVE_CUSTOMER_IMPORT);
+          setStepActive(runId, 2);
+          setStepFailed(runId, 2, skippedSummary.errorMessage!);
+          finalizeProgress(runId, "SKIPPED", { summary: skippedSummary, errorMessage: skippedSummary.errorMessage ?? undefined });
+        }
+      } catch { /* noop */ }
+      return skippedSummary;
     }
+    try { doSetStepDone(2); } catch { /* noop */ }
 
+    // STEP 3: create run
+    try { doSetStepActive(3); } catch { /* noop */ }
     const t2 = Date.now();
     const syncJobConfig = await getSyncJobConfig(SyncJobId.INSERVE_CUSTOMER_IMPORT);
     const created = await createSyncJobRun(prisma, {
@@ -583,6 +728,27 @@ export async function runInserveCustomerImport(
     });
     syncJobRun = { id: created.id, configId: syncJobConfig.id };
     timing.createConfigAndRun = Date.now() - t2;
+    runId = created.id;
+    if (progressEnabled && runId) {
+      initProgress(runId, STEPS_INSERVE_CUSTOMER_IMPORT);
+      // Re-fire the earlier step boundaries against the now-known runId so
+      // state isn't missing steps 0-2 in the registry.
+      setStepDone(runId, 0);
+      setStepDone(runId, 1, { configured: credsInfo.configured, source: credsInfo.source });
+      setStepDone(runId, 2);
+      setStepActive(runId, 3);
+    }
+    try { doSetStepDone(3, { id: created.id }); } catch { /* noop */ }
+    if (progressEnabled && onProgress) {
+      // Registry → opts.onProgress mirror (once) so explicit callback sees
+      // the same updates SSE subscribers get (registry emits on every
+      // setStep* mutation by default; subscribe sends 1 snapshot immediately).
+      try {
+        subscribe(runId!, (s) => {
+          try { onProgress(s); } catch { /* noop */ }
+        });
+      } catch { /* noop */ }
+    }
   }
 
   let finalStatus: SyncJobStatus = SyncJobStatus.SUCCESS;
@@ -627,6 +793,24 @@ export async function runInserveCustomerImport(
     finalErrorDetail = detail;
     summary.status = asPartialSuccess ? "PARTIAL_SUCCESS" : "FAILED";
     summary.errorMessage = msg;
+    // Try to write progress error context (in step order guess)
+    try {
+      if (!progressEnabled || !runId) return;
+      const activeIdx = (() => {
+        for (let i = 0; i < STEPS_INSERVE_CUSTOMER_IMPORT.length; i++) {
+          const entry = getCurrentState(runId!)?.steps[i];
+          if (entry?.status === "ACTIVE") return i;
+        }
+        // Guess: step-specific markers in the message
+        if (/SIM[- ]?koppel/i.test(msg)) return 10;
+        if (/contactpersoon|clients endpoint|rate limit.*contact/i.test(msg)) return 6;
+        if (/bedrijven|custom fields|Nexus.*verwerk/i.test(msg)) return 8;
+        if (/match/i.test(msg)) return 9;
+        if (/import mislukt/i.test(msg)) return 11;
+        return -1;
+      })();
+      if (activeIdx >= 0) setStepFailed(runId, activeIdx, msg);
+    } catch { /* noop */ }
   };
 
   const doFinalize = (overrideSummaryStatus?: ImportSummary["status"]): ImportSummary => {
@@ -645,6 +829,25 @@ export async function runInserveCustomerImport(
     timing.total = Math.max(timing.total, Date.now() - t0);
     finished.timingMs = { ...timing };
     try {
+      // STEP 11: finalize already implicitly started at doFinalize call site,
+      // mark done before writing progress final state.
+      if (progressEnabled && runId) {
+        const cur = getCurrentState(runId);
+        if (cur && cur.steps[11]?.status !== "DONE" && cur.steps[11]?.status !== "FAILED") {
+          setStepDone(runId, 11, { finalStatus: sStatus });
+        }
+        const finalProgStatus =
+          sStatus === "SUCCESS" ? "SUCCESS" as const
+          : sStatus === "PARTIAL_SUCCESS" ? "PARTIAL_SUCCESS" as const
+          : sStatus === "SKIPPED" ? "SKIPPED" as const
+          : "FAILED" as const;
+        finalizeProgress(runId, finalProgStatus, {
+          errorMessage: finished.errorMessage ?? undefined,
+          summary: finished,
+        });
+      }
+    } catch { /* noop */ }
+    try {
       const statStr = (sStatus === "SUCCESS") ? "SUCCES" : (sStatus === "PARTIAL_SUCCESS") ? "GESLAAGD (partieel)" : (sStatus === "SKIPPED") ? "OVERGESLAGEN" : "MISLUKT";
       const cSum = finished.contacts.created + finished.contacts.updated + Number((finished.contacts as any).unchanged ?? 0);
       console.info(
@@ -660,6 +863,7 @@ export async function runInserveCustomerImport(
   };
 
   try {
+    // STEP 11 finalize only starts at the very end — mark it PENDING
     // Credentials al gecontroleerd in [P1]; herhaal isConfigured defensief
     if (!(await inserveClient.isConfigured())) {
       markPartialFailed(
@@ -668,6 +872,8 @@ export async function runInserveCustomerImport(
       return doFinalize();
     }
 
+    // STEP 4: fetchCompanies
+    try { doSetStepActive(4); } catch { /* noop */ }
     let fetchedCompanies: InserveCompany[] = [];
     let t4 = Date.now();
     try {
@@ -686,6 +892,7 @@ export async function runInserveCustomerImport(
       summary.fetched = res.totalFetched;
       summary.pagesProcessed = res.pagesProcessed;
       summary.totalExpected = res.totalExpected;
+      try { doSetStepDone(4, { totalFetched: res.totalFetched, pagesProcessed: res.pagesProcessed, totalExpected: res.totalExpected }); } catch { /* noop */ }
       if (res.totalFetched === 0) {
         markPartialFailed(
           `Inserve API gaf 0 bedrijven terug (pagina's verwerkt: ${res.pagesProcessed}, verwachte totaal volgens API: ${res.totalExpected ?? 0}). Controleer of de API-key leesrechten heeft op bedrijven, of dat het juiste endpoint en builder-parameter worden gebruikt.`
@@ -693,6 +900,7 @@ export async function runInserveCustomerImport(
       }
     } catch (e: any) {
       timing.fetchCompanies = Math.max(timing.fetchCompanies, Date.now() - t4);
+      try { doSetStepFailed(4, `Kon bedrijven niet ophalen: ${e?.message ?? String(e)}`, { statusCode: (e as any)?.statusCode ?? null }); } catch { /* noop */ }
       if (e instanceof InserveApiError) {
         if (e.statusCode === 401 || e.statusCode === 403) {
           markPartialFailed(
@@ -708,6 +916,8 @@ export async function runInserveCustomerImport(
       return doFinalize();
     }
 
+    // Stap-order in de code: (1) loadPreExisting (step 7), (2) PRE-SCAN nexus (step 5), (3) fetchContacts (step 6)
+    try { doSetStepActive(7); } catch { /* noop */ }
     const t5 = Date.now();
     const previouslyLinkedIds = new Map<number, { id: string; companyName: string; deletedAt: Date | null; status?: CustomerStatus | string | null }>();
     const preExistingLinked = await prisma.customer.findMany({
@@ -726,6 +936,10 @@ export async function runInserveCustomerImport(
       }
     }
     const nowProcessedLinked = new Map<number, string>();
+    try { doSetStepDone(7, { previouslyLinked: previouslyLinkedIds.size }); } catch { /* noop */ }
+
+    // STEP 5: PRE-SCAN Nexus
+    try { doSetStepActive(5); } catch { /* noop */ }
 
     // -------------------------------------------------------------------------
     // [PRE-SCAN] Determine WHICH companies actually need their contacts synced.
@@ -771,7 +985,10 @@ export async function runInserveCustomerImport(
     } catch {
       // Never abort; worst-case empty set skips contacts.
     }
+    try { doSetStepDone(5, { activeCompanies: contactRelevantCompanyIds.size, total: fetchedCompanies.length }); } catch { /* noop */ }
 
+    // STEP 6: fetch contacts
+    try { doSetStepActive(6); } catch { /* noop */ }
     let fetchedContacts: InserveContact[] = [];
     let contactsByCompanyId: Record<number, InserveContact[]> = {};
     let tClients = Date.now();
@@ -797,10 +1014,12 @@ export async function runInserveCustomerImport(
         summary.clientsTotalExpected = 0;
         contactsByCompanyId = {};
       }
+      try { doSetStepDone(6, { relevantCompanies: contactRelevantCompanyIds.size, fetched: summary.contacts.fetched, pages: summary.clientsPagesProcessed }); } catch { /* noop */ }
     } catch (ce: any) {
       timing.fetchClients = Math.max(timing.fetchClients, Date.now() - tClients);
       const rl = isInserveRateLimitError(ce);
       summary.contacts.rateLimitBreached = !!rl;
+      try { doSetStepFailed(6, rl ? `Rate limit (${rl.usedCount}/${rl.maxCount})` : `Contacten ophalen mislukt: ${(ce?.message ?? String(ce)).slice(0, 200)}`, { rateLimit: !!rl, remainingMs: rl?.remainingMs ?? null }); } catch { /* noop */ }
       if (rl) {
         summary.contactFailedDetails!.push({
           error: `Rate limit bereikt (${rl.usedCount}/${rl.maxCount} calls, wacht ${Math.ceil(rl.remainingMs / 1000)}s). Contactpersonen overgeslagen.`,
@@ -944,8 +1163,24 @@ export async function runInserveCustomerImport(
       }
     }
 
+    // STEP 8: processRecords (met sub-percentages per 5%)
+    try { doSetStepActive(8, { totalCompanies: fetchedCompanies.length }); } catch { /* noop */ }
     const tProcess = Date.now();
-    for (const rawCompany of fetchedCompanies) {
+    const totalRec = fetchedCompanies.length;
+    const SUB_EVERY_PCT = Math.max(1, subStep); // every 5% by default
+    let lastReportedSub = -1;
+    for (let i = 0; i < totalRec; i++) {
+      const rawCompany = fetchedCompanies[i];
+      // Emit sub-percent event (capped by bucket granularity = max 20 per run).
+      if (totalRec > 0) {
+        const pctDone = Math.floor((i / totalRec) * 100);
+        const bucket = Math.floor(pctDone / SUB_EVERY_PCT);
+        if (bucket > lastReportedSub) {
+          lastReportedSub = bucket;
+          const sub = Math.min(1, pctDone / 100);
+          try { doSetStepSub(sub, 8); } catch { /* noop */ }
+        }
+      }
       const companyId = rawCompany.id;
       let company: InserveCompany = rawCompany;
       let nexus: NexusFieldResolution;
@@ -1309,7 +1544,9 @@ export async function runInserveCustomerImport(
         });
       }
     }
+    try { doSetStepSub(1, 8); } catch { /* noop */ }
     timing.processRecords = Date.now() - tProcess;
+    try { doSetStepDone(8, { processed: totalRec, created: summary.created, updated: summary.updated, unchanged: summary.unchanged, failed: summary.failed }); } catch { /* noop */ }
 
     try {
       await prisma.$transaction(async (tx) => {
@@ -1364,17 +1601,23 @@ export async function runInserveCustomerImport(
     }
 
     try {
+      // STEP 9: findMatches
+      try { doSetStepActive(9); } catch { /* noop */ }
       const tFind = Date.now();
       summary.possibleUnlinkedMatches = await findPossibleUnlinkedMatches(
         fetchedCompanies,
         nowProcessedLinked
       );
       timing.findMatches = Date.now() - tFind;
+      try { doSetStepDone(9, { matches: summary.possibleUnlinkedMatches.length }); } catch { /* noop */ }
     } catch (_) {
       summary.possibleUnlinkedMatches = [];
+      try { doSetStepDone(9, { matches: 0, failed: true }); } catch { /* noop */ }
     }
 
     try {
+      // STEP 10: simAssetLink
+      try { doSetStepActive(10); } catch { /* noop */ }
       const tSimLink = Date.now();
       const simLinkResult = await runInserveSimAssetLink({
         dryRun: !!opts.simLinkDryRun,
@@ -1384,6 +1627,7 @@ export async function runInserveCustomerImport(
       });
       summary.simLink = simLinkResult;
       timing.linkSimAssets = Date.now() - tSimLink;
+      try { doSetStepDone(10, { newlyLinked: simLinkResult.newlyLinked, errors: simLinkResult.errors, dryRun: simLinkResult.dryRun }); } catch { /* noop */ }
       if (simLinkResult.errors > 0 && (finalStatus === SyncJobStatus.SUCCESS || finalErrorMessage == null)) {
         markPartialFailed(
           `SIM-koppelingsfase bevat ${simLinkResult.errors} fout(en). Zie simLink.errorMessages.`,
@@ -1399,6 +1643,7 @@ export async function runInserveCustomerImport(
         errorMessages: [`SIM-link top-level error: ${simErr?.message ?? String(simErr)}`.slice(0, 400)],
       };
       timing.linkSimAssets = 0;
+      try { doSetStepFailed(10, `SIM-link mislukt: ${simErr?.message ?? String(simErr)}`.slice(0, 300)); } catch { /* noop */ }
       markPartialFailed(
         `SIM-koppelingsfase onverwachts mislukt: ${simErr?.message ?? String(simErr)}`,
         { source: "sim_link" },

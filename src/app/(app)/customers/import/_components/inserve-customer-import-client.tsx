@@ -33,8 +33,10 @@ import {
   DialogTitle,
   DialogClose,
 } from "@/components/ui/dialog";
-import { startInserveCustomerImportAction } from "../../actions";
+import { startInserveCustomerImportAction, startInserveCustomerImportWithProgressAction } from "../../actions";
 import type { ImportSummary } from "@/server/services/inserve-customer-import.service";
+import { SyncProgress } from "@/components/ui/sync-progress";
+import type { SyncProgressState } from "@/lib/progress/sync-progress-registry";
 
 type ActionResult =
   | { ok: true; summary: ImportSummary; error?: undefined }
@@ -44,61 +46,101 @@ export function InserveCustomerImportClient() {
   const [isPending, startTransition] = useTransition();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
 
   const onConfirmRun = () => {
     setConfirmOpen(false);
     setLastResult(null);
     startTransition(async () => {
-      const res = (await startInserveCustomerImportAction()) as ActionResult;
-      setLastResult(res);
-      const s = res.summary;
-      const cred = s?.inserveCredentials;
-      const credTag = cred
-        ? ` | Configuratie: ${cred.configured ? "OK" : "❌ NIET"} (${
-              cred.source === "db" ? "DB" : cred.source === "env" ? "ENV" : "GEEN"
-            })`
-        : "";
-      const t = s?.timingMs;
-      const zeroFases =
-        t
-          ? ([
-              ["inserveInit", t.inserveInit],
-              ["fetchCompanies", t.fetchCompanies],
-              ["fetchPreExisting", t.fetchPreExisting],
-              ["processRecords", t.processRecords],
-              ["findMatches", t.findMatches],
-              ["finalize", t.finalize],
-            ] as const)
-              .filter(([, v]) => (v ?? 0) === 0)
-              .map(([k]) => k)
-              .slice(0, 2)
-          : [];
-      const zeroTag =
-        zeroFases.length > 0 ? ` | ⚠️ 0ms fasen: ${zeroFases.join(", ")}` : "";
-      if (res.ok) {
-        const contacts = s?.contacts;
-        const isPartial = s?.status === "PARTIAL_SUCCESS";
-        const statusMsg = isPartial
-          ? `Inserve import gedeeltelijk geslaagd (let op: ${s?.errorMessage ?? "contactpersonen konden niet worden opgehaald"}). Bedrijven: ${s?.fetched ?? 0} | Nieuw: ${s?.created ?? 0}, Bijgewerkt: ${s?.updated ?? 0} | Deact: ${s?.customersDeactivated ?? 0} | Heract: ${s?.customersReactivated ?? 0}. Contacten: ${contacts?.fetched ?? 0} | Nieuw: ${contacts?.created ?? 0} | Bijgewerkt: ${contacts?.updated ?? 0}. Duur: ${s?.durationMs ?? 0}ms${credTag}`
-          : `Inserve import voltooid. Bedrijven: ${s?.fetched ?? 0} | Nieuw: ${s?.created ?? 0}, Bijgewerkt: ${s?.updated ?? 0} | Deact: ${s?.customersDeactivated ?? 0} | Heract: ${s?.customersReactivated ?? 0}. Contacten: ${contacts?.fetched ?? 0} | Nieuw: ${contacts?.created ?? 0} | Bijgewerkt: ${contacts?.updated ?? 0}. Duur: ${s?.durationMs ?? 0}ms${credTag}`;
-        if (isPartial) {
-          toast.warning(statusMsg);
-        } else {
-          toast.success(statusMsg);
+      try {
+        const res = (await startInserveCustomerImportWithProgressAction()) as
+          | { ok: true; runId: string; initialStatus?: "SKIPPED"; skipMessage?: string }
+          | { ok: false; error: string; runId?: undefined };
+        if (!res.ok) {
+          toast.error(res.error ?? "Onbekende fout bij starten import.");
+          setLastResult({ ok: false, error: res.error ?? "Onbekende fout" });
+          return;
         }
-      } else if (s?.status === "SKIPPED") {
-        toast.info(`${res.error ?? "Import is overgeslagen."}${credTag}${zeroTag}`);
-      } else {
-        const contacts = s?.contacts;
-        toast.error(
-          `${res.error ?? "Import is (gedeeltelijk) mislukt."}${credTag}${zeroTag}${contacts && contacts.failed > 0 ? ` | Contactfouten: ${contacts.failed}` : ""}`
-        );
+        setActiveRunId(res.runId);
+        if (res.initialStatus === "SKIPPED" && res.skipMessage) {
+          toast.info(res.skipMessage);
+        }
+      } catch (caught: any) {
+        const msg = (caught as Error)?.message ?? String(caught);
+        toast.error(msg);
+        setLastResult({ ok: false, error: msg });
       }
     });
   };
 
+  const handleProgressFinalize = (
+    summary: unknown | null,
+    finalState: SyncProgressState
+  ) => {
+    const sm = summary as ImportSummary | null;
+    if (sm) {
+      const ok =
+        finalState.overallStatus === "SUCCESS" ||
+        finalState.overallStatus === "PARTIAL_SUCCESS";
+      setLastResult(
+        ok
+          ? { ok: true, summary: sm }
+          : {
+              ok: false,
+              summary: sm,
+              error: sm.errorMessage ?? "Import niet volledig geslaagd.",
+            }
+      );
+      const t = sm.timingMs;
+      const zeroFases = t
+        ? ([
+            ["inserveInit", t.inserveInit],
+            ["fetchCompanies", t.fetchCompanies],
+            ["fetchPreExisting", t.fetchPreExisting],
+            ["processRecords", t.processRecords],
+            ["findMatches", t.findMatches],
+            ["finalize", t.finalize],
+          ] as const)
+            .filter(([, v]) => (v ?? 0) === 0)
+            .map(([k]) => k)
+            .slice(0, 2)
+        : [];
+      const zeroTag =
+        zeroFases.length > 0 ? ` | ⚠️ 0ms fasen: ${zeroFases.join(", ")}` : "";
+      const credTag = sm.inserveCredentials
+        ? ` | Configuratie: ${sm.inserveCredentials.configured ? "OK" : "❌ NIET"} (${
+            sm.inserveCredentials.source === "db"
+              ? "DB"
+              : sm.inserveCredentials.source === "env"
+                ? "ENV"
+                : "GEEN"
+          })`
+        : "";
+      const contacts = sm.contacts;
+      if (finalState.overallStatus === "PARTIAL_SUCCESS") {
+        const statusMsg = `Inserve import gedeeltelijk geslaagd (let op: ${sm.errorMessage ?? "contactpersonen konden niet worden opgehaald"}). Bedrijven: ${sm.fetched ?? 0} | Nieuw: ${sm.created ?? 0}, Bijgewerkt: ${sm.updated ?? 0} | Deact: ${sm.customersDeactivated ?? 0} | Heract: ${sm.customersReactivated ?? 0}. Contacten: ${contacts?.fetched ?? 0} | Nieuw: ${contacts?.created ?? 0} | Bijgewerkt: ${contacts?.updated ?? 0}. Duur: ${sm.durationMs ?? 0}ms${credTag}${zeroTag}`;
+        toast.warning(statusMsg);
+      } else if (ok) {
+        const statusMsg = `Inserve import voltooid. Bedrijven: ${sm.fetched ?? 0} | Nieuw: ${sm.created ?? 0}, Bijgewerkt: ${sm.updated ?? 0} | Deact: ${sm.customersDeactivated ?? 0} | Heract: ${sm.customersReactivated ?? 0}. Contacten: ${contacts?.fetched ?? 0} | Nieuw: ${contacts?.created ?? 0} | Bijgewerkt: ${contacts?.updated ?? 0}. Duur: ${sm.durationMs ?? 0}ms${credTag}${zeroTag}`;
+        toast.success(statusMsg);
+      } else if (finalState.overallStatus === "SKIPPED") {
+        toast.info(
+          `Import is overgeslagen.${credTag}${zeroTag}${sm.errorMessage ? ` | ${sm.errorMessage}` : ""}`
+        );
+      } else {
+        toast.error(
+          `Import is (gedeeltelijk) mislukt.${credTag}${zeroTag}${contacts && contacts.failed > 0 ? ` | Contactfouten: ${contacts.failed}` : ""}${sm.errorMessage ? ` | ${sm.errorMessage}` : ""}`
+        );
+      }
+    } else if (finalState.overallStatus === "FAILED") {
+      const msg = finalState.errors?.length ? finalState.errors.join(" | ") : "Import onverwachts mislukt (geen summary).";
+      toast.error(msg);
+      setLastResult({ ok: false, error: msg });
+    }
+  };
+
   const summary = lastResult?.summary;
-  const busy = isPending;
+  const busy = isPending || activeRunId != null;
 
   return (
     <div className="space-y-6" aria-live="polite">
@@ -156,6 +198,15 @@ export function InserveCustomerImportClient() {
           </div>
         </CardContent>
       </Card>
+
+      {activeRunId && (
+        <SyncProgress
+          runId={activeRunId}
+          onFinalize={handleProgressFinalize}
+          autoCloseAfterMs={0 /* niet automatisch sluiten: gebruiker sluit zelf, maar we geven 60s aanhoudend de resultaten weer */}
+          onClose={() => setActiveRunId(null)}
+        />
+      )}
 
       {summary && (
         <div className="space-y-4">
