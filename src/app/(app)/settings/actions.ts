@@ -6,8 +6,6 @@ import { requirePermission } from "@/lib/rbac";
 import {
   saveInserveSettings,
   getInserveSettingsMasked,
-  saveSimhuisSettings,
-  getSimhuisSettingsMasked,
   saveNavixySettings,
   getNavixySettingsMasked,
   saveSmtpSettings,
@@ -15,34 +13,13 @@ import {
   getSmtpSettings,
 } from "@/server/services/app-setting.service";
 import { inserveClient } from "@/server/integrations/inserve/client";
-import { simhuisClient } from "@/server/integrations/simhuis/client";
 import { navixyClient } from "@/server/integrations/navixy/client";
 import {
   syncAvailableSimsFromSimhuis,
-  type SimhuisSyncResult,
 } from "@/server/services/simhuis-sim-sync.service";
-
-async function getSimhuisCredentialsForWafDebug() {
-  try {
-    const anyClient = await simhuisClient.getClient();
-    if (!anyClient) return null;
-    return (anyClient as unknown as {
-      creds: {
-        baseUrl: string;
-        username: string;
-        password: string;
-        resellerId?: string | null;
-      };
-    }).creds;
-  } catch {
-    return null;
-  }
-}
 import {
   InserveSettingsSchema,
   type InserveSettingsInput,
-  SimhuisSettingsSchema,
-  type SimhuisSettingsInput,
   NavixySettingsSchema,
   type NavixySettingsInput,
   SmtpSettingsSchema,
@@ -56,7 +33,6 @@ import {
 } from "@/server/validators/schedule";
 import type {
   InserveSettingsMasked,
-  SimhuisSettingsMasked,
   NavixySettingsMasked,
   SmtpSettingsMasked,
 } from "@/server/validators/setting";
@@ -92,12 +68,6 @@ import {
 
 export type InserveSettingsActionState = {
   errors?: Partial<Record<keyof InserveSettingsInput, string[]>>;
-  message?: string | null;
-  success?: boolean;
-};
-
-export type SimhuisSettingsActionState = {
-  errors?: Partial<Record<keyof SimhuisSettingsInput, string[]>>;
   message?: string | null;
   success?: boolean;
 };
@@ -161,65 +131,6 @@ export async function saveInserveSettingsAction(
     };
   } catch (err) {
     console.error("[settings] Failed to save Inserve settings:", err);
-    return {
-      success: false,
-      message:
-        err instanceof Error
-          ? err.message
-          : "Er is een fout opgetreden bij het opslaan van de instellingen.",
-    };
-  }
-}
-
-/* ========================= Simhuis ========================= */
-
-export async function getSimhuisSettingsAction(): Promise<SimhuisSettingsMasked | null> {
-  const user = await getCurrentUser();
-  if (!canUserRole(user.role, "view", "setting")) return null;
-  return getSimhuisSettingsMasked();
-}
-
-export async function saveSimhuisSettingsAction(
-  _prev: SimhuisSettingsActionState,
-  formData: FormData
-): Promise<SimhuisSettingsActionState> {
-  const user = await getCurrentUser();
-  await requirePermission(user.role, "edit", "setting");
-
-  const data: SimhuisSettingsInput = {
-    baseUrl: formStr(formData.get("baseUrl")),
-    authMode: (formStr(formData.get("authMode")) as "basic" | "bearer") || "basic",
-    username: formStr(formData.get("username")),
-    password: formStr(formData.get("password")),
-    resellerId: formStr(formData.get("resellerId")),
-    defaultOfferId: formStr(formData.get("defaultOfferId")),
-    defaultPlanId: formStr(formData.get("defaultPlanId")),
-    defaultProductName: formStr(formData.get("defaultProductName")),
-    endpointLogin: formStr(formData.get("endpointLogin")) || "/auth/login",
-    endpointSims: formStr(formData.get("endpointSims")) || "/sims",
-    endpointSimActivate: formStr(formData.get("endpointSimActivate")) || "/activate",
-    endpointSimDeactivate: formStr(formData.get("endpointSimDeactivate")) || "/deactivate",
-  };
-
-  const validated = SimhuisSettingsSchema.safeParse(data);
-  if (!validated.success) {
-    return {
-      errors: validated.error.flatten().fieldErrors as SimhuisSettingsActionState["errors"],
-      message: "Controleer de invoer.",
-      success: false,
-    };
-  }
-
-  try {
-    const ctx = { userId: user.id, userRole: user.role };
-    await saveSimhuisSettings(validated.data, ctx);
-    revalidatePath("/settings");
-    return {
-      success: true,
-      message: "Simhuis API-instellingen zijn opgeslagen.",
-    };
-  } catch (err) {
-    console.error("[settings] Failed to save Simhuis settings:", err);
     return {
       success: false,
       message:
@@ -321,20 +232,6 @@ export async function testInserveConnectionAction(): Promise<ConnectionTestResul
     message: res.ok
       ? `Verbinding Inserve succesvol (${res.latencyMs}ms)`
       : res.error ?? "Verbinding Inserve mislukt.",
-  };
-}
-
-export async function testSimhuisConnectionAction(): Promise<ConnectionTestResult> {
-  const user = await getCurrentUser();
-  if (!canUserRole(user.role, "view", "setting")) {
-    return { ok: false, error: "Onvoldoende rechten." };
-  }
-  const res = await simhuisClient.testConnection();
-  return {
-    ...res,
-    message: res.ok
-      ? `Verbinding Simhuis succesvol (${res.latencyMs}ms)`
-      : res.error ?? "Verbinding Simhuis mislukt.",
   };
 }
 
@@ -483,127 +380,6 @@ export async function testSmtpSendAction(): Promise<ConnectionTestResult> {
   };
 }
 
-/* ========================= Simhuis SIM-voorraad sync ========================= */
-
-export interface SimSyncActionResult {
-  ok: boolean;
-  message: string;
-  totalInSimhuis?: number;
-  eligibleInSimhuis?: number;
-  created?: number;
-  updated?: number;
-  skipped?: number;
-  errors?: number;
-  errorMessages?: string[];
-  durationMs?: number;
-  debugContext?: {
-    wafBlocked: boolean;
-    wafSteps: string[];
-    wafCurlTest?: string;
-    wafCurlOnNexusServer?: string;
-    wafEmailTemplate?: string;
-  };
-}
-
-export async function syncSimhuisSimsAction(): Promise<SimSyncActionResult> {
-  try {
-    const user = await getCurrentUser();
-    await requirePermission(user.role, "edit", "sim");
-    const r = await syncAvailableSimsFromSimhuis({ userId: user.id, userRole: user.role });
-    const ok = r.totalInSimhuis === 0
-      ? false
-      : (r.errors < r.eligibleInSimhuis || r.created > 0 || r.updated > 0);
-    const summary =
-      r.totalInSimhuis === 0
-        ? `Geen SIMs gevonden in Simhuis (list endpoint vond geen records). Controleer of jouw account SIM-inventaris heeft, of lees de foutmelding in de server logs. Totaal: ${r.totalInSimhuis}, Gekwalificeerd: ${r.eligibleInSimhuis}. Duur: ${r.durationMs}ms.`
-        : `SIM-voorraad bijgewerkt. Aangemaakt: ${r.created}, bijgewerkt: ${r.updated}, overgeslagen: ${r.skipped}. ` +
-          `Totaal in Simhuis: ${r.totalInSimhuis}, in aanmerking genomen: ${r.eligibleInSimhuis}. ` +
-          `Fouten: ${r.errors}. Duur: ${r.durationMs}ms.`;
-    revalidatePath("/sims");
-    revalidatePath("/settings");
-    return {
-      ok,
-      message: summary,
-      ...r,
-    };
-  } catch (err) {
-    console.error("[settings] Failed to sync Simhuis SIMs:", err);
-    const rawMsg = err instanceof Error ? err.message : String(err ?? "Onbekende fout");
-    const wafBlocked = /Allow\s*:\s*OPTIONS/.test(rawMsg) || /WAF|Web Application Firewall|IP.?whitelist|whitelisting/.test(rawMsg);
-    let debugContext: SimSyncActionResult["debugContext"] | undefined;
-    if (wafBlocked) {
-      try {
-        const cfg = await getSimhuisCredentialsForWafDebug();
-        const username = cfg?.username || process.env.SIMHUIS_USERNAME || "<JOUW_SIMHUIS_USERNAME>";
-        const password = cfg?.password || process.env.SIMHUIS_PASSWORD || "<JOUW_SIMHUIS_PASSWORD>";
-        const base = (cfg?.baseUrl || process.env.SIMHUIS_BASE_URL || "https://apicontrolcenter.com/v3").replace(/\/+$/, "");
-        const basicB64 = Buffer.from(`${username}:${password}`, "utf8").toString("base64");
-        const publicIpCmd = "# Bepaal jouw Nexus server PUBLIC IP (geef dit IP op aan Simhuis Support):\ncurl -sS ifconfig.me";
-        const curlCmd =
-          `# STAP 1 (JOUW computer / Postman): draai deze 2 curl-commando's in jouw lokale terminal (post je uitkomst hier als het werkt)\n` +
-          `# Test 1: AirOn360 eSIMS lijst (GET /v3/esims) — voorkeursendpoint\n` +
-          `curl -sS -X GET '${base}/v3/esims?page=1&limit=100' \\\n` +
-          `  -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36' \\\n` +
-          `  -H 'Accept: application/json' \\\n` +
-          `  -H 'Origin: ${base.replace(/\/[^/]*$/, "")}' \\\n` +
-          `  -H 'Referer: ${base.replace(/\/[^/]*$/, "")}/' \\\n` +
-          `  -H 'Authorization: Basic ${basicB64}' \\\n` +
-          `  -H 'Sec-Fetch-Dest: empty' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Site: same-origin'\n` +
-          `\n# Test 2: AirOn360 Assets lijst (GET /v3/assets) — fallback endpoint\n` +
-          `curl -sS -X GET '${base}/v3/assets?page=1&limit=100' \\\n` +
-          `  -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36' \\\n` +
-          `  -H 'Accept: application/json' \\\n` +
-          `  -H 'Origin: ${base.replace(/\/[^/]*$/, "")}' \\\n` +
-          `  -H 'Referer: ${base.replace(/\/[^/]*$/, "")}/' \\\n` +
-          `  -H 'Authorization: Basic ${basicB64}' \\\n` +
-          `  -H 'Sec-Fetch-Dest: empty' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Site: same-origin'`;
-        const serverCurl =
-          `# STAP 2 (NEXUS SERVER): log IN op de server waar Nexus draait, en voer daar HETZELFDE commando uit:\n` +
-          `# (Als dit "405 MethodNotAllowed" geeft, en STAP 1 gaf WEL 200/401/400 → IP WHITELISTING = de oorzaak)\n\n` +
-          publicIpCmd + "\n\n" + curlCmd;
-        const emailTmpl =
-          `Onderwerp: Whitelist verzoek API SIM-voorraad sync - [JOUW BEDRIJF]\n` +
-          `\nGeachte heer/mevrouw Simhuis Support,\n\n` +
-          `Wij gebruiken jullie AirOn360 IoT Suite API v3.6 (base URL ${base}) voor het automatisch synchroniseren van onze SIM-voorraad / assets vanuit ons Nexus-platform.\n\n` +
-          `Gebruikte endpoints (allemaal GET op het AirOn360 platform):\n` +
-          `  - ${base}/v3/esims (eSIMS inventory)\n` +
-          `  - ${base}/v3/assets (Assets / SIM-kaarten inventory)\n` +
-          `  - ${base}/v3/assets/{iccid}/subscribe (SIM-activatie)\n\n` +
-          `Probleem: API calls vanaf onze Nexus-server krijgen consequent "HTTP 405 Allow: OPTIONS" (method not allowed) op bovenstaande endpoints. Dezelfde calls VANAF ONZE WERKPLEK (met Postman / curl naar dezelfde endpoints, met dezelfde credentials) werken WEL en geven een app-level response (bv. 401 InvalidCredentials of 200 met JSON data).\n\n` +
-          `Dit wijst erop dat jullie WAF (Web Application Firewall) / firewall / Citrix Netscaler ons SERVER-IP blokkeert.\n\n` +
-          `Verzoek: Whitelist het volgende PUBLIC IP-adres van onze Nexus-server (zowel inbound als outbound, poorten 80 en 443 TCP):\n` +
-          `  [Plak hier de uitvoer van: curl -sS ifconfig.me  - uitgevoerd OP DE NEXUS SERVER]\n\n` +
-          `Onze credentials / account naam: ${username}\n` +
-          `Base URL: ${base}\n` +
-          `AirOn360 Swagger (indien nodig): ${base}/v3/docs/swagger/index.html\n\n` +
-          `Alvast bedankt!\n\n` +
-          `Met vriendelijke groet,\n` +
-          `[JOUW NAAM] • [JOUW FUNCTIE] • [JOUW BEDRIJF]`;
-        debugContext = {
-          wafBlocked: true,
-          wafSteps: [
-            "STAP 1: Kopieer de 2 curl-commando's (Test 1 + Test 2) en voer ze UIT OP JE EIGEN COMPUTER (lokaal). Noteer of je een 200/401/400-body terugkrijgt (JSON met SIMs/assets of Unauthorized is OK = endpoint werkt).",
-            "STAP 2: Log IN op de server waar Nexus draait, en voer HETZELFDE 2 curl-commando DAAR UIT. Bepaal ook eerst je PUBLIC IP met het curl ifconfig.me commando (ook in STAP 2 te vinden).",
-            "STAP 3: Als STAP 1 WEL werkt (200/401/400) en STAP 2 geeft 405 Allow: OPTIONS → e-mail Simhuis Support met de onderstaande template om jouw Nexus-server IP te whitelisten.",
-          ],
-          wafCurlTest: curlCmd,
-          wafCurlOnNexusServer: serverCurl,
-          wafEmailTemplate: emailTmpl,
-        };
-      } catch (_e) {
-        // ignore
-      }
-    }
-    return {
-      ok: false,
-      message:
-        err instanceof Error
-          ? err.message
-          : "Er is een fout opgetreden tijdens het synchroniseren van de Simhuis SIM-voorraad.",
-      debugContext,
-    };
-  }
-}
 /* ========================= Sync Schedule beheer (ADMIN / INTERNAL) ========================= */
 
 export interface SyncScheduleSaveState {

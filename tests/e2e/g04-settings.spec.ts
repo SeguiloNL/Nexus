@@ -5,9 +5,9 @@ import { loginAs } from "./lib/auth-helpers";
  * E2E Flow 4: Instellingen-pagina (P2.5)
  *
  * Doel: bevestigen dat de /settings pagina werkt voor ADMIN, inclusief
- *   - 3 API-koppeling formulieren (Inserve, Simhuis, Navixy)
- *   - 3x "Verbinding testen" knoppen
- *   - 3x "Opslaan" knoppen
+ *   - 2 API-koppeling formulieren (Inserve, Navixy)
+ *   - 2x "Verbinding testen" knoppen
+ *   - 2x "Opslaan" knoppen (API-formulieren)
  *   - Source indicaties (badges: Database/.env/Niet geconfigureerd)
  *   - 4 info-cards: Systeeminformatie, Beveiliging, Database, Notificaties
  *
@@ -20,7 +20,7 @@ test.describe("G.2.4 — Instellingen (Settings) smoke", () => {
       await loginAs(page, "admin");
     });
 
-    test("ADMIN → /settings: 3 API-koppeling cards + 4 info-cards zichtbaar", async ({
+    test("ADMIN → /settings: 2 API-koppeling cards + 4 info-cards zichtbaar", async ({
       page,
     }) => {
       await page.goto("/settings", { waitUntil: "domcontentloaded" });
@@ -29,8 +29,8 @@ test.describe("G.2.4 — Instellingen (Settings) smoke", () => {
       // 1. H1: Instellingen
       await expect(page.getByText(/^instellingen$/i).first()).toBeVisible();
 
-      // 2. 3 API-koppeling titels (Case Insensitive)
-      for (const title of ["Inserve API-koppeling", "Simhuis API-koppeling", "Navixy API-koppeling"]) {
+      // 2. 2 API-koppeling titels (Case Insensitive)
+      for (const title of ["Inserve API-koppeling", "Navixy API-koppeling"]) {
         const loc = page.getByText(new RegExp(`^${title}$`, "i")).first();
         await expect(loc).toBeVisible({ timeout: 12_000 });
       }
@@ -64,9 +64,9 @@ test.describe("G.2.4 — Instellingen (Settings) smoke", () => {
         await expect(loc).toBeVisible({ timeout: 10_000 });
       }
 
-      // 3. Sync Schedule card bevat 3× Opslaan (naast 3 API opslaan)
+      // 3. Sync Schedule card bevat 3× Opslaan (naast 2 API opslaan)
       const saveButtons = page.getByRole("button", { name: /^opslaan$/i });
-      await expect(saveButtons).toHaveCount(6, { timeout: 10_000 });
+      await expect(saveButtons).toHaveCount(5, { timeout: 10_000 });
 
       // 4. Sync Schedule card bevat 3× "Handmatig nu synchroniseren" (ADMIN-only)
       const manualButtons = page.getByRole("button", { name: /handmatig nu synchroniseren/i });
@@ -76,7 +76,7 @@ test.describe("G.2.4 — Instellingen (Settings) smoke", () => {
       await expect(page.getByText(/recente synchronisatieruns/i).first()).toBeVisible();
     });
 
-    test("ADMIN → /settings: Source-badges + 3× verbinding-testen + 3× api-opslaan", async ({
+    test("ADMIN → /settings: Source-badges + 2× verbinding-testen + 2× api-opslaan", async ({
       page,
     }) => {
       await page.goto("/settings", { waitUntil: "domcontentloaded" });
@@ -88,11 +88,11 @@ test.describe("G.2.4 — Instellingen (Settings) smoke", () => {
       const anyBadgeText = page.locator("body *").filter({ hasText: allowedRe });
       await expect(anyBadgeText.first()).toBeVisible({ timeout: 12_000 });
 
-      // 2. "Verbinding testen" knoppen: 3 stuks
+      // 2. "Verbinding testen" knoppen: 2 stuks
       const testButtons = page.getByRole("button", {
         name: /verbinding testen/i,
       });
-      await expect(testButtons).toHaveCount(3, { timeout: 12_000 });
+      await expect(testButtons).toHaveCount(2, { timeout: 12_000 });
 
       // 3. Systeem info: Applicatie en Versie velden bestaan
       await expect(page.getByText(/^applicatie$/i).first()).toBeVisible();
@@ -105,7 +105,7 @@ test.describe("G.2.4 — Instellingen (Settings) smoke", () => {
       await loginAs(page, "employee");
     });
 
-    test("EMPLOYEE → /settings: 3× API readOnly-melding + 0× API Opslaan + 0× sync-opslaan + sync card readOnly", async ({
+    test("EMPLOYEE → /settings: 2× API readOnly-melding + 0× API Opslaan + 0× sync-opslaan + sync card readOnly", async ({
       page,
     }) => {
       await page.goto("/settings", { waitUntil: "domcontentloaded" });
@@ -113,7 +113,7 @@ test.describe("G.2.4 — Instellingen (Settings) smoke", () => {
       // Employee heeft view:setting (vanaf FUP2) maar GEEN edit:setting → readOnly mode.
       const readOnlyMeldingen = page
         .getByText(/alleen .*beheerders.* kunnen .* api-instellingen wijzigen/i);
-      await expect(readOnlyMeldingen).toHaveCount(3, { timeout: 12_000 });
+      await expect(readOnlyMeldingen).toHaveCount(2, { timeout: 12_000 });
 
       // Sync schedule card MOET wel zichtbaar zijn (viewer right), maar readOnly melding
       const syncCard = page.getByText(/^automatische synchronisatie/i).first();
@@ -134,13 +134,12 @@ test.describe("G.2.4 — Instellingen (Settings) smoke", () => {
 
       // Wel "Verbinding testen" knoppen (view:setting is voldoende)
       const testButtons = page.getByRole("button", { name: /verbinding testen/i });
-      await expect(testButtons).toHaveCount(3);
+      await expect(testButtons).toHaveCount(2);
 
       // Info-cards + API-card titels moeten ook zichtbaar zijn.
       await expect(page.getByText(/^systeeminformatie$/i).first()).toBeVisible();
       for (const title of [
         "Inserve API-koppeling",
-        "Simhuis API-koppeling",
         "Navixy API-koppeling",
       ]) {
         await expect(

@@ -1,15 +1,13 @@
 import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Settings as SettingsIcon, Info, Database, Shield, Globe } from "lucide-react";
+import { Info, Database, Shield } from "lucide-react";
 import { InserveSettingsForm } from "./_components/inserve-settings-client";
-import { SimhuisSettingsForm } from "./_components/simhuis-settings-client";
 import { NavixySettingsForm } from "./_components/navixy-settings-client";
 import { SmtpSettingsForm } from "./_components/smtp-settings-client";
 import { SyncScheduleCard } from "./_components/sync-schedule-client";
 import {
   getInserveSettingsMasked,
-  getSimhuisSettingsMasked,
   getNavixySettingsMasked,
   getSmtpSettingsMasked,
 } from "@/server/services/app-setting.service";
@@ -24,10 +22,9 @@ export default async function SettingsPage() {
   }
 
   const canEdit = canUserRole(user.permissions, "edit", "setting");
-  const [inserveSettings, simhuisSettings, navixySettings, smtpSettings, syncState] =
+  const [inserveSettings, navixySettings, smtpSettings, syncState] =
     await Promise.all([
       getInserveSettingsMasked(),
-      getSimhuisSettingsMasked(),
       getNavixySettingsMasked(),
       getSmtpSettingsMasked(),
       getSyncSchedulesAction(),
@@ -43,7 +40,6 @@ export default async function SettingsPage() {
       </div>
 
       <InserveSettingsForm initial={inserveSettings} readOnly={!canEdit} />
-      <SimhuisSettingsForm initial={simhuisSettings} readOnly={!canEdit} />
       <NavixySettingsForm initial={navixySettings} readOnly={!canEdit} />
       <SmtpSettingsForm initial={smtpSettings} readOnly={!canEdit} />
 
