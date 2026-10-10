@@ -362,6 +362,7 @@ describe("InserveCustomerImport :: parse functies (unit)", () => {
 describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
   let listAllCompaniesSpy: any;
   let listAllClientsSpy: any;
+  let listClientsForCompanyIdsSpy: any;
   let logAuditSpy: any;
   let genCustNrSpy: any;
   let getSyncJobConfigSpy: any;
@@ -404,6 +405,35 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
       pagesProcessed: 0,
       responses: [],
     } as any);
+    // listClientsForCompanyIds is the NEW code path. Proxy to listAllClientsSpy
+    // so the 7 existing tests (SM-1..SM-9) that mock listAllClientsSpy keep
+    // passing — new tests that specifically test the per-company filter must
+    // call listClientsForCompanyIdsSpy directly.
+    listClientsForCompanyIdsSpy = vi
+      .spyOn(inserveSvc, "listClientsForCompanyIds")
+      .mockImplementation(async (ids: number[], opts?: any) => {
+        const res = await inserveSvc.listAllClients(opts?.perPage ?? 50);
+        const idSet = new Set(ids);
+        const filtered = (res?.items ?? []).filter((c: any) => {
+          const cids =
+            Array.isArray((c as any).company_ids) ? (c as any).company_ids
+            : Array.isArray((c as any).companyIds) ? (c as any).companyIds
+            : (c as any).company_id != null ? [(c as any).company_id]
+            : (c as any).companyId != null ? [(c as any).companyId]
+            : [];
+          if (cids.length === 0) return idSet.size === 0;
+          return cids.some((id: any) => idSet.has(Number(id)));
+        });
+        return {
+          items: filtered,
+          totalFetched: filtered.length,
+          totalExpected: res?.totalExpected ?? ids.length,
+          pagesProcessed: res?.pagesProcessed ?? (filtered.length > 0 ? 1 : 0),
+          strategyUsed: "A-batch-filter/0",
+          rateLimitRemaining: 80,
+          companyIdsRequested: ids.length,
+        };
+      });
     vi.spyOn(simLinkSvc, "runInserveSimAssetLink").mockResolvedValue({
       ...(simLinkSvc.EMPTY_SIM_LINK_SUMMARY ?? {
         totalAssetsExamined: 0,
@@ -980,6 +1010,7 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
 describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactpersonen sync", () => {
   let listAllCompaniesSpy: any;
   let listAllClientsSpy: any;
+  let listClientsForCompanyIdsSpy: any;
   let logAuditSpy: any;
   let genCustNrSpy: any;
   let getSyncJobConfigSpy: any;
@@ -1003,6 +1034,35 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       pagesProcessed: 0,
       responses: [],
     } as any);
+    // listClientsForCompanyIds is the NEW code path. Proxy to listAllClientsSpy
+    // so the 7 existing tests (SM-1..SM-9) that mock listAllClientsSpy keep
+    // passing — new tests that specifically test the per-company filter must
+    // call listClientsForCompanyIdsSpy directly.
+    listClientsForCompanyIdsSpy = vi
+      .spyOn(inserveSvc, "listClientsForCompanyIds")
+      .mockImplementation(async (ids: number[], opts?: any) => {
+        const res = await inserveSvc.listAllClients(opts?.perPage ?? 50);
+        const idSet = new Set(ids);
+        const filtered = (res?.items ?? []).filter((c: any) => {
+          const cids =
+            Array.isArray((c as any).company_ids) ? (c as any).company_ids
+            : Array.isArray((c as any).companyIds) ? (c as any).companyIds
+            : (c as any).company_id != null ? [(c as any).company_id]
+            : (c as any).companyId != null ? [(c as any).companyId]
+            : [];
+          if (cids.length === 0) return idSet.size === 0;
+          return cids.some((id: any) => idSet.has(Number(id)));
+        });
+        return {
+          items: filtered,
+          totalFetched: filtered.length,
+          totalExpected: res?.totalExpected ?? ids.length,
+          pagesProcessed: res?.pagesProcessed ?? (filtered.length > 0 ? 1 : 0),
+          strategyUsed: "A-batch-filter/0",
+          rateLimitRemaining: 80,
+          companyIdsRequested: ids.length,
+        };
+      });
     vi.spyOn(simLinkSvc, "runInserveSimAssetLink").mockResolvedValue({
       ...(simLinkSvc.EMPTY_SIM_LINK_SUMMARY ?? {
         totalAssetsExamined: 0,
@@ -1213,7 +1273,10 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       responses: [],
     } as any);
     const s = await runInserveCustomerImport(defaultCtx);
-    expect(s.contacts.fetched).toBe(3);
+    // With the new pre-scan + listClientsForCompanyIds filter, only the 2
+    // contacts actually belonging to the imported Nexus=active company are
+    // fetched (company_id=9999 was NOT in the request set → excluded).
+    expect(s.contacts.fetched).toBe(2);
     expect(s.contacts.created).toBe(2);
     expect(s.contacts.skipped).toBe(0);
     expect(s.contacts.updated).toBe(0);
@@ -1418,7 +1481,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(createContactServiceSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("SM-10: API call listAllClients THROWS → import wordt PARTIAL_SUCCESS; contactFailedDetails gevuld; bedrijven verwerking WEL doorloopt", async () => {
+  it("SM-10: API call listClientsForCompanyIds THROWS → import wordt PARTIAL_SUCCESS; contactFailedDetails gevuld; bedrijven verwerking WEL doorloopt", async () => {
     listAllCompaniesSpy.mockResolvedValueOnce({
       items: [
         makeCompany({
@@ -1429,7 +1492,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       ],
       totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
     } as any);
-    listAllClientsSpy.mockRejectedValueOnce(new Error("502 Bad Gateway: clients endpoint down"));
+    listClientsForCompanyIdsSpy.mockRejectedValueOnce(new Error("502 Bad Gateway: clients endpoint down"));
     const s = await runInserveCustomerImport(defaultCtx);
     expect(s.status).toBe("PARTIAL_SUCCESS");
     expect(s.created).toBe(1);
@@ -1443,7 +1506,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(s.errorMessage).toMatch(/502 Bad Gateway|contactpersonen konden niet worden opgehaald/i);
   });
 
-  it("SM-11: Multi-page contacten (listAllClients pagesProcessed=3) → alle pagina's verwerkt; pagination tellingen correct", async () => {
+  it("SM-11: Multi-page contacten (listClientsForCompanyIds pagesProcessed=3) → alle pagina's verwerkt; pagination tellingen correct", async () => {
     listAllCompaniesSpy.mockResolvedValueOnce({
       items: [
         makeCompany({ id: 9011, name: "Multipage", custom_fields: [{ name: "Nexus", value: "Actief" }] as any }),
@@ -1454,13 +1517,15 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     for (let i = 1; i <= 20; i++) {
       allContacts.push(makeContact({ id: 5700 + i, company_id: 9011, first_name: `C${i}`, last_name: `Contact${i}` }));
     }
-    listAllClientsSpy.mockResolvedValueOnce({
+    listClientsForCompanyIdsSpy.mockResolvedValueOnce({
       items: allContacts,
       totalFetched: 20,
       totalExpected: 20,
       pagesProcessed: 3,
-      responses: [],
-    } as any);
+      strategyUsed: "A-batch-filter/0",
+      rateLimitRemaining: 77,
+      companyIdsRequested: 1,
+    });
     const s = await runInserveCustomerImport(defaultCtx);
     expect(s.clientsPagesProcessed).toBe(3);
     expect(s.clientsTotalExpected).toBe(20);

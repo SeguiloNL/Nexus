@@ -1187,6 +1187,302 @@ export async function listAllClients(
   );
 }
 
+/**
+ * Fetch contacts ONLY for a specific set of Inserve company IDs.
+ * Prevents the default "fetch ALL 2000 companies contacts" pattern which
+ * reliably triggers the 80-calls/10-min Inserve rate limit on production.
+ *
+ * Strategy order (fallback on first success):
+ *   (a) [preferred] Batch-filter /clients endpoint by company_id[] chunks
+ *       (chunk size 20) → ~(N/20) API calls.
+ *   (b) [robust]    Per company GET companies/:id/clients endpoint
+ *       (concurrent 5) → N API calls, but only for the ~200 relevant
+ *       companies (160 filterPassed + existing links).
+ *   (c) [fallback]  Original listAllClients() when everything else fails.
+ *
+ * All strategies wrapped in try/catch per-batch; on ANY non-recoverable
+ * error (rate-limit, 401, 403) we re-throw; other failures move to the
+ * next strategy.
+ */
+export async function listClientsForCompanyIds(
+  companyIds: number[],
+  opts: Omit<ListClientsOptions, 'page'> & { maxPages?: number } = {}
+): Promise<{
+  items: InserveContact[];
+  totalFetched: number;
+  totalExpected: number;
+  pagesProcessed: number;
+  strategyUsed: string;
+  rateLimitRemaining: number;
+  companyIdsRequested: number;
+}> {
+  const client = await inserveClient.getClient();
+  if (!client) {
+    throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
+  }
+  const { maxPages, perPage = 50, withRelations = [], extraQueryParams } = opts;
+  const uniqueIds = Array.from(new Set(companyIds.filter((n) => Number.isFinite(n) && Number.isInteger(n) && n > 0)));
+  if (uniqueIds.length === 0) {
+    return {
+      items: [],
+      totalFetched: 0,
+      totalExpected: 0,
+      pagesProcessed: 0,
+      strategyUsed: 'none-empty-set',
+      rateLimitRemaining: (inserveClient as any).getRemaining?.() ?? -1,
+      companyIdsRequested: 0,
+    };
+  }
+
+  const rateRemaining = async (): Promise<number> => {
+    try {
+      const info = await (inserveClient as any).getRateLimitInfo?.();
+      if (info && typeof info.remaining === 'number') return info.remaining;
+    } catch {
+    }
+    return -1;
+  };
+
+  // ---- Strategy A: batch /clients?company_id[]=... chunks -------------------
+  try {
+    const CHUNK = 20;
+    const allContacts: InserveContact[] = [];
+    let totalPages = 0;
+    let totalExpected = 0;
+    const rateLimitMaxCallsPerImport = 70; // keep 10 calls buffer inside 80/10min window
+    let selectedVariant = 0; // persisted after first successful batch (index into VARIANTS)
+    const estPagesA = Math.max(1, Math.ceil(uniqueIds.length / CHUNK));
+    const estPagesB = uniqueIds.length;
+
+    type BatchesDone = number;
+    const batchesTotal = Math.ceil(uniqueIds.length / CHUNK) as number;
+    let batchesDone: BatchesDone = 0;
+
+    for (let i = 0; i < uniqueIds.length; i += CHUNK) {
+      const idChunk = uniqueIds.slice(i, i + CHUNK);
+      const companyIdQuery: Record<string, string | number | boolean | undefined> = {
+        ...(extraQueryParams ?? {}),
+      };
+      // 3 variants (Inserve accepts different param shapes):
+      //   company_id[]=1&company_id[]=2     (Laravel style)
+      //   company_ids=1,2,3                  (CSV)
+      //   company_id=1&company_id=2          (duplicate keys, first wins usually, fallback)
+      const VARIANTS = [
+        (ids: number[]) => ids.map((id) => `company_id[]=${encodeURIComponent(id)}`).join('&'),
+        (ids: number[]) => `company_ids=${ids.map((id) => encodeURIComponent(id)).join(',')}`,
+        (ids: number[]) => `company_id=${ids.map((id) => encodeURIComponent(id)).join(',')}`,
+      ];
+      let chunkItems: InserveContact[] = [];
+      let chunkPages = 0;
+      let chunkTotalExpected = 0;
+      let chunkSucceeded = false;
+
+      const probeVariants = batchesDone === 0 ? [0, 1, 2] : [selectedVariant];
+      variantProbe: for (const vi of probeVariants) {
+        const vStr = VARIANTS[vi](idChunk);
+        const effectiveMax = maxPages ?? 20;
+        for (let page = 1; page <= effectiveMax; page++) {
+          const separator = (vStr && vStr.length > 0) ? '&' : '';
+          const qsExtra = vStr.length > 0 ? `${separator}page=${page}&per_page=${perPage}` : `page=${page}&per_page=${perPage}`;
+          const path = `${INSERVE_CLIENT_ENDPOINT}?${vStr}${qsExtra}`;
+          try {
+            const chunk = await client.request<any>(path, { method: 'GET' });
+            chunkPages++;
+            totalPages++;
+            // If budget exceeded: break & continue to next strategy
+            if (totalPages >= rateLimitMaxCallsPerImport) break;
+
+            let pageItems: InserveContact[] = [];
+            if (Array.isArray(chunk)) pageItems = chunk as InserveContact[];
+            else if (chunk && typeof chunk === 'object') {
+              const rAny = chunk as Record<string, unknown>;
+              if (Array.isArray(rAny.data)) pageItems = rAny.data as InserveContact[];
+              else if (Array.isArray(rAny.items)) pageItems = rAny.items as InserveContact[];
+              else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as InserveContact[];
+              else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveContact[];
+              if (typeof rAny.total === 'number' && chunkTotalExpected === 0) chunkTotalExpected = rAny.total as number;
+            }
+            // First chunk, first probe, first page: detect if filter works
+            if (batchesDone === 0 && page === 1 && !chunkSucceeded) {
+              const filterHit = pageItems.filter((c) => idChunk.includes((c as any).company_id ?? (c as any).companyId ?? -1)).length;
+              const anyContactRel = pageItems.filter((c) => getContactCompanyIds(c).length > 0).length;
+              // Heuristic: if 20%+ pageItems match our chunk → variant works; remember vi
+              if ((pageItems.length > 0 && filterHit > 0 && filterHit / Math.max(1, anyContactRel || pageItems.length) >= 0.2) ||
+                  (pageItems.length > 0 && anyContactRel === 0 && filterHit === 0 && uniqueIds.length === idChunk.length)) {
+                selectedVariant = vi;
+              }
+            }
+            if (pageItems.length > 0) chunkItems.push(...pageItems);
+            // Termination heuristics for this chunk page loop
+            if (pageItems.length === 0 && page >= 2) break;
+            const lpAny = ((chunk as any)?.meta?.last_page ?? (chunk as any)?.last_page ?? (chunk as any)?.lastPage ?? (chunk as any)?.meta?.lastPage);
+            if (typeof lpAny === 'number' && page >= lpAny) break;
+            if (typeof chunkTotalExpected === 'number' && chunkTotalExpected > 0 && chunkItems.length >= chunkTotalExpected) break;
+          } catch (aErr: any) {
+            const rl = isInserveRateLimitError(aErr);
+            if (rl) throw rl; // re-throw: handled at outer catch
+            // non-rate-limit network/5xx/400: try next variant (if first chunk) else break
+            if (batchesDone === 0) continue variantProbe;
+            break;
+          }
+        }
+        // If we got page items at all → variant works for subsequent chunks
+        if (chunkItems.length > 0 || (batchesDone > 0)) {
+          chunkSucceeded = true;
+          break;
+        }
+      }
+      batchesDone++;
+      allContacts.push(...chunkItems);
+      // global budget guard (not chunk level)
+      if (totalPages >= rateLimitMaxCallsPerImport) break;
+      if (batchesTotal === batchesDone) break;
+    }
+
+    // De-duplicate contacts by contact.id (same contact may appear across chunks)
+    const seen = new Map<number | string, InserveContact>();
+    for (const c of allContacts) {
+      if (c?.id != null) seen.set(c.id, c);
+    }
+    const dedup = Array.from(seen.values());
+
+    // If we got any contacts at all OR the probe did not throw rate limit / hard
+    // errors → return this result (even if empty — means these companies have 0 contacts).
+    if (dedup.length >= 0) {
+      return {
+        items: dedup,
+        totalFetched: dedup.length,
+        totalExpected: totalExpected || uniqueIds.length,
+        pagesProcessed: totalPages,
+        strategyUsed: `A-batch-filter/${selectedVariant}`,
+        rateLimitRemaining: await rateRemaining(),
+        companyIdsRequested: uniqueIds.length,
+      };
+    }
+  } catch (aErr: any) {
+    const rl = isInserveRateLimitError(aErr);
+    if (rl) throw rl; // stop at rate limit → handled upstream
+    // Other errors → strategy A failed; silently continue to strategy B.
+  }
+
+  // ---- Strategy B: GET companies/:id/clients (per-company) ------------------
+  try {
+    const MAX_CONCURRENCY = 5;
+    let totalCalls = 0;
+    const allContacts: InserveContact[] = [];
+    // 3 endpoint variants per company, try sequentially first company → remember
+    const endpoints = [
+      (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}/clients`,
+      (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}/contacts`,
+      (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}`,
+    ];
+    let workingEp = 0;
+    // Probe endpoints on first company
+    if (uniqueIds.length > 0) {
+      const firstId = uniqueIds[0];
+      let found = false;
+      for (let vi = 0; vi < endpoints.length && !found; vi++) {
+        try {
+          const resp = await client.request<any>(endpoints[vi](firstId), { method: 'GET' });
+          totalCalls++;
+          let pageItems: InserveContact[] = [];
+          if (Array.isArray(resp)) pageItems = resp as InserveContact[];
+          else if (resp && typeof resp === 'object') {
+            const rAny = resp as Record<string, unknown>;
+            if (Array.isArray(rAny.data)) pageItems = rAny.data as InserveContact[];
+            else if (Array.isArray(rAny.items)) pageItems = rAny.items as InserveContact[];
+            else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as InserveContact[];
+            else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveContact[];
+          }
+          // Heuristic: accept if page is array-like (even empty)
+          workingEp = vi;
+          found = true;
+          if (pageItems.length > 0) allContacts.push(...pageItems);
+        } catch (bErr: any) {
+          const rl = isInserveRateLimitError(bErr);
+          if (rl) throw rl;
+          // ignore: try next endpoint
+        }
+      }
+      if (!found) {
+        throw new Error('Strategy B: all per-company endpoints returned non-array on first company.');
+      }
+    }
+
+    // remaining companies (skip first, we already did it)
+    const remaining = uniqueIds.slice(1);
+    for (let i = 0; i < remaining.length; i += MAX_CONCURRENCY) {
+      const slice = remaining.slice(i, i + MAX_CONCURRENCY);
+      const results = await Promise.all(
+        slice.map(async (id) => {
+          try {
+            const resp = await client.request<any>(endpoints[workingEp](id), { method: 'GET' });
+            let pageItems: InserveContact[] = [];
+            if (Array.isArray(resp)) pageItems = resp as InserveContact[];
+            else if (resp && typeof resp === 'object') {
+              const rAny = resp as Record<string, unknown>;
+              if (Array.isArray(rAny.data)) pageItems = rAny.data as InserveContact[];
+              else if (Array.isArray(rAny.items)) pageItems = rAny.items as InserveContact[];
+              else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as InserveContact[];
+              else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveContact[];
+            }
+            return { ok: true, items: pageItems };
+          } catch (bErr: any) {
+            const rl = isInserveRateLimitError(bErr);
+            if (rl) return { ok: false, rateLimit: rl, items: [] };
+            return { ok: false, items: [], err: bErr };
+          }
+        })
+      );
+      totalCalls += slice.length;
+      // Check for rate limit → bubble up
+      const anyRL = results.find((r) => !(r as any).ok && (r as any).rateLimit);
+      if (anyRL) throw (anyRL as any).rateLimit;
+      for (const r of results) {
+        if (r.ok && r.items.length > 0) allContacts.push(...(r.items as any));
+      }
+      // Budget guard
+      if (totalCalls >= 70) {
+        // Stop, don't burn last 10 calls
+        break;
+      }
+    }
+
+    const seen = new Map<number | string, InserveContact>();
+    for (const c of allContacts) if (c?.id != null) seen.set(c.id, c);
+    const dedup = Array.from(seen.values());
+    return {
+      items: dedup,
+      totalFetched: dedup.length,
+      totalExpected: uniqueIds.length,
+      pagesProcessed: totalCalls,
+      strategyUsed: `B-per-company/ep${workingEp}`,
+      rateLimitRemaining: await rateRemaining(),
+      companyIdsRequested: uniqueIds.length,
+    };
+  } catch (bErr: any) {
+    const rl = isInserveRateLimitError(bErr);
+    if (rl) throw rl;
+    // else: fall through to strategy C.
+  }
+
+  // ---- Strategy C (last resort): original listAllClients -------------------
+  const c = await listAllClients(opts);
+  const dedup = c.items.filter((x) => {
+    const ids = getContactCompanyIds(x);
+    return ids.some((id) => uniqueIds.includes(id));
+  });
+  return {
+    items: dedup,
+    totalFetched: dedup.length,
+    totalExpected: c.totalExpected,
+    pagesProcessed: c.pagesProcessed,
+    strategyUsed: 'C-listAllClients-filter',
+    rateLimitRemaining: await rateRemaining(),
+    companyIdsRequested: uniqueIds.length,
+  };
+}
+
 export async function getCompanyById(
   id: number,
   withRelations: string[] = []

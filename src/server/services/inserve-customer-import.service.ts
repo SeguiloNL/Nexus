@@ -10,6 +10,7 @@ import {
 import {
   listAllCompanies,
   listAllClients,
+  listClientsForCompanyIds,
   resolveNexusFieldFromCompany,
   listCompanyCustomFields,
   groupContactsByCompanyId,
@@ -645,7 +646,7 @@ export async function runInserveCustomerImport(
     finished.timingMs = { ...timing };
     try {
       const statStr = (sStatus === "SUCCESS") ? "SUCCES" : (sStatus === "PARTIAL_SUCCESS") ? "GESLAAGD (partieel)" : (sStatus === "SKIPPED") ? "OVERGESLAGEN" : "MISLUKT";
-      const cSum = finished.contacts.created + finished.contacts.updated + (finished.contacts as any).unchanged ?? 0;
+      const cSum = finished.contacts.created + finished.contacts.updated + Number((finished.contacts as any).unchanged ?? 0);
       console.info(
         `[Inserve] Import ${statStr}. Ophaalde=${finished.fetched} filterpass=${finished.activeFilterPassed} aangemaakt=${finished.created} bijgewerkt=${finished.updated} ongewijzigd=${finished.unchanged} overgeslagen=${finished.skipped.other + finished.skipped.inactive_or_missing_nexus_field + finished.skipped.fetch_error_nexus + finished.skipped.missing_required_fields} mislukt=${finished.failed} | contacten: OK=${cSum} nieuw=${finished.contacts.created} falen=${finished.contacts.failed} | duur=${finished.timingMs.total}ms (API-bedrijven:${finished.pagesProcessed}p, contacten:${finished.clientsPagesProcessed}p)`
       );
@@ -707,18 +708,95 @@ export async function runInserveCustomerImport(
       return doFinalize();
     }
 
+    const t5 = Date.now();
+    const previouslyLinkedIds = new Map<number, { id: string; companyName: string; deletedAt: Date | null; status?: CustomerStatus | string | null }>();
+    const preExistingLinked = await prisma.customer.findMany({
+      where: { inserveCompanyId: { not: null } },
+      select: { id: true, inserveCompanyId: true, companyName: true, deletedAt: true, status: true },
+    });
+    timing.fetchPreExisting = Date.now() - t5;
+    for (const c of preExistingLinked) {
+      if (c.inserveCompanyId) {
+        previouslyLinkedIds.set(c.inserveCompanyId, {
+          id: c.id,
+          companyName: c.companyName,
+          deletedAt: c.deletedAt,
+          status: c.status,
+        });
+      }
+    }
+    const nowProcessedLinked = new Map<number, string>();
+
+    // -------------------------------------------------------------------------
+    // [PRE-SCAN] Determine WHICH companies actually need their contacts synced.
+    // Runs AFTER previouslyLinkedIds load.
+    // Performs the same Nexus-resolution logic as main loop but WITHOUT side
+    // effects (no DB writes, no summary finalStatus changes). Custom-field
+    // enrichment is cached internally by enrichCompanyWithCustomFields so the
+    // second resolve below costs ~0 extra API calls.
+    //
+    // Why? Previously listAllClients fetched ALL 2000 companies' contacts =
+    // ~80 pages of /clients → ALWAYS hit Inserve's 80-calls/10-min rate limit
+    // (PARTIAL_SUCCESS every run). Now only the ~160 Nexus=active companies
+    // make contact calls → 80-90% fewer API calls.
+    // -------------------------------------------------------------------------
+    const contactRelevantCompanyIds: Set<number> = new Set();
+    try {
+      for (const rawCompany of fetchedCompanies) {
+        const companyId = rawCompany.id;
+        let nexus: NexusFieldResolution;
+        try {
+          const hasFieldsInline =
+            Array.isArray(rawCompany.custom_fields) ||
+            Array.isArray(rawCompany.company_fields) ||
+            Array.isArray(rawCompany.extra_fields) ||
+            Array.isArray(rawCompany.fields);
+          let customFetchErr: Error | null = null;
+          let company: InserveCompany = rawCompany;
+          if (!hasFieldsInline) {
+            try {
+              company = await enrichCompanyWithCustomFields(rawCompany);
+            } catch (fe: any) {
+              customFetchErr = fe instanceof Error ? fe : new Error(String(fe));
+            }
+          }
+          nexus = resolveNexusFieldValue(company, customFetchErr);
+        } catch {
+          nexus = { status: "fetch_error", errorMessage: "" };
+        }
+        if (nexus.status === "active") {
+          contactRelevantCompanyIds.add(companyId);
+        }
+      }
+    } catch {
+      // Never abort; worst-case empty set skips contacts.
+    }
+
     let fetchedContacts: InserveContact[] = [];
     let contactsByCompanyId: Record<number, InserveContact[]> = {};
     let tClients = Date.now();
     try {
       tClients = Date.now();
-      const cRes = await listAllClients({ perPage: 50 });
-      timing.fetchClients = Date.now() - tClients;
-      fetchedContacts = cRes.items;
-      summary.contacts.fetched = cRes.totalFetched;
-      summary.clientsPagesProcessed = cRes.pagesProcessed;
-      summary.clientsTotalExpected = cRes.totalExpected;
-      contactsByCompanyId = groupContactsByCompanyId(fetchedContacts);
+      const relevantIds = Array.from(contactRelevantCompanyIds);
+      if (relevantIds.length > 0) {
+        console.debug(`[Inserve] Pre-scan: ${relevantIds.length}/${fetchedCompanies.length} bedrijven markeren contacten-sync relevant → listClientsForCompanyIds().`);
+        const cRes = await listClientsForCompanyIds(relevantIds, { perPage: 50 });
+        timing.fetchClients = Date.now() - tClients;
+        fetchedContacts = cRes.items;
+        summary.contacts.fetched = cRes.totalFetched;
+        summary.clientsPagesProcessed = cRes.pagesProcessed;
+        summary.clientsTotalExpected = cRes.totalExpected;
+        (summary as any).contactsFetchStrategy = cRes.strategyUsed;
+        contactsByCompanyId = groupContactsByCompanyId(fetchedContacts);
+      } else {
+        timing.fetchClients = Date.now() - tClients;
+        console.info(`[Inserve] Pre-scan: 0/${fetchedCompanies.length} bedrijven relevant voor contacten → client-fetch overgeslagen.`);
+        fetchedContacts = [];
+        summary.contacts.fetched = 0;
+        summary.clientsPagesProcessed = 0;
+        summary.clientsTotalExpected = 0;
+        contactsByCompanyId = {};
+      }
     } catch (ce: any) {
       timing.fetchClients = Math.max(timing.fetchClients, Date.now() - tClients);
       const rl = isInserveRateLimitError(ce);
@@ -743,25 +821,6 @@ export async function runInserveCustomerImport(
         );
       }
     }
-
-    const t5 = Date.now();
-    const previouslyLinkedIds = new Map<number, { id: string; companyName: string; deletedAt: Date | null; status?: CustomerStatus | string | null }>();
-    const preExistingLinked = await prisma.customer.findMany({
-      where: { inserveCompanyId: { not: null } },
-      select: { id: true, inserveCompanyId: true, companyName: true, deletedAt: true, status: true },
-    });
-    timing.fetchPreExisting = Date.now() - t5;
-    for (const c of preExistingLinked) {
-      if (c.inserveCompanyId) {
-        previouslyLinkedIds.set(c.inserveCompanyId, {
-          id: c.id,
-          companyName: c.companyName,
-          deletedAt: c.deletedAt,
-          status: c.status,
-        });
-      }
-    }
-    const nowProcessedLinked = new Map<number, string>();
 
     async function syncContactsForCustomer(
       customerId: string,
