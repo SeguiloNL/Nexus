@@ -8,7 +8,6 @@ import {
 import {
   syncAvailableSimsFromSimhuis,
   syncActiveSimsUsageFromSimhuis,
-  syncUsageAlertsFromSimhuis,
 } from "@/server/services/simhuis-sim-sync.service";
 import type { SimProviderCapability } from "@/server/providers/capabilities";
 
@@ -127,13 +126,9 @@ export async function POST(req: Request) {
         });
         return NextResponse.json({ ok: true, job, providerKey, result: r });
       }
-      if (job === "usage_alerts") {
-        const r = await syncUsageAlertsFromSimhuis({
-          userId: user.id,
-          userRole: user.role,
-        });
-        return NextResponse.json({ ok: true, job, providerKey, result: r });
-      }
+      // usage_alerts voor simhuis loopt via de dedicated route
+      // /api/integrations/simhuis/notify-usage-alerts (met SyncJob scheduling).
+      // Voor andere providers valt usage_alerts door naar de generieke no-op.
     }
 
     // Algemene provider-route: voor toekomstige providers.

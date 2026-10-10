@@ -66,25 +66,36 @@ export async function listProvidersAction(): Promise<{
   await assertSettingsView();
   await initializeProviderRegistry();
   const all = await providerRegistry.listAll();
-  return {
-    ok: true,
-    items: all.map((p) => ({
+  // Fetch masked settings voor iedere provider (apart, want listAll geeft geen settings)
+  const items: ProviderListItem[] = [];
+  for (const p of all) {
+    let settings: ProviderListItem["settings"] = {};
+    try {
+      settings = await getProviderSettingsMasked(p.providerKey);
+    } catch {
+      settings = {};
+    }
+    items.push({
       providerKey: p.providerKey,
       displayName: p.displayName,
-      moduleAvailable: p.moduleAvailable,
-      isConfigured: p.isConfigured,
-      isActivated: p.isActivated,
-      isConnected: p.isConnected,
+      moduleAvailable: p.registered,
+      isConfigured: p.configured,
+      isActivated: p.activated,
+      isConnected: p.connected === true,
       lastConnectionCheckedAt: p.lastConnectionCheckedAt ?? null,
       lastConnectionLatencyMs: p.lastConnectionLatencyMs ?? null,
       lastConnectionErrorSafe: p.lastConnectionErrorSafe ?? null,
       capabilities: Object.entries(p.capabilities)
         .filter(([, v]) => v === true)
         .map(([k]) => k as SimProviderCapability),
-      settings: p.settingsMasked ?? {},
-      createdAt: p.createdAt ?? null,
-      updatedAt: p.updatedAt ?? null,
-    })),
+      settings,
+      createdAt: null,
+      updatedAt: null,
+    });
+  }
+  return {
+    ok: true,
+    items,
   };
 }
 
@@ -113,16 +124,19 @@ export async function testConnectionAction(
   let errorSafe: string | undefined;
   let okFlag = false;
   try {
+    if (typeof adapter.testConnection !== "function") {
+      throw new Error("testConnection niet geimplementeerd");
+    }
     const res = await adapter.testConnection();
     okFlag = !!res?.ok;
     errorSafe = res?.ok
       ? undefined
-      : res?.safeMessage || "Verbinding mislukt (geen details).";
+      : res?.safeError || "Verbinding mislukt (geen details).";
   } catch (e: any) {
     okFlag = false;
     errorSafe =
-      e?.safeMessage && typeof e.safeMessage === "string"
-        ? e.safeMessage
+      e?.safeError && typeof e.safeError === "string"
+        ? e.safeError
         : "Verbinding mislukt (geen details).";
   } finally {
     const latency = Math.round(performance.now() - start);
@@ -130,7 +144,7 @@ export async function testConnectionAction(
       ok: okFlag,
       checkedAt: new Date(),
       latencyMs: latency,
-      safeErrorMessage: errorSafe,
+      safeError: errorSafe,
     });
   }
 
@@ -261,9 +275,11 @@ export async function saveProviderSettingsAction(
   const parsed = schema.safeParse(rawValues);
   if (!parsed.success) {
     const flat = parsed.error.flatten();
+    const fieldErrors = flat.fieldErrors as Record<string, string[] | undefined>;
+    const firstKey = Object.keys(fieldErrors)[0];
     const first =
-      flat.fieldErrors && Object.keys(flat.fieldErrors).length > 0
-        ? `${Object.keys(flat.fieldErrors)[0]}: ${flat.fieldErrors[Object.keys(flat.fieldErrors)[0]]?.[0] ?? ""}`
+      firstKey
+        ? `${firstKey}: ${fieldErrors[firstKey]?.[0] ?? ""}`
         : parsed.error.issues[0]?.message ?? "Validatiefout in instellingen.";
     return { ok: false as const, message: first };
   }

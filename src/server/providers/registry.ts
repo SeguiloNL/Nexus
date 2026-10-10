@@ -264,14 +264,14 @@ export class SimProviderRegistry {
 // ============================================================
 declare global {
   // eslint-disable-next-line no-var
-  var [GLOBAL_REGISTRY_KEY]: SimProviderRegistry | undefined;
+  var __nexus_provider_registry: SimProviderRegistry | undefined;
 }
 
 export const providerRegistry: SimProviderRegistry =
-  globalThis[GLOBAL_REGISTRY_KEY] ?? new SimProviderRegistry();
+  globalThis.__nexus_provider_registry ?? new SimProviderRegistry();
 
 if (process.env.NODE_ENV !== "production") {
-  globalThis[GLOBAL_REGISTRY_KEY] = providerRegistry;
+  globalThis.__nexus_provider_registry = providerRegistry;
 }
 
 // ============================================================
@@ -284,11 +284,11 @@ if (process.env.NODE_ENV !== "production") {
 export async function initializeProviderRegistry(): Promise<void> {
   if (providerRegistry.isRegistered("simhuis")) return;
   // Lazy imports zodat test-registraties Simhuis volledig kunnen overslaan
-  const { SimhuisAdapter } = await import("./simhuis/adapter.js");
+  const { SimhuisAdapter } = await import("./simhuis/adapter");
   providerRegistry.register("simhuis", () => new SimhuisAdapter());
 
   if (process.env.NODE_ENV === "test") {
-    const { MockAdapter } = await import("./mock/adapter.js");
+    const { MockAdapter } = await import("./mock/adapter");
     if (!providerRegistry.isRegistered("mock")) {
       providerRegistry.register("mock", () => new MockAdapter());
     }

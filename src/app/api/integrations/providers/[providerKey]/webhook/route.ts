@@ -110,11 +110,10 @@ export async function POST(
       }
     }
 
-    const result = await adapter.handleWebhook?.({
+    const result = await adapter.handleWebhook?.(
       rawBody,
-      headers,
-      timestamp: new Date(),
-    });
+      headers as Record<string, string | string[] | undefined>
+    );
 
     if (!result || !result?.ok) {
       return NextResponse.json(

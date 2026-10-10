@@ -430,10 +430,10 @@ export class SimhuisAdapter implements SimProviderAdapter {
       const r = await simhuisClient.testConnection();
       return {
         ok: r.ok,
-        status: r.httpStatus,
+        status: r.status,
         latencyMs: r.latencyMs,
         endpoint: r.endpoint ?? null,
-        safeError: r.ok ? undefined : r.safeMessage ?? "Verbinding met Simhuis mislukt.",
+        safeError: r.ok ? undefined : r.error ?? "Verbinding met Simhuis mislukt.",
       };
     } catch (err) {
       if (err instanceof SimhuisApiError) {
