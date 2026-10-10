@@ -563,6 +563,16 @@ REQ_FILES=(
   "docker-compose.prod.yml"
   ".env.production.example"
   "Caddyfile"
+  "entrypoint.sh"
+  "prisma/schema.prisma"
+  "prisma/migrations/20261012000000_add_sim_provider_table/migration.sql"
+  "src/server/providers/types.ts"
+  "src/server/providers/registry.ts"
+  "src/server/providers/simhuis/adapter.ts"
+  "src/server/validators/provider-setting.ts"
+  "src/app/(app)/admin/providers/page.tsx"
+  "src/app/(app)/admin/providers/actions.ts"
+  "docs/adding-a-sim-provider.md"
   "scripts/backup-stm-db.sh"
   "scripts/sync-simhuis-usage.sh"
   "scripts/sync-simhuis-sims.sh"
@@ -576,6 +586,8 @@ REQ_FILES=(
   "deploy/stm-simhuis-usage-sync.timer"
   "deploy/stm-simhuis-sims-sync.service"
   "deploy/stm-simhuis-sims-sync.timer"
+  "deploy/stm-simhuis-usage-alert-notify.service"
+  "deploy/stm-simhuis-usage-alert-notify.timer"
   "deploy/stm-inserve-sync.service"
   "deploy/stm-inserve-sync.timer"
   "deploy/stm-cleanup.service"
@@ -2170,6 +2182,33 @@ STM_NEXT_CONFIG_V2
   env_upsert_update "POSTGRES_USER" "stm"
   env_upsert_update "STM_APP_URL" "127.0.0.1:3000"
   env_upsert_update "SIMHUIS_SYNC_API_TOKEN" ""
+  # ============================================================
+  #  MODULAIR SIM-kaart LEVERANCIERS SYSTEEM (provider-keys)
+  # ------------------------------------------------------------
+  #  Nieuwe providers gebruiken hetzelfde UPPERCASE-key patroon:
+  #    <PROVIDERKEY>_BASE_URL, <PROVIDERKEY>_AUTH_MODE,
+  #    <PROVIDERKEY>_USERNAME, <PROVIDERKEY>_PASSWORD,
+  #    <PROVIDERKEY>_API_TOKEN, <PROVIDERKEY>_CLIENT_ID,
+  #    <PROVIDERKEY>_CLIENT_SECRET, <PROVIDERKEY>_WEBHOOK_SECRET,
+  #    <PROVIDERKEY>_RESELLER_ID.
+  #  BESTAANDE Simhuis sectie BLIJFT ONGEWIJZIGD (backward compat).
+  #  Nieuw hier: default placeholders, bestaande waarden PRESERVEN.
+  # ============================================================
+  env_upsert_update "SIMHUIS_BASE_URL"    "https://apicontrolcenter.com/v3"
+  env_upsert_update "SIMHUIS_AUTH_MODE"  "basic"
+  env_upsert_update "SIMHUIS_USERNAME"   ""
+  env_upsert_update "SIMHUIS_PASSWORD"   ""
+  env_upsert_update "SIMHUIS_RESELLER_ID" ""
+  env_upsert_update "SIMHUIS_ENDPOINT_LOGIN"          "/auth/login"
+  env_upsert_update "SIMHUIS_ENDPOINT_SIMS"           "/sims"
+  env_upsert_update "SIMHUIS_ENDPOINT_SIM_ACTIVATE"   "/activate"
+  env_upsert_update "SIMHUIS_ENDPOINT_SIM_DEACTIVATE" "/deactivate"
+  #
+  # ----- Generiek voorbeeld (Mock / toekomstige providers, NIET actief):
+  env_upsert_update "MOCK_BASE_URL"      ""
+  env_upsert_update "MOCK_AUTH_MODE"     "api_token"
+  env_upsert_update "MOCK_API_TOKEN"     ""
+  env_upsert_update "MOCK_WEBHOOK_SECRET" ""
   chmod 0600 "$ENV_FILE"
   chown "${STM_USER}:${STM_GROUP}" "$ENV_FILE"
   ok ".env geüpgraded (alleen NIEUWE vars aangevuld; secrets & bestaande waarden ongewijzigd)."
@@ -2393,32 +2432,32 @@ UP7_ENV_EOF
   # ==============================================================================
   # UPDATE STAP — ROBUUSTHEIDSVERIFICATIE (nieuw)
   #   1) Controleer dat de container werkelijk de NIEUWE code bevat
-  #      (concreet: de notification-settings-form.tsx heeft WARNING_70)
+  #      (concreet: de Modulaire Provider-code bevat "SimProvider" en "providerKey")
   #   2) Controleer dat Prisma migrate status: "geen pending migraties"
   # ==============================================================================
   title "Verificatie: code + migrations correct toegepast?"
   CODE_VERIFY_OK=0
   # De runner image heeft GEEN .tsx bronbestanden (alleen gebundelde JS in .next/
   # en Prisma schema in node_modules/.prisma). Daarom checken we op 3 plekken:
-  #   A) Prisma client schema.prisma (meest betrouwbaar: bevat AlertThresholdLevel enum)
-  #   B) Next.js standalone server chunks (bevatten UI code)
+  #   A) Prisma client schema.prisma (meest betrouwbaar: bevat SimProvider model)
+  #   B) Next.js standalone server chunks (bevatten UI code, bv. Providers page)
   #   C) Next.js server chunks (fallback)
   PRISMA_SCHEMA="/app/node_modules/.prisma/client/schema.prisma"
   STANDALONE_DIR="/app/.next/standalone/.next/server"
   SERVER_DIR="/app/.next/server"
   CODE_HITS=0
-  _TMP=$(docker exec stm-app sh -lc "grep -c 'WARNING_70\|WARNING_90\|CRITICAL_100' '${PRISMA_SCHEMA}' 2>/dev/null || echo 0") 2>/dev/null || _TMP=0
+  _TMP=$(docker exec stm-app sh -lc "grep -c 'SimProvider\|providerKey' '${PRISMA_SCHEMA}' 2>/dev/null || echo 0") 2>/dev/null || _TMP=0
   CODE_HITS=$(( CODE_HITS + _TMP ))
   if [ "${CODE_HITS}" -lt 2 ]; then
-    _TMP=$(docker exec stm-app sh -lc "grep -rc 'WARNING_70\|WARNING_90\|CRITICAL_100' '${STANDALONE_DIR}' 2>/dev/null | awk -F: '{s+=\$2} END {print s+0}'") 2>/dev/null || _TMP=0
+    _TMP=$(docker exec stm-app sh -lc "grep -rc 'SimProvider\|providerKey\|admin/providers' '${STANDALONE_DIR}' 2>/dev/null | awk -F: '{s+=\$2} END {print s+0}'") 2>/dev/null || _TMP=0
     CODE_HITS=$(( CODE_HITS + _TMP ))
   fi
   if [ "${CODE_HITS}" -lt 2 ]; then
-    _TMP=$(docker exec stm-app sh -lc "grep -rc 'WARNING_70\|WARNING_90\|CRITICAL_100' '${SERVER_DIR}' 2>/dev/null | awk -F: '{s+=\$2} END {print s+0}'") 2>/dev/null || _TMP=0
+    _TMP=$(docker exec stm-app sh -lc "grep -rc 'SimProvider\|providerKey\|admin/providers' '${SERVER_DIR}' 2>/dev/null | awk -F: '{s+=\$2} END {print s+0}'") 2>/dev/null || _TMP=0
     CODE_HITS=$(( CODE_HITS + _TMP ))
   fi
   if [ "${CODE_HITS:-0}" -ge 2 ]; then
-    ok "  ✅  Code in container = VERS NIEUW (WARNING_70/90/100 gevonden: ${CODE_HITS} treffers)."
+    ok "  ✅  Code in container = VERS NIEUW (SimProvider/providerKey/providers-page gevonden: ${CODE_HITS} treffers)."
     CODE_VERIFY_OK=1
   else
     # Fallback: check of Prisma schema uberhaupt bestaat (voor oude commits zonder deze feature)
@@ -2427,7 +2466,7 @@ UP7_ENV_EOF
       info "  ⚪  Fallback: Prisma schema bestaat niet in de container (geen waarschuwing, oudere codebase)."
       CODE_VERIFY_OK=1
     else
-      warn "  ⚠️  Code in container lijkt OUD! Prisma schema bestaat maar WARNING_70-tref teller = ${CODE_HITS} (verwachting >= 2)."
+      warn "  ⚠️  Code in container lijkt OUD! Prisma schema bestaat maar SimProvider/providerKey tref-teller = ${CODE_HITS} (verwachting >= 2)."
       info "     💡  Oplossing: FORCEER clean rebuild:"
       info "         cd ${INSTALL_DIR}"
       info "         docker compose -f ${COMPOSE_FILE} build --pull --no-cache stm-app"
@@ -2465,6 +2504,69 @@ UP7_ENV_EOF
       else
         ok "  ✅  Prisma migraties: (geen pending migraties volgens status)."
       fi
+    fi
+  fi
+
+  # ==============================================================================
+  # UPDATE STAP — (Optioneel) Seed + systemd timers herinstalleren indien
+  #               er nieuwe deploy/ units bij zijn gekomen in deze update.
+  # ==============================================================================
+  if [[ -d "${INSTALL_DIR}/deploy" ]]; then
+    title "UPDATE STAP — Nieuwe/gewijzigde systemd units (deploy/) + sync-scripts installeren"
+    SCRIPTS_DST_DIR="/opt/stm/scripts"
+    as_root mkdir -p "${SCRIPTS_DST_DIR}" 2>/dev/null || true
+    UNITS_COPIED=0
+    # (1) Alle scripts/ + permissies (incl. nieuwe sync-simhuis-usage-alert-notify.sh)
+    SCRIPTS_SRC_DIR="${INSTALL_DIR}/scripts"
+    for S in \
+      "backup-stm-db.sh" \
+      "sync-simhuis-usage.sh" \
+      "sync-simhuis-sims.sh" \
+      "sync-simhuis-usage-alert-notify.sh" \
+      "sync-inserve-invoices.sh" \
+      "cleanup-stm.sh" \
+      "health-check-stm.sh" \
+      "check-cron-jobs.sh"
+    do
+      SP="${SCRIPTS_SRC_DIR}/${S}"
+      if [[ -f "${SP}" ]]; then
+        as_root install -o root -g root -m 0750 "${SP}" "${SCRIPTS_DST_DIR}/${S}" 2>/dev/null || true
+        UNITS_COPIED=$(( UNITS_COPIED + 1 ))
+      fi
+    done
+    # (2) Alle systemd units uit deploy/ (ook nieuwe) kopiëren
+    DEPLOY_SRC_DIR="${INSTALL_DIR}/deploy"
+    SYSTEMD_DIR="/etc/systemd/system"
+    if [[ -d "${SYSTEMD_DIR}" ]]; then
+      for UNIT_TYPE in service timer; do
+        shopt -s nullglob
+        for UF in "${DEPLOY_SRC_DIR}"/*.${UNIT_TYPE}; do
+          UNAME="$(basename "${UF}")"
+          as_root install -o root -g root -m 0644 "${UF}" "${SYSTEMD_DIR}/${UNAME}" 2>/dev/null || true
+          UNITS_COPIED=$(( UNITS_COPIED + 1 ))
+        done
+        shopt -u nullglob
+      done
+      as_root systemctl daemon-reload 2>/dev/null || true
+      # (3) Enable known timers (idem STAP 10 + --setcronjobs mode), geen herstart draaiende timers.
+      TIMER_LIST=(
+        "stm-db-backup.timer"
+        "stm-simhuis-sims-sync.timer"
+        "stm-simhuis-usage-sync.timer"
+        "stm-simhuis-usage-alert-notify.timer"
+        "stm-inserve-sync.timer"
+        "stm-cleanup.timer"
+        "stm-healthcheck.timer"
+      )
+      for T in "${TIMER_LIST[@]}"; do
+        SF="${SYSTEMD_DIR}/${T}"
+        if [[ -f "${SF}" ]]; then
+          as_root systemctl enable --now "${T}" 2>/dev/null >&2 || true
+        fi
+      done
+      ok "  ${UNITS_COPIED} deploy/units + scripts gesynchroniseerd; systemd timers (her)ingeschakeld."
+    else
+      info "  ${UNITS_COPIED} scripts gekopieerd; systemd dir niet aanwezig (skipped timers)."
     fi
   fi
 
