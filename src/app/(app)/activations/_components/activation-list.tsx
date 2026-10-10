@@ -28,8 +28,9 @@ import {
   DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
 import { ActivationOrderStatusBadge } from "@/components/ui/status-badges";
+import { Badge } from "@/components/ui/badge";
 import { formatDate, formatImei, formatIccid, formatCurrency } from "@/lib/formatters";
-import type { ActivationOrder, Customer, Product, Tracker, SIM, Subscription, Vehicle } from "@prisma/client";
+import type { ActivationOrder, Customer, Product, Tracker, SIM, Subscription, Vehicle, DataPlan, ActivationOrderProductType } from "@prisma/client";
 import {
   retryFailedAction,
   cancelOrderAction,
@@ -56,6 +57,7 @@ type Row = ActivationOrder & {
   sim?: Pick<SIM, "id" | "iccid" | "msisdn"> | null;
   subscription?: Pick<Subscription, "id" | "subscriptionNumber" | "status"> | null;
   vehicle?: Pick<Vehicle, "id" | "licensePlate"> | null;
+  dataPlan?: Pick<DataPlan, "id" | "name"> | null;
 };
 
 interface Props {
@@ -154,6 +156,33 @@ export function ActivationOrderList({ orders, canCreate, canEdit, canDelete }: P
         ) : (
           <span className="text-slate-400">—</span>
         ),
+    },
+    {
+      header: "Type",
+      cell: ({ row }) => {
+        const t = (row.original.orderType ??
+          "TRACKER_WITH_SIM") as ActivationOrderProductType;
+        if (t === "SIM_ONLY_DATA") {
+          return (
+            <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+              Sim-only
+            </Badge>
+          );
+        }
+        return (
+          <Badge variant="outline" className="bg-slate-50 text-slate-700 border-slate-200">
+            Tracker + SIM
+          </Badge>
+        );
+      },
+    },
+    {
+      header: "Dataplan",
+      cell: ({ row }) => {
+        const d = row.original.dataPlan;
+        if (!d) return <span className="text-slate-400">—</span>;
+        return <span className="font-medium">{d.name}</span>;
+      },
     },
     {
       accessorKey: "desiredStartDate",

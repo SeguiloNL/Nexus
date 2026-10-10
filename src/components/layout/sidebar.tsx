@@ -18,6 +18,8 @@ import {
   FileText,
   Shield,
   X,
+  Database,
+  Boxes,
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -39,6 +41,7 @@ type NavItem = {
     | "sim"
     | "vehicle"
     | "product"
+    | "data_plan"
     | "subscription"
     | "invoice"
     | "activation_order"
@@ -92,6 +95,13 @@ const NAV_ITEMS: NavItem[] = [
     resource: "product",
   },
   {
+    label: "Dataplannen",
+    href: "/data-plans",
+    icon: Database,
+    action: "view",
+    resource: "data_plan",
+  },
+  {
     label: "Abonnementen",
     href: "/subscriptions",
     icon: Receipt,
@@ -132,6 +142,13 @@ const NAV_ITEMS: NavItem[] = [
     icon: History,
     action: "view",
     resource: "audit_log",
+  },
+  {
+    label: "Leveranciers",
+    href: "/admin/providers",
+    icon: Boxes,
+    action: "view",
+    resource: "setting",
   },
   {
     label: "Instellingen",

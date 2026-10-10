@@ -1,10 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "./audit.service";
+// --- Modulair leverancierssysteem: registry wrappen rond bestaande Simhuis-code
 import {
   suspendSimhuisAsset,
   unsuspendSimhuisAsset,
   getSimStatus,
-  simhuisClient,
   precheckProductById,
   precheckProductAvailability,
   subscribeSimhuisAsset,
@@ -14,6 +14,10 @@ import {
   type SimhuisSubscribeResult,
   type SimhuisPurgeResult,
 } from "@/server/integrations/simhuis/service";
+import {
+  initializeProviderRegistry,
+  providerRegistry,
+} from "@/server/providers/registry";
 import type { SimhuisSimStatus } from "@/server/integrations/simhuis/types";
 import { findSimById } from "./sim.service";
 import { findActivationOrderById } from "./activation-order.service";
@@ -66,7 +70,10 @@ export type SimSuspendResult = {
   error?: SimSuspendError;
 };
 
-function mapSimhuisStatusToNexus(
+// Huidige naam: mapping van provider lifecycle (string) naar Nexus SimStatus.
+// Nieuwe (generieke) naam: mapProviderStatusToNexus — oude naam blijft als alias
+// om eventuele externe callers niet te breken.
+function mapProviderStatusToNexus(
   simhuisStatus: SimhuisSimStatus["status"] | null | undefined,
 ): SimStatus | null {
   if (!simhuisStatus) return null;
@@ -88,6 +95,8 @@ function mapSimhuisStatusToNexus(
   }
   return SimStatus.IN_STOCK;
 }
+/** @deprecated Gebruik generieke `mapProviderStatusToNexus`. */
+const mapSimhuisStatusToNexus = mapProviderStatusToNexus;
 
 function toDateOrNull(raw: unknown): Date | null {
   if (raw === null || raw === undefined) return null;
@@ -239,7 +248,8 @@ async function performAction(
     };
   }
 
-  const configured = await simhuisClient.isConfigured();
+  await initializeProviderRegistry();
+  const configured = await providerRegistry.isConfigured("simhuis");
   if (!configured) {
     return {
       ok: false,
@@ -249,6 +259,24 @@ async function performAction(
       error: {
         kind: "PROVIDER",
         detail: "Simhuis integratie is niet geconfigureerd (username/password ontbreken).",
+      },
+    };
+  }
+
+  // --- Modulair leverancierssysteem: resolve adapter + activeringsguard (mutatie)
+  const adapter = await providerRegistry.resolveForSim(sim);
+  await providerRegistry.guardActivated(adapter.providerKey);
+  // capability check: moet suspendSim/unsuspendSim ondersteunen
+  const cap = action === "suspend" ? "suspendSim" : "unsuspendSim";
+  if (!adapter.capabilities[cap]) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: `Actie “${actionLabel}” wordt niet ondersteund door de geconfigureerde leverancier (${adapter.providerKey}).`,
+      error: {
+        kind: "PROVIDER" as const,
+        detail: `Capability ${cap} ontbreekt voor provider ${adapter.providerKey}.`,
       },
     };
   }
@@ -652,7 +680,8 @@ export async function subscribeSimById(
     };
   }
 
-  const configured = await simhuisClient.isConfigured();
+  await initializeProviderRegistry();
+  const configured = await providerRegistry.isConfigured("simhuis");
   if (!configured) {
     return {
       ok: false,
@@ -662,6 +691,22 @@ export async function subscribeSimById(
       error: {
         kind: "PROVIDER",
         detail: "Simhuis integratie is niet geconfigureerd (username/password ontbreken).",
+      },
+    };
+  }
+
+  // --- Modulair leverancierssysteem: resolve adapter + activeringsguard (mutatie)
+  const adapter = await providerRegistry.resolveForSim(sim);
+  await providerRegistry.guardActivated(adapter.providerKey);
+  if (!adapter.capabilities.subscribeToProduct) {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: `Productabonnement wordt niet ondersteund door de geconfigureerde leverancier (${adapter.providerKey}).`,
+      error: {
+        kind: "PROVIDER" as const,
+        detail: `Capability subscribeToProduct ontbreekt voor provider ${adapter.providerKey}.`,
       },
     };
   }
@@ -1197,7 +1242,8 @@ export async function refreshSimStatusById(
 
   const previousStatus = sim.status;
 
-  const configured = await simhuisClient.isConfigured();
+  await initializeProviderRegistry();
+  const configured = await providerRegistry.isConfigured("simhuis");
   if (!configured) {
     return {
       ok: false,
@@ -1411,7 +1457,8 @@ export async function purgeSimById(
     };
   }
 
-  const configured = await simhuisClient.isConfigured();
+  await initializeProviderRegistry();
+  const configured = await providerRegistry.isConfigured("simhuis");
   if (!configured) {
     return {
       ok: false,
@@ -1419,6 +1466,20 @@ export async function purgeSimById(
       error: {
         kind: "PROVIDER",
         detail: "Simhuis integratie is niet geconfigureerd (username/password ontbreken).",
+      },
+    };
+  }
+
+  // --- Modulair leverancierssysteem: resolve adapter + activeringsguard (mutatie)
+  const adapter = await providerRegistry.resolveForSim(sim);
+  await providerRegistry.guardActivated(adapter.providerKey);
+  if (!adapter.capabilities.purgeAsset) {
+    return {
+      ok: false,
+      message: `Netwerkvernieuwen (purge) wordt niet ondersteund door de geconfigureerde leverancier (${adapter.providerKey}).`,
+      error: {
+        kind: "PROVIDER" as const,
+        detail: `Capability purgeAsset ontbreekt voor provider ${adapter.providerKey}.`,
       },
     };
   }

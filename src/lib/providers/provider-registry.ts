@@ -1,7 +1,23 @@
 import type { UserRole, RoleScope } from "@/types/enums";
 import { RoleScope as _RoleScope } from "@/types/enums";
 
-export type SimProviderId = "simhuis";
+/**
+ * ACHTERWAARTS COMPATIBELE wrapper (Fase 3e).
+ *
+ * Oorspronkelijk was dit de ENIGE provider-registry. Sinds de introductie
+ * van het modulaire leverancierssysteem (Fase 2) is de echte bron van
+ * waarheid `@/server/providers/registry.ts` (SimProviderRegistry).
+ *
+ * Dit bestand blijft bestaan voor bestaande callers in de UI die alleen
+ * tekstuele labels nodig hebben. Nieuwe code moet — waar mogelijk — de
+ * server-gebaseerde registry gebruiken (via initializeProviderRegistry +
+ * providerRegistry.listAll() / resolveForSim()).
+ *
+ * `SimProviderId` is verbreden van de literal `"simhuis"` naar een
+ * generic string-brand, zodat bestaande callers met "simhuis" nog steeds
+ * compileren EN nieuwe providerKeys ook werken.
+ */
+export type SimProviderId = string & { readonly __brand?: "providerKey" };
 
 export interface SimProviderDefinition {
   readonly providerId: SimProviderId;
@@ -12,9 +28,28 @@ export interface SimProviderDefinition {
   readonly statusPrefixNl: string;
 }
 
-export const SIM_PROVIDER_REGISTRY: Readonly<Record<SimProviderId, SimProviderDefinition>> = {
+/**
+ * Fallback-definitie voor een onbekende provider. Toont generieke
+ * "SIM-provider"-tekst zonder de echte leveranciersnaam prijs te geven.
+ */
+function buildGenericDefinition(providerId: string): SimProviderDefinition {
+  const cap =
+    providerId.length === 0
+      ? "SIM-provider"
+      : providerId.charAt(0).toUpperCase() + providerId.slice(1);
+  return {
+    providerId: providerId as SimProviderId,
+    displayNameForAdmins: cap,
+    displayNameGeneric: "SIM-provider",
+    labelNounSingular: "SIM-provider",
+    labelNounWithArticle: "de SIM-provider",
+    statusPrefixNl: "SIM-provider",
+  };
+}
+
+export const SIM_PROVIDER_REGISTRY: Readonly<Record<string, SimProviderDefinition>> = {
   simhuis: {
-    providerId: "simhuis",
+    providerId: "simhuis" as SimProviderId,
     displayNameForAdmins: "Simhuis",
     displayNameGeneric: "SIM-provider",
     labelNounSingular: "SIM-provider",
@@ -23,10 +58,10 @@ export const SIM_PROVIDER_REGISTRY: Readonly<Record<SimProviderId, SimProviderDe
   },
 } as const;
 
-export const DEFAULT_SIM_PROVIDER_ID: SimProviderId = "simhuis";
+export const DEFAULT_SIM_PROVIDER_ID: SimProviderId = "simhuis" as SimProviderId;
 
 export const GENERIC_FALLBACK_PROVIDER_LABEL: Readonly<SimProviderDefinition> = {
-  providerId: "simhuis",
+  providerId: "simhuis" as SimProviderId,
   displayNameForAdmins: "SIM-provider",
   displayNameGeneric: "SIM-provider",
   labelNounSingular: "SIM-provider",
@@ -45,12 +80,10 @@ interface GetSimProviderLabelOpts {
 export function resolveSimProviderDefinition(
   providerId?: string | null
 ): SimProviderDefinition {
-  if (!providerId) return SIM_PROVIDER_REGISTRY[DEFAULT_SIM_PROVIDER_ID];
-  const asKnown = providerId as SimProviderId;
-  if (Object.prototype.hasOwnProperty.call(SIM_PROVIDER_REGISTRY, asKnown)) {
-    return SIM_PROVIDER_REGISTRY[asKnown];
-  }
-  return GENERIC_FALLBACK_PROVIDER_LABEL;
+  if (!providerId) return SIM_PROVIDER_REGISTRY[DEFAULT_SIM_PROVIDER_ID as string];
+  const known = (SIM_PROVIDER_REGISTRY as Record<string, SimProviderDefinition>)[providerId];
+  if (known) return known;
+  return buildGenericDefinition(providerId);
 }
 
 function isInternalAdminScope(scope?: RoleScope | null): boolean {
@@ -99,3 +132,14 @@ export const SIM_PROVIDER_UI_LABELS = {
   providerStatusRefreshButtonAria: (opts?: GetSimProviderLabelOpts) =>
     `${getSimProviderStatusVerb(opts)} status verversen`,
 } as const;
+
+/**
+ * Voeg dynamisch een provider-label toe (voor test/ontwikkelomgevingen).
+ * Dit is voornamelijk bedoeld om de UI zonder server-oproep labels te
+ * kunnen tonen voor mock/prove providers. Overschrijft nooit Simhuis.
+ */
+export function registerProviderLabel(def: SimProviderDefinition): void {
+  if (def.providerId === "simhuis") return;
+  (SIM_PROVIDER_REGISTRY as Record<string, SimProviderDefinition>)[def.providerId as string] =
+    def;
+}

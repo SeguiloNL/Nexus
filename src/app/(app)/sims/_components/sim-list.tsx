@@ -17,7 +17,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { SIM, SimStatus } from "@prisma/client";
+import type { SIM, SimStatus, DataPlan, DataUnit } from "@prisma/client";
 import { formatBytes, formatDateRangeLong, formatIccid } from "@/lib/formatters";
 import { SIM_PROVIDER_UI_LABELS } from "@/lib/providers/provider-registry";
 import {
@@ -39,7 +39,32 @@ function resolveStatusFilter(raw: string | null): SimStatus | "__ALL__" {
   return "ACTIVE";
 }
 
-type ListSim = SIM;
+type ListSim = SIM & {
+  dataPlan?: Pick<DataPlan, "id" | "name" | "dataAmountBytes" | "dataAmountDisplayUnit"> | null;
+};
+
+// Client-side bundle formatter (mirror van serverversie in data-plan.service.ts).
+function formatDataBundleClient(
+  bytes: bigint | number | string | null | undefined,
+  unit: DataUnit | string | null | undefined
+): string {
+  if (unit === "UNLIMITED") return "Onbeperkt";
+  if (!bytes) return unit ? `— (${String(unit)})` : "—";
+  const b = typeof bytes === "bigint" ? bytes : BigInt(String(bytes));
+  if (unit === "MB") {
+    const mb = Number(b) / 1024 ** 2;
+    return `${mb.toLocaleString("nl-NL", { maximumFractionDigits: mb % 1 === 0 ? 0 : 2 })} MB`;
+  }
+  if (unit === "GB") {
+    const gb = Number(b) / 1024 ** 3;
+    return `${gb.toLocaleString("nl-NL", { maximumFractionDigits: gb % 1 === 0 ? 0 : 2 })} GB`;
+  }
+  if (unit === "TB") {
+    const tb = Number(b) / 1024 ** 4;
+    return `${tb.toLocaleString("nl-NL", { maximumFractionDigits: tb % 1 === 0 ? 0 : 2 })} TB`;
+  }
+  return `${Number(b).toLocaleString("nl-NL")} B`;
+}
 
 const STATUS_OPTIONS: Array<{ value: SimStatus | "__ALL__"; label: string }> = [
   { value: "__ALL__", label: "Alle statussen" },
@@ -356,6 +381,24 @@ export function SimList({
       cell: ({ row }) => (
         <SimStatusBadge status={row.getValue<SimStatus>("status")} />
       ),
+    },
+    {
+      id: "dataPlan",
+      header: "Dataplan",
+      enableSorting: true,
+      accessorFn: (row) => (row as ListSim).dataPlan?.name ?? "",
+      cell: ({ row }) => {
+        const dp = (row.original as ListSim).dataPlan;
+        if (!dp) return <span className="text-slate-400">—</span>;
+        return (
+          <div>
+            <div className="font-medium">{dp.name}</div>
+            <div className="text-xs text-slate-500">
+              {formatDataBundleClient(dp.dataAmountBytes, dp.dataAmountDisplayUnit)}
+            </div>
+          </div>
+        );
+      },
     },
     {
       id: "usage",

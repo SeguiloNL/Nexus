@@ -1096,3 +1096,219 @@ export async function saveSmtpSettings(
     return finalSettings;
   });
 }
+
+// ============================================================================
+// GENERIEKE PROVIDER SETTINGS HELPERS (Fase 3d: modulair leverancierssysteem)
+//
+// Nieuwe simkaartleveranciers gebruiken {providerKey}.{settingKey} als
+// AppSetting.key. Bestaande Simhuis gebruikt "simhuis.*"-keys en wordt
+// achterwaarts compatibel gehouden via getSimhuisSettings().
+// ============================================================================
+
+const GENERIC_PROVIDER_SUBKEYS = [
+  "baseUrl",
+  "authMode",
+  "username",
+  "password",
+  "resellerId",
+  "defaultOfferId",
+  "defaultPlanId",
+  "defaultProductName",
+  "endpoint.login",
+  "endpoint.sims",
+  "endpoint.simActivate",
+  "endpoint.simDeactivate",
+  "endpoint.simSuspend",
+  "endpoint.simUnsuspend",
+  "endpoint.subscribe",
+  "endpoint.usage",
+  "endpoint.asset",
+  "webhookSecret",
+  "apiToken",
+  "clientId",
+  "clientSecret",
+] as const;
+
+/** Sleutels die standaard als geheim (isSecret=true) worden opgeslagen. */
+const SECRET_KEY_HINTS = [
+  "password",
+  "secret",
+  "token",
+  "apikey",
+  "apisecret",
+  "clientsecret",
+] as const;
+
+function isSecretSubkey(subkey: string): boolean {
+  const lower = subkey.toLowerCase();
+  return SECRET_KEY_HINTS.some((hint) => lower.includes(hint));
+}
+
+function buildProviderKey(providerKey: string, subkey: string): string {
+  return `${providerKey}.${subkey}`;
+}
+
+/**
+ * Resolve ENV fallback voor een provider-key.
+ * Probeert eerst SIMHUIS_* als providerKey==="simhuis" (backwards compat),
+ * daarna UPPERCASE_{providerKey}_{subkey}.
+ */
+function resolveProviderEnv(providerKey: string, subkey: string): string | undefined {
+  if (providerKey === "simhuis") {
+    const envMap: Record<string, string | undefined> = {
+      baseUrl: process.env.SIMHUIS_BASE_URL,
+      authMode: process.env.SIMHUIS_AUTH_MODE,
+      username: process.env.SIMHUIS_USERNAME,
+      password: process.env.SIMHUIS_PASSWORD,
+      resellerId: process.env.SIMHUIS_RESELLER_ID,
+      defaultOfferId: process.env.SIMHUIS_DEFAULT_OFFER_ID,
+      defaultPlanId: process.env.SIMHUIS_DEFAULT_PLAN_ID,
+      defaultProductName: process.env.SIMHUIS_DEFAULT_PRODUCT_NAME,
+    };
+    if (subkey in envMap && envMap[subkey]) return envMap[subkey];
+  }
+  const prefix = providerKey.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  const suffix = subkey
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "_");
+  return process.env[`${prefix}_${suffix}`];
+}
+
+export type ProviderSettingsMap = Record<string, string | undefined>;
+
+/**
+ * Haal alle provider-specifieke settings op: eerst uit DB (AppSetting),
+ * fallback op process.env (SIMHUIS_* voor Simhuis, anders PROV_SUBKEY).
+ * Geeft een plat object {subkey: value} terug.
+ */
+export async function getProviderSettings(
+  providerKey: string
+): Promise<ProviderSettingsMap> {
+  if (providerKey === "simhuis") {
+    const simhuis = await getSimhuisSettings();
+    if (simhuis) {
+      const out: ProviderSettingsMap = {};
+      out.baseUrl = simhuis.baseUrl;
+      out.authMode = simhuis.authMode;
+      out.username = simhuis.username;
+      out.password = simhuis.password;
+      if (simhuis.resellerId) out.resellerId = simhuis.resellerId;
+      if (simhuis.defaultOfferId) out.defaultOfferId = simhuis.defaultOfferId;
+      if (simhuis.defaultPlanId) out.defaultPlanId = simhuis.defaultPlanId;
+      if (simhuis.defaultProductName) out.defaultProductName = simhuis.defaultProductName;
+      out["endpoint.login"] = simhuis.endpoints.login;
+      out["endpoint.sims"] = simhuis.endpoints.sims;
+      out["endpoint.simActivate"] = simhuis.endpoints.simActivate;
+      out["endpoint.simDeactivate"] = simhuis.endpoints.simDeactivate;
+      return out;
+    }
+  }
+
+  const out: ProviderSettingsMap = {};
+  const subkeys = GENERIC_PROVIDER_SUBKEYS;
+  const rows = await Promise.all(
+    subkeys.map((sk) =>
+      prisma.appSetting.findUnique({
+        where: { key: buildProviderKey(providerKey, sk) },
+      })
+    )
+  );
+  subkeys.forEach((sk, idx) => {
+    const dbVal = rows[idx]?.value?.trim();
+    out[sk] = dbVal ?? resolveProviderEnv(providerKey, sk);
+  });
+  return out;
+}
+
+/**
+ * Versie van getProviderSettings() met gemaskeerde geheimen (laatste 4 tekens
+ * zichtbaar). Bedoeld voor weergave in de beheer-UI.
+ */
+export async function getProviderSettingsMasked(
+  providerKey: string
+): Promise<Record<string, { value?: string; masked?: string; isSecret: boolean }>> {
+  const raw = await getProviderSettings(providerKey);
+  const out: Record<string, { value?: string; masked?: string; isSecret: boolean }> = {};
+  for (const [sk, val] of Object.entries(raw)) {
+    const secret = isSecretSubkey(sk);
+    if (val && secret) {
+      out[sk] = { masked: maskApiKey(val), isSecret: true };
+    } else {
+      out[sk] = { value: val, isSecret: false };
+    }
+  }
+  return out;
+}
+
+type CtxLike = { userId: string; userRole?: any; roleId?: string };
+
+/**
+ * Sla één of meerdere provider-settings op (upsert).
+ * - Keys zijn subkeys (zonder providerKey prefix).
+ * - Subkeys die password/secret/token/etc. bevatten worden automatisch
+ *   opgeslagen met isSecret=true.
+ * - Audit log entry met entityId=providerKey, action=UPDATE_SETTINGS.
+ * - LEEGE strings worden NIET verwijderd (behoudt compatibiliteit met
+ *   getSimhuisSettings die alleen truthy neemt).
+ */
+export async function saveProviderSettings(
+  providerKey: string,
+  values: ProviderSettingsMap,
+  ctx: CtxLike
+): Promise<ProviderSettingsMap> {
+  const entries = Object.entries(values).filter(([, v]) => v !== undefined);
+  if (entries.length === 0) return getProviderSettings(providerKey);
+
+  const maskedEntries: Record<string, string | null> = {};
+  for (const [sk, v] of entries) {
+    maskedEntries[sk] = isSecretSubkey(sk) && v ? maskApiKey(v) : v ?? null;
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const prev = await getProviderSettings(providerKey);
+    const prevMasked: Record<string, string | null> = {};
+    for (const [sk, v] of Object.entries(prev)) {
+      prevMasked[sk] = isSecretSubkey(sk) && v ? maskApiKey(v) : v ?? null;
+    }
+
+    const upserts = entries.map(([subkey, rawVal]) => {
+      const key = buildProviderKey(providerKey, subkey);
+      const value = (rawVal ?? "").toString();
+      const isSecret = isSecretSubkey(subkey);
+      return (tx as any).appSetting.upsert({
+        where: { key },
+        create: { key, value, isSecret },
+        update: { value, isSecret: isSecret || undefined },
+      });
+    });
+    await Promise.all(upserts);
+
+    const { oldValues, newValues: newV } = diffObject(prevMasked, maskedEntries);
+
+    try {
+      await logAudit(tx, {
+        entityType: "SimProvider",
+        entityId: providerKey,
+        action: "PROVIDER_SETTINGS_UPDATED",
+        userId: ctx.userId,
+        oldValues,
+        newValues: newV,
+        metadata: { scope: "provider_settings" },
+      });
+    } catch (_auditErr) {
+      await logAudit(tx, {
+        entityType: "AppSetting",
+        entityId: buildProviderKey(providerKey, "baseUrl"),
+        action: "UPDATE_SETTINGS",
+        userId: ctx.userId,
+        oldValues,
+        newValues: newV,
+        metadata: { scope: `provider_${providerKey}` },
+      });
+    }
+
+    return getProviderSettings(providerKey);
+  });
+
+  return result;
+}

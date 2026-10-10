@@ -22,6 +22,14 @@ type Ctx = {
 
 function includeDetail(): Prisma.SIMInclude {
   return {
+    dataPlan: {
+      select: {
+        id: true,
+        name: true,
+        dataAmountBytes: true,
+        dataAmountDisplayUnit: true,
+      },
+    },
     customer: {
       select: {
         id: true,
@@ -120,6 +128,16 @@ export async function findManySims(
     prisma.sIM.count({ where }),
     prisma.sIM.findMany({
       where,
+      include: {
+        dataPlan: {
+          select: {
+            id: true,
+            name: true,
+            dataAmountBytes: true,
+            dataAmountDisplayUnit: true,
+          },
+        },
+      },
       orderBy: { [sortKey]: order } as Prisma.SIMOrderByWithRelationInput,
       take: perPage,
       skip,

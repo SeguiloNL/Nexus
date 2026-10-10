@@ -20,6 +20,7 @@ import {
   RefreshCw,
   AlertCircle,
   CheckCircle,
+  Database,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -64,7 +65,8 @@ import {
 } from "@/lib/formatters";
 import { toast } from "sonner";
 import type { OrderActionState } from "../actions";
-import type { UserRole } from "@/types/enums";
+import { UserRole, BillingCycle, ActivationOrderProductType, DataUnit } from "@/types/enums";
+import { ActivationOrderProductType as _OrderType } from "@/types/enums";
 import { canUserRole } from "@/lib/auth/session";
 import { SIM_PROVIDER_REGISTRY } from "@/lib/providers/provider-registry";
 
@@ -106,11 +108,24 @@ type VehicleOption = {
   model: string | null;
   description: string | null;
 };
+type DataPlanOption = {
+  id: string;
+  name: string;
+  dataAmountBytes: bigint | number | null;
+  dataAmountDisplayUnit: DataUnit | string | null;
+  monthlyPrice: number | null;
+  currency: string | null;
+  validityDays: number | null;
+  validityBillingCycle: BillingCycle | string | null;
+  provider: string | null;
+};
 
 interface Props {
   role: UserRole;
   customerOptions: CustomerOption[];
   productOptions: ProductOption[];
+  dataPlanOptions: DataPlanOption[];
+  canSimOnly: boolean;
   trackerStock: TrackerOption[];
   simStock: SimOption[];
   vehiclesByCustomerMap: Record<string, VehicleOption[]>;
@@ -119,6 +134,8 @@ interface Props {
     customerId: string;
     subCustomerId: string | null;
     productId: string;
+    dataPlanId: string | null;
+    orderType: ActivationOrderProductType;
     desiredStartDate: string;
     monthlyPrice: number;
     billingCycle: string;
@@ -159,6 +176,8 @@ export function ActivationWizard({
   role,
   customerOptions,
   productOptions,
+  dataPlanOptions,
+  canSimOnly,
   trackerStock,
   simStock,
   vehiclesByCustomerMap,
@@ -185,6 +204,8 @@ export function ActivationWizard({
     customerId: string;
     subCustomerId: string | null;
     productId: string;
+    dataPlanId: string | null;
+    orderType: ActivationOrderProductType;
     desiredStartDate: string;
     monthlyPrice: string;
     billingCycle: string;
@@ -196,6 +217,8 @@ export function ActivationWizard({
     customerId: initialOrder?.customerId ?? "",
     subCustomerId: initialOrder?.subCustomerId ?? null,
     productId: initialOrder?.productId ?? "",
+    dataPlanId: initialOrder?.dataPlanId ?? null,
+    orderType: initialOrder?.orderType ?? _OrderType.TRACKER_WITH_SIM,
     desiredStartDate:
       initialOrder?.desiredStartDate ??
       new Date().toISOString().substring(0, 10),
@@ -209,6 +232,8 @@ export function ActivationWizard({
     vehicleId: initialOrder?.vehicleId ?? null,
     internalNotes: initialOrder?.internalNotes ?? "",
   }));
+
+  const isSimOnly = form.orderType === _OrderType.SIM_ONLY_DATA;
 
   useEffect(() => {
     const p = productOptions.find((x) => x.id === form.productId);
@@ -230,6 +255,9 @@ export function ActivationWizard({
     (t) => t.id === form.trackerId
   );
   const selectedSim = simStock.find((s) => s.id === form.simId);
+  const selectedDataPlan = dataPlanOptions.find(
+    (dp) => dp.id === form.dataPlanId
+  );
   const vehiclesOfCustomer = form.customerId
     ? vehiclesByCustomerMap[form.customerId] ?? []
     : [];
@@ -254,14 +282,23 @@ export function ActivationWizard({
   if (!form.desiredStartDate) stepErrors[2].push("Gewenste startdatum ontbreekt.");
   if (stepErrors[2].length === 0) delete stepErrors[2];
 
-  if (!form.trackerId) stepErrors[3] = ["Kies tracker (IN_STOCK/RESERVED)."];
+  // Stap 3 is tracker of dataplan, afhankelijk van order type
+  if (!isSimOnly) {
+    if (!form.trackerId) stepErrors[3] = ["Kies tracker (IN_STOCK/RESERVED)."];
+  } else {
+    if (!form.dataPlanId) stepErrors[3] = ["Kies een actief dataplan voor Sim-only."];
+  }
   if (!form.simId) stepErrors[4] = ["Kies SIM (IN_STOCK/RESERVED)."];
 
   const isReadyErrors: string[] = [];
   if (!form.customerId) isReadyErrors.push("Klant ontbreekt.");
   if (!form.productId) isReadyErrors.push("Product ontbreekt.");
   if (!form.desiredStartDate) isReadyErrors.push("Gewenste startdatum ontbreekt.");
-  if (!form.trackerId) isReadyErrors.push("Tracker ontbreekt.");
+  if (!isSimOnly) {
+    if (!form.trackerId) isReadyErrors.push("Tracker ontbreekt.");
+  } else {
+    if (!form.dataPlanId) isReadyErrors.push("Dataplan ontbreekt (Sim-only vereist).");
+  }
   if (!form.simId) isReadyErrors.push("SIM ontbreekt.");
 
   async function persistAsDraft() {
@@ -379,20 +416,101 @@ export function ActivationWizard({
           />
         )}
         {step === 2 && (
-          <StepProduct
-            form={form}
-            setForm={setForm}
-            productOptions={productOptions}
-            priceEditable={canEditPrice}
-          />
+          <div className="space-y-6">
+            {canSimOnly && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Activatie-type</CardTitle>
+                  <CardDescription>
+                    Kies of je een tracker met SIM wilt activeren, of alleen een losse datasimkaart (Sim-only) met een dataplan.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <label
+                      className={`relative cursor-pointer rounded-lg border p-4 transition hover:border-slate-400 ${
+                        !isSimOnly
+                          ? "border-slate-900 bg-slate-900 text-white shadow"
+                          : "border-slate-200 bg-white"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="orderType"
+                        className="sr-only"
+                        checked={!isSimOnly}
+                        onChange={() => {
+                          setForm((f) => ({
+                            ...f,
+                            orderType: _OrderType.TRACKER_WITH_SIM,
+                          }));
+                        }}
+                      />
+                      <div className="flex items-start gap-3">
+                        <Cpu className={`mt-0.5 h-5 w-5 ${!isSimOnly ? "text-white" : "text-slate-500"}`} />
+                        <div className="space-y-1">
+                          <div className="font-semibold">Tracker met simkaart</div>
+                          <p className={`text-sm ${!isSimOnly ? "text-slate-200" : "text-slate-500"}`}>
+                            Bestel en activeer een fysieke tracker inclusief SIM-kaart en abonnement (bestaande werking).
+                          </p>
+                        </div>
+                      </div>
+                    </label>
+                    <label
+                      className={`relative cursor-pointer rounded-lg border p-4 transition hover:border-slate-400 ${
+                        isSimOnly
+                          ? "border-slate-900 bg-slate-900 text-white shadow"
+                          : "border-slate-200 bg-white"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="orderType"
+                        className="sr-only"
+                        checked={isSimOnly}
+                        onChange={() => {
+                          setForm((f) => ({
+                            ...f,
+                            orderType: _OrderType.SIM_ONLY_DATA,
+                          }));
+                        }}
+                      />
+                      <div className="flex items-start gap-3">
+                        <CreditCard className={`mt-0.5 h-5 w-5 ${isSimOnly ? "text-white" : "text-slate-500"}`} />
+                        <div className="space-y-1">
+                          <div className="font-semibold">Sim-only datasimkaart</div>
+                          <p className={`text-sm ${isSimOnly ? "text-slate-200" : "text-slate-500"}`}>
+                            Bestel en activeer een losse SIM-kaart met een specifiek dataplan, zonder tracker.
+                          </p>
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+            <StepProduct
+              form={form}
+              setForm={setForm}
+              productOptions={productOptions}
+              priceEditable={canEditPrice}
+            />
+          </div>
         )}
-        {step === 3 && (
-          <StepTracker
-            form={form}
-            setForm={setForm}
-            options={trackerStock}
-          />
-        )}
+        {step === 3 &&
+          (isSimOnly ? (
+            <StepDataPlan
+              form={form}
+              setForm={setForm}
+              options={dataPlanOptions}
+            />
+          ) : (
+            <StepTracker
+              form={form}
+              setForm={setForm}
+              options={trackerStock}
+            />
+          ))}
         {step === 4 && (
           <StepSim
             form={form}
@@ -414,9 +532,11 @@ export function ActivationWizard({
         {step === 6 && (
           <StepReview
             form={form}
+            isSimOnly={isSimOnly}
             customer={selectedCustomer ?? null}
             sub={selectedSub ?? null}
             product={selectedProduct ?? null}
+            dataPlan={selectedDataPlan ?? null}
             tracker={selectedTracker ?? null}
             sim={selectedSim ?? null}
             vehicle={selectedVehicle ?? null}
@@ -784,6 +904,130 @@ function PickTable<T extends { id: string }>({
           columns={[...columns, rowClick]}
           searchPlaceholder="Zoeken..."
         />
+      </CardContent>
+    </Card>
+  );
+}
+
+function formatDataBundleClient(
+  bytes: bigint | number | string | null | undefined,
+  unit: DataUnit | string | null | undefined
+): string {
+  if (unit === DataUnit.UNLIMITED) return "Onbeperkt";
+  if (!bytes) return unit ? `— (${unit})` : "Geen databundel ingesteld";
+  const b = typeof bytes === "bigint" ? bytes : BigInt(bytes);
+  switch (unit) {
+    case DataUnit.MB: {
+      const mb = Number(b) / 1024 ** 2;
+      return `${mb.toLocaleString("nl-NL", { maximumFractionDigits: mb % 1 === 0 ? 0 : 2 })} MB`;
+    }
+    case DataUnit.GB: {
+      const gb = Number(b) / 1024 ** 3;
+      return `${gb.toLocaleString("nl-NL", { maximumFractionDigits: gb % 1 === 0 ? 0 : 2 })} GB`;
+    }
+    case DataUnit.TB: {
+      const tb = Number(b) / 1024 ** 4;
+      return `${tb.toLocaleString("nl-NL", { maximumFractionDigits: tb % 1 === 0 ? 0 : 2 })} TB`;
+    }
+    default:
+      return `${Number(b).toLocaleString("nl-NL")} B`;
+  }
+}
+
+function StepDataPlan({
+  form,
+  setForm,
+  options,
+}: {
+  form: any;
+  setForm: (v: any) => void;
+  options: DataPlanOption[];
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Stap 3 — Dataplan (Sim-only)</CardTitle>
+        <CardDescription>
+          Kies het dataplan dat aan deze Sim-only SIM-kaart gekoppeld wordt. Alleen actieve, voor Sim-only beschikbare plannen worden getoond.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {options.length === 0 ? (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 flex items-start gap-2">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <strong>Geen dataplannen beschikbaar.</strong>
+              <br />
+              Een beheerder moet eerst actieve, voor Sim-only beschikbare dataplannen aanmaken onder Beheer → Dataplannen.
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {options.map((dp) => {
+              const selected = form.dataPlanId === dp.id;
+              return (
+                <label
+                  key={dp.id}
+                  className={`cursor-pointer rounded-lg border p-4 transition hover:border-slate-400 ${
+                    selected
+                      ? "border-slate-900 bg-slate-900 text-white shadow"
+                      : "border-slate-200 bg-white"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="dataPlanId"
+                    className="sr-only"
+                    checked={selected}
+                    onChange={() =>
+                      setForm({ ...form, dataPlanId: dp.id })
+                    }
+                  />
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="font-semibold leading-tight">{dp.name}</div>
+                      <Badge variant={selected ? "secondary" : "outline"} className="shrink-0">
+                        {dp.provider || "Dataplan"}
+                      </Badge>
+                    </div>
+                    <div
+                      className={`text-sm ${selected ? "text-slate-200" : "text-slate-600"}`}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <Database className={`h-3.5 w-3.5 ${selected ? "text-slate-200" : "text-slate-500"}`} />
+                        <span className="font-medium">
+                          {formatDataBundleClient(dp.dataAmountBytes, dp.dataAmountDisplayUnit)}
+                        </span>
+                      </div>
+                      {dp.validityDays ? (
+                        <div className="mt-1">Geldigheid: {dp.validityDays} dagen</div>
+                      ) : dp.validityBillingCycle ? (
+                        <div className="mt-1">Geldigheid: {String(dp.validityBillingCycle).toLowerCase()}</div>
+                      ) : null}
+                      {dp.monthlyPrice != null && (
+                        <div className="mt-1 font-semibold">
+                          {formatCurrency(String(dp.monthlyPrice), dp.currency ?? "EUR")}
+                          <span className={`text-xs ml-1 ${selected ? "text-slate-300" : "text-slate-500"}`}>
+                            /mnd
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        )}
+        {form.dataPlanId && (
+          <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md p-3">
+            <CheckCircle className="h-4 w-4 shrink-0" />
+            <div>
+              Gekozen plan:{" "}
+              <strong>{options.find((o) => o.id === form.dataPlanId)?.name ?? form.dataPlanId}</strong>
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -1325,9 +1569,11 @@ function StepVehicle({
 
 function StepReview({
   form,
+  isSimOnly,
   customer,
   sub,
   product,
+  dataPlan,
   tracker,
   sim,
   vehicle,
@@ -1336,9 +1582,11 @@ function StepReview({
   busy,
 }: {
   form: any;
+  isSimOnly: boolean;
   customer: CustomerOption | null;
   sub: CustomerOption | null;
   product: ProductOption | null;
+  dataPlan: DataPlanOption | null;
   tracker: TrackerOption | null;
   sim: SimOption | null;
   vehicle: VehicleOption | null;
@@ -1348,6 +1596,16 @@ function StepReview({
 }) {
   return (
     <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={isSimOnly ? "outline" : "secondary"} className="gap-1.5">
+          {isSimOnly ? (
+            <><CreditCard className="h-3.5 w-3.5" /> Sim-only datasim</>
+          ) : (
+            <><Cpu className="h-3.5 w-3.5" /> Tracker met simkaart</>
+          )}
+        </Badge>
+      </div>
+
       {isReadyErrors.length > 0 ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 space-y-1">
           <div className="font-semibold">Nog niet alle velden zijn ingevuld:</div>
@@ -1374,6 +1632,7 @@ function StepReview({
         <InfoCard
           title="Product & facturatie"
           rows={[
+            ["Type activatie", isSimOnly ? "Sim-only datasimkaart" : "Tracker met simkaart (standaard)"],
             ["Product", product ? `${product.name} (${product.productCode})` : "—"],
             ["Omschrijving", product?.description ?? "—"],
             [
@@ -1391,41 +1650,91 @@ function StepReview({
             ["Cyclus", form.billingCycle ?? "MONTHLY"],
           ]}
         />
-        <InfoCard
-          title="Assets"
-          rows={[
-            [
-              "Tracker",
-              tracker ? (
-                <Link href={`/trackers/${tracker.id}`} className="flex flex-col">
-                  <span>{tracker.serialNumber}</span>
-                  <span className="font-mono text-xs text-slate-500">
-                    {formatImei(tracker.imei)}
-                  </span>
-                </Link>
-              ) : null,
-            ],
-            [
-              "SIM",
-              sim ? (
-                <Link href={`/sims/${sim.id}`} className="flex flex-col">
-                  <span className="font-mono text-xs">{formatIccid(sim.iccid)}</span>
-                  <span className="text-xs text-slate-500">{sim.msisdn ?? sim.provider}</span>
-                </Link>
-              ) : null,
-            ],
-            [
-              "Voertuig",
-              vehicle ? (
-                <Link href={`/vehicles/${vehicle.id}`}>
-                  {vehicle.licensePlate
-                    ? formatLicensePlate(vehicle.licensePlate)
-                    : `${vehicle.brand ?? ""} ${vehicle.model ?? ""}` || "—"}
-                </Link>
-              ) : null,
-            ],
-          ]}
-        />
+        {isSimOnly ? (
+          <InfoCard
+            title="Dataplan"
+            rows={[
+              ["Naam", dataPlan ? dataPlan.name : "—"],
+              ["Bundel", dataPlan ? formatDataBundleClient(dataPlan.dataAmountBytes, dataPlan.dataAmountDisplayUnit) : "—"],
+              ["Provider", dataPlan?.provider ?? "—"],
+              ["Geldigheid", dataPlan
+                ? dataPlan.validityDays
+                  ? `${dataPlan.validityDays} dagen`
+                  : String(dataPlan.validityBillingCycle ?? "—").toLowerCase()
+                : "—"],
+              [
+                "Prijs",
+                dataPlan?.monthlyPrice != null
+                  ? formatCurrency(String(dataPlan.monthlyPrice), dataPlan.currency ?? "EUR")
+                  : "—",
+              ],
+            ]}
+          />
+        ) : (
+          <InfoCard
+            title="Tracker & SIM"
+            rows={[
+              [
+                "Tracker",
+                tracker ? (
+                  <Link href={`/trackers/${tracker.id}`} className="flex flex-col">
+                    <span>{tracker.serialNumber}</span>
+                    <span className="font-mono text-xs text-slate-500">
+                      {formatImei(tracker.imei)}
+                    </span>
+                  </Link>
+                ) : null,
+              ],
+              [
+                "SIM",
+                sim ? (
+                  <Link href={`/sims/${sim.id}`} className="flex flex-col">
+                    <span className="font-mono text-xs">{formatIccid(sim.iccid)}</span>
+                    <span className="text-xs text-slate-500">{sim.msisdn ?? sim.provider}</span>
+                  </Link>
+                ) : null,
+              ],
+              [
+                "Voertuig",
+                vehicle ? (
+                  <Link href={`/vehicles/${vehicle.id}`}>
+                    {vehicle.licensePlate
+                      ? formatLicensePlate(vehicle.licensePlate)
+                      : `${vehicle.brand ?? ""} ${vehicle.model ?? ""}` || "—"}
+                  </Link>
+                ) : isSimOnly ? "Niet van toepassing" : null,
+              ],
+            ]}
+          />
+        )}
+        {isSimOnly && (
+          <InfoCard
+            title="SIM-kaart"
+            rows={[
+              [
+                "SIM",
+                sim ? (
+                  <Link href={`/sims/${sim.id}`} className="flex flex-col">
+                    <span className="font-mono text-xs">{formatIccid(sim.iccid)}</span>
+                    <span className="text-xs text-slate-500">{sim.msisdn ?? sim.provider}</span>
+                  </Link>
+                ) : null,
+              ],
+              [
+                "Voertuig (optioneel)",
+                vehicle ? (
+                  <Link href={`/vehicles/${vehicle.id}`}>
+                    {vehicle.licensePlate
+                      ? formatLicensePlate(vehicle.licensePlate)
+                      : `${vehicle.brand ?? ""} ${vehicle.model ?? ""}` || "—"}
+                  </Link>
+                ) : (
+                  "Niet opgegeven (optioneel)"
+                ),
+              ],
+            ]}
+          />
+        )}
       </div>
 
       {form.internalNotes ? (
@@ -1440,8 +1749,9 @@ function StepReview({
           <div className="flex-1">
             <CardTitle>Bevestig activatie</CardTitle>
             <CardDescription>
-              Bij klikken wordt eerst het order READY gemaakt, daarna direct de
-              6-staps transactionele activatie uitgevoerd.
+              {isSimOnly
+                ? "Bij klikken wordt eerst het Sim-only order READY gemaakt, daarna direct de transactionele SIM-activatie + Sim-only toewijzing uitgevoerd. Er wordt géén tracker geregistreerd of toegewezen."
+                : "Bij klikken wordt eerst het order READY gemaakt, daarna direct de 6-staps transactionele activatie uitgevoerd."}
             </CardDescription>
           </div>
           <Button

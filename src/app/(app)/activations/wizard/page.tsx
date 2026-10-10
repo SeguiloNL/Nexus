@@ -10,6 +10,7 @@ import {
   validateAndSubscribeSimAction,
 } from "../actions";
 import { findActivationOrderById } from "@/server/services/activation-order.service";
+import { ActivationOrderProductType } from "@/types/enums";
 
 type WizardPageProps = {
   searchParams?: { orderId?: string; step?: string };
@@ -33,7 +34,7 @@ export default async function ActivationWizardPage({
     : undefined;
   const customerScopeVehicle: any = hasScope ? { customerId: { in: customerIds } } : undefined;
 
-  const [customers, products, trackersStock, simsStock, vehicles] =
+  const [customers, products, trackersStock, simsStock, vehicles, dataPlans] =
     await Promise.all([
       prisma.customer.findMany({
         where: { deletedAt: null, ...customerScopeCustomer },
@@ -100,6 +101,21 @@ export default async function ActivationWizardPage({
           description: true,
         },
       }),
+      prisma.dataPlan.findMany({
+        where: { isActive: true, simOnlyAvailable: true },
+        select: {
+          id: true,
+          name: true,
+          dataAmountBytes: true,
+          dataAmountDisplayUnit: true,
+          monthlyPrice: true,
+          currency: true,
+          validityDays: true,
+          validityBillingCycle: true,
+          provider: true,
+        },
+        orderBy: { name: "asc" },
+      }),
     ]);
 
   let initial: any = null;
@@ -111,6 +127,8 @@ export default async function ActivationWizardPage({
         customerId: order.customerId,
         subCustomerId: order.subCustomerId ?? null,
         productId: order.productId,
+        dataPlanId: (order as any).dataPlanId ?? null,
+        orderType: (order as any).orderType ?? ActivationOrderProductType.TRACKER_WITH_SIM,
         desiredStartDate: order.desiredStartDate.toISOString().slice(0, 10),
         monthlyPrice: Number(order.monthlyPrice),
         billingCycle: order.billingCycle,
@@ -132,6 +150,20 @@ export default async function ActivationWizardPage({
     description: p.description,
   }));
 
+  const dataPlanOptions = dataPlans.map((dp: any) => ({
+    id: dp.id,
+    name: dp.name,
+    dataAmountBytes: dp.dataAmountBytes,
+    dataAmountDisplayUnit: dp.dataAmountDisplayUnit,
+    monthlyPrice: dp.monthlyPrice,
+    currency: dp.currency,
+    validityDays: dp.validityDays,
+    validityBillingCycle: dp.validityBillingCycle,
+    provider: dp.provider,
+  }));
+
+  const canSimOnly = canUserRole(user.permissions, "sim_only_order", "activation_order");
+
   const vehiclesByCustomer: Record<string, any[]> = {};
   for (const v of vehicles) {
     if (!vehiclesByCustomer[v.customerId]) vehiclesByCustomer[v.customerId] = [];
@@ -151,6 +183,8 @@ export default async function ActivationWizardPage({
         role={user.role as any}
         customerOptions={customers as any}
         productOptions={productOptions}
+        dataPlanOptions={dataPlanOptions}
+        canSimOnly={canSimOnly}
         trackerStock={trackersStock as any}
         simStock={simsStock as any}
         vehiclesByCustomerMap={vehiclesByCustomer}

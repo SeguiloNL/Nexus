@@ -1,6 +1,11 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "./audit.service";
-import { listAllSims, getSimStatus, simhuisClient } from "@/server/integrations/simhuis/service";
+// --- Modulair leverancierssysteem: via registry (backward compat, zie §3 plan)
+import { listAllSims, getSimStatus } from "@/server/integrations/simhuis/service";
+import {
+  initializeProviderRegistry,
+  providerRegistry,
+} from "@/server/providers/registry";
 import type { SimhuisSimStatus } from "@/server/integrations/simhuis/types";
 import { SimStatus, SyncJobTrigger, SyncJobStatus, SyncJobId, type UserRole } from "@/types/enums";
 import {
@@ -511,7 +516,8 @@ function mapSimhuisStatusToNexus(
 }
 
 export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<SimhuisSyncResult> {
-  const configured = await simhuisClient.isConfigured();
+  await initializeProviderRegistry();
+  const configured = await providerRegistry.isConfigured("simhuis");
   if (!configured) {
     throw new Error("Simhuis niet geconfigureerd (username en/of password ontbreekt).");
   }
@@ -857,6 +863,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           product: existing.product,
           productType: existing.productType,
           provider: existing.provider,
+          providerKey: (existing as any).providerKey ?? null,
           simType: existing.simType,
           dataUsedBytes: existing.dataUsedBytes,
           dataLimitBytes: existing.dataLimitBytes,
@@ -947,6 +954,11 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
           newData.provider = existing.provider ? truncate(`${existing.provider} + ${providerTag}`, 150) ?? providerTag : providerTag;
           changed = true;
         }
+        // --- Nieuwe kolom providerKey (backward compat, §3 plan)
+        if (!newData.providerKey) {
+          newData.providerKey = "simhuis";
+          changed = true;
+        }
         if (!changed) {
           skipped++;
           h.skippedReasonNoChanges++;
@@ -971,6 +983,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
               productType: newData.productType,
               simType: newData.simType,
               provider: newData.provider,
+              providerKey: newData.providerKey,
               dataUsedBytes: newData.dataUsedBytes,
               dataLimitBytes: newData.dataLimitBytes,
               lowestDataLimitBytes: newData.lowestDataLimitBytes,
@@ -1030,6 +1043,7 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
               product: productVal,
               productType: productTypeVal,
               provider: providerTag,
+              providerKey: "simhuis",
               simType: networkVal,
               status: statusForNew,
               dataUsedBytes: dataUsedBytesVal,
@@ -1242,7 +1256,8 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
 export async function syncActiveSimsUsageFromSimhuis(
   ctx: Ctx = {}
 ): Promise<SimhuisUsageSyncResult> {
-  const configured = await simhuisClient.isConfigured();
+  await initializeProviderRegistry();
+  const configured = await providerRegistry.isConfigured("simhuis");
   if (!configured) {
     throw new Error(
       "Simhuis niet geconfigureerd (username en/of password ontbreekt)."
@@ -1862,7 +1877,8 @@ export async function syncUsageForSingleSim(
   ctx: Ctx = {}
 ): Promise<PerSimUsageSyncResult> {
   const startedAt = Date.now();
-  const configured = await simhuisClient.isConfigured();
+  await initializeProviderRegistry();
+  const configured = await providerRegistry.isConfigured("simhuis");
   if (!configured) {
     throw new Error("Simhuis niet geconfigureerd.");
   }
@@ -2037,6 +2053,7 @@ export async function syncUsageForSingleSim(
     await prisma.sIM.update({
       where: { id: sim.id },
       data: {
+        providerKey: "simhuis",
         dataUsedBytes: applyUsage.newData.dataUsedBytes,
         dataLimitBytes: applyUsage.newData.dataLimitBytes,
         lowestDataLimitBytes: applyUsage.newData.lowestDataLimitBytes,

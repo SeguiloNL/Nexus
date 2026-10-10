@@ -26,7 +26,7 @@ import {
   subscribeSimById,
   type SimSubscribeResult,
 } from "@/server/services/simhuis-asset.service";
-import { UserRole } from "@/types/enums";
+import { UserRole, ActivationOrderProductType } from "@/types/enums";
 
 const TARGET_PRODUCT_ID = "662a3e2f4e2af7a852384696";
 const TARGET_PRODUCT_NAME = "Seguilo B.V. ROPD LR 0.40 OU per MB 0.0029 EUR SMS";
@@ -46,6 +46,8 @@ export async function createOrderAction(_prev: OrderActionState, formData: FormD
     customerId: formData.get("customerId") || undefined,
     subCustomerId: formData.get("subCustomerId") || null,
     productId: formData.get("productId") || undefined,
+    dataPlanId: formData.get("dataPlanId") || null,
+    orderType: (formData.get("orderType") as string) || undefined,
     desiredStartDate: formData.get("desiredStartDate"),
     monthlyPrice: formData.get("monthlyPrice") || 0,
     billingCycle: formData.get("billingCycle") || undefined,
@@ -54,6 +56,12 @@ export async function createOrderAction(_prev: OrderActionState, formData: FormD
     vehicleId: formData.get("vehicleId") || null,
     internalNotes: formData.get("internalNotes") || null,
   };
+
+  if (raw.orderType && raw.orderType === ActivationOrderProductType.SIM_ONLY_DATA) {
+    // Dubbele UI-guard: ook hier expliciet het sim_only_order recht controleren,
+    // zodat ook directe API-aanroepen worden geblokkeerd.
+    await requirePermission(user.permissions ?? user.role, "sim_only_order", "activation_order");
+  }
 
   const validated = CreateActivationOrderSchema.safeParse(raw);
   if (!validated.success) {
@@ -88,6 +96,12 @@ export async function updateOrderAction(orderId: string, _prev: OrderActionState
   if (!raw.simId) raw.simId = null;
   if (!raw.vehicleId) raw.vehicleId = null;
   if (!raw.subCustomerId) raw.subCustomerId = null;
+  if (!raw.dataPlanId) raw.dataPlanId = null;
+
+  // Sim-only guard (indien orderType expliciet meegegeven)
+  if (raw.orderType && raw.orderType === ActivationOrderProductType.SIM_ONLY_DATA) {
+    await requirePermission(user.permissions ?? user.role, "sim_only_order", "activation_order");
+  }
 
   const validated = UpdateActivationOrderSchema.safeParse(raw);
   if (!validated.success) {

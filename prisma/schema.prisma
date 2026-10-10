@@ -80,9 +80,13 @@ enum ActivationOrderStatus {
 }
 
 enum BillingCycle {
+  WEEKLY
+  BIWEEKLY
   MONTHLY
   QUARTERLY
+  BIANNUAL
   YEARLY
+  ANNUAL
 }
 
 enum AssignmentReason {
@@ -122,6 +126,19 @@ enum AuditAction {
   BATCH_ERROR
   SIMHUIS_SYNCED
   SIMHUIS_SYNC_FAILED
+  // Generieke provider-acties (toegevoegd t.b.v. modulaire leveranciers)
+  SIM_SYNCED
+  SIM_SYNC_FAILED
+  SIM_ACTIVATED
+  SIM_DEACTIVATED
+  SIM_SUSPENDED
+  SIM_UNSUSPENDED
+  SIM_PURGED
+  SIM_SUBSCRIBED
+  PROVIDER_ACTIVATED
+  PROVIDER_DEACTIVATED
+  PROVIDER_CONNECTION_TESTED
+  PROVIDER_SETTINGS_UPDATED
   CLONE_ROLE
   LINK_USER_CUSTOMER
   UNLINK_USER_CUSTOMER
@@ -203,6 +220,18 @@ enum CustomerLinkSource {
   MANUAL
   SUBSCRIPTION_DERIVED
   UNKNOWN
+}
+
+enum ActivationOrderProductType {
+  TRACKER_WITH_SIM
+  SIM_ONLY_DATA
+}
+
+enum DataUnit {
+  MB
+  GB
+  TB
+  UNLIMITED
 }
 
 // ------------------------------
@@ -373,6 +402,36 @@ model Product {
   @@map("products")
 }
 
+model DataPlan {
+  id                    String              @id @default(cuid())
+  name                  String
+  description           String?             @db.Text
+  dataAmountBytes       BigInt?
+  dataAmountDisplayUnit DataUnit?
+  validityDays          Int?
+  validityBillingCycle  BillingCycle?
+  monthlyPrice          Decimal?            @db.Decimal(10, 2)
+  currency              String              @default("EUR") @db.VarChar(3)
+  btwPercentage         Decimal?            @db.Decimal(4, 2) @default(21)
+  provider              String?             @db.VarChar(150)
+  providerPlanRef       String?             @db.VarChar(200)
+  providerOfferRef      String?             @db.VarChar(200)
+  isActive              Boolean             @default(true)
+  simOnlyAvailable      Boolean             @default(true)
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  activationOrders      ActivationOrder[]
+  subscriptions         Subscription[]
+  sims                  SIM[]
+
+  @@unique([name, provider])
+  @@index([isActive])
+  @@index([simOnlyAvailable])
+  @@index([provider])
+  @@map("data_plans")
+}
+
 model Subscription {
   id                   String              @id @default(cuid())
   subscriptionNumber   String              @unique
@@ -382,6 +441,8 @@ model Subscription {
   billingCustomer      Customer?           @relation("BillingCustomer", fields: [billingCustomerId], references: [id], onDelete: SetNull)
   productId            String
   product              Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
+  dataPlanId           String?
+  dataPlan             DataPlan?           @relation(fields: [dataPlanId], references: [id], onDelete: SetNull)
   startDate            DateTime            @db.Date
   endDate              DateTime?           @db.Date
   status               SubscriptionStatus  @default(DRAFT)
@@ -404,6 +465,7 @@ model Subscription {
   @@index([customerId])
   @@index([billingCustomerId])
   @@index([productId])
+  @@index([dataPlanId])
   @@index([status])
   @@index([inserveSyncStatus])
   @@map("subscriptions")
@@ -479,6 +541,8 @@ model SIM {
   product                  String?             @db.VarChar(200)
   productType              String?             @db.VarChar(150)
   provider                 String              @db.VarChar(150)
+  providerKey              String?             @db.VarChar(50)
+  providerRef              SimProvider?        @relation("ProviderSims", fields: [providerKey], references: [providerKey], onDelete: SetNull, onUpdate: Cascade)
   simType                  String?             @db.VarChar(100)
   apn                      String?             @db.VarChar(200)
   status                   SimStatus           @default(IN_STOCK)
@@ -512,6 +576,8 @@ model SIM {
   customerLinkedAt         DateTime?           @db.Timestamptz
   inserveAssetId           Int?                @unique
   inserveAssetLinkedAt     DateTime?           @db.Timestamptz
+  dataPlanId               String?
+  dataPlan                 DataPlan?           @relation(fields: [dataPlanId], references: [id], onDelete: SetNull)
   createdAt                DateTime            @default(now())
   updatedAt                DateTime            @updatedAt
   deletedAt                DateTime?
@@ -523,6 +589,9 @@ model SIM {
   @@index([status])
   @@index([provider])
   @@index([customerId])
+  @@index([dataPlanId])
+  @@index([providerKey])
+  @@index([providerKey, subscriberId])
   @@map("sims")
 }
 
@@ -589,38 +658,44 @@ model SimAssignment {
 }
 
 model ActivationOrder {
-  id                 String                 @id @default(cuid())
-  orderNumber        String                 @unique
+  id                 String                     @id @default(cuid())
+  orderNumber        String                     @unique
   customerId         String
-  customer           Customer               @relation("CustomerOrders", fields: [customerId], references: [id], onDelete: Restrict)
+  customer           Customer                   @relation("CustomerOrders", fields: [customerId], references: [id], onDelete: Restrict)
   subCustomerId      String?
-  subCustomer        Customer?              @relation("SubCustomerOrders", fields: [subCustomerId], references: [id], onDelete: SetNull)
+  subCustomer        Customer?                  @relation("SubCustomerOrders", fields: [subCustomerId], references: [id], onDelete: SetNull)
   productId          String
-  product            Product                @relation(fields: [productId], references: [id], onDelete: Restrict)
+  product            Product                    @relation(fields: [productId], references: [id], onDelete: Restrict)
+  dataPlanId         String?
+  dataPlan           DataPlan?                  @relation(fields: [dataPlanId], references: [id], onDelete: SetNull)
+  orderType          ActivationOrderProductType @default(TRACKER_WITH_SIM)
+  dataPlanSnapshot   Json?
   subscriptionId     String?
-  subscription       Subscription?          @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  subscription       Subscription?              @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
   trackerId          String?
-  tracker            Tracker?               @relation(fields: [trackerId], references: [id], onDelete: SetNull)
+  tracker            Tracker?                   @relation(fields: [trackerId], references: [id], onDelete: SetNull)
   simId              String?
-  sim                SIM?                   @relation(fields: [simId], references: [id], onDelete: SetNull)
+  sim                SIM?                       @relation(fields: [simId], references: [id], onDelete: SetNull)
   vehicleId          String?
-  vehicle            Vehicle?               @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
-  desiredStartDate   DateTime               @db.Date
-  monthlyPrice       Decimal                @db.Decimal(10, 2)
-  billingCycle       BillingCycle           @default(MONTHLY)
-  status             ActivationOrderStatus  @default(DRAFT)
-  internalNotes      String?                @db.Text
-  failureReason      String?                @db.Text
-  failedAt           DateTime?              @db.Timestamptz
-  completedAt        DateTime?              @db.Timestamptz
+  vehicle            Vehicle?                   @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  desiredStartDate   DateTime                   @db.Date
+  monthlyPrice       Decimal                    @db.Decimal(10, 2)
+  billingCycle       BillingCycle               @default(MONTHLY)
+  status             ActivationOrderStatus      @default(DRAFT)
+  internalNotes      String?                    @db.Text
+  failureReason      String?                    @db.Text
+  failedAt           DateTime?                  @db.Timestamptz
+  completedAt        DateTime?                  @db.Timestamptz
   createdById        String?
-  createdBy          User?                  @relation("CreatedOrders", fields: [createdById], references: [id], onDelete: SetNull)
-  createdAt          DateTime               @default(now())
-  updatedAt          DateTime               @updatedAt
+  createdBy          User?                      @relation("CreatedOrders", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
 
   @@index([customerId])
   @@index([subCustomerId])
   @@index([productId])
+  @@index([dataPlanId])
+  @@index([orderType])
   @@index([subscriptionId])
   @@index([status])
   @@index([trackerId])
@@ -637,6 +712,23 @@ model AppSetting {
   createdAt DateTime @default(now())
 
   @@map("app_settings")
+}
+
+model SimProvider {
+  providerKey             String   @id @db.VarChar(50)
+  displayName             String   @db.VarChar(200)
+  moduleAvailable         Boolean  @default(true)
+  active                  Boolean  @default(false)
+  lastConnectionOk        Boolean?
+  lastConnectionCheckedAt DateTime? @db.Timestamptz
+  lastConnectionLatencyMs Int?
+  lastConnectionErrorSafe String?  @db.VarChar(500)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  sims SIM[] @relation("ProviderSims")
+
+  @@map("sim_providers")
 }
 
 model SyncJobConfig {

@@ -73,9 +73,13 @@ export enum ActivationOrderStatus {
 }
 
 export enum BillingCycle {
+  WEEKLY = "WEEKLY",
+  BIWEEKLY = "BIWEEKLY",
   MONTHLY = "MONTHLY",
   QUARTERLY = "QUARTERLY",
+  BIANNUAL = "BIANNUAL",
   YEARLY = "YEARLY",
+  ANNUAL = "ANNUAL",
 }
 
 export enum InvoiceStatus {
@@ -92,6 +96,13 @@ export enum AssignmentReason {
   REMOVED = "REMOVED",
   RMA = "RMA",
   UPGRADE = "UPGRADE",
+}
+
+export enum CustomerLinkSource {
+  INSERVE_ASSET = "INSERVE_ASSET",
+  MANUAL = "MANUAL",
+  SUBSCRIPTION_DERIVED = "SUBSCRIPTION_DERIVED",
+  UNKNOWN = "UNKNOWN",
 }
 
 export enum AuditAction {
@@ -143,7 +154,8 @@ export type ResourceAction =
   | "purge_network"
   | "suspend_sim"
   | "view_all_sim_usage_dashboard"
-  | "import_from_inserve";
+  | "import_from_inserve"
+  | "sim_only_order";
 
 export type ActionOverrides = Partial<
   Record<ResourceType, Partial<Record<ResourceAction, boolean>>>
@@ -162,7 +174,20 @@ export type ResourceType =
   | "audit_log"
   | "setting"
   | "dashboard"
-  | "role";
+  | "role"
+  | "data_plan";
+
+export enum ActivationOrderProductType {
+  TRACKER_WITH_SIM = "TRACKER_WITH_SIM",
+  SIM_ONLY_DATA = "SIM_ONLY_DATA",
+}
+
+export enum DataUnit {
+  MB = "MB",
+  GB = "GB",
+  TB = "TB",
+  UNLIMITED = "UNLIMITED",
+}
 
 /* ========================= Sync-Schedule enums (mirror Prisma) ========================= */
 
@@ -213,6 +238,7 @@ export const ALL_RESOURCE_TYPES: ResourceType[] = [
   "setting",
   "dashboard",
   "role",
+  "data_plan",
 ];
 
 export const CUSTOMER_SCOPE_RESOURCES: ResourceType[] = [

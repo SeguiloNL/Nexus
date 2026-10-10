@@ -383,6 +383,7 @@ describe("Sim-only restricted rol (klant@seguilo.nl bug): sim.read=true en legac
       setting:        { read: false, write: false },
       product:        { read: false, write: false },
       dashboard:      { read: false, write: false },
+      data_plan:      { read: false, write: false },
     };
 
     expect(can(simOnlyBits, "view", "sim")).toBe(true);
@@ -435,6 +436,7 @@ describe("Legacy ADMIN Beheerder safety-net (role.permissions leeg / isSystem â†
       setting:        { read: false, write: false },
       product:        { read: false, write: false },
       dashboard:      { read: false, write: false },
+      data_plan:      { read: false, write: false },
     };
 
     const isLegacySystemRole = true;
@@ -468,6 +470,7 @@ describe("Legacy ADMIN Beheerder safety-net (role.permissions leeg / isSystem â†
       setting:        { read: false, write: false },
       product:        { read: false, write: false },
       dashboard:      { read: false, write: false },
+      data_plan:      { read: false, write: false },
     };
 
     const isLegacySystemRole = false;
@@ -691,6 +694,7 @@ describe("Dashboard Tegel-Permissie Matrix", () => {
       setting:          { read: false, write: false },
       product:          { read: false, write: false },
       dashboard:        { read: true,  write: false },
+      data_plan:        { read: false, write: false },
     };
     const visible = countVisibleTiles(simTrackerBits, null, null, RoleScope.INTERNAL);
     expect(visible).toBe(5);
@@ -715,6 +719,7 @@ describe("Dashboard Tegel-Permissie Matrix", () => {
       setting:          { read: false, write: false },
       product:          { read: false, write: false },
       dashboard:        { read: true,  write: false },
+      data_plan:        { read: false, write: false },
     };
     const visible = countVisibleTiles(dashOnlyBits, null, null, RoleScope.INTERNAL);
     expect(visible).toBe(0);
@@ -747,5 +752,81 @@ describe("Dashboard Tegel-Permissie Matrix", () => {
     expect(dashboardCanView(adminRes, null, UserRole.ADMIN, RoleScope.RESELLER, "activation_order")).toBe(true);
     expect(dashboardCanView(adminPart, null, UserRole.ADMIN, RoleScope.PARTNER, "activation_order")).toBe(true);
     expect(dashboardCanView(adminInt, null, UserRole.ADMIN, RoleScope.INTERNAL, "activation_order")).toBe(true);
+  });
+});
+
+// --------------------------------------------------------------------
+// NIEUW: DataPlan resource + Sim-only action (sim_only_order op activation_order)
+// --------------------------------------------------------------------
+describe("DataPlan resource scope en Sim-only action", () => {
+  it("data_plan alleen zichtbaar in INTERNAL scope, NIET in CUSTOMER/RESELLER/PARTNER", () => {
+    expect(CUSTOMER_SCOPE_RESOURCES.includes("data_plan" as any)).toBe(false);
+    expect(RESELLER_SCOPE_RESOURCES.includes("data_plan" as any)).toBe(false);
+    expect(PARTNER_SCOPE_RESOURCES.includes("data_plan" as any)).toBe(false);
+    expect(ALL_RESOURCE_TYPES.includes("data_plan" as any)).toBe(true);
+  });
+
+  it("INTERNAL ADMIN/EMPLOYEE krijgen read+write op data_plan (legacy matrix)", () => {
+    const admin = buildLegacyPermissionsForRole(UserRole.ADMIN, RoleScope.INTERNAL);
+    const employee = buildLegacyPermissionsForRole(UserRole.EMPLOYEE, RoleScope.INTERNAL);
+    const viewer = buildLegacyPermissionsForRole(UserRole.VIEWER, RoleScope.INTERNAL);
+
+    expect(admin.data_plan?.read).toBe(true);
+    expect(admin.data_plan?.write).toBe(true);
+    expect(employee.data_plan?.read).toBe(true);
+    expect(employee.data_plan?.write).toBe(true);
+    expect(viewer.data_plan?.read).toBe(true);
+    expect(viewer.data_plan?.write).toBe(false);
+  });
+
+  it("CUSTOMER/RESELLER/PARTNER scopes: data_plan bits altijd read=false write=false (buiten scope)", () => {
+    const cust = buildLegacyPermissionsForRole(UserRole.ADMIN, RoleScope.CUSTOMER);
+    const res = buildLegacyPermissionsForRole(UserRole.ADMIN, RoleScope.RESELLER);
+    const part = buildLegacyPermissionsForRole(UserRole.ADMIN, RoleScope.PARTNER);
+    for (const bits of [cust, res, part]) {
+      expect(bits.data_plan?.read).not.toBe(true);
+      expect(bits.data_plan?.write).not.toBe(true);
+    }
+  });
+});
+
+describe("ActivationOrder action: sim_only_order (aparte rechtengroep)", () => {
+  it("legacy ADMIN/EMPLOYEE hebben sim_only_order via write=true op activation_order", () => {
+    const adminBits = buildLegacyPermissionsForRole(UserRole.ADMIN);
+    const employeeBits = buildLegacyPermissionsForRole(UserRole.EMPLOYEE);
+    const viewerBits = buildLegacyPermissionsForRole(UserRole.VIEWER);
+
+    expect(can(adminBits, "sim_only_order", "activation_order")).toBe(true);
+    expect(can(employeeBits, "sim_only_order", "activation_order")).toBe(true);
+    // Viewer heeft alleen read â†’ sim_only_order is write-type fallback â†’ denied
+    expect(can(viewerBits, "sim_only_order", "activation_order")).toBe(false);
+  });
+
+  it("role bits met expliciete actions entry: sim_only_order=true overschrijft write=false", () => {
+    const restrictedBits: PermissionBits = {
+      ...(buildLegacyPermissionsForRole(UserRole.VIEWER) as any),
+      activation_order: {
+        read: true,
+        write: false,
+        actions: { sim_only_order: true },
+      },
+    };
+    expect(can(restrictedBits, "sim_only_order", "activation_order")).toBe(true);
+    // write=false, dus edit mag niet
+    expect(can(restrictedBits, "edit", "activation_order")).toBe(false);
+  });
+
+  it("role bits met actions.sim_only_order=false â†’ expliciet deny ook al is write=true", () => {
+    const bits: PermissionBits = {
+      ...(buildLegacyPermissionsForRole(UserRole.EMPLOYEE) as any),
+      activation_order: {
+        read: true,
+        write: true,
+        actions: { sim_only_order: false },
+      },
+    };
+    expect(can(bits, "sim_only_order", "activation_order")).toBe(false);
+    // overige write actions (create/edit/delete) mogen nog wel via write=true
+    expect(can(bits, "create", "activation_order")).toBe(true);
   });
 });

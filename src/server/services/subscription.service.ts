@@ -13,7 +13,7 @@ import type {
   CreateSubscriptionInput,
   UpdateSubscriptionStatusInput,
 } from "@/types/domain";
-import { UserRole, RoleScope, CustomerType } from "@/types/enums";
+import { UserRole, RoleScope, CustomerType, BillingCycle } from "@/types/enums";
 import type { Prisma, Subscription as PrismaSub, $Enums } from "@prisma/client";
 import { syncSubscriptionToInserve } from "./inserve-sync.service";
 import type { PermissionBits } from "@/types/next-auth";
@@ -265,7 +265,7 @@ export async function createSubscription(
         endDate: input.endDate ?? null,
         status: "DRAFT" as any,
         monthlyPrice: input.monthlyPrice,
-        billingCycle: input.billingCycle ?? "MONTHLY",
+        billingCycle: input.billingCycle ?? BillingCycle.MONTHLY,
         notes: input.notes ?? null,
       },
     });

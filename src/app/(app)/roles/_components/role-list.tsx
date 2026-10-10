@@ -18,6 +18,7 @@ import {
   Search,
   Eye,
   EyeOff,
+  Database,
 } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import { Button } from "@/components/ui/button";
@@ -92,6 +93,7 @@ const RESOURCE_LABELS: Record<ResourceType | string, { label: string; icon: any 
   activation_order: { label: "Activeringen", icon: Shield },
   invoice: { label: "Facturen", icon: Shield },
   product: { label: "Producten", icon: Shield },
+  data_plan: { label: "Dataplannen", icon: Database },
   user: { label: "Gebruikers", icon: Users },
   role: { label: "Rollen", icon: Shield },
   audit_log: { label: "Audit log", icon: Shield },

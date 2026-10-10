@@ -2,7 +2,8 @@ import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
 import { generateOrderNumber, generateSubscriptionNumber } from "@/lib/identifiers";
 import { pickAuth, requirePermission } from "@/lib/rbac";
-import type { Prisma, ActivationOrder } from "@prisma/client";
+import type { Prisma, ActivationOrder, DataPlan } from "@prisma/client";
+import { ActivationOrderProductType, BillingCycle, CustomerLinkSource } from "@/types/enums";
 import {
   assignSim,
   assignTracker,
@@ -19,8 +20,11 @@ import {
   activateSim as simhuisActivateSim,
   getSimStatus as simhuisGetSimStatus,
   deactivateSim as simhuisDeactivateSim,
-  simhuisClient,
 } from "../integrations/simhuis/service";
+import {
+  initializeProviderRegistry,
+  providerRegistry,
+} from "@/server/providers/registry";
 import type { SimhuisSimStatus } from "../integrations/simhuis/types";
 import { getSimhuisSettings } from "./app-setting.service";
 
@@ -139,6 +143,7 @@ export async function findManyActivationOrders(
           select: { id: true, customerNumber: true, companyName: true },
         },
         product: { select: { id: true, productCode: true, name: true } },
+        dataPlan: { select: { id: true, name: true, dataAmountBytes: true, dataAmountDisplayUnit: true } },
         tracker: {
           select: { id: true, serialNumber: true, imei: true, brand: true, model: true },
         },
@@ -179,6 +184,7 @@ export async function findActivationOrderById(id: string, customerScope?: string
       customer: { select: { id: true, customerNumber: true, companyName: true } },
       subCustomer: { select: { id: true, customerNumber: true, companyName: true } },
       product: { select: { id: true, productCode: true, name: true } },
+      dataPlan: { select: { id: true, name: true, dataAmountBytes: true, dataAmountDisplayUnit: true, monthlyPrice: true, currency: true, validityDays: true, validityBillingCycle: true, provider: true, providerPlanRef: true, providerOfferRef: true, isActive: true, simOnlyAvailable: true } },
       subscription: { select: { id: true, subscriptionNumber: true, status: true, monthlyPrice: true } },
       tracker: {
         select: { id: true, serialNumber: true, imei: true, brand: true, model: true, status: true },
@@ -198,6 +204,13 @@ export async function createDraftOrder(
 ): Promise<ActivationOrder> {
   await requirePermission(pickAuth(ctx), "create", "activation_order");
 
+  const orderType = input.orderType ?? ActivationOrderProductType.TRACKER_WITH_SIM;
+
+  // Sim-only bestellingen vereisen een extra recht (zowel UI als backend guard)
+  if (orderType === ActivationOrderProductType.SIM_ONLY_DATA) {
+    await requirePermission(pickAuth(ctx), "sim_only_order", "activation_order");
+  }
+
   if (ctx.customerScope && ctx.customerScope.length > 0) {
     if (!ctx.customerScope.includes(input.customerId)) {
       throw new Error("Customer valt niet binnen je toegang");
@@ -208,6 +221,28 @@ export async function createDraftOrder(
   }
 
   return prisma.$transaction(async (tx) => {
+    let snapshotData: any = null;
+    if (input.dataPlanId) {
+      const plan: DataPlan | null = await tx.dataPlan.findUnique({
+        where: { id: input.dataPlanId },
+      });
+      if (plan) {
+        snapshotData = {
+          id: plan.id,
+          name: plan.name,
+          dataAmountBytes: plan.dataAmountBytes ? plan.dataAmountBytes.toString() : null,
+          dataAmountDisplayUnit: plan.dataAmountDisplayUnit,
+          monthlyPrice: plan.monthlyPrice ? plan.monthlyPrice.toString() : null,
+          currency: plan.currency,
+          provider: plan.provider,
+          providerPlanRef: plan.providerPlanRef,
+          providerOfferRef: plan.providerOfferRef,
+          isActive: plan.isActive,
+          simOnlyAvailable: plan.simOnlyAvailable,
+        };
+      }
+    }
+
     const orderNumber = await generateOrderNumber();
     const order = await tx.activationOrder.create({
       data: {
@@ -215,9 +250,12 @@ export async function createDraftOrder(
         customerId: input.customerId,
         subCustomerId: input.subCustomerId ?? null,
         productId: input.productId,
+        dataPlanId: input.dataPlanId ?? null,
+        orderType: orderType as any,
+        dataPlanSnapshot: snapshotData,
         desiredStartDate: input.desiredStartDate,
         monthlyPrice: input.monthlyPrice,
-        billingCycle: input.billingCycle ?? "MONTHLY",
+        billingCycle: input.billingCycle ?? BillingCycle.MONTHLY,
         trackerId: input.trackerId ?? null,
         simId: input.simId ?? null,
         vehicleId: input.vehicleId ?? null,
@@ -302,6 +340,7 @@ export async function markReady(id: string, ctx: Ctx): Promise<ActivationOrder> 
         sim: true,
         customer: true,
         product: true,
+        dataPlan: true,
       },
     });
 
@@ -315,17 +354,37 @@ export async function markReady(id: string, ctx: Ctx): Promise<ActivationOrder> 
 
     assertOrderTransition(existing.status, "READY");
 
+    const orderType: ActivationOrderProductType = existing.orderType || ActivationOrderProductType.TRACKER_WITH_SIM;
+    const isSimOnly = orderType === ActivationOrderProductType.SIM_ONLY_DATA;
+
+    if (isSimOnly) {
+      await requirePermission(pickAuth(ctx), "sim_only_order", "activation_order");
+    }
+
     const missing: string[] = [];
     if (!existing.customer) missing.push("klant");
     if (!existing.product) missing.push("product");
-    if (!existing.tracker) missing.push("tracker");
-    else if (existing.tracker.status !== "IN_STOCK" && existing.tracker.status !== "RESERVED") {
-      missing.push(`tracker status moet IN_STOCK/RESERVED (nu ${existing.tracker.status})`);
+
+    if (!isSimOnly) {
+      if (!existing.tracker) missing.push("tracker");
+      else if (existing.tracker.status !== "IN_STOCK" && existing.tracker.status !== "RESERVED") {
+        missing.push(`tracker status moet IN_STOCK/RESERVED (nu ${existing.tracker.status})`);
+      }
     }
+
     if (!existing.sim) missing.push("sim");
     else if (existing.sim.status !== "IN_STOCK" && existing.sim.status !== "RESERVED") {
       missing.push(`SIM status moet IN_STOCK/RESERVED (nu ${existing.sim.status})`);
     }
+
+    if (isSimOnly) {
+      if (!existing.dataPlan) missing.push("dataplan");
+      else {
+        if (!existing.dataPlan.isActive) missing.push("dataplan is inactief");
+        if (!existing.dataPlan.simOnlyAvailable) missing.push("dataplan is niet beschikbaar voor Sim-only bestellingen");
+      }
+    }
+
     if (!existing.desiredStartDate) missing.push("gewenste startdatum");
     if (!existing.monthlyPrice) missing.push("maandprijs");
 
@@ -524,9 +583,10 @@ function buildDeviceModel(brand: string | null | undefined, model: string | null
  *  0. Preflight: order exists + status OK
  *  1. Markeer PROCESSING (binnen transactie)
  *  2. Externe stap 1: Activeer SIM bij Simhuis (idempotent, skip indien reeds actief of NIET geconfigureerd)
- *  3. Externe stap 2: Registreer tracker bij Navixy met device_model (idempotent, skip indien NIET geconfigureerd)
+ *  3. Externe stap 2: Registreer tracker bij Navixy met device_model (idempotent, skip indien NIET geconfigureerd OF SIM_ONLY order)
  *     → Bij falen Navixy: compensatie (deactiveer SIM indien stap 2a geslaagd)
  *  4. Interne transactie: Re-lock assets, assignments, subscription, COMPLETED
+ *     → Bij SIM_ONLY: skip tracker assignment, tracker status update, Navixy-koppeling
  *     → Bij falen interne transactie: best-effort compensatie (suspend tracker + deactivate SIM)
  *  5. Na succes: Inserve sync queue.
  */
@@ -538,6 +598,7 @@ export async function completeActivation(id: string, ctx: Ctx) {
     include: {
       customer: true,
       product: true,
+      dataPlan: true,
       tracker: true,
       sim: true,
       vehicle: true,
@@ -556,10 +617,27 @@ export async function completeActivation(id: string, ctx: Ctx) {
   if (initial.status !== "READY" && initial.status !== "FAILED") {
     throw new Error(`Alleen READY of FAILED orders kunnen geactiveerd worden (status ${initial.status}).`);
   }
-  if (!initial.tracker || !initial.sim || !initial.customer || !initial.product) {
-    throw new Error(
-      `Incomplete order: ontbreekt ${!initial.customer ? "klant " : ""}${!initial.product ? "product " : ""}${!initial.tracker ? "tracker " : ""}${!initial.sim ? "SIM" : ""}`
-    );
+
+  const orderType: ActivationOrderProductType = (initial as any).orderType || ActivationOrderProductType.TRACKER_WITH_SIM;
+  const isSimOnly = orderType === ActivationOrderProductType.SIM_ONLY_DATA;
+
+  if (isSimOnly) {
+    await requirePermission(pickAuth(ctx), "sim_only_order", "activation_order");
+  }
+
+  // Validatie van optionele/verplichte velden per order type
+  if (isSimOnly) {
+    if (!initial.sim || !initial.customer || !initial.product) {
+      throw new Error(
+        `Incomplete Sim-only order: ontbreekt ${!initial.customer ? "klant " : ""}${!initial.product ? "product " : ""}${!initial.sim ? "SIM " : ""}${!(initial as any).dataPlan ? "dataplan" : ""}`
+      );
+    }
+  } else {
+    if (!initial.tracker || !initial.sim || !initial.customer || !initial.product) {
+      throw new Error(
+        `Incomplete order: ontbreekt ${!initial.customer ? "klant " : ""}${!initial.product ? "product " : ""}${!initial.tracker ? "tracker " : ""}${!initial.sim ? "SIM" : ""}`
+      );
+    }
   }
 
   // --- STAP 1: Mark order PROCESSING (altijd, zodat UI inzicht heeft) ---
@@ -576,86 +654,119 @@ export async function completeActivation(id: string, ctx: Ctx) {
   } = { simActivated: null, navixyTracker: null };
 
   try {
-    // --- STAP 2: SIM activeren (Simhuis) ---
-    const simhuisConfigured = await simhuisClient.isConfigured();
-    if (simhuisConfigured) {
+    // --- STAP 2: SIM activeren (via provider-registry) ---
+    await initializeProviderRegistry();
+    const adapter = initial.sim
+      ? await providerRegistry.resolveForSim(initial.sim as { providerKey?: string | null; provider?: string | null })
+      : await providerRegistry.require("simhuis");
+    const simProviderConfigured = await providerRegistry.isConfigured(adapter.providerKey);
+    if (simProviderConfigured) {
+      if (!adapter.capabilities.activateSim) {
+        const msg = `Provider “${adapter.providerKey}” ondersteunt geen SIM-activatie (capability activateSim=false).`;
+        console.error(`[Activation] ${msg}`);
+        await markFailedTx(id, msg, ctx.userId);
+        throw new Error(msg);
+      }
+      await providerRegistry.guardActivated(adapter.providerKey);
       try {
-        const simhuisSettings = await getSimhuisSettings();
-        const defaultOfferId = simhuisSettings?.defaultOfferId ?? null;
-        const defaultPlanId = simhuisSettings?.defaultPlanId ?? null;
-        const resellerId = simhuisSettings?.resellerId ?? null;
+        // Default producten: eerst adapter.getDefaultProducts, fallback op getSimhuisSettings
+        const adapterDefaults =
+          (await adapter.getDefaultProducts?.()) ??
+          { defaultOfferId: null, defaultPlanId: null, defaultProductName: null, resellerId: null };
+        const simhuisSettings =
+          adapter.providerKey === "simhuis" ? await getSimhuisSettings() : null;
+        const defaultOfferId =
+          adapterDefaults.defaultOfferId ?? simhuisSettings?.defaultOfferId ?? null;
+        const defaultPlanId =
+          adapterDefaults.defaultPlanId ?? simhuisSettings?.defaultPlanId ?? null;
+        const resellerId = adapterDefaults.resellerId ?? simhuisSettings?.resellerId ?? null;
 
-        if (defaultOfferId || defaultPlanId) {
+        // Gebruik dataplan-specifieke refs indien gekoppeld (anders val terug op globals)
+        const dataPlanOfferId = (initial as any).dataPlan?.providerOfferRef ?? null;
+        const dataPlanPlanId = (initial as any).dataPlan?.providerPlanRef ?? null;
+        const effectiveOfferId = dataPlanOfferId ?? defaultOfferId;
+        const effectivePlanId = dataPlanPlanId ?? defaultPlanId;
+
+        if (effectiveOfferId || effectivePlanId) {
           console.info(
-            `[Activation] Standaard Simhuis-product: offer_id=${defaultOfferId ?? "-"}, plan_id=${defaultPlanId ?? "-"} (reseller_id=${resellerId ?? "-"})`
+            `[Activation] Gebruik ${adapter.providerKey}-product: offer_id=${effectiveOfferId ?? "-"}, plan_id=${effectivePlanId ?? "-"} (reseller_id=${resellerId ?? "-"}, dataPlan=${(initial as any).dataPlan?.name ?? "default"})`
           );
         }
 
         const preStatus = await simhuisGetSimStatus(initial.sim.iccid);
         if (preStatus.status === "active") {
-          console.info(`[Activation] SIM ${initial.sim.iccid} reeds actief in Simhuis — overslaan`);
+          console.info(`[Activation] SIM ${initial.sim.iccid} reeds actief in ${adapter.providerKey} — overslaan`);
           rollbackCtx.simActivated = preStatus;
         } else {
           const activated = await simhuisActivateSim({
             iccid: initial.sim.iccid,
             customerRef: initial.customer.customerNumber ?? `${initial.customer.id}`,
-            offerId: defaultOfferId,
-            planId: defaultPlanId,
+            offerId: effectiveOfferId,
+            planId: effectivePlanId,
             resellerId: resellerId,
           });
           rollbackCtx.simActivated = activated;
         }
       } catch (simErr: any) {
-        const msg = `Simhuis activatie mislukt voor SIM ${initial.sim.iccid}: ${simErr?.message ?? simErr}`;
+        const msg = `${adapter.providerKey} activatie mislukt voor SIM ${initial.sim.iccid}: ${simErr?.message ?? simErr}`;
         console.error(`[Activation] ${msg}`);
         await markFailedTx(id, msg, ctx.userId);
         throw new Error(msg);
       }
     } else {
-      console.info("[Activation] Simhuis niet geconfigureerd (username/password leeg) — skip SIM activatie");
+      console.info(`[Activation] ${adapter.providerKey} niet geconfigureerd — skip SIM activatie`);
     }
 
-    // --- STAP 3: Tracker registreren (Navixy) ---
-    const navixyConfigured = await navixyClient.isConfigured();
-    if (navixyConfigured) {
-      try {
-        const deviceModel = buildDeviceModel(initial.tracker.brand, initial.tracker.model);
-        const label = initial.tracker.serialNumber
-          ? `${initial.tracker.serialNumber} (${initial.customer.companyName ?? initial.customerId})`
-          : `${initial.customer.companyName ?? initial.customerId} - ${initial.orderNumber}`;
+    // --- STAP 3: Tracker registreren (Navixy) — ALLEEN bij NIET-SIM_ONLY ---
+    if (!isSimOnly && initial.tracker) {
+      const navixyConfigured = await navixyClient.isConfigured();
+      if (navixyConfigured) {
+        try {
+          const deviceModel = buildDeviceModel(initial.tracker.brand, initial.tracker.model);
+          const label = initial.tracker.serialNumber
+            ? `${initial.tracker.serialNumber} (${initial.customer.companyName ?? initial.customerId})`
+            : `${initial.customer.companyName ?? initial.customerId} - ${initial.orderNumber}`;
 
-        const registered = await navixyRegisterTracker({
-          imei: initial.tracker.imei,
-          deviceModel,
-          label,
-        });
-        rollbackCtx.navixyTracker = registered;
-      } catch (navErr: any) {
-        // Compensatie: SIM deactiveren (indien geactiveerd)
-        if (rollbackCtx.simActivated) {
-          console.warn(`[Activation] Navixy registratie mislukt — proberen SIM ${initial.sim.iccid} te deactiveren`);
-          try {
-            await simhuisDeactivateSim(initial.sim.iccid);
-          } catch (rbErr: any) {
-            console.error(`[Activation] ⚠️ Compensatie SIM deactiveren mislukt (Handmatig actie vereist): ${rbErr?.message ?? rbErr}`);
+          const registered = await navixyRegisterTracker({
+            imei: initial.tracker.imei,
+            deviceModel,
+            label,
+          });
+          rollbackCtx.navixyTracker = registered;
+        } catch (navErr: any) {
+          // Compensatie: SIM deactiveren (indien geactiveerd)
+          if (rollbackCtx.simActivated) {
+            console.warn(`[Activation] Navixy registratie mislukt — proberen SIM ${initial.sim.iccid} te deactiveren`);
+            try {
+              if (adapter.capabilities.deactivateSim) {
+                await simhuisDeactivateSim(initial.sim.iccid);
+              } else {
+                console.warn(`[Activation] Provider ${adapter.providerKey} heeft geen deactivateSim-capability — skip rollback`);
+              }
+            } catch (rbErr: any) {
+              console.error(`[Activation] ⚠️ Compensatie SIM deactiveren mislukt (Handmatig actie vereist): ${rbErr?.message ?? rbErr}`);
+            }
           }
+          const msg = `Navixy tracker registratie mislukt (IMEI ${initial.tracker.imei}): ${navErr?.message ?? navErr}`;
+          console.error(`[Activation] ${msg}`);
+          await markFailedTx(id, msg, ctx.userId);
+          throw new Error(msg);
         }
-        const msg = `Navixy tracker registratie mislukt (IMEI ${initial.tracker.imei}): ${navErr?.message ?? navErr}`;
-        console.error(`[Activation] ${msg}`);
-        await markFailedTx(id, msg, ctx.userId);
-        throw new Error(msg);
+      } else {
+        console.info("[Activation] Navixy niet geconfigureerd (credentials leeg) — skip tracker registratie");
       }
-    } else {
-      console.info("[Activation] Navixy niet geconfigureerd (credentials leeg) — skip tracker registratie");
+    } else if (isSimOnly) {
+      console.info(`[Activation] Order ${initial.orderNumber} is SIM_ONLY — skip Navixy tracker-registratie`);
     }
 
-    // --- STAP 4: Interne transactionele stappen (originele flow) ---
+    // --- STAP 4: Interne transactionele stappen ---
     const result = await prisma.$transaction(async (tx) => {
       const order: any = await tx.activationOrder.findUnique({
         where: { id },
         include: {
           customer: true,
           product: true,
+          dataPlan: true,
           tracker: true,
           sim: true,
           vehicle: true,
@@ -666,26 +777,34 @@ export async function completeActivation(id: string, ctx: Ctx) {
         throw new Error(`Order onverwachte status in interne stap: ${order.status}`);
       }
 
-      const tracker = await tx.tracker.findUnique({
-        where: { id: order.tracker.id, deletedAt: null },
-      });
-      if (!tracker || (tracker.status !== "IN_STOCK" && tracker.status !== "RESERVED")) {
-        throw new Error(
-          `Tracker status veranderd: nu ${tracker?.status ?? "deleted"}`
-        );
+      const orderTypeInner: ActivationOrderProductType = order.orderType || ActivationOrderProductType.TRACKER_WITH_SIM;
+      const isSimOnlyInner = orderTypeInner === ActivationOrderProductType.SIM_ONLY_DATA;
+
+      // Tracker checks (alleen bij niet-sim-only)
+      let trackerUpdated: any = null;
+      if (!isSimOnlyInner) {
+        const tracker = await tx.tracker.findUnique({
+          where: { id: order.tracker.id, deletedAt: null },
+        });
+        if (!tracker || (tracker.status !== "IN_STOCK" && tracker.status !== "RESERVED")) {
+          throw new Error(
+            `Tracker status veranderd: nu ${tracker?.status ?? "deleted"}`
+          );
+        }
+        const hasTrackerAssign = await tx.trackerAssignment.findFirst({
+          where: { trackerId: order.tracker.id, endAt: null },
+        });
+        if (hasTrackerAssign) {
+          throw new Error(`Tracker heeft reeds een actieve assignment.`);
+        }
       }
+
+      // SIM checks (altijd)
       const sim = await tx.sIM.findUnique({
         where: { id: order.sim.id, deletedAt: null },
       });
       if (!sim || (sim.status !== "IN_STOCK" && sim.status !== "RESERVED")) {
         throw new Error(`SIM status veranderd: nu ${sim?.status ?? "deleted"}`);
-      }
-
-      const hasTrackerAssign = await tx.trackerAssignment.findFirst({
-        where: { trackerId: order.tracker.id, endAt: null },
-      });
-      if (hasTrackerAssign) {
-        throw new Error(`Tracker heeft reeds een actieve assignment.`);
       }
       const hasSimAssign = await tx.simAssignment.findFirst({
         where: { simId: order.sim.id, endAt: null },
@@ -700,6 +819,7 @@ export async function completeActivation(id: string, ctx: Ctx) {
           subscriptionNumber: subNumber,
           customerId: order.customerId,
           productId: order.productId,
+          dataPlanId: order.dataPlanId ?? null,
           startDate: order.desiredStartDate,
           monthlyPrice: order.monthlyPrice,
           billingCycle: order.billingCycle,
@@ -712,25 +832,77 @@ export async function completeActivation(id: string, ctx: Ctx) {
         data: { status: "ACTIVE" as any },
       });
 
-      const trackerUpdated = await tx.tracker.update({
-        where: { id: order.tracker.id },
-        data: { status: "ACTIVE" as any },
-      });
+      if (!isSimOnlyInner) {
+        trackerUpdated = await tx.tracker.update({
+          where: { id: order.tracker.id },
+          data: { status: "ACTIVE" as any },
+        });
+      }
+
+      // Bepaal SIM customerLink guard: NIET overschrijven als INSERVE_ASSET/MANUAL met andere klant
+      // Opmerking: Prisma's SIMUpdateInput (checked) vereist relation-nested inputs; wij gebruiken
+      // de scalar-FK velden en geven die direct door via SIMUncheckedUpdateInput-achtig object.
+      const updateSimData: Record<string, unknown> = {
+        status: "ACTIVE" as any,
+        dataPlanId: order.dataPlanId ?? null,
+      };
+      const existingCustomerId = sim.customerId;
+      const existingLinkSource = sim.customerLinkSource as CustomerLinkSource | null;
+      const targetCustomerId = order.customerId;
+
+      if (!existingCustomerId) {
+        // Leeg: direct vullen
+        updateSimData.customerId = targetCustomerId;
+        updateSimData.customerLinkedAt = new Date();
+        updateSimData.customerLinkSource = isSimOnlyInner
+          ? ("MANUAL" as any)
+          : ("SUBSCRIPTION_DERIVED" as any);
+      } else if (existingCustomerId === targetCustomerId) {
+        // Dezelfde klant: bron alleen updaten indien leeg of subscription-gerelateerd
+        if (!existingLinkSource || existingLinkSource === CustomerLinkSource.SUBSCRIPTION_DERIVED) {
+          updateSimData.customerLinkSource = isSimOnlyInner
+            ? ("MANUAL" as any)
+            : ("SUBSCRIPTION_DERIVED" as any);
+        }
+        // customerLinkedAt: alleen zetten indien leeg
+        if (!sim.customerLinkedAt) {
+          updateSimData.customerLinkedAt = new Date();
+        }
+      } else {
+        // ANDERE klant dan reeds gekoppeld
+        if (existingLinkSource === CustomerLinkSource.INSERVE_ASSET) {
+          // Beschermd: NIET overschrijven. Geen warning, gewoon overslaan (bron vertelt dat dit InServe masterdata is)
+          console.info(`[Activation] SIM ${sim.iccid} reeds gekoppeld aan andere klant via INSERVE_ASSET — koppeling NIET overschreven.`);
+        } else if (existingLinkSource === CustomerLinkSource.MANUAL) {
+          // Handmatige koppeling: NIET zomaar overschrijven (tenzij expliciet geweten); we laten staan.
+          console.warn(`[Activation] SIM ${sim.iccid} reeds handmatig gekoppeld aan andere klant (${existingCustomerId} vs ${targetCustomerId}) — koppeling NIET overschreven.`);
+        } else {
+          // SUBSCRIPTION_DERIVED of leeg: wel overschrijven (oude abonnement-koppeling)
+          updateSimData.customerId = targetCustomerId;
+          updateSimData.customerLinkedAt = new Date();
+          updateSimData.customerLinkSource = isSimOnlyInner
+            ? ("MANUAL" as any)
+            : ("SUBSCRIPTION_DERIVED" as any);
+        }
+      }
+
       const simUpdated = await tx.sIM.update({
         where: { id: order.sim.id },
-        data: { status: "ACTIVE" as any },
+        data: updateSimData,
       });
 
-      await tx.trackerAssignment.create({
-        data: {
-          subscriptionId: subscription.id,
-          trackerId: order.tracker.id,
-          vehicleId: order.vehicleId ?? null,
-          startAt: new Date(),
-          reason: "INITIAL" as any,
-          createdById: ctx.userId,
-        },
-      });
+      if (!isSimOnlyInner) {
+        await tx.trackerAssignment.create({
+          data: {
+            subscriptionId: subscription.id,
+            trackerId: order.tracker.id,
+            vehicleId: order.vehicleId ?? null,
+            startAt: new Date(),
+            reason: "INITIAL" as any,
+            createdById: ctx.userId,
+          },
+        });
+      }
 
       await tx.simAssignment.create({
         data: {
@@ -760,6 +932,8 @@ export async function completeActivation(id: string, ctx: Ctx) {
           subscriptionNumber: subNumber,
           status: "ACTIVE",
           orderId: order.id,
+          orderType: order.orderType,
+          dataPlanId: order.dataPlanId,
         } as any,
       });
       await logAudit(tx, {
@@ -769,12 +943,14 @@ export async function completeActivation(id: string, ctx: Ctx) {
         userId: ctx.userId,
         newValues: {
           subscriptionId: subscription.id,
-          trackerId: trackerUpdated.id,
+          trackerId: trackerUpdated?.id ?? null,
           simId: simUpdated.id,
+          orderType: order.orderType,
+          dataPlanId: order.dataPlanId,
         } as any,
       });
 
-      return { order: completed, subscription };
+      return { order: completed, subscription, isSimOnly: isSimOnlyInner };
     }, { isolationLevel: "Serializable" });
 
     // --- STAP 5: Async externe syncs (geen blokking) ---
@@ -786,6 +962,7 @@ export async function completeActivation(id: string, ctx: Ctx) {
 
     // Best-effort compensatie indien interne transactie of onverwachte fout
     if (!isAlreadyMarkedFailed) {
+      // Navixy compensatie: alleen als tracker NIET SIM_ONLY is
       if (rollbackCtx.navixyTracker) {
         console.warn(`[Activation] Interne stap mislukt — proberen Navixy tracker ${rollbackCtx.navixyTracker.id} te deactiveren`);
         try {
@@ -797,7 +974,15 @@ export async function completeActivation(id: string, ctx: Ctx) {
       if (rollbackCtx.simActivated && !rollbackCtx.simActivated.status) {
         console.warn(`[Activation] Interne stap mislukt — proberen SIM ${initial.sim.iccid} te deactiveren`);
         try {
-          await simhuisDeactivateSim(initial.sim.iccid);
+          await initializeProviderRegistry();
+          const rbAdapter = initial.sim
+            ? await providerRegistry.resolveForSim(initial.sim as { providerKey?: string | null; provider?: string | null })
+            : await providerRegistry.require("simhuis");
+          if (rbAdapter.capabilities.deactivateSim) {
+            await simhuisDeactivateSim(initial.sim.iccid);
+          } else {
+            console.warn(`[Activation] Provider ${rbAdapter.providerKey} heeft geen deactivateSim-capability — skip rollback`);
+          }
         } catch (rbErr: any) {
           console.error(`[Activation] ⚠️ Compensatie SIM deactiveren mislukt: ${rbErr?.message ?? rbErr}`);
         }

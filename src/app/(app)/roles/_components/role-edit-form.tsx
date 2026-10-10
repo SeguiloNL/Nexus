@@ -11,6 +11,8 @@ import {
   Building2,
   Users,
   Save,
+  Database,
+  CreditCard,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -41,11 +43,12 @@ const RESOURCE_LABELS: Record<string, { label: string; icon: any }> = {
   customer: { label: "Klanten", icon: Building2 },
   subscription: { label: "Abonnementen", icon: Shield },
   vehicle: { label: "Voertuigen", icon: Users },
-  sim: { label: "SIM-kaarten", icon: Shield },
+  sim: { label: "SIM-kaarten", icon: CreditCard },
   tracker: { label: "Trackers", icon: Shield },
   activation_order: { label: "Activeringen", icon: Shield },
   invoice: { label: "Facturen", icon: Shield },
   product: { label: "Producten", icon: Shield },
+  data_plan: { label: "Dataplannen", icon: Database },
   user: { label: "Gebruikers", icon: Users },
   role: { label: "Rollen", icon: Shield },
   audit_log: { label: "Audit log", icon: Shield },
@@ -398,6 +401,39 @@ export function RoleEditForm({ role, canEdit }: Props) {
                               Tegel &quot;Dataverbruik alle SIMs&quot; tonen
                               <span className="text-slate-400">
                                 (totaalverbruik alle actieve SIMs, los toe te kennen)
+                              </span>
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                    {resource === "activation_order" && isInternalScope ? (
+                      <div className="px-4 pb-2">
+                        <div className="grid grid-cols-12 gap-2">
+                          <div className="col-span-5 text-xs text-slate-400 italic">
+                            Specifieke acties
+                          </div>
+                          <div className="col-span-7 space-y-1">
+                            <label
+                              className={`inline-flex items-center gap-2 text-xs cursor-pointer ${
+                                disabled
+                                  ? "opacity-50 pointer-events-none"
+                                  : "text-slate-700"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                name={`act_activation_order_sim_only_order`}
+                                defaultChecked={Boolean(
+                                  (role as any).actionOverrides?.[resource]
+                                    ?.sim_only_order
+                                )}
+                                disabled={disabled}
+                                className="h-3.5 w-3.5"
+                              />
+                              Sim-only datasimkaarten bestellen en activeren
+                              <span className="text-slate-400">
+                                (los toe te kennen: naast standaard tracker-activaties)
                               </span>
                             </label>
                           </div>
