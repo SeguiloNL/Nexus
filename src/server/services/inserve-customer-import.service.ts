@@ -1022,6 +1022,10 @@ export async function runInserveCustomerImport(
     // make contact calls → 80-90% fewer API calls.
     // -------------------------------------------------------------------------
     const contactRelevantCompanyIds: Set<number> = new Set();
+    // Cache van verrijkte bedrijven (met custom fields) zodat de hoofdloop
+    // geen dubbele API-calls hoeft te doen. Bij 2000 bedrijven zonder inline
+    // velden zou dit anders 4000 calls worden → rate limit.
+    const enrichedCompaniesCache: Map<number, InserveCompany> = new Map();
     try {
       for (const rawCompany of fetchedCompanies) {
         const companyId = rawCompany.id;
@@ -1040,6 +1044,12 @@ export async function runInserveCustomerImport(
             } catch (fe: any) {
               customFetchErr = fe instanceof Error ? fe : new Error(String(fe));
             }
+          }
+          // Alleen cachen als verrijking niet faalde. Bij een fout niet
+          // cachen, zodat de hoofdloop de fout nog steeds kan detecteren
+          // en correct kan afhandelen (fetch_error_nexus).
+          if (!customFetchErr) {
+            enrichedCompaniesCache.set(companyId, company);
           }
           nexus = resolveNexusFieldValue(company, customFetchErr);
         } catch {
@@ -1279,17 +1289,23 @@ export async function runInserveCustomerImport(
         }
       }
       const companyId = rawCompany.id;
-      let company: InserveCompany = rawCompany;
+      // Gebruik de verrijkte bedrijf uit de pre-scan cache om dubbele
+      // API-calls te voorkomen.
+      let company: InserveCompany = enrichedCompaniesCache.get(companyId) ?? rawCompany;
       let nexus: NexusFieldResolution;
 
       try {
+        // Alleen verrijken als het niet in de cache zit (zou niet moeten
+        // voorkomen, maar als fall-back).
         const hasFieldsInline =
-          Array.isArray(rawCompany.custom_fields) ||
-          Array.isArray(rawCompany.company_fields) ||
-          Array.isArray(rawCompany.extra_fields) ||
-          Array.isArray(rawCompany.fields);
+          Array.isArray((company as any).customValues) ||
+          Array.isArray((company as any).custom_values) ||
+          Array.isArray(company.custom_fields) ||
+          Array.isArray(company.company_fields) ||
+          Array.isArray(company.extra_fields) ||
+          Array.isArray(company.fields);
         let customFetchErr: Error | null = null;
-        if (!hasFieldsInline) {
+        if (!hasFieldsInline && !enrichedCompaniesCache.has(companyId)) {
           try {
             company = await enrichCompanyWithCustomFields(rawCompany);
           } catch (fe: any) {
@@ -1302,6 +1318,31 @@ export async function runInserveCustomerImport(
           status: "fetch_error",
           errorMessage: (topErr?.message ?? "Onbekende fout").slice(0, 500),
         };
+      }
+
+      // DIAGNOSTISCH: log de Nexus-resolutie voor de eerste 25 bedrijven en
+      // voor alle bedrijven die niet als 'active' worden herkend. Dit helpt
+      // bij het diagnosticeren waarom bedrijven met Nexus=Actief in Inserve
+      // niet worden geïmporteerd (bv. afwijkende veldnaam of waarde-structuur).
+      if (i < 25 || nexus.status !== "active") {
+        const allFields = [
+          ...(Array.isArray((company as any).customValues) ? (company as any).customValues : []),
+          ...(Array.isArray((company as any).custom_values) ? (company as any).custom_values : []),
+          ...(Array.isArray(company.custom_fields) ? company.custom_fields : []),
+          ...(Array.isArray(company.company_fields) ? company.company_fields : []),
+          ...(Array.isArray(company.extra_fields) ? company.extra_fields : []),
+          ...(Array.isArray(company.fields) ? company.fields : []),
+        ];
+        const fieldNames = allFields.map((f: any) => {
+          const fn = f?.name ?? f?.slug ?? f?.title ?? f?.key ?? f?.field_id ?? f?.id ?? "(onbekend)";
+          const fv = typeof f?.value === 'object' ? JSON.stringify(f.value) : (f?.value ?? f?.field_value?.value ?? "(leeg)");
+          return `${fn}=${fv}`;
+        }).join("; ");
+        console.debug(
+          `[Inserve] Nexus-diagnose bedrijf #${companyId} (${company.name ?? "?"}): ` +
+          `status=${nexus.status} rawValue=${(nexus as any).rawValue ?? "(geen)"} | ` +
+          `velden=[${fieldNames || "(geen custom fields)"}]`
+        );
       }
 
       const hasLink = previouslyLinkedIds.has(companyId);

@@ -1313,15 +1313,19 @@ export async function listClientsForCompanyIds(
               else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveContact[];
               if (typeof rAny.total === 'number' && chunkTotalExpected === 0) chunkTotalExpected = rAny.total as number;
             }
-            // Fallback: als de API geen bedrijfsrelatie retourneert op de
-            // contacten (bv. `with=companies` wordt genegeerd), kennen we
-            // de contacten toe aan de bedrijf-ID's uit deze chunk. We
-            // weten immers dat deze contacten zijn opgehaald voor deze
-            // bedrijf-ID's. Dit voorkomt dat 0 contacten worden verwerkt.
-            for (const c of pageItems) {
-              if (getContactCompanyIds(c).length === 0) {
-                (c as any).companies = [...idChunk];
-              }
+            // GEEN fallback die alle chunk-ID's toekent — dat zou elk
+            // contact aan alle bedrijven in de chunk koppelen. In plaats
+            // daarvan controleren we of de API de bedrijfsrelatie retourneert.
+            // Als contacten géén resolveerbaar bedrijf-ID hebben, is
+            // Strategie A onbruikbaar en vallen we terug op Strategie B
+            // (per-company), waar we het exacte bedrijf kennen.
+            const contactsHaveCompany = pageItems.length > 0
+              ? pageItems.some((c) => getContactCompanyIds(c).length > 0)
+              : true; // lege pagina is geen reden om te falen
+            if (pageItems.length > 0 && !contactsHaveCompany) {
+              // Gooi een speciale error zodat de outer catch Strategie A
+              // afbreekt en doorgaat naar Strategie B.
+              throw new Error('STRATEGY_A_NO_COMPANY_RELATION');
             }
             // First chunk, first probe, first page: detect if filter works
             if (batchesDone === 0 && page === 1 && !chunkSucceeded) {
@@ -1342,6 +1346,10 @@ export async function listClientsForCompanyIds(
           } catch (aErr: any) {
             const rl = isInserveRateLimitError(aErr);
             if (rl) throw rl; // re-throw: handled at outer catch
+            // Special: Strategie A retourneert contacten zonder bedrijfsrelatie.
+            // Alle varianten hebben ditzelfde probleem → breek Strategie A af
+            // en val terug op Strategie B (per-company).
+            if (aErr?.message === 'STRATEGY_A_NO_COMPANY_RELATION') throw aErr;
             // non-rate-limit network/5xx/400: try next variant (if first chunk) else break
             if (batchesDone === 0) continue variantProbe;
             break;
