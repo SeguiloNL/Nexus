@@ -245,6 +245,71 @@ export async function findContactByInserveId(
   return prisma.contactPerson.findFirst({ where });
 }
 
+export interface UpsertContactForImportInput {
+  inserveContactId: number;
+  firstName: string | null;
+  lastName: string;
+  email: string | null;
+  phone: string | null;
+  mobile: string | null;
+  functionTitle: string | null;
+}
+
+export interface UpsertContactForImportResult {
+  contact: PrismaContactPerson;
+  created: boolean;
+  restored: boolean;
+}
+
+/**
+ * Atomisch aanmaken of bijwerken van een contactpersoon op basis van
+ * inserveContactId (voor de Inserve-import). Gebruikt Prisma upsert zodat:
+ *  - soft-gedeleted contacten met dezelfde inserveContactId worden hersteld
+ *    (deletedAt = null) in plaats van een unique-constraint fout te geven;
+ *  - concurrerende imports niet kunnen crashen op een race-condition tussen
+ *    findContactByInserveId en createContactService.
+ *
+ * Geeft ook aan of het contact nieuw is aangemaakt of hersteld uit soft-delete.
+ */
+export async function upsertContactForImport(
+  input: UpsertContactForImportInput
+): Promise<UpsertContactForImportResult> {
+  const data: Prisma.ContactPersonCreateInput = {
+    firstName: input.firstName,
+    lastName: input.lastName,
+    email: input.email,
+    phone: input.phone,
+    mobile: input.mobile,
+    functionTitle: input.functionTitle,
+    inserveContactId: input.inserveContactId,
+  };
+
+  const existing = await prisma.contactPerson.findUnique({
+    where: { inserveContactId: input.inserveContactId },
+    select: { id: true, deletedAt: true },
+  });
+
+  const result = await prisma.contactPerson.upsert({
+    where: { inserveContactId: input.inserveContactId },
+    create: data,
+    update: {
+      firstName: input.firstName,
+      lastName: input.lastName,
+      email: input.email,
+      phone: input.phone,
+      mobile: input.mobile,
+      functionTitle: input.functionTitle,
+      deletedAt: null,
+    },
+  });
+
+  return {
+    contact: result,
+    created: !existing,
+    restored: existing?.deletedAt != null,
+  };
+}
+
 export async function findSimilarContactsByCustomer(
   customerId: string,
   predicate: { firstName?: string | null; lastName?: string | null; email?: string | null }

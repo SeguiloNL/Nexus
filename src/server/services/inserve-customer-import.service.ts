@@ -28,6 +28,7 @@ import {
   updateContactService,
   linkContactToCustomer,
   getCustomerIdsForContact,
+  upsertContactForImport,
 } from "./contact.service";
 import { logAudit, diffObject } from "./audit.service";
 import { generateCustomerNumber } from "@/lib/identifiers";
@@ -1142,7 +1143,12 @@ export async function runInserveCustomerImport(
             const phone = resolveContactPhoneLandline(insContact);
             const mobile = resolveContactPhoneMobile(insContact);
             const functionTitle = resolveContactFunction(insContact);
-            const existingByInserve = await findContactByInserveId(insId);
+
+            // Zoek ook soft-gedeleted contacten: een eerder verwijderd contact
+            // met dezelfde inserveContactId mag worden hersteld, niet leiden
+            // tot een unique-constraint fout.
+            const existingByInserve = await findContactByInserveId(insId, { includeDeleted: true });
+
             if (existingByInserve) {
               // Many-to-many: een contactpersoon kan bij meerdere bedrijven
               // horen. Controleer of het contact al aan deze klant is
@@ -1181,7 +1187,8 @@ export async function runInserveCustomerImport(
               const fnComp = (functionTitle ?? null) ?? null;
               const oldFnComp = oldRec.functionTitle ?? null;
               if (fnComp !== oldFnComp) newVals.functionTitle = fnComp;
-              if (Object.keys(newVals).length === 0) {
+              const wasDeleted = oldRec.deletedAt != null;
+              if (Object.keys(newVals).length === 0 && !wasDeleted) {
                 summary.contacts.skipped++;
                 if (dryRun && summary.plannedChanges) summary.plannedChanges.contacts.unchanged++;
                 continue;
@@ -1191,15 +1198,25 @@ export async function runInserveCustomerImport(
                 if (summary.plannedChanges) summary.plannedChanges.contacts.update++;
                 continue;
               }
+              // Gebruik atomische upsert: herstelt soft-deleted contacten
+              // (deletedAt = null) en update velden in één operatie.
               try {
-                await updateContactService(existingByInserve.id, newVals, ctx as any);
+                await upsertContactForImport({
+                  inserveContactId: insId,
+                  firstName: firstName ?? null,
+                  lastName,
+                  email: email ?? null,
+                  phone: phone ?? null,
+                  mobile: mobile ?? null,
+                  functionTitle: functionTitle ?? null,
+                });
                 summary.contacts.updated++;
               } catch {
                 summary.contacts.failed++;
                 summary.contactFailedDetails!.push({
                   companyId, inserveContactId: insId,
                   inserveFullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
-                  error: `Update contact mislukt`,
+                  error: `Update/herstel contact mislukt`,
                 });
               }
             } else {
@@ -1229,17 +1246,30 @@ export async function runInserveCustomerImport(
                 if (summary.plannedChanges) summary.plannedChanges.contacts.create++;
                 continue;
               }
+              // Atomische upsert: voorkomt race-condition tussen concurrerende
+              // imports die beide hetzelfde contact proberen aan te maken.
               try {
-                await createContactService({
-                  customerId,
-                  firstName: firstName ?? undefined,
-                  lastName,
-                  email: email ?? undefined,
-                  phone: phone ?? undefined,
-                  mobile: mobile ?? undefined,
-                  functionTitle: functionTitle ?? undefined,
+                const upsertRes = await upsertContactForImport({
                   inserveContactId: insId,
-                }, ctx as any);
+                  firstName: firstName ?? null,
+                  lastName,
+                  email: email ?? null,
+                  phone: phone ?? null,
+                  mobile: mobile ?? null,
+                  functionTitle: functionTitle ?? null,
+                });
+                // Zorg dat het contact aan deze klant is gekoppeld.
+                try {
+                  await linkContactToCustomer(upsertRes.contact.id, customerId, ctx.userId ?? undefined);
+                } catch {
+                  summary.contacts.failed++;
+                  summary.contactFailedDetails!.push({
+                    companyId, inserveContactId: insId,
+                    inserveFullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
+                    error: `Koppeling nieuw contact aan klant mislukt`,
+                  });
+                  continue;
+                }
                 summary.contacts.created++;
               } catch {
                 summary.contacts.failed++;
@@ -1336,7 +1366,11 @@ export async function runInserveCustomerImport(
         const fieldNames = allFields.map((f: any) => {
           const fn = f?.name ?? f?.slug ?? f?.title ?? f?.key ?? f?.field_id ?? f?.id ?? "(onbekend)";
           const fv = typeof f?.value === 'object' ? JSON.stringify(f.value) : (f?.value ?? f?.field_value?.value ?? "(leeg)");
-          return `${fn}=${fv}`;
+          // Toon ook de custom_field_object naam (de echte veld-label in Inserve),
+          // zodat we kunnen zien welk veld het Nexus-veld is (ook al heeft f.name
+          // alleen een numerieke ID).
+          const cfoName = f?.custom_field_object?.name ?? f?.custom_field_object?.title ?? null;
+          return `${fn}${cfoName ? `[${cfoName}]` : ""}=${fv}`;
         }).join("; ");
         console.debug(
           `[Inserve] Nexus-diagnose bedrijf #${companyId} (${company.name ?? "?"}): ` +

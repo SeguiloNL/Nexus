@@ -554,6 +554,33 @@ export async function triggerSyncJobAction(
     return { success: false, errors: validated.error.flatten().fieldErrors as any };
   }
 
+  // Mutex-check: voorkom dat twee runs van dezelfde job gelijktijdig draaien.
+  // Zonder deze check kon een handmatige run vanuit Instellingen concurreren
+  // met een run gestart vanuit de Klanten-importpagina, wat leidde tot
+  // unique-constraint fouten en dubbele verwerking.
+  const MUTEX_STALE_MS = 10 * 60 * 1000;
+  const staleCutoff = new Date(Date.now() - MUTEX_STALE_MS);
+  const bestaandeRun = await prisma.syncJobRun.findFirst({
+    where: {
+      jobId: validated.data.jobId,
+      status: { in: [SyncJobStatus.QUEUED, SyncJobStatus.RUNNING] },
+      startedAt: { gt: staleCutoff },
+    },
+    select: { id: true, startedAt: true, status: true },
+  });
+  if (bestaandeRun) {
+    const ageSec = Math.max(0, Math.round((Date.now() - bestaandeRun.startedAt.getTime()) / 1000));
+    return {
+      success: false,
+      errors: {
+        _global: [
+          `Er is reeds een run bezig voor ${validated.data.jobId} (status: ${bestaandeRun.status}, leeftijd: ${ageSec}s). ` +
+            `Wacht tot deze is afgerond of forceer een nieuwe run.`,
+        ],
+      },
+    };
+  }
+
   const config = await getSyncJobConfig(validated.data.jobId);
   const run = await prisma.$transaction(async (tx) =>
     createSyncJobRun(tx, {

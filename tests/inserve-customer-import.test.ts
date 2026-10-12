@@ -370,6 +370,7 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
   let findContactByInserveIdSpy: any;
   let findSimilarContactsByCustomerSpy: any;
   let createContactServiceSpy: any;
+  let upsertContactForImportSpy: any;
   let updateContactServiceSpy: any;
   let consoleErr: any;
 
@@ -478,6 +479,23 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
       deletedAt: null,
+    } as any));
+    upsertContactForImportSpy = vi.spyOn(contactSvc, "upsertContactForImport").mockImplementation(async (d) => ({
+      contact: {
+        id: `cp-new-${d.inserveContactId ?? Math.random().toString(36).slice(2, 7)}`,
+        firstName: d.firstName,
+        lastName: d.lastName,
+        email: d.email,
+        phone: d.phone,
+        mobile: d.mobile,
+        functionTitle: d.functionTitle,
+        inserveContactId: d.inserveContactId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+      },
+      created: true,
+      restored: false,
     } as any));
     updateContactServiceSpy = vi.spyOn(contactSvc, "updateContactService").mockImplementation(async (id, d) => ({
       ...(d as any),
@@ -826,6 +844,7 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
     expect(s.previouslyActiveNowInactive![0].inserveCompanyId).toBe(77);
     expect(createContactServiceSpy).not.toHaveBeenCalled();
     expect(updateContactServiceSpy).not.toHaveBeenCalled();
+    expect(upsertContactForImportSpy).not.toHaveBeenCalled();
   });
 
   it("TR-6.4: fetch_error (ophalen custom fields mislukt) → NIET als Inactief gezien; wordt geteld in skipped.fetch_error_nexus EN failed", async () => {
@@ -1021,6 +1040,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
   let findSimilarContactsByCustomerSpy: any;
   let createContactServiceSpy: any;
   let updateContactServiceSpy: any;
+  let upsertContactForImportSpy: any;
   let consoleErr: any;
 
   beforeEach(() => {
@@ -1117,6 +1137,23 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       updatedAt: new Date(),
       deletedAt: null,
     } as any));
+    upsertContactForImportSpy = vi.spyOn(contactSvc, "upsertContactForImport").mockImplementation(async (d) => ({
+      contact: {
+        id: `cp-new-${d.inserveContactId ?? Math.random().toString(36).slice(2, 7)}`,
+        firstName: d.firstName,
+        lastName: d.lastName,
+        email: d.email,
+        phone: d.phone,
+        mobile: d.mobile,
+        functionTitle: d.functionTitle,
+        inserveContactId: d.inserveContactId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+      },
+      created: true,
+      restored: false,
+    } as any));
     updateContactServiceSpy = vi.spyOn(contactSvc, "updateContactService").mockImplementation(async (id, d) => ({
       ...(d as any),
       id,
@@ -1165,6 +1202,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(prisma.customer.create).not.toHaveBeenCalled();
     expect(prisma.customer.update).not.toHaveBeenCalled();
     expect(createContactServiceSpy).not.toHaveBeenCalled();
+    expect(upsertContactForImportSpy).not.toHaveBeenCalled();
   });
 
   it("SM-2: Nexus=Actief + BESTAANDE klant (status=INACTIVE) → TERUG naar ACTIEF; customersReactivated=1; sync contacten WEL", async () => {
@@ -1223,8 +1261,8 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(s.previouslyInactiveNowActive![0].inserveCompanyId).toBe(9002);
     expect(capturedUpdate).not.toBeNull();
     expect(capturedUpdate.data.status).toBe("ACTIVE");
-    expect(createContactServiceSpy).toHaveBeenCalledTimes(1);
-    expect((createContactServiceSpy.mock.calls[0][0] as any).inserveContactId).toBe(5002);
+    expect(upsertContactForImportSpy).toHaveBeenCalledTimes(1);
+    expect((upsertContactForImportSpy.mock.calls[0][0] as any).inserveContactId).toBe(5002);
   });
 
   it("SM-3: Nexus ontbreekt (missing) + BESTAANDE gekoppelde klant (status=ACTIVE) → status ONGEMOEID; tellingen unchanged/failed?", async () => {
@@ -1290,8 +1328,8 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(s.contacts.created).toBe(2);
     expect(s.contacts.skipped).toBe(0);
     expect(s.contacts.updated).toBe(0);
-    expect(createContactServiceSpy).toHaveBeenCalledTimes(2);
-    const args = createContactServiceSpy.mock.calls.map((c: any) => c[0]);
+    expect(upsertContactForImportSpy).toHaveBeenCalledTimes(2);
+    const args = upsertContactForImportSpy.mock.calls.map((c: any) => c[0]);
     const ids = args.map((a: any) => a.inserveContactId).sort();
     expect(ids).toEqual([5101, 5102]);
     expect((args.find((a: any) => a.inserveContactId === 5102) as any).mobile).toBe("0699999999");
@@ -1352,6 +1390,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(s.contacts.updated).toBe(0);
     expect(createContactServiceSpy).not.toHaveBeenCalled();
     expect(updateContactServiceSpy).not.toHaveBeenCalled();
+    expect(upsertContactForImportSpy).not.toHaveBeenCalled();
   });
 
   it("SM-6: Contactpersoon Inserve e-mail gewijzigd → updateContactService aangeroepen; contacts.updated=1", async () => {
@@ -1402,11 +1441,11 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     const s = await runInserveCustomerImport(defaultCtx);
     expect(s.contacts.updated).toBe(1);
     expect(s.contacts.created).toBe(0);
-    expect(updateContactServiceSpy).toHaveBeenCalledTimes(1);
-    const [id, newVals] = updateContactServiceSpy.mock.calls[0] as any;
-    expect(id).toBe("cp-5301");
-    expect(newVals.email).toBe("NIEUW@verander.nl");
-    expect(newVals.lastName).toBeUndefined();
+    expect(upsertContactForImportSpy).toHaveBeenCalledTimes(1);
+    const upsertArgs = upsertContactForImportSpy.mock.calls[0][0] as any;
+    expect(upsertArgs.inserveContactId).toBe(5301);
+    expect(upsertArgs.email).toBe("NIEUW@verander.nl");
+    expect(upsertArgs.lastName).toBe("Verander");
   });
 
   it("SM-7: 2 contacten met ZELFDE e-mail (binnen 1 bedrijf) → beide worden aangemaakt; GEEN unique email violation; contacts.created=2", async () => {
@@ -1430,7 +1469,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     const s = await runInserveCustomerImport(defaultCtx);
     expect(s.contacts.created).toBe(2);
     expect(s.contacts.failed).toBe(0);
-    expect(createContactServiceSpy).toHaveBeenCalledTimes(2);
+    expect(upsertContactForImportSpy).toHaveBeenCalledTimes(2);
   });
 
   it("SM-8: Contactpersoon zonder achternaam (last_name=null) → OVERSLAAN; contacts.skipped=1", async () => {
@@ -1453,7 +1492,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     const s = await runInserveCustomerImport(defaultCtx);
     expect(s.contacts.skipped).toBe(1);
     expect(s.contacts.created).toBe(0);
-    expect(createContactServiceSpy).not.toHaveBeenCalled();
+    expect(upsertContactForImportSpy).not.toHaveBeenCalled();
   });
 
   it("SM-9: Overeenkomst op naam+email (bestaand Handmatig contact) → possibleContactMatches gevuld; GEEN automerge; findContactByInserveId returned null, findSimilar returned bestaand cp", async () => {
@@ -1486,7 +1525,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(s.possibleContactMatches![0].inserveContactId).toBe(5601);
     expect(s.possibleContactMatches![0].existingContactIds).toContain("cp-bestaand-handmatig");
     expect(s.possibleContactMatches![0].reason).toBe("name_email");
-    expect(createContactServiceSpy).toHaveBeenCalledTimes(1);
+    expect(upsertContactForImportSpy).toHaveBeenCalledTimes(1);
   });
 
   it("SM-10: API call listClientsForCompanyIds THROWS → import wordt PARTIAL_SUCCESS; contactFailedDetails gevuld; bedrijven verwerking WEL doorloopt", async () => {
@@ -1732,6 +1771,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     (prisma.customer.create as any).mockImplementation(async () => { createCalled = true; return { id: "x" }; });
     (prisma.customer.update as any).mockImplementation(async () => { updateCalled = true; return {}; });
     createContactServiceSpy.mockImplementation(async () => { createCalled = true; return {} as any; });
+    upsertContactForImportSpy.mockImplementation(async () => { createCalled = true; return { contact: {}, created: true, restored: false } as any; });
 
     const s = await runInserveCustomerImport(defaultCtx, { dryRun: true });
     expect(s.dryRun).toBe(true);
@@ -1765,9 +1805,14 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     // Het contact bestaat al (aangemaakt tijdens bedrijf 9201) en is nog
     // niet gekoppeld aan bedrijf 9202.
     let contactCreatedCount = 0;
-    createContactServiceSpy.mockImplementation(async (d: any) => {
+    upsertContactForImportSpy.mockImplementation(async (d: any) => {
+      const isFirst = contactCreatedCount === 0;
       contactCreatedCount++;
-      return { id: `cp-${d.inserveContactId}`, ...d } as any;
+      return {
+        contact: { id: `cp-${d.inserveContactId}`, ...d },
+        created: isFirst,
+        restored: false,
+      } as any;
     });
     findContactByInserveIdSpy.mockImplementation(async (insId: any) => {
       if (insId === 6201 && contactCreatedCount > 0) {
@@ -1782,9 +1827,10 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
 
     const s = await runInserveCustomerImport(defaultCtx);
     expect(s.status).toBe("SUCCESS");
-    // Eén contactpersoon aangemaakt (geen duplicaten).
+    // Eén contactpersoon aangemaakt (geen duplicaten). upsert wordt 2x
+    // aangeroepen: 1x create (bedrijf 9201) + 1x update (bedrijf 9202).
     expect(s.contacts.created).toBe(1);
-    expect(contactCreatedCount).toBe(1);
+    expect(upsertContactForImportSpy).toHaveBeenCalledTimes(2);
     // Het contact moet aan beide bedrijven zijn gekoppeld.
     expect(linkedCustomerIds.length).toBeGreaterThanOrEqual(1);
   });
