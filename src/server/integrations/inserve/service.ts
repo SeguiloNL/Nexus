@@ -1283,7 +1283,18 @@ export async function listClientsForCompanyIds(
         const effectiveMax = maxPages ?? 20;
         for (let page = 1; page <= effectiveMax; page++) {
           const separator = (vStr && vStr.length > 0) ? '&' : '';
-          const qsExtra = vStr.length > 0 ? `${separator}page=${page}&per_page=${perPage}` : `page=${page}&per_page=${perPage}`;
+          // Vraag de companies-relatie op zodat getContactCompanyIds de
+          // contacten correct aan bedrijven kan koppelen. Zonder deze
+          // `with` retourneert Inserve contacten zonder bedrijfsrelatie,
+          // waardoor groupContactsByCompanyId een lege map oplevert en
+          // er 0 contacten worden verwerkt.
+          const withRels = (withRelations && withRelations.length > 0)
+            ? withRelations
+            : ['companies'];
+          const withStr = `with=${encodeURIComponent(withRels.join(','))}`;
+          const qsExtra = vStr.length > 0
+            ? `${separator}${withStr}&page=${page}&per_page=${perPage}`
+            : `${withStr}&page=${page}&per_page=${perPage}`;
           const path = `${INSERVE_CLIENT_ENDPOINT}?${vStr}${qsExtra}`;
           try {
             const chunk = await client.request<any>(path, { method: 'GET' });
@@ -1301,6 +1312,16 @@ export async function listClientsForCompanyIds(
               else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as InserveContact[];
               else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveContact[];
               if (typeof rAny.total === 'number' && chunkTotalExpected === 0) chunkTotalExpected = rAny.total as number;
+            }
+            // Fallback: als de API geen bedrijfsrelatie retourneert op de
+            // contacten (bv. `with=companies` wordt genegeerd), kennen we
+            // de contacten toe aan de bedrijf-ID's uit deze chunk. We
+            // weten immers dat deze contacten zijn opgehaald voor deze
+            // bedrijf-ID's. Dit voorkomt dat 0 contacten worden verwerkt.
+            for (const c of pageItems) {
+              if (getContactCompanyIds(c).length === 0) {
+                (c as any).companies = [...idChunk];
+              }
             }
             // First chunk, first probe, first page: detect if filter works
             if (batchesDone === 0 && page === 1 && !chunkSucceeded) {
@@ -1397,7 +1418,17 @@ export async function listClientsForCompanyIds(
           // Heuristic: accept if page is array-like (even empty)
           workingEp = vi;
           found = true;
-          if (pageItems.length > 0) allContacts.push(...pageItems);
+          if (pageItems.length > 0) {
+            // Fallback: label contacten met het bedrijf-ID waarvoor ze
+            // zijn opgehaald, wanneer de API geen bedrijfsrelatie
+            // retourneert.
+            for (const c of pageItems) {
+              if (getContactCompanyIds(c).length === 0) {
+                (c as any).companies = [firstId];
+              }
+            }
+            allContacts.push(...pageItems);
+          }
         } catch (bErr: any) {
           const rl = isInserveRateLimitError(bErr);
           if (rl) throw rl;
@@ -1425,6 +1456,14 @@ export async function listClientsForCompanyIds(
               else if (Array.isArray(rAny.items)) pageItems = rAny.items as InserveContact[];
               else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as InserveContact[];
               else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveContact[];
+            }
+            // Fallback: label contacten met het bedrijf-ID waarvoor ze
+            // zijn opgehaald, wanneer de API geen bedrijfsrelatie
+            // retourneert.
+            for (const c of pageItems) {
+              if (getContactCompanyIds(c).length === 0) {
+                (c as any).companies = [id];
+              }
             }
             return { ok: true, items: pageItems };
           } catch (bErr: any) {
