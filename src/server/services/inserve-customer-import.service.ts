@@ -528,6 +528,92 @@ export async function runInserveCustomerImport(
   // can follow along without opts.onProgress needing to be threaded).
   const progressEnabled = !!onProgress || !!runId;
 
+  // ---------------------------------------------------------------------------
+  // GLOBAL MUTEX — voorkomt concurrerende runs van uit ELK entry point.
+  // De STEP-2 mutex-check hieronder wordt overgeslagen wanneer
+  // opts.skipRunManagement=true (de UI- en settings-actions maken zelf een
+  // SyncJobRun aan). Zonder deze vroege check konden twee actions tegelijk
+  // hun eigen mutex-check doorstaan (TOCTOU-race) en allebei een run starten,
+  // waardoor de import 2x tegelijk draaide en dezelfde bedrijven herhaald
+  // werden gelogd.
+  //
+  // Wanneer preExistingRunId is gezet, sluiten we die uit van de check (het is
+  // onze eigen run).
+  // ---------------------------------------------------------------------------
+  const GLOBAL_MUTEX_STALE_MS = 10 * 60 * 1000;
+  try {
+    const globalStaleCutoff = new Date(Date.now() - GLOBAL_MUTEX_STALE_MS);
+    const globalExisting = await prisma.syncJobRun.findFirst({
+      where: {
+        jobId: SyncJobId.INSERVE_CUSTOMER_IMPORT,
+        status: { in: [SyncJobStatus.QUEUED, SyncJobStatus.RUNNING] },
+        startedAt: { gt: globalStaleCutoff },
+        ...(runId ? { id: { not: runId } } : {}),
+      },
+      select: { id: true, startedAt: true, status: true },
+    });
+    if (globalExisting) {
+      const ageSec = Math.max(
+        0,
+        Math.round((Date.now() - globalExisting.startedAt.getTime()) / 1000)
+      );
+      console.warn(
+        `[Inserve] Global mutex: import overgeslagen. ` +
+        `Er is reeds een run bezig (id=${globalExisting.id}, status=${globalExisting.status}, leeftijd=${ageSec}s). ` +
+        `Huidige preExistingRunId=${runId ?? "(geen)"}.`
+      );
+      const skippedSummary: ImportSummary = {
+        runId: globalExisting.id,
+        status: "SKIPPED",
+        startedAt,
+        endedAt: new Date(),
+        durationMs: Date.now() - t0,
+        fetched: 0,
+        activeFilterPassed: 0,
+        created: 0,
+        updated: 0,
+        unchanged: 0,
+        customersReactivated: 0,
+        customersDeactivated: 0,
+        contacts: { ...ZERO_CONTACTS },
+        skipped: { ...ZERO_SKIPPED },
+        failed: 0,
+        pagesProcessed: 0,
+        clientsPagesProcessed: 0,
+        totalExpected: 0,
+        clientsTotalExpected: 0,
+        errorMessage:
+          `Er is reeds een import bezig (status: ${globalExisting.status}, leeftijd: ${ageSec}s). Wacht tot de vorige is afgerond, of probeer het over 10 minuten opnieuw.`,
+        timingMs: { ...ZERO_TIMING, total: Date.now() - t0, mutexCheck: Date.now() - t0 },
+        possibleUnlinkedMatches: [],
+        possibleContactMatches: [],
+        previouslyActiveNowInactive: [],
+        previouslyInactiveNowActive: [],
+        skippedDetails: [],
+        failedDetails: [],
+        contactFailedDetails: [],
+        dryRun,
+        simLink: { ...EMPTY_SIM_LINK_SUMMARY, dryRun: false },
+        inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
+      };
+      try {
+        if (progressEnabled) {
+          if (!runId) runId = globalExisting.id;
+          initProgress(runId, STEPS_INSERVE_CUSTOMER_IMPORT);
+          finalizeProgress(runId, "SKIPPED", {
+            summary: skippedSummary,
+            errorMessage: skippedSummary.errorMessage ?? undefined,
+          });
+        }
+      } catch { /* noop */ }
+      return skippedSummary;
+    }
+  } catch (mutexErr: any) {
+    // Bij een DB-fout in de mutex-check laten we de import niet onnodig
+    // stoppen; de STEP-2 check (of de caller's check) vangt het nog op.
+    console.warn(`[Inserve] Global mutex check faalde (niet-fataal): ${mutexErr?.message ?? String(mutexErr)}`);
+  }
+
   function pushProgress(state: SyncProgressState) {
     if (onProgress) {
       try {
