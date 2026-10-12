@@ -26,6 +26,8 @@ import {
   findSimilarContactsByCustomer,
   createContactService,
   updateContactService,
+  linkContactToCustomer,
+  getCustomerIdsForContact,
 } from "./contact.service";
 import { logAudit, diffObject } from "./audit.service";
 import { generateCustomerNumber } from "@/lib/identifiers";
@@ -175,7 +177,40 @@ export interface ImportSummary {
     inserveFullName?: string | null;
     error: string;
   }>;
+  /**
+   * Alleen gevuld wanneer de import in dry-run/proefmodus draaide
+   * (`opts.dryRun === true`). Bevat de berekende wijzigingsset die *zou*
+   * worden toegepast, zonder dat er ook maar één schrijfbewerking heeft
+   * plaatsgevonden.
+   */
+  dryRun: boolean;
+  plannedChanges?: PlannedChanges;
   simLink: SimLinkSummary;
+}
+
+/**
+ * Beschrijft de berekende wijzigingsset van een dry-run. Alle aantallen zijn
+ * op basis van de bronlezing en de diff-berekening; er is niets geschreven.
+ */
+export interface PlannedChanges {
+  companies: {
+    create: number;
+    update: number;
+    deactivate: number;
+    reactivate: number;
+    unchanged: number;
+  };
+  contacts: {
+    create: number;
+    update: number;
+    unchanged: number;
+    skipped: number;
+  };
+  relations: {
+    link: number;
+    unlink: number;
+    unchanged: number;
+  };
 }
 
 const MAPPED_FIELDS: Array<
@@ -453,6 +488,13 @@ export interface ImportManagementOpts {
   /** Optionele API-endpoint hint voor assets (debug). */
   assetEndpointHint?: string;
   /**
+   * Indien true: de gehele import draait in proefmodus. Er wordt wel een
+   * volledige diff-berekening gedaan, maar er wordt NIETS naar de database
+   * geschreven (geen customer/contact/relation create/update/delete, geen
+   * audit-log). De samenvatting bevat `dryRun: true` en `plannedChanges`.
+   */
+  dryRun?: boolean;
+  /**
    * Optionele progress callback. Wordt per stap-wijziging en maximaal 20x per
    * run voor sub-percentages (elke 5%) aangeroepen zodat UI of SSE-stream de
    * voortgang realtime kan weergeven.
@@ -474,6 +516,8 @@ export async function runInserveCustomerImport(
 
   const subStep = opts.progressSubPercentStep ?? 5;
   const onProgress: ((state: SyncProgressState) => void) | undefined = opts.onProgress;
+  // Dry-run / proefmodus: bereken alles, schrijf niets.
+  const dryRun = !!opts.dryRun;
 
   // Resolve run-id as soon as possible so progress can be written even when
   // preExistingRunId is not set until after step-3 (createSyncJobRun).
@@ -699,6 +743,7 @@ export async function runInserveCustomerImport(
         skippedDetails: [],
         failedDetails: [],
         contactFailedDetails: [],
+        dryRun: !!opts.dryRun,
         simLink: { ...EMPTY_SIM_LINK_SUMMARY, dryRun: false },
         inserveCredentials: credsInfo,
       };
@@ -719,16 +764,25 @@ export async function runInserveCustomerImport(
     try { doSetStepActive(3); } catch { /* noop */ }
     const t2 = Date.now();
     const syncJobConfig = await getSyncJobConfig(SyncJobId.INSERVE_CUSTOMER_IMPORT);
-    const created = await createSyncJobRun(prisma, {
-      configId: syncJobConfig.id,
-      jobId: SyncJobId.INSERVE_CUSTOMER_IMPORT,
-      triggeredBy: SyncJobTrigger.MANUAL_ADMIN,
-      userId: ctx.userId ?? undefined,
-      status: SyncJobStatus.RUNNING,
-    });
-    syncJobRun = { id: created.id, configId: syncJobConfig.id };
-    timing.createConfigAndRun = Date.now() - t2;
-    runId = created.id;
+    if (dryRun) {
+      // Dry-run: geen SyncJobRun aanmaken. Gebruik een synthetisch runId
+      // voor de voortgangsregistry (indien geactiveerd).
+      const syntheticId = `dryrun-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      syncJobRun = { id: syntheticId, configId: syncJobConfig.id };
+      runId = syntheticId;
+      timing.createConfigAndRun = Date.now() - t2;
+    } else {
+      const created = await createSyncJobRun(prisma, {
+        configId: syncJobConfig.id,
+        jobId: SyncJobId.INSERVE_CUSTOMER_IMPORT,
+        triggeredBy: SyncJobTrigger.MANUAL_ADMIN,
+        userId: ctx.userId ?? undefined,
+        status: SyncJobStatus.RUNNING,
+      });
+      syncJobRun = { id: created.id, configId: syncJobConfig.id };
+      timing.createConfigAndRun = Date.now() - t2;
+      runId = created.id;
+    }
     if (progressEnabled && runId) {
       initProgress(runId, STEPS_INSERVE_CUSTOMER_IMPORT);
       // Re-fire the earlier step boundaries against the now-known runId so
@@ -738,7 +792,7 @@ export async function runInserveCustomerImport(
       setStepDone(runId, 2);
       setStepActive(runId, 3);
     }
-    try { doSetStepDone(3, { id: created.id }); } catch { /* noop */ }
+    try { doSetStepDone(3, { id: syncJobRun.id }); } catch { /* noop */ }
     if (progressEnabled && onProgress) {
       // Registry → opts.onProgress mirror (once) so explicit callback sees
       // the same updates SSE subscribers get (registry emits on every
@@ -784,6 +838,14 @@ export async function runInserveCustomerImport(
     previouslyActiveNowInactive: [],
     previouslyInactiveNowActive: [],
     contactFailedDetails: [],
+    dryRun: !!opts.dryRun,
+    plannedChanges: opts.dryRun
+      ? {
+          companies: { create: 0, update: 0, deactivate: 0, reactivate: 0, unchanged: 0 },
+          contacts: { create: 0, update: 0, unchanged: 0, skipped: 0 },
+          relations: { link: 0, unlink: 0, unchanged: 0 },
+        }
+      : undefined,
     simLink: { ...EMPTY_SIM_LINK_SUMMARY, dryRun: !!opts.simLinkDryRun },
   };
 
@@ -873,6 +935,11 @@ export async function runInserveCustomerImport(
     }
 
     // STEP 4: fetchCompanies
+    // Full-read-guard: bronlezing is alleen "compleet" wanneer zowel bedrijven
+    // ALS contacten succesvol zijn opgehaald. Zolang deze vlag false is, worden
+    // er geen klanten gedeactiveerd (voorkomt massadeactivatie bij een
+    // mislukte/onvolledige bronlezing).
+    let sourceReadComplete = false;
     try { doSetStepActive(4); } catch { /* noop */ }
     let fetchedCompanies: InserveCompany[] = [];
     let t4 = Date.now();
@@ -1015,6 +1082,8 @@ export async function runInserveCustomerImport(
         contactsByCompanyId = {};
       }
       try { doSetStepDone(6, { relevantCompanies: contactRelevantCompanyIds.size, fetched: summary.contacts.fetched, pages: summary.clientsPagesProcessed }); } catch { /* noop */ }
+      // Zowel bedrijven- als contacten-lezing geslaagd → bronmomentopname compleet.
+      sourceReadComplete = true;
     } catch (ce: any) {
       timing.fetchClients = Math.max(timing.fetchClients, Date.now() - tClients);
       const rl = isInserveRateLimitError(ce);
@@ -1065,9 +1134,26 @@ export async function runInserveCustomerImport(
             const functionTitle = resolveContactFunction(insContact);
             const existingByInserve = await findContactByInserveId(insId);
             if (existingByInserve) {
-              if (existingByInserve.customerId !== customerId) {
-                summary.contacts.skipped++;
-                continue;
+              // Many-to-many: een contactpersoon kan bij meerdere bedrijven
+              // horen. Controleer of het contact al aan deze klant is
+              // gekoppeld; zo niet, leg de relatie.
+              const linkedCustomerIds = await getCustomerIdsForContact(existingByInserve.id);
+              const alreadyLinked = linkedCustomerIds.includes(customerId);
+              if (!alreadyLinked) {
+                if (!dryRun) {
+                  try {
+                    await linkContactToCustomer(existingByInserve.id, customerId, ctx.userId ?? undefined);
+                  } catch {
+                    summary.contacts.failed++;
+                    summary.contactFailedDetails!.push({
+                      companyId, inserveContactId: insId,
+                      inserveFullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
+                      error: `Koppeling contact aan klant mislukt`,
+                    });
+                    continue;
+                  }
+                }
+                if (summary.plannedChanges) summary.plannedChanges.relations.link++;
               }
               const oldRec = existingByInserve as any;
               const newVals: any = {};
@@ -1087,6 +1173,12 @@ export async function runInserveCustomerImport(
               if (fnComp !== oldFnComp) newVals.functionTitle = fnComp;
               if (Object.keys(newVals).length === 0) {
                 summary.contacts.skipped++;
+                if (dryRun && summary.plannedChanges) summary.plannedChanges.contacts.unchanged++;
+                continue;
+              }
+              if (dryRun) {
+                summary.contacts.updated++;
+                if (summary.plannedChanges) summary.plannedChanges.contacts.update++;
                 continue;
               }
               try {
@@ -1120,6 +1212,11 @@ export async function runInserveCustomerImport(
               }
               if (!rawLastName || rawLastName.trim() === "") {
                 summary.contacts.skipped++;
+                continue;
+              }
+              if (dryRun) {
+                summary.contacts.created++;
+                if (summary.plannedChanges) summary.plannedChanges.contacts.create++;
                 continue;
               }
               try {
@@ -1238,6 +1335,22 @@ export async function runInserveCustomerImport(
         continue;
       }
       if (nexus.status === "inactive") {
+        // Full-read-guard: als de bronlezing (bedrijven + contacten) niet
+        // volledig geslaagd is, mogen we geen klanten deactiveren. Een
+        // mislukte pagina of time-out mag nooit leiden tot massale
+        // deactivatie. Sla de klant ongemoeid en registreer de reden.
+        if (!sourceReadComplete) {
+          summary.skipped.inactive_or_missing_nexus_field++;
+          summary.skippedDetails!.push({
+            companyId,
+            companyName: (company.name as string | null) ?? null,
+            reason: `Bronlezing onvolledig; deactivatie overgeslagen (Nexus = ${(nexus as any).rawValue}).`,
+          });
+          if (hasLink) {
+            nowProcessedLinked.set(companyId, previouslyLinkedIds.get(companyId)!.id);
+          }
+          continue;
+        }
         if (!hasLink) {
           summary.skipped.inactive_or_missing_nexus_field++;
           summary.skippedDetails!.push({
@@ -1270,33 +1383,36 @@ export async function runInserveCustomerImport(
           if (needsRestore) updateData.deletedAt = null;
           const beforeSnapshot: any = { status: currentStatus };
           if (needsRestore) beforeSnapshot.deletedAt = current.deletedAt;
-          await prisma.$transaction(async (tx) => {
-            const updated = await tx.customer.update({
-              where: { id: current.id },
-              data: updateData,
-            });
-            try {
-              await logAudit(tx as any, {
-                entityType: "customer",
-                entityId: updated.id,
-                action: AuditAction.UPDATE,
-                userId: ctx.userId,
-                oldValues: beforeSnapshot,
-                newValues: updateData,
-                metadata: {
-                  source: "inserve_customer_import",
-                  inserveCompanyId: companyId,
-                  nexusRawValue: (nexus as any).rawValue,
-                  statusChange: "deactivated",
-                  reason: "Nexus = Inactief",
-                },
+          if (!dryRun) {
+            await prisma.$transaction(async (tx) => {
+              const updated = await tx.customer.update({
+                where: { id: current.id },
+                data: updateData,
               });
-            } catch {
-              // audit failure not fatal
-            }
-          });
+              try {
+                await logAudit(tx as any, {
+                  entityType: "customer",
+                  entityId: updated.id,
+                  action: AuditAction.UPDATE,
+                  userId: ctx.userId,
+                  oldValues: beforeSnapshot,
+                  newValues: updateData,
+                  metadata: {
+                    source: "inserve_customer_import",
+                    inserveCompanyId: companyId,
+                    nexusRawValue: (nexus as any).rawValue,
+                    statusChange: "deactivated",
+                    reason: "Nexus = Inactief",
+                  },
+                });
+              } catch {
+                // audit failure not fatal
+              }
+            });
+          }
           if (needsStatusChange) {
             summary.customersDeactivated++;
+            if (dryRun && summary.plannedChanges) summary.plannedChanges.companies.deactivate++;
             summary.previouslyActiveNowInactive!.push({
               customerId: existing.id,
               inserveCompanyId: companyId,
@@ -1381,6 +1497,21 @@ export async function runInserveCustomerImport(
           if (!hasAnyChanges) {
             summary.unchanged++;
             currentCustomerId = existingCustomer.id;
+            if (dryRun && summary.plannedChanges) summary.plannedChanges.companies.unchanged++;
+          } else if (dryRun) {
+            // Dry-run: geen schrijven, wel de wijziging registreren.
+            if (wasNotActive) {
+              summary.customersReactivated++;
+              summary.previouslyInactiveNowActive!.push({
+                customerId: existingCustomer.id,
+                inserveCompanyId: companyId,
+                companyName: (company.name as string) ?? existingCustomer.companyName,
+              });
+              if (summary.plannedChanges) summary.plannedChanges.companies.reactivate++;
+            }
+            summary.updated++;
+            currentCustomerId = existingCustomer.id;
+            if (summary.plannedChanges) summary.plannedChanges.companies.update++;
           } else {
             await prisma.$transaction(async (tx) => {
               const updated = await tx.customer.update({
@@ -1415,7 +1546,17 @@ export async function runInserveCustomerImport(
           }
         } else {
           let created: Customer;
-          try {
+          if (dryRun) {
+            // Dry-run: geen klant aanmaken. Gebruik een synthetisch ID zodat
+            // syncContactsForCustomer zijn diff nog kan berekenen (die ook
+            // dry-run is en niets schrijft).
+            const syntheticId = `dryrun-cust-${companyId}`;
+            summary.created++;
+            if (summary.plannedChanges) summary.plannedChanges.companies.create++;
+            nowProcessedLinked.set(companyId, syntheticId);
+            currentCustomerId = syntheticId;
+          } else {
+            try {
             created = await prisma.$transaction(async (tx) => {
               const customerNumber =
                 mapped.customerNumber ||
@@ -1529,6 +1670,7 @@ export async function runInserveCustomerImport(
           summary.created++;
           currentCustomerId = created.id;
         }
+        } // end else (geen bestaande klant)
         if (currentCustomerId) {
           await syncContactsForCustomer(currentCustomerId, companyId);
         }
@@ -1548,6 +1690,7 @@ export async function runInserveCustomerImport(
     timing.processRecords = Date.now() - tProcess;
     try { doSetStepDone(8, { processed: totalRec, created: summary.created, updated: summary.updated, unchanged: summary.unchanged, failed: summary.failed }); } catch { /* noop */ }
 
+    if (!dryRun) {
     try {
       await prisma.$transaction(async (tx) => {
         const summaryForAudit: Record<string, any> = {
@@ -1599,6 +1742,7 @@ export async function runInserveCustomerImport(
     } catch (_) {
       // audit failure is not fatal
     }
+    } // end if (!dryRun)
 
     try {
       // STEP 9: findMatches
@@ -1765,7 +1909,7 @@ function makeFailedSummary(
   startedAt: Date,
   message: string,
   runId: string | null,
-  extra?: { simLinkDryRun?: boolean }
+  extra?: { simLinkDryRun?: boolean; dryRun?: boolean }
 ): ImportSummary {
   const endedAt = new Date();
   const durationMs = Math.max(0, endedAt.getTime() - startedAt.getTime());
@@ -1799,6 +1943,7 @@ function makeFailedSummary(
     skippedDetails: [],
     failedDetails: [],
     contactFailedDetails: [],
+    dryRun: !!extra?.dryRun,
     simLink: { ...EMPTY_SIM_LINK_SUMMARY, dryRun: !!extra?.simLinkDryRun },
   };
 }

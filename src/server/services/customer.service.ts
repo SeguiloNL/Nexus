@@ -139,12 +139,10 @@ function includeDetail(): Prisma.CustomerInclude {
         },
       },
     },
-    contacts: {
-      where: { deletedAt: null },
-      orderBy: [
-        { lastName: "asc" as const },
-        { firstName: "asc" as const },
-      ],
+    contactLinks: {
+      where: { contactPerson: { deletedAt: null } },
+      include: { contactPerson: true },
+      orderBy: { contactPerson: { lastName: "asc" as const } },
     },
     directSims: {
       where: { deletedAt: null },
@@ -244,10 +242,15 @@ export async function findCustomerById(id: string, customerScope?: string[]) {
   if (customerScope && customerScope.length > 0) {
     if (!customerScope.includes(id)) return null;
   }
-  return prisma.customer.findUnique({
+  const customer = await prisma.customer.findUnique({
     where: where as Prisma.CustomerWhereUniqueInput,
     include: includeDetail(),
   });
+  if (!customer) return null;
+  // Flatten many-to-many: contactLinks[].contactPerson → contacts[]
+  const links = (customer as any).contactLinks as Array<{ contactPerson: any }> | undefined;
+  const contacts = links ? links.map((l) => l.contactPerson).filter(Boolean) : [];
+  return { ...customer, contacts } as any;
 }
 
 export async function createCustomer(

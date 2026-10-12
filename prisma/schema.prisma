@@ -336,7 +336,7 @@ model Customer {
   invoices          Invoice[]
   users             User[]           @relation("CustomerUsers")
   userLinks         UserCustomer[]
-  contacts          ContactPerson[]
+  contactLinks      CustomerContactPerson[]
   directSims        SIM[]            @relation("SimDirectCustomer")
 
   @@index([status])
@@ -363,8 +363,6 @@ model UserCustomer {
 
 model ContactPerson {
   id               String   @id @default(cuid())
-  customerId       String
-  customer         Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
   firstName        String?
   lastName         String
   email            String?
@@ -376,11 +374,26 @@ model ContactPerson {
   updatedAt        DateTime @updatedAt
   deletedAt        DateTime?
 
-  @@index([customerId])
+  customerLinks    CustomerContactPerson[]
+
   @@index([inserveContactId])
   @@index([lastName])
-  @@unique([customerId, inserveContactId])
   @@map("contact_persons")
+}
+
+model CustomerContactPerson {
+  customerId      String
+  contactPersonId String
+  linkedAt        DateTime @default(now())
+  linkedBy        String?
+
+  customer      Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  contactPerson ContactPerson @relation(fields: [contactPersonId], references: [id], onDelete: Cascade)
+
+  @@id([customerId, contactPersonId])
+  @@index([customerId])
+  @@index([contactPersonId])
+  @@map("customer_contact_persons")
 }
 
 model Product {

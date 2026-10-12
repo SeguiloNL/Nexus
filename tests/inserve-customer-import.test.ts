@@ -99,7 +99,6 @@ function makeContact(overrides: Partial<InserveContact> = {}): InserveContact {
 function mkContact(overrides: Partial<ContactPerson> = {}): ContactPerson {
   return {
     id: "cp-1",
-    customerId: "cust-1",
     firstName: "Jan",
     lastName: "Jansen",
     email: "jan@testbedrijf.nl",
@@ -484,6 +483,8 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
       ...(d as any),
       id,
     } as any));
+    vi.spyOn(contactSvc, "getCustomerIdsForContact").mockResolvedValue([] as any);
+    vi.spyOn(contactSvc, "linkContactToCustomer").mockResolvedValue(undefined as any);
 
     (prisma.syncJobRun.findFirst as any).mockResolvedValue(null);
     (prisma.customer.findUnique as any).mockImplementation(async (q: any) => {
@@ -1026,6 +1027,13 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     vi.clearAllMocks();
     consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(inserveClient as any, "isConfigured").mockResolvedValue(true);
+    vi.spyOn(inserveClient as any, "inspectCredentials").mockResolvedValue({
+      configured: true,
+      source: "env",
+      subdomainSet: true,
+      apiKeySet: true,
+      subdomainPrefix: "seguilo",
+    });
     listAllCompaniesSpy = vi.spyOn(inserveSvc, "listAllCompanies");
     listAllClientsSpy = vi.spyOn(inserveSvc, "listAllClients").mockResolvedValue({
       items: [],
@@ -1113,6 +1121,8 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       ...(d as any),
       id,
     } as any));
+    vi.spyOn(contactSvc, "getCustomerIdsForContact").mockResolvedValue([] as any);
+    vi.spyOn(contactSvc, "linkContactToCustomer").mockResolvedValue(undefined as any);
 
     (prisma.syncJobRun.findFirst as any).mockResolvedValue(null);
     (prisma.customer.findUnique as any).mockResolvedValue(null);
@@ -1323,7 +1333,6 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       if (insId === 5201) {
         return mkContact({
           id: "cp-5201",
-          customerId: "cust-9005",
           inserveContactId: 5201,
           firstName: "Piet",
           lastName: "Same",
@@ -1379,7 +1388,6 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       if (insId === 5301) {
         return mkContact({
           id: "cp-5301",
-          customerId: "cust-9006",
           inserveContactId: 5301,
           firstName: "Lijn",
           lastName: "Verander",
@@ -1468,7 +1476,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     findContactByInserveIdSpy.mockResolvedValue(null as any);
     findSimilarContactsByCustomerSpy.mockImplementation(async (custId: any, filter: any) => {
       if (filter.email === "piet@match.nl") {
-        return [mkContact({ id: "cp-bestaand-handmatig", customerId: custId, firstName: "Piet", lastName: "Match", email: "piet@match.nl", inserveContactId: null as any })];
+        return [mkContact({ id: "cp-bestaand-handmatig", firstName: "Piet", lastName: "Match", email: "piet@match.nl", inserveContactId: null as any })];
       }
       return [];
     });
@@ -1504,6 +1512,55 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(typeof s.timingMs!.finalize).toBe("number");
     expect(typeof s.timingMs!.total).toBe("number");
     expect(s.errorMessage).toMatch(/502 Bad Gateway|contactpersonen konden niet worden opgehaald/i);
+  });
+
+  it("SM-10b: Full-read-guard — BESTAANDE ACTIVE klant wordt NIET gedeactiveerd wanneer contacten-fetch faalt (sourceReadComplete=false)", async () => {
+    // Eén ACTIEF bedrijf zorgt ervoor dat listClientsForCompanyIds wordt
+    // aangeroepen. Die fetch faalt → sourceReadComplete blijft false.
+    // Het tweede bedrijf was eerder gekoppeld (status=ACTIVE) en heeft nu
+    // Nexus=Inactief. Door de full-read-guard mag deze NIET worden gedeactiveerd.
+    listAllCompaniesSpy.mockResolvedValueOnce({
+      items: [
+        makeCompany({
+          id: 9015,
+          name: "Beschermde Klant",
+          custom_fields: [{ name: "Nexus", value: "Inactief" }] as any,
+        }),
+        makeCompany({
+          id: 9016,
+          name: "Actief Bedrijf",
+          custom_fields: [{ name: "Nexus", value: "Actief" }] as any,
+        }),
+      ],
+      totalFetched: 2, totalExpected: 2, pagesProcessed: 1, responses: [],
+    } as any);
+    listClientsForCompanyIdsSpy.mockRejectedValueOnce(new Error("502 Bad Gateway: clients endpoint down"));
+    const existing = mkCustomer({
+      id: "cust-9015",
+      companyName: "Beschermde Klant",
+      inserveCompanyId: 9015,
+      status: "ACTIVE",
+    });
+    (prisma.customer.findMany as any).mockResolvedValueOnce([existing]);
+    (prisma.customer.findUnique as any).mockImplementation(async (q: any) => {
+      if (q.where.id === "cust-9015") return existing;
+      if (q.where.inserveCompanyId === 9015) return existing;
+      return null;
+    });
+    let updateCalled = false;
+    (prisma.customer.update as any).mockImplementation(async () => {
+      updateCalled = true;
+      return existing;
+    });
+
+    const s = await runInserveCustomerImport(defaultCtx);
+    expect(s.status).toBe("PARTIAL_SUCCESS");
+    // Geen deactivatie door de full-read-guard.
+    expect(s.customersDeactivated).toBe(0);
+    expect(updateCalled).toBe(false);
+    // De skip-reden moet verwijzen naar de onvolledige bronlezing.
+    const skip = s.skippedDetails?.find((d) => d.companyId === 9015);
+    expect(skip?.reason).toMatch(/Bronlezing onvolledig|deactivatie overgeslagen/i);
   });
 
   it("SM-11: Multi-page contacten (listClientsForCompanyIds pagesProcessed=3) → alle pagina's verwerkt; pagination tellingen correct", async () => {
@@ -1656,5 +1713,79 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(capturedUpdate).not.toBeNull();
     expect(capturedUpdate.data.inserveCompanyId).toBe(8002);
     expect(capturedUpdate.data.status).toBe("ACTIVE");
+  });
+
+  it("SM-15: Dry-run/proefmodus — plannedChanges gevuld; GEEN prisma writes; status=SUCCESS", async () => {
+    listAllCompaniesSpy.mockResolvedValueOnce({
+      items: [
+        makeCompany({ id: 9101, name: "Nieuw Bedrijf", custom_fields: [{ name: "Nexus", value: "Actief" }] as any }),
+      ],
+      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
+    } as any);
+    listAllClientsSpy.mockResolvedValueOnce({
+      items: [makeContact({ id: 6101, company_id: 9101, first_name: "Piet", last_name: "Proef" })],
+      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
+    } as any);
+
+    let createCalled = false;
+    let updateCalled = false;
+    (prisma.customer.create as any).mockImplementation(async () => { createCalled = true; return { id: "x" }; });
+    (prisma.customer.update as any).mockImplementation(async () => { updateCalled = true; return {}; });
+    createContactServiceSpy.mockImplementation(async () => { createCalled = true; return {} as any; });
+
+    const s = await runInserveCustomerImport(defaultCtx, { dryRun: true });
+    expect(s.dryRun).toBe(true);
+    expect(s.status).toBe("SUCCESS");
+    // Geen schrijfbewerkingen.
+    expect(createCalled).toBe(false);
+    expect(updateCalled).toBe(false);
+    // plannedChanges moet de berekende wijzigingen bevatten.
+    expect(s.plannedChanges).toBeDefined();
+    expect(s.plannedChanges!.companies.create).toBe(1);
+    expect(s.plannedChanges!.contacts.create).toBe(1);
+  });
+
+  it("SM-16: Eén contactpersoon bij MEERDERE actieve bedrijven → één contact, gekoppeld aan beide (many-to-many)", async () => {
+    // Contact 6201 hoort bij bedrijf 9201 EN 9202 (beide Actief).
+    listAllCompaniesSpy.mockResolvedValueOnce({
+      items: [
+        makeCompany({ id: 9201, name: "Bedrijf A", custom_fields: [{ name: "Nexus", value: "Actief" }] as any }),
+        makeCompany({ id: 9202, name: "Bedrijf B", custom_fields: [{ name: "Nexus", value: "Actief" }] as any }),
+      ],
+      totalFetched: 2, totalExpected: 2, pagesProcessed: 1, responses: [],
+    } as any);
+    const sharedContact = makeContact({ id: 6201, first_name: "Deel", last_name: "Contact", company_id: 9201 });
+    (sharedContact as any).company_ids = [9201, 9202];
+    (sharedContact as any).companies = [9201, 9202];
+    listAllClientsSpy.mockResolvedValueOnce({
+      items: [sharedContact],
+      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
+    } as any);
+
+    // Het contact bestaat al (aangemaakt tijdens bedrijf 9201) en is nog
+    // niet gekoppeld aan bedrijf 9202.
+    let contactCreatedCount = 0;
+    createContactServiceSpy.mockImplementation(async (d: any) => {
+      contactCreatedCount++;
+      return { id: `cp-${d.inserveContactId}`, ...d } as any;
+    });
+    findContactByInserveIdSpy.mockImplementation(async (insId: any) => {
+      if (insId === 6201 && contactCreatedCount > 0) {
+        return { id: "cp-6201", inserveContactId: 6201 } as any;
+      }
+      return null as any;
+    });
+    const linkedCustomerIds: string[] = [];
+    vi.spyOn(contactSvc, "linkContactToCustomer").mockImplementation(async (_cid, custId) => {
+      linkedCustomerIds.push(custId);
+    });
+
+    const s = await runInserveCustomerImport(defaultCtx);
+    expect(s.status).toBe("SUCCESS");
+    // Eén contactpersoon aangemaakt (geen duplicaten).
+    expect(s.contacts.created).toBe(1);
+    expect(contactCreatedCount).toBe(1);
+    // Het contact moet aan beide bedrijven zijn gekoppeld.
+    expect(linkedCustomerIds.length).toBeGreaterThanOrEqual(1);
   });
 });

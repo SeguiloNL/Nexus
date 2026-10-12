@@ -35,6 +35,35 @@ async function validateCustomerScope(
   }
 }
 
+/**
+ * Valideert dat de gebruiker toegang heeft tot ten minste één van de klanten
+ * waaraan dit contact is gekoppeld (many-to-many).
+ */
+async function validateContactScope(
+  contactId: string,
+  ctx: { customerScope?: string[]; roleScope?: RoleScope; customerId?: string | null }
+): Promise<void> {
+  if (ctx.roleScope === "INTERNAL" && !ctx.customerScope) return;
+  const links = await prisma.customerContactPerson.findMany({
+    where: { contactPersonId: contactId },
+    select: { customerId: true },
+  });
+  const linkedCustomerIds = links.map((l) => l.customerId);
+  if (linkedCustomerIds.length === 0) return;
+  if (ctx.roleScope === "CUSTOMER" && ctx.customerId) {
+    if (!linkedCustomerIds.includes(ctx.customerId)) {
+      throw new Error("Onvoldoende rechten: contactpersoon valt buiten je klantscope.");
+    }
+    return;
+  }
+  if (ctx.customerScope && ctx.customerScope.length > 0) {
+    const hasAccess = linkedCustomerIds.some((id) => ctx.customerScope!.includes(id));
+    if (!hasAccess) {
+      throw new Error("Contactpersoon valt niet binnen je toegang (customer-scope).");
+    }
+  }
+}
+
 export async function listContactsForCustomer(
   customerId: string,
   opts: ContactListOptions = {},
@@ -44,7 +73,9 @@ export async function listContactsForCustomer(
     await requirePermission(pickAuth(ctx), "view", "customer");
     await validateCustomerScope(customerId, ctx);
   }
-  const where: Prisma.ContactPersonWhereInput = { customerId };
+  const where: Prisma.ContactPersonWhereInput = {
+    customerLinks: { some: { customerId } },
+  };
   if (!opts.includeDeleted) where.deletedAt = null;
   return prisma.contactPerson.findMany({
     where,
@@ -61,7 +92,7 @@ export async function getContactDetail(
   const where: Prisma.ContactPersonWhereUniqueInput & Prisma.ContactPersonWhereInput = { id };
   if (!opts.includeDeleted) where.deletedAt = null;
   const contact = await prisma.contactPerson.findUnique({ where });
-  if (contact && ctx) await validateCustomerScope(contact.customerId, ctx);
+  if (contact && ctx) await validateContactScope(contact.id, ctx);
   return contact;
 }
 
@@ -83,7 +114,6 @@ export async function createContactService(
 
   const created = await prisma.contactPerson.create({
     data: {
-      customerId: parsed.customerId,
       firstName: parsed.firstName ?? null,
       lastName: parsed.lastName,
       email: parsed.email ?? null,
@@ -91,6 +121,12 @@ export async function createContactService(
       mobile: parsed.mobile ?? null,
       functionTitle: parsed.functionTitle ?? null,
       inserveContactId: parsed.inserveContactId ?? null,
+      customerLinks: {
+        create: {
+          customerId: parsed.customerId,
+          linkedBy: ctx.userId,
+        },
+      },
     },
   });
 
@@ -101,7 +137,7 @@ export async function createContactService(
       action: "CREATE_CONTACT",
       userId: ctx.userId,
       newValues: { ...created },
-      metadata: { customerId: created.customerId },
+      metadata: { customerId: parsed.customerId },
     });
   } catch (_auditErr) {
   }
@@ -123,7 +159,7 @@ export async function updateContactService(
   if (!existing) {
     throw new Error(`Contactpersoon (${parsed.id}) bestaat niet of is verwijderd.`);
   }
-  await validateCustomerScope(existing.customerId, ctx);
+  await validateContactScope(existing.id, ctx);
 
   const newValues: Prisma.ContactPersonUncheckedUpdateInput = {};
   if (parsed.firstName !== undefined) newValues.firstName = parsed.firstName ?? null;
@@ -152,7 +188,7 @@ export async function updateContactService(
       userId: ctx.userId,
       oldValues,
       newValues: newValuesDiff,
-      metadata: { customerId: updated.customerId },
+      metadata: { contactId: updated.id },
     });
   } catch (_auditErr) {
   }
@@ -174,7 +210,7 @@ export async function deleteContactService(
   if (!existing) {
     throw new Error(`Contactpersoon (${id}) bestaat niet of is reeds verwijderd.`);
   }
-  await validateCustomerScope(existing.customerId, ctx);
+  await validateContactScope(existing.id, ctx);
 
   const result = softDelete
     ? await prisma.contactPerson.update({
@@ -190,7 +226,7 @@ export async function deleteContactService(
       action: "DELETE_CONTACT",
       userId: ctx.userId,
       oldValues: { ...existing },
-      metadata: { customerId: existing.customerId, softDelete },
+      metadata: { contactId: id, softDelete },
     });
   } catch (_auditErr) {
   }
@@ -215,23 +251,65 @@ export async function findSimilarContactsByCustomer(
 ): Promise<PrismaContactPerson[]> {
   const { firstName, lastName, email } = predicate;
   const whereOr: Prisma.ContactPersonWhereInput["OR"] = [];
+  const baseFilter: Prisma.ContactPersonWhereInput = {
+    deletedAt: null,
+    customerLinks: { some: { customerId } },
+  };
   if (firstName && lastName) {
     whereOr.push({
       AND: [
         { firstName: { equals: firstName, mode: "insensitive" } },
         { lastName: { equals: lastName, mode: "insensitive" } },
       ],
-      deletedAt: null,
-      customerId,
+      ...baseFilter,
     });
   }
   if (email) {
     whereOr.push({
       email: { equals: email, mode: "insensitive" },
-      deletedAt: null,
-      customerId,
+      ...baseFilter,
     });
   }
   if (whereOr.length === 0) return [];
   return prisma.contactPerson.findMany({ where: { OR: whereOr } });
+}
+
+/**
+ * Koppelt een bestaande contactpersoon aan een klant (many-to-many).
+ * Idempotent: als de koppeling al bestaat, gebeurt er niets.
+ */
+export async function linkContactToCustomer(
+  contactId: string,
+  customerId: string,
+  linkedBy?: string
+): Promise<void> {
+  await prisma.customerContactPerson.upsert({
+    where: { customerId_contactPersonId: { customerId, contactPersonId: contactId } },
+    update: {},
+    create: { customerId, contactPersonId: contactId, linkedBy },
+  });
+}
+
+/**
+ * Ontkoppelt een contactpersoon van een klant. De contactpersoon zelf blijft
+ * bestaan (kan nog aan andere klanten gekoppeld zijn).
+ */
+export async function unlinkContactFromCustomer(
+  contactId: string,
+  customerId: string
+): Promise<void> {
+  await prisma.customerContactPerson.deleteMany({
+    where: { customerId, contactPersonId: contactId },
+  });
+}
+
+/**
+ * Geeft alle klant-ID's waaraan een contactpersoon is gekoppeld.
+ */
+export async function getCustomerIdsForContact(contactId: string): Promise<string[]> {
+  const links = await prisma.customerContactPerson.findMany({
+    where: { contactPersonId: contactId },
+    select: { customerId: true },
+  });
+  return links.map((l) => l.customerId);
 }
