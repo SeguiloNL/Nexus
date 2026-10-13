@@ -3,9 +3,14 @@
 # STM/Nexus — Reset klanten + contactpersonen (voor import-test)
 #
 # Verwijdert ALLE klanten, contactpersonen en de koppeltabel,
-# inclusief alle afhankelijke rijen (subscriptions, invoices,
-# vehicles, activation_orders, user_customers, enz.) via
-# TRUNCATE ... CASCADE.
+# inclusief de afhankelijke business-rijen (subscriptions,
+# invoices, vehicles, activation_orders, assignments).
+#
+# Gebruikt expliciete DELETEs in FK-volgorde (geen TRUNCATE
+# CASCADE!) zodat users, sims, products, trackers,
+# sync_job_configs en audit_logs BEWAARD blijven.
+# PostgreSQL's onDelete: SetNull zet users.customerId en
+# sims.customerId automatisch op NULL.
 #
 # Gebruik:
 #   bash scripts/reset-customers-contacts.sh            # met bevestiging
@@ -47,7 +52,6 @@ if [ -f "${ENV_FILE}" ]; then
   DB_NAME="$(grep -E '^POSTGRES_DB=' "${ENV_FILE}" 2>/dev/null | cut -d= -f2- | tr -d '"\r' || true)"
   if [ -z "${DB_USER}" ] || [ -z "${DB_NAME}" ]; then
     DATABASE_URL="$(grep -E '^DATABASE_URL=' "${ENV_FILE}" 2>/dev/null | cut -d= -f2- | tr -d '"\r' || true)"
-    # postgresql://USER:PASS@HOST:PORT/DB
     if [ -n "${DATABASE_URL}" ]; then
       DB_USER="${DB_USER:-$(printf '%s' "${DATABASE_URL}" | sed -nE 's#^postgresql://([^:]+):.*#\1#p')}"
       DB_NAME="${DB_NAME:-$(printf '%s' "${DATABASE_URL}" | sed -nE 's#.*/([^/?]+).*#\1#p')}"
@@ -66,15 +70,22 @@ count() { PSQL "SELECT COALESCE(count(*),0) FROM \"$1\";" 2>/dev/null | tr -d ' 
 C_CUST_BEFORE="$(count customers)"
 C_CONT_BEFORE="$(count contact_persons)"
 C_LINK_BEFORE="$(count customer_contact_persons)"
-log "[info] Vooraf  — customers: ${C_CUST_BEFORE} | contact_persons: ${C_CONT_BEFORE} | customer_contact_persons: ${C_LINK_BEFORE}"
+C_SUB_BEFORE="$(count subscriptions)"
+C_INV_BEFORE="$(count invoices)"
+C_VEH_BEFORE="$(count vehicles)"
+C_USER_BEFORE="$(count users)"
+C_SIM_BEFORE="$(count sims)"
+log "[info] Vooraf — customers: ${C_CUST_BEFORE} | contact_persons: ${C_CONT_BEFORE} | customer_contact_persons: ${C_LINK_BEFORE}"
+log "[info] Vooraf — subscriptions: ${C_SUB_BEFORE} | invoices: ${C_INV_BEFORE} | vehicles: ${C_VEH_BEFORE}"
+log "[info] Vooraf — users: ${C_USER_BEFORE} (blijft bewaard) | sims: ${C_SIM_BEFORE} (blijft bewaard)"
 
 # ---- 4. Bevestiging ----
 if [ "${FORCE}" -ne 1 ]; then
   echo ""
-  echo "WAARSCHUWING: Dit verwijdert ALLE klanten en contactpersonen,"
-  echo "inclusief alle gekoppelde data (subscriptions, invoices, vehicles,"
-  echo "activation_orders, user_customers, enz.). Dit kan niet ongedaan"
-  echo "gemaakt worden zonder een database-herstel."
+  echo "WAARSCHUWING: Dit verwijdert ALLE klanten, contactpersonen,"
+  echo "subscriptions, invoices, vehicles, activation_orders en assignments."
+  echo "Users, sims, products, trackers en sync-configuraties blijven bewaard."
+  echo "Dit kan niet ongedaan gemaakt worden zonder database-herstel."
   echo ""
   read -r -p "Typ 'JA' om te bevestigen: " ANSWER
   if [ "${ANSWER}" != "JA" ]; then
@@ -83,16 +94,44 @@ if [ "${FORCE}" -ne 1 ]; then
   fi
 fi
 
-# ---- 5. Uitvoeren (TRUNCATE CASCADE in 1 transactie) ----
-log "[info] Uitvoeren: TRUNCATE customers, contact_persons, customer_contact_persons CASCADE"
-docker exec -i "${DB_CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" -c \
-  "TRUNCATE TABLE customers, contact_persons, customer_contact_persons RESTART IDENTITY CASCADE;" 2>&1 \
+# ---- 5. Uitvoeren: expliciete DELETEs in FK-volgorde binnen 1 transactie ----
+# Volgorde is belangrijk vanwege onDelete: Restrict op:
+#   invoices.subscriptionId / invoices.customerId
+#   tracker_assignments.subscriptionId
+#   sim_assignments.subscriptionId
+#   subscriptions.customerId
+#   vehicles.customerId
+#   activation_orders.customerId
+log "[info] Uitvoeren: DELETE in FK-volgorde (transactioneel)"
+
+SQL="BEGIN;
+DELETE FROM invoices;
+DELETE FROM tracker_assignments;
+DELETE FROM sim_assignments;
+DELETE FROM activation_orders;
+DELETE FROM subscriptions;
+DELETE FROM vehicles;
+DELETE FROM customer_contact_persons;
+DELETE FROM user_customers;
+DELETE FROM customers;
+DELETE FROM contact_persons;
+COMMIT;"
+
+echo "${SQL}" | docker exec -i "${DB_CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" 2>&1 \
   | tee >(while IFS= read -r line; do log "[sql] ${line}"; done)
 
 # ---- 6. Tel achteraf ----
 C_CUST_AFTER="$(count customers)"
 C_CONT_AFTER="$(count contact_persons)"
 C_LINK_AFTER="$(count customer_contact_persons)"
+C_USER_AFTER="$(count users)"
+C_SIM_AFTER="$(count sims)"
 log "[info] Achteraf — customers: ${C_CUST_AFTER} | contact_persons: ${C_CONT_AFTER} | customer_contact_persons: ${C_LINK_AFTER}"
+log "[info] Achteraf — users: ${C_USER_AFTER} | sims: ${C_SIM_AFTER}"
 
-log "[ok] Reset voltooid. Je kunt de import nu opnieuw draaien."
+if [ "${C_USER_AFTER}" = "0" ]; then
+  log "[warn] De users-tabel is leeg! Je hebt geen admin-account meer om in te loggen."
+  log "[hint] Herstel een admin via: cd ${WORKDIR} && npx prisma db seed"
+fi
+
+log "[ok] Reset voltooid. Je kunt de Inserve-import nu opnieuw draaien."
