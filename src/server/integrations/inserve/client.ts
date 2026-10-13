@@ -447,18 +447,23 @@ export class InserveClient {
     let seenLastPage = false;
 
     while (!seenLastPage && (maxPages === undefined || currentPage <= maxPages)) {
+      // Inserve's `paginate` in de builder accepteert ALLEEN een getal
+      // (de per_page count), NIET een object met page/per_page.
+      // Docs voorbeeld: {"builder":[{"paginate":15}],"page":1}
+      // De pagina-selectie gebeurt via de top-level `page` query param.
       const pageBuilder: unknown[] = [
         ...(withRelations.length > 0 ? [{ with: withRelations }] : []),
-        { paginate: { page: currentPage, per_page: perPage } },
+        { paginate: perPage },
         ...extraBuilder,
       ];
 
-      // Wanneer we de builder gebruiken voor paginering, sturen we GEEN
-      // page/per_page query params mee. Inserve ziet beide signalen en
-      // retourneert status 500 (conflict tussen query-params en builder).
-      // De builder bevat al de paginering-informatie.
+      // `page` is een top-level query param (geen onderdeel van de builder).
+      // We sturen GEEN `per_page` query param mee, want dat staat al in de
+      // builder via `paginate: perPage`.
       const query: Record<string, string | number | boolean | undefined> =
-        pageBuilder.length > 0 ? {} : { page: currentPage, per_page: perPage };
+        pageBuilder.length > 0
+          ? { page: currentPage }
+          : { page: currentPage, per_page: perPage };
 
       const resp = await this.request<any>(path, {
         method: method ?? 'GET',

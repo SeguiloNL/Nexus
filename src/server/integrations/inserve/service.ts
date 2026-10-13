@@ -611,12 +611,13 @@ export async function listCompanies(
   const { page = 1, perPage = 25, withRelations = [], builder = [], builderParamsStyle } = opts;
   const fullBuilder: unknown[] = [
     ...(withRelations.length > 0 ? [{ with: withRelations }] : []),
-    { paginate: { page, per_page: perPage } },
+    { paginate: perPage },
     ...builder,
   ];
   return (await client.request(INSERVE_COMPANY_ENDPOINT, {
     method: 'GET',
     builder: fullBuilder,
+    query: { page },
     ...(builderParamsStyle ? { builderParamsStyle } : {}),
   })) as InserveListResponse<InserveCompany>;
 }
@@ -661,7 +662,8 @@ export async function listAllCompanies(
       // PRIMAIRE strategie: gebruik de JSON-encoded builder voor zowel de
       // `with`-relatie (customValues) ALS de paginering (paginate). Inserve
       // herkent `page`/`per_page` query params NIET als paginering op het
-      // /companies endpoint; dat vereist `{"builder":[{"paginate":{"page":N,"per_page":M}}]}`.
+      // /companies endpoint; dat vereist `{"builder":[{"with":["customValues"]},{"paginate":50}]}`
+      // gecombineerd met de `page` query param.
       // Zonder builder-paginering retourneert elke pagina alle bedrijven,
       // waardoor we 80 pagina's × alle bedrijven ophalen = 48.800 items.
       label: '1-customValues-json-builder',
@@ -974,13 +976,13 @@ export async function listClients(
   const { page = 1, perPage = 25, withRelations = [], builder = [], builderParamsStyle, extraQueryParams } = opts;
   const fullBuilder: unknown[] = [
     ...(withRelations.length > 0 ? [{ with: withRelations }] : []),
-    { paginate: { page, per_page: perPage } },
+    { paginate: perPage },
     ...builder,
   ];
   return (await client.request(INSERVE_CLIENT_ENDPOINT, {
     method: 'GET',
     builder: fullBuilder,
-    query: extraQueryParams,
+    query: { ...extraQueryParams, page },
     ...(builderParamsStyle ? { builderParamsStyle } : {}),
   })) as InserveListResponse<InserveContact>;
 }
@@ -1112,13 +1114,13 @@ export async function listAllClients(
         } else {
           const fullBuilder: unknown[] = [
             ...(strat.withRelations.length > 0 ? [{ with: strat.withRelations }] : []),
-            { paginate: { page, per_page: effectivePerPage } },
+            { paginate: effectivePerPage },
             ...builder,
           ];
           chunk = await client.request<any>(INSERVE_CLIENT_ENDPOINT, {
             method: 'GET',
             builder: fullBuilder,
-            query: extraQueryParams,
+            query: { ...extraQueryParams, page },
             builderParamsStyle: builderParamsStyle ?? strat.builderParamsStyle,
           });
         }
@@ -1306,17 +1308,20 @@ export async function listClientsForCompanyIds(
 
     for (let i = 0; i < uniqueIds.length; i += CHUNK) {
       const idChunk = uniqueIds.slice(i, i + CHUNK);
-      const companyIdQuery: Record<string, string | number | boolean | undefined> = {
-        ...(extraQueryParams ?? {}),
-      };
       // 3 variants (Inserve accepts different param shapes):
       //   company_id[]=1&company_id[]=2     (Laravel style)
       //   company_ids=1,2,3                  (CSV)
       //   company_id=1&company_id=2          (duplicate keys, first wins usually, fallback)
-      const VARIANTS = [
-        (ids: number[]) => ids.map((id) => `company_id[]=${encodeURIComponent(id)}`).join('&'),
-        (ids: number[]) => `company_ids=${ids.map((id) => encodeURIComponent(id)).join(',')}`,
-        (ids: number[]) => `company_id=${ids.map((id) => encodeURIComponent(id)).join(',')}`,
+      // Elke variant produceert een query object dat via `client.request`'s
+      // `query` optie wordt gestuurd (buildUrl zet het correct in de URL).
+      const VARIANTS: ((ids: number[]) => Record<string, string | number | boolean | undefined>)[] = [
+        (ids: number[]) => {
+          const q: Record<string, string | number | boolean | undefined> = {};
+          ids.forEach((id, i) => { q[`company_id[${i}]`] = id; });
+          return q;
+        },
+        (ids: number[]) => ({ company_ids: ids.join(',') }),
+        (ids: number[]) => ({ company_id: ids.join(',') }),
       ];
       let chunkItems: InserveContact[] = [];
       let chunkPages = 0;
@@ -1325,7 +1330,7 @@ export async function listClientsForCompanyIds(
 
       const probeVariants = batchesDone === 0 ? [0, 1, 2] : [selectedVariant];
       variantProbe: for (const vi of probeVariants) {
-        const vStr = VARIANTS[vi](idChunk);
+        const variantQuery = VARIANTS[vi](idChunk);
         const effectiveMax = maxPages ?? 20;
         for (let page = 1; page <= effectiveMax; page++) {
           // Vraag de companies-relatie op zodat getContactCompanyIds de
@@ -1335,27 +1340,21 @@ export async function listClientsForCompanyIds(
           // er 0 contacten worden verwerkt.
           //
           // BELANGRIJK: Gebruik de builder voor de `with`-relatie EN de
-          // paginering. Inserve herkent `page`/`per_page` query params NIET
-          // als paginering op het /clients endpoint; dat vereist
-          // `{"builder":[{"with":["companies"]},{"paginate":{"page":N,"per_page":M}}]}`.
-          // Zonder builder-paginering retourneert elke pagina alle contacten
-          // (of geen), waardoor er 0 contacten worden verwerkt.
+          // paginering. Inserve's `paginate` in de builder is een getal
+          // (per_page count); de pagina-selectie gebeurt via de `page`
+          // query param.
           const withRels = (withRelations && withRelations.length > 0)
             ? withRelations
             : ['companies'];
-          // De company_id[] filter blijft als query params op de URL staan;
-          // alleen `with` en `paginate` gaan via de builder.
-          const path = vStr.length > 0
-            ? `${INSERVE_CLIENT_ENDPOINT}?${vStr}`
-            : INSERVE_CLIENT_ENDPOINT;
           const clientBuilder: unknown[] = [
             { with: withRels },
-            { paginate: { page, per_page: perPage } },
+            { paginate: perPage },
           ];
           try {
-            const chunk = await client.request<any>(path, {
+            const chunk = await client.request<any>(INSERVE_CLIENT_ENDPOINT, {
               method: 'GET',
               builder: clientBuilder,
+              query: { ...variantQuery, page },
               builderParamsStyle: 'json',
             });
             chunkPages++;
@@ -2317,13 +2316,13 @@ export async function listAllAssets(
         } else {
           const fullBuilder: unknown[] = [
             ...(strat.withRelations.length > 0 ? [{ with: strat.withRelations }] : []),
-            { paginate: { page, per_page: effectivePerPage } },
+            { paginate: effectivePerPage },
             ...builder,
           ];
           chunk = await client.request<any>(strat.endpoint, {
             method: 'GET',
             builder: fullBuilder,
-            query: extraQueryParams,
+            query: { ...extraQueryParams, page },
             builderParamsStyle: builderParamsStyle ?? strat.builderParamsStyle,
           });
         }

@@ -56,25 +56,23 @@ function pageResponse<T>(data: T[], page: number, perPage: number, total: number
   };
 }
 
-// Haal page/per_page uit de builder (zoals Inserve dat verwacht) of uit query params
+// Haal page/per_page uit de builder (zoals Inserve dat verwacht) of uit query params.
+// Inserve's formaat: builder=[{paginate:PER_PAGE_NUMBER}] + query param page=N
 function getPagination(opts: any): { page: number; perPage: number } {
-  // Probeer eerst de builder: [{ with: [...] }, { paginate: { page, per_page } }]
   const builder = opts?.builder;
+  let perPage = 50;
   if (Array.isArray(builder)) {
     for (const item of builder) {
       if (item && typeof item === 'object' && 'paginate' in item) {
-        return {
-          page: item.paginate.page ?? 1,
-          perPage: item.paginate.per_page ?? 50,
-        };
+        // `paginate` is een getal (per_page count), geen object
+        perPage = typeof item.paginate === 'number' ? item.paginate : 50;
+        break;
       }
     }
   }
-  // Fallback: query params
-  return {
-    page: opts?.query?.page ?? 1,
-    perPage: opts?.query?.per_page ?? 50,
-  };
+  // `page` komt uit de query params (top-level)
+  const page = opts?.query?.page ?? 1;
+  return { page, perPage };
 }
 
 describe("Inserve paginering fix", () => {
@@ -140,16 +138,17 @@ describe("Inserve paginering fix", () => {
       // Controleer dat GEEN builder[2][limit] of builder[3][page] wordt gestuurd
       expect(opts?.query?.["builder[2][limit]"]).toBeUndefined();
       expect(opts?.query?.["builder[3][page]"]).toBeUndefined();
-      // Controleer dat GEEN page/per_page query params worden gestuurd (conflict met builder)
-      expect(opts?.query?.page).toBeUndefined();
+      // Controleer dat `page` WEL als query param wordt gestuurd (Inserve formaat)
+      expect(opts?.query?.page).toBe(1);
+      // Controleer dat GEEN `per_page` query param wordt gestuurd (staat in builder)
       expect(opts?.query?.per_page).toBeUndefined();
-      // Controleer dat de builder paginate bevat
+      // Controleer dat de builder paginate bevat als GETAL (per_page count)
       const builder = opts?.builder;
       expect(Array.isArray(builder)).toBe(true);
       const paginateItem = builder?.find((b: any) => b && typeof b === 'object' && 'paginate' in b);
       expect(paginateItem).toBeDefined();
-      expect(paginateItem.paginate.page).toBe(1);
-      expect(paginateItem.paginate.per_page).toBe(50);
+      expect(typeof paginateItem.paginate).toBe('number');
+      expect(paginateItem.paginate).toBe(50);
       const start = (page - 1) * perPage;
       const slice = allCompanies.slice(start, start + perPage);
       return pageResponse(slice, page, perPage, allCompanies.length);
