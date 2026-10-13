@@ -1564,6 +1564,15 @@ export async function listClientsForCompanyIds(
             // met proberen — dit is het beste endpoint.
             if (hasCompanyInfo) break;
           } else {
+            // Log de response structuur voor diagnose.
+            const respType = Array.isArray(resp) ? 'array' : typeof resp;
+            const respKeys = resp && typeof resp === 'object' && !Array.isArray(resp)
+              ? Object.keys(resp).join(",")
+              : "";
+            console.info(
+              `[Inserve] Strategy B endpoint variant ${vi} voor bedrijf #${firstId}: ` +
+              `0 contacten (respType=${respType}${respKeys ? ` keys=[${respKeys}]` : ""}).`
+            );
             // Lege response: onthoud dit endpoint maar blijf proberen —
             // een volgend endpoint geeft mogelijk wel contacten terug.
             workingEndpoints.push({ vi, items: [], hasCompanyInfo: false });
@@ -1571,6 +1580,11 @@ export async function listClientsForCompanyIds(
         } catch (bErr: any) {
           const rl = isInserveRateLimitError(bErr);
           if (rl) throw rl;
+          // Log de fout voor diagnose.
+          console.info(
+            `[Inserve] Strategy B endpoint variant ${vi} voor bedrijf #${firstId}: ` +
+            `fout ${bErr?.status ?? '?'} ${(bErr?.message ?? '').slice(0, 100)}`
+          );
           // ignore: try next endpoint
         }
       }
