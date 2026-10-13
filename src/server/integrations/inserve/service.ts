@@ -656,14 +656,16 @@ export async function listAllCompanies(
       withRelations: [],
       enrichLater: false,
       useBuilder: false,
-      perPage: 25,
+      perPage: 50,
       extraQueryParams: {
-        // Exact Postman docs stijl: builder[1][with]=customValues ; builder[2][limit]=N ; builder[3][page]=P
-        // Wordt in de lus per page ingevuld (pagina-P wordt dynamisch gezet).
-        // We initialiseren hier de fixed delen (with + limit); page wordt in de loop per iteratie overschreven.
+        // Gebruik standaard page/per_page query params voor paginering
+        // (Inserve herkent builder[2][limit] / builder[3][page] NIET als
+        // paginering; dat leidde tot slechts 1 pagina met bedrijven).
+        // De with-relation wordt via builder[1][with]=customValues opgegeven.
+        'builder[1][with]': 'customValues',
       },
-      separateLimitPage: true,
-      nestedBuilderIndexFromOne: true,
+      separateLimitPage: false,
+      nestedBuilderIndexFromOne: false,
     },
     {
       label: '1-customValues-nested-builder',
@@ -978,29 +980,26 @@ export async function listAllClients(
       useBuilder: false,
       perPage: 50,
       extraQueryParams: {},
-      separateLimitPage: true,
-      nestedBuilderIndexFromOne: true,
-      // Geen builder[1][with]! Alleen limit + page (flat-qs).
-      onlyLimitPageSeparateNoWith: true,
-    } as any,
+      separateLimitPage: false,
+      nestedBuilderIndexFromOne: false,
+    },
     {
       label: 'clients-postman-flat-met-customers',
       withRelations: [],
       useBuilder: false,
-      perPage: 25,
-      extraQueryParams: {},
-      separateLimitPage: true,
-      nestedBuilderIndexFromOne: true,
-      separateWithValue: 'customers',
-    } as any,
+      perPage: 50,
+      extraQueryParams: { 'with': 'customers' },
+      separateLimitPage: false,
+      nestedBuilderIndexFromOne: false,
+    },
     {
       label: 'clients-postman-flat',
       withRelations: [],
       useBuilder: false,
-      perPage: 25,
-      extraQueryParams: {},
-      separateLimitPage: true,
-      nestedBuilderIndexFromOne: true,
+      perPage: 50,
+      extraQueryParams: { 'with': 'company' },
+      separateLimitPage: false,
+      nestedBuilderIndexFromOne: false,
     },
     {
       label: 'clients-nested-builder-company',
@@ -1375,23 +1374,49 @@ export async function listClientsForCompanyIds(
     }
     const dedup = Array.from(seen.values());
 
-    // If we got any contacts at all OR the probe did not throw rate limit / hard
-    // errors → return this result (even if empty — means these companies have 0 contacts).
-    if (dedup.length >= 0) {
-      return {
-        items: dedup,
-        totalFetched: dedup.length,
-        totalExpected: totalExpected || uniqueIds.length,
-        pagesProcessed: totalPages,
-        strategyUsed: `A-batch-filter/${selectedVariant}`,
-        rateLimitRemaining: await rateRemaining(),
-        companyIdsRequested: uniqueIds.length,
-      };
+    // Filter op ALLEEN contacten die werkelijk bij een van de gevraagde
+    // company IDs horen. Dit voorkomt dat ALLE Inserve-contacten worden
+    // teruggegeven wanneer de company_id[] filter-parameter door de API
+    // wordt genegeerd.
+    const uniqueIdSet = new Set(uniqueIds);
+    const filtered = dedup.filter((c) => {
+      const cids = getContactCompanyIds(c);
+      return cids.some((id) => uniqueIdSet.has(id));
+    });
+
+    // Detecteer of de server-side filter wel werkte. Als een groot deel van
+    // de opgehaalde contacten NIET bij de gevraagde companies hoort, dan
+    // negeerde de API de company_id[] parameter en kunnen we beter terugvallen
+    // op Strategy B (per-company) om alle contacten correct te koppelen.
+    const fetchedWithCompany = dedup.filter((c) => getContactCompanyIds(c).length > 0);
+    const relevantRatio = fetchedWithCompany.length > 0 ? filtered.length / fetchedWithCompany.length : 0;
+    const filterLikelyBroken = dedup.length > 0 && fetchedWithCompany.length > 0 && relevantRatio < 0.5;
+
+    if (filterLikelyBroken) {
+      // De filter werkte niet naar behoren. Val terug naar Strategy B
+      // (per-company endpoints) zodat we zeker weten dat we alleen de
+      // contacten van de geselecteerde bedrijven ophalen.
+      console.debug(
+        `[Inserve] Strategy A filter lijkt niet te werken (${filtered.length}/${fetchedWithCompany.length} contacten relevant). Val terug naar Strategy B (per-company).`
+      );
+      throw new Error('STRATEGY_A_FILTER_BROKEN');
     }
+
+    // Return alleen de contacten die bij de gevraagde companies horen.
+    return {
+      items: filtered,
+      totalFetched: filtered.length,
+      totalExpected: totalExpected || uniqueIds.length,
+      pagesProcessed: totalPages,
+      strategyUsed: `A-batch-filter/${selectedVariant}`,
+      rateLimitRemaining: await rateRemaining(),
+      companyIdsRequested: uniqueIds.length,
+    };
   } catch (aErr: any) {
     const rl = isInserveRateLimitError(aErr);
     if (rl) throw rl; // stop at rate limit → handled upstream
-    // Other errors → strategy A failed; silently continue to strategy B.
+    // Other errors (inclusief STRATEGY_A_FILTER_BROKEN) → strategy A failed;
+    // ga door naar strategy B (per-company).
   }
 
   // ---- Strategy B: GET companies/:id/clients (per-company) ------------------
@@ -2135,9 +2160,8 @@ export async function listAllAssets(
       useBuilder: false,
       perPage: 50,
       extraQueryParams: {},
-      separateLimitPage: true,
-      nestedBuilderIndexFromOne: true,
-      onlyLimitPageSeparateNoWith: true as any,
+      separateLimitPage: false,
+      nestedBuilderIndexFromOne: false,
     } as Strat);
     // 3) flat-builder snake_case relations (custom_fields, companies) —
     //    komt het meest voor bij Inserve Laravel APIs
@@ -2147,10 +2171,9 @@ export async function listAllAssets(
       withRelations: [],
       useBuilder: false,
       perPage,
-      extraQueryParams: {},
-      separateLimitPage: true,
-      nestedBuilderIndexFromOne: true,
-      separateWithValue: 'companies,custom_fields' as any,
+      extraQueryParams: { 'with': 'companies,custom_fields' },
+      separateLimitPage: false,
+      nestedBuilderIndexFromOne: false,
     } as Strat);
     // 4) Oude bekende: flat-builder met company,customValues
     strategies.push({
@@ -2159,10 +2182,9 @@ export async function listAllAssets(
       withRelations: [],
       useBuilder: false,
       perPage,
-      extraQueryParams: {},
-      separateLimitPage: true,
-      nestedBuilderIndexFromOne: true,
-      separateWithValue: 'company,customValues' as any,
+      extraQueryParams: { 'with': 'company,customValues' },
+      separateLimitPage: false,
+      nestedBuilderIndexFromOne: false,
     } as Strat);
     // 5) json builder snake_case
     strategies.push({

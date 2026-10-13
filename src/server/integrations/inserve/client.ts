@@ -479,7 +479,17 @@ export class InserveClient {
         else if (Array.isArray(rAny.items)) pageItems = rAny.items as T[];
         else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as T[];
         else if (Array.isArray(rAny.result)) pageItems = rAny.result as T[];
-        pageMeta = (rAny.meta ?? rAny.pagination ?? rAny._meta ?? {}) as any;
+        // Inserve retourneert paginering op top-level (current_page, last_page,
+        // total, per_page), niet in een meta-object. Lees zowel meta.* als
+        // top-level velden zodat beide response-vormen werken.
+        const metaWrapper = (rAny.meta ?? rAny.pagination ?? rAny._meta ?? rAny._pagination ?? {}) as any;
+        pageMeta = {
+          ...metaWrapper,
+          last_page: metaWrapper?.last_page ?? metaWrapper?.lastPage ?? metaWrapper?.total_pages ?? metaWrapper?.totalPages ?? (rAny as any).last_page ?? (rAny as any).lastPage ?? (rAny as any).total_pages,
+          current_page: metaWrapper?.current_page ?? metaWrapper?.currentPage ?? (rAny as any).current_page ?? (rAny as any).currentPage,
+          total: metaWrapper?.total ?? metaWrapper?.count ?? metaWrapper?.total_items ?? metaWrapper?.totalItems ?? (rAny as any).total,
+          per_page: metaWrapper?.per_page ?? metaWrapper?.perPage ?? (rAny as any).per_page ?? (rAny as any).perPage,
+        };
       }
 
       items.push(...pageItems);
