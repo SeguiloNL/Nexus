@@ -1485,16 +1485,41 @@ export async function listClientsForCompanyIds(
     // Endpoint variants per company, try sequentially first company → remember.
     // Het `company_id` query-filter werkt niet bij Inserve (retourneert alle
     // contacten), en de contacten bevatten geen bedrijfsinformatie. Daarom
-    // proberen we ook `with` query-parameters om de bedrijfsrelatie te laden,
-    // zodat we client-side kunnen filteren.
+    // proberen we ook het company endpoint met `with[]=clients` om de
+    // contacten direct aan het bedrijf gekoppeld te krijgen.
     const endpoints: Array<(id: number) => string> = [
+      (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}?with%5B%5D=clients`,
+      (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}?with%5B%5D=contacts`,
       (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}/clients`,
       (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}/contacts`,
       (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&with%5B%5D=companies`,
       (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&with=companies`,
-      (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&include%5B%5D=companies`,
       (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}`,
     ];
+    // Helper om contacten uit een response te halen. De response kan een
+    // array van contacten zijn, of een company object met een `clients` of
+    // `contacts` veld.
+    const extractContacts = (resp: any): InserveContact[] => {
+      if (Array.isArray(resp)) return resp as InserveContact[];
+      if (resp && typeof resp === 'object') {
+        const rAny = resp as Record<string, unknown>;
+        for (const key of ['data', 'items', 'rows', 'result']) {
+          if (Array.isArray(rAny[key])) return rAny[key] as InserveContact[];
+        }
+        // Het is een company object: zoek naar clients/contacts velden.
+        for (const key of ['clients', 'contacts', 'company_clients']) {
+          const val = rAny[key];
+          if (Array.isArray(val)) return val as InserveContact[];
+          if (val && typeof val === 'object') {
+            const vAny = val as Record<string, unknown>;
+            for (const subKey of ['data', 'items', 'rows', 'result']) {
+              if (Array.isArray(vAny[subKey])) return vAny[subKey] as InserveContact[];
+            }
+          }
+        }
+      }
+      return [];
+    };
     let workingEp = 0;
     // Probe endpoints on first company. We proberen alle endpoints en
     // onthouden welke een array retourneren. We geven de voorkeur aan een
@@ -1508,15 +1533,7 @@ export async function listClientsForCompanyIds(
         try {
           const resp = await client.request<any>(endpoints[vi](firstId), { method: 'GET' });
           totalCalls++;
-          let pageItems: InserveContact[] = [];
-          if (Array.isArray(resp)) pageItems = resp as InserveContact[];
-          else if (resp && typeof resp === 'object') {
-            const rAny = resp as Record<string, unknown>;
-            if (Array.isArray(rAny.data)) pageItems = rAny.data as InserveContact[];
-            else if (Array.isArray(rAny.items)) pageItems = rAny.items as InserveContact[];
-            else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as InserveContact[];
-            else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveContact[];
-          }
+          const pageItems = extractContacts(resp);
           if (pageItems.length > 0) {
             const sample = pageItems[0] as Record<string, unknown>;
             const sampleKeys = Object.keys(sample);
@@ -1535,10 +1552,9 @@ export async function listClientsForCompanyIds(
             // met proberen — dit is het beste endpoint.
             if (hasCompanyInfo) break;
           } else {
-            // Lege response is ook een geldig endpoint (bedrijf heeft geen
-            // contacten).
+            // Lege response: onthoud dit endpoint maar blijf proberen —
+            // een volgend endpoint geeft mogelijk wel contacten terug.
             workingEndpoints.push({ vi, items: [], hasCompanyInfo: false });
-            break;
           }
         } catch (bErr: any) {
           const rl = isInserveRateLimitError(bErr);
@@ -1549,8 +1565,12 @@ export async function listClientsForCompanyIds(
       if (workingEndpoints.length === 0) {
         throw new Error('Strategy B: all per-company endpoints returned non-array on first company.');
       }
-      // Kies het eerste endpoint met bedrijfsinformatie, anders de laatste.
-      const bestEp = workingEndpoints.find((e) => e.hasCompanyInfo) ?? workingEndpoints[workingEndpoints.length - 1];
+      // Kies het eerste endpoint met bedrijfsinformatie, anders het eerste
+      // endpoint met contacten, anders de laatste (lege) fallback.
+      const bestEp =
+        workingEndpoints.find((e) => e.hasCompanyInfo) ??
+        workingEndpoints.find((e) => e.items.length > 0) ??
+        workingEndpoints[workingEndpoints.length - 1];
       workingEp = bestEp.vi;
       const pageItems = bestEp.items;
       console.info(`[Inserve] Strategy B gebruikt endpoint variant ${workingEp} (bedrijfsinformatie=${bestEp.hasCompanyInfo}).`);
@@ -1579,15 +1599,7 @@ export async function listClientsForCompanyIds(
         slice.map(async (id) => {
           try {
             const resp = await client.request<any>(endpoints[workingEp](id), { method: 'GET' });
-            let pageItems: InserveContact[] = [];
-            if (Array.isArray(resp)) pageItems = resp as InserveContact[];
-            else if (resp && typeof resp === 'object') {
-              const rAny = resp as Record<string, unknown>;
-              if (Array.isArray(rAny.data)) pageItems = rAny.data as InserveContact[];
-              else if (Array.isArray(rAny.items)) pageItems = rAny.items as InserveContact[];
-              else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as InserveContact[];
-              else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveContact[];
-            }
+            const pageItems = extractContacts(resp);
             // Filter: alleen contacten die werkelijk bij dit bedrijf horen.
             // De `company_id` query-filter werkt mogelijk niet bij Inserve,
             // dus filteren we client-side op het company_id veld.
