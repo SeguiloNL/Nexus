@@ -453,10 +453,12 @@ export class InserveClient {
         ...extraBuilder,
       ];
 
-      const query: Record<string, string | number | boolean | undefined> = {
-        page: currentPage,
-        per_page: perPage,
-      };
+      // Wanneer we de builder gebruiken voor paginering, sturen we GEEN
+      // page/per_page query params mee. Inserve ziet beide signalen en
+      // retourneert status 500 (conflict tussen query-params en builder).
+      // De builder bevat al de paginering-informatie.
+      const query: Record<string, string | number | boolean | undefined> =
+        pageBuilder.length > 0 ? {} : { page: currentPage, per_page: perPage };
 
       const resp = await this.request<any>(path, {
         method: method ?? 'GET',

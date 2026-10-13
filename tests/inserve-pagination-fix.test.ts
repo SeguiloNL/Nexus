@@ -56,6 +56,27 @@ function pageResponse<T>(data: T[], page: number, perPage: number, total: number
   };
 }
 
+// Haal page/per_page uit de builder (zoals Inserve dat verwacht) of uit query params
+function getPagination(opts: any): { page: number; perPage: number } {
+  // Probeer eerst de builder: [{ with: [...] }, { paginate: { page, per_page } }]
+  const builder = opts?.builder;
+  if (Array.isArray(builder)) {
+    for (const item of builder) {
+      if (item && typeof item === 'object' && 'paginate' in item) {
+        return {
+          page: item.paginate.page ?? 1,
+          perPage: item.paginate.per_page ?? 50,
+        };
+      }
+    }
+  }
+  // Fallback: query params
+  return {
+    page: opts?.query?.page ?? 1,
+    perPage: opts?.query?.per_page ?? 50,
+  };
+}
+
 describe("Inserve paginering fix", () => {
   let mockRequest: any;
   let getClientSpy: any;
@@ -78,8 +99,7 @@ describe("Inserve paginering fix", () => {
     const allCompanies = Array.from({ length: 120 }, (_, i) => makeCompany(1001 + i));
 
     mockRequest.mockImplementation(async (_path: string, opts: any) => {
-      const page = opts?.query?.page ?? 1;
-      const perPage = opts?.query?.per_page ?? 50;
+      const { page, perPage } = getPagination(opts);
       const start = (page - 1) * perPage;
       const slice = allCompanies.slice(start, start + perPage);
       return pageResponse(slice, page, perPage, allCompanies.length);
@@ -100,8 +120,7 @@ describe("Inserve paginering fix", () => {
     const allCompanies = Array.from({ length: 51 }, (_, i) => makeCompany(2001 + i));
 
     mockRequest.mockImplementation(async (_path: string, opts: any) => {
-      const page = opts?.query?.page ?? 1;
-      const perPage = opts?.query?.per_page ?? 50;
+      const { page, perPage } = getPagination(opts);
       const start = (page - 1) * perPage;
       const slice = allCompanies.slice(start, start + perPage);
       return pageResponse(slice, page, perPage, allCompanies.length);
@@ -113,31 +132,35 @@ describe("Inserve paginering fix", () => {
     expect(result.pagesProcessed).toBe(2); // 50 + 1
   });
 
-  it("listAllCompanies gebruikt standaard page/per_page params (geen builder[2][limit])", async () => {
+  it("listAllCompanies gebruikt de builder voor paginering (geen conflicterende query params)", async () => {
     const allCompanies = [makeCompany(3001)];
 
     mockRequest.mockImplementation(async (_path: string, opts: any) => {
-      const page = opts?.query?.page ?? 1;
-      const perPage = opts?.query?.per_page ?? 50;
+      const { page, perPage } = getPagination(opts);
       // Controleer dat GEEN builder[2][limit] of builder[3][page] wordt gestuurd
       expect(opts?.query?.["builder[2][limit]"]).toBeUndefined();
       expect(opts?.query?.["builder[3][page]"]).toBeUndefined();
+      // Controleer dat GEEN page/per_page query params worden gestuurd (conflict met builder)
+      expect(opts?.query?.page).toBeUndefined();
+      expect(opts?.query?.per_page).toBeUndefined();
+      // Controleer dat de builder paginate bevat
+      const builder = opts?.builder;
+      expect(Array.isArray(builder)).toBe(true);
+      const paginateItem = builder?.find((b: any) => b && typeof b === 'object' && 'paginate' in b);
+      expect(paginateItem).toBeDefined();
+      expect(paginateItem.paginate.page).toBe(1);
+      expect(paginateItem.paginate.per_page).toBe(50);
       const start = (page - 1) * perPage;
       const slice = allCompanies.slice(start, start + perPage);
       return pageResponse(slice, page, perPage, allCompanies.length);
     });
 
     await inserveSvc.listAllCompanies({ perPage: 50 });
-
-    // De eerste call moet page=1 en per_page=50 hebben
-    const firstCall = mockRequest.mock.calls[0];
-    expect(firstCall[1]?.query?.page).toBe(1);
-    expect(firstCall[1]?.query?.per_page).toBe(50);
   });
 
   it("listAllCompanies geeft een fout door wanneer een pagina faalt (geen stille stop)", async () => {
     mockRequest.mockImplementation(async (_path: string, opts: any) => {
-      const page = opts?.query?.page ?? 1;
+      const { page } = getPagination(opts);
       if (page === 2) {
         throw new Error("Netwerkfout op pagina 2");
       }
@@ -158,8 +181,7 @@ describe("Inserve paginering fix", () => {
 
     mockRequest.mockImplementation(async (path: string, opts: any) => {
       // Simuleer dat de API de company_id[] filter NEGEERT en alle contacten teruggeeft
-      const page = opts?.query?.page ?? 1;
-      const perPage = opts?.query?.per_page ?? 50;
+      const { page, perPage } = getPagination(opts);
       const start = (page - 1) * perPage;
       const slice = allContacts.slice(start, start + perPage);
       return pageResponse(slice, page, perPage, allContacts.length);
