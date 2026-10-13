@@ -658,21 +658,17 @@ export async function listAllCompanies(
   };
   const strategies: Strat[] = [
     {
-      label: '1-customValues-postman-flat-params',
-      withRelations: [],
+      // PRIMAIRE strategie: gebruik de JSON-encoded builder voor zowel de
+      // `with`-relatie (customValues) ALS de paginering (paginate). Inserve
+      // herkent `page`/`per_page` query params NIET als paginering op het
+      // /companies endpoint; dat vereist `{"builder":[{"paginate":{"page":N,"per_page":M}}]}`.
+      // Zonder builder-paginering retourneert elke pagina alle bedrijven,
+      // waardoor we 80 pagina's × alle bedrijven ophalen = 48.800 items.
+      label: '1-customValues-json-builder',
+      withRelations: ['customValues'],
       enrichLater: false,
-      useBuilder: false,
-      perPage: 50,
       requireInlineFields: true,
-      extraQueryParams: {
-        // Gebruik standaard page/per_page query params voor paginering
-        // (Inserve herkent builder[2][limit] / builder[3][page] NIET als
-        // paginering; dat leidde tot slechts 1 pagina met bedrijven).
-        // De with-relation wordt via builder[1][with]=customValues opgegeven.
-        'builder[1][with]': 'customValues',
-      },
-      separateLimitPage: false,
-      nestedBuilderIndexFromOne: false,
+      builderParamsStyle: 'json',
     },
     {
       label: '1-customValues-nested-builder',
@@ -682,13 +678,8 @@ export async function listAllCompanies(
       builderParamsStyle: 'nested',
     },
     {
-      label: '1-customValues-json-builder',
-      withRelations: ['customValues'],
-      enrichLater: false,
-      requireInlineFields: true,
-      builderParamsStyle: 'json',
-    },
-    {
+      // Fallback: probeer de flat-params variant als de builder niet werkt.
+      // Gebruik `with[]` query param voor de relatie (geen builder).
       label: '1-customValues-with-query-zonder-builder',
       withRelations: [],
       enrichLater: false,
@@ -1337,22 +1328,36 @@ export async function listClientsForCompanyIds(
         const vStr = VARIANTS[vi](idChunk);
         const effectiveMax = maxPages ?? 20;
         for (let page = 1; page <= effectiveMax; page++) {
-          const separator = (vStr && vStr.length > 0) ? '&' : '';
           // Vraag de companies-relatie op zodat getContactCompanyIds de
           // contacten correct aan bedrijven kan koppelen. Zonder deze
           // `with` retourneert Inserve contacten zonder bedrijfsrelatie,
           // waardoor groupContactsByCompanyId een lege map oplevert en
           // er 0 contacten worden verwerkt.
+          //
+          // BELANGRIJK: Gebruik de builder voor de `with`-relatie EN de
+          // paginering. Inserve herkent `page`/`per_page` query params NIET
+          // als paginering op het /clients endpoint; dat vereist
+          // `{"builder":[{"with":["companies"]},{"paginate":{"page":N,"per_page":M}}]}`.
+          // Zonder builder-paginering retourneert elke pagina alle contacten
+          // (of geen), waardoor er 0 contacten worden verwerkt.
           const withRels = (withRelations && withRelations.length > 0)
             ? withRelations
             : ['companies'];
-          const withStr = `with=${encodeURIComponent(withRels.join(','))}`;
-          const qsExtra = vStr.length > 0
-            ? `${separator}${withStr}&page=${page}&per_page=${perPage}`
-            : `${withStr}&page=${page}&per_page=${perPage}`;
-          const path = `${INSERVE_CLIENT_ENDPOINT}?${vStr}${qsExtra}`;
+          // De company_id[] filter blijft als query params op de URL staan;
+          // alleen `with` en `paginate` gaan via de builder.
+          const path = vStr.length > 0
+            ? `${INSERVE_CLIENT_ENDPOINT}?${vStr}`
+            : INSERVE_CLIENT_ENDPOINT;
+          const clientBuilder: unknown[] = [
+            { with: withRels },
+            { paginate: { page, per_page: perPage } },
+          ];
           try {
-            const chunk = await client.request<any>(path, { method: 'GET' });
+            const chunk = await client.request<any>(path, {
+              method: 'GET',
+              builder: clientBuilder,
+              builderParamsStyle: 'json',
+            });
             chunkPages++;
             totalPages++;
             // If budget exceeded: break & continue to next strategy

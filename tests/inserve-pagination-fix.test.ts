@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as inserveSvc from "@/server/integrations/inserve/service";
-import { inserveClient } from "@/server/integrations/inserve/client";
+import { inserveClient, InserveClient } from "@/server/integrations/inserve/client";
 import type { InserveCompany, InserveContact } from "@/server/integrations/inserve/types";
 
 /**
@@ -62,10 +62,11 @@ describe("Inserve paginering fix", () => {
 
   beforeEach(() => {
     mockRequest = vi.fn();
-    getClientSpy = vi.spyOn(inserveClient, "getClient").mockResolvedValue({
-      request: mockRequest,
-      requestAllPages: inserveClient["instance"]?.requestAllPages?.bind(inserveClient["instance"]) as any,
-    } as any);
+    // Gebruik een echte InserveClient instantie zodat requestAllPages
+    // beschikbaar is, maar mock de request-methode om API-calls te simuleren.
+    const realClient = new InserveClient("test", "test");
+    vi.spyOn(realClient, "request").mockImplementation(mockRequest);
+    getClientSpy = vi.spyOn(inserveClient, "getClient").mockResolvedValue(realClient);
   });
 
   afterEach(() => {
