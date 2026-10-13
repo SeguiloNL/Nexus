@@ -1482,18 +1482,29 @@ export async function listClientsForCompanyIds(
     const MAX_CONCURRENCY = 5;
     let totalCalls = 0;
     const allContacts: InserveContact[] = [];
-    // 3 endpoint variants per company, try sequentially first company → remember
-    const endpoints = [
+    // Endpoint variants per company, try sequentially first company → remember.
+    // Het `company_id` query-filter werkt niet bij Inserve (retourneert alle
+    // contacten), en de contacten bevatten geen bedrijfsinformatie. Daarom
+    // proberen we ook `with` query-parameters om de bedrijfsrelatie te laden,
+    // zodat we client-side kunnen filteren.
+    const endpoints: Array<(id: number) => string> = [
       (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}/clients`,
       (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}/contacts`,
+      (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&with%5B%5D=companies`,
+      (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&with=companies`,
+      (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&include%5B%5D=companies`,
       (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}`,
     ];
     let workingEp = 0;
-    // Probe endpoints on first company
+    // Probe endpoints on first company. We proberen alle endpoints en
+    // onthouden welke een array retourneren. We geven de voorkeur aan een
+    // endpoint dat bedrijfsinformatie (company_id of companies) retourneert,
+    // zodat we client-side kunnen filteren. Als geen van beide werkt,
+    // gebruiken we de laatste als fallback.
     if (uniqueIds.length > 0) {
       const firstId = uniqueIds[0];
-      let found = false;
-      for (let vi = 0; vi < endpoints.length && !found; vi++) {
+      const workingEndpoints: Array<{ vi: number; items: InserveContact[]; hasCompanyInfo: boolean }> = [];
+      for (let vi = 0; vi < endpoints.length; vi++) {
         try {
           const resp = await client.request<any>(endpoints[vi](firstId), { method: 'GET' });
           totalCalls++;
@@ -1506,38 +1517,28 @@ export async function listClientsForCompanyIds(
             else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as InserveContact[];
             else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveContact[];
           }
-          // Heuristic: accept if page is array-like (even empty)
-          workingEp = vi;
-          found = true;
           if (pageItems.length > 0) {
-            // Diagnose: log de structuur van het eerste contact om te
-            // bepalen of de API een company_id veld retourneert.
             const sample = pageItems[0] as Record<string, unknown>;
             const sampleKeys = Object.keys(sample);
             const sampleCompanyId = sample.company_id ?? sample.companyId ?? (sample.company as any)?.id ?? null;
+            const hasCompanies = Array.isArray(sample.companies);
+            const hasCompanyInfo = sampleCompanyId != null || hasCompanies;
             console.info(
               `[Inserve] Strategy B endpoint variant ${vi} voor bedrijf #${firstId}: ` +
               `${pageItems.length} contacten. Sample keys=[${sampleKeys.join(",")}] ` +
               `company_id=${JSON.stringify(sampleCompanyId)} ` +
+              `companies=${hasCompanies ? `[len=${(sample.companies as any[])?.length}]` : "nee"} ` +
               `naam=${JSON.stringify(sample.firstName ?? sample.first_name ?? sample.fullName ?? sample.name ?? null)}`
             );
-            // Filter: alleen contacten die werkelijk bij dit bedrijf horen.
-            // De `company_id` query-filter werkt mogelijk niet bij Inserve,
-            // dus filteren we client-side op het company_id veld.
-            const filtered = pageItems.filter((c) => {
-              const ids = getContactCompanyIds(c);
-              // Als het contact geen company_id heeft, labelen we het met
-              // het opgevraagde bedrijf (fallback).
-              if (ids.length === 0) {
-                (c as any).companies = [firstId];
-                return true;
-              }
-              return ids.includes(firstId);
-            });
-            console.info(
-              `[Inserve] Strategy B filter: ${filtered.length}/${pageItems.length} contacten behoren tot bedrijf #${firstId}.`
-            );
-            allContacts.push(...filtered);
+            workingEndpoints.push({ vi, items: pageItems, hasCompanyInfo });
+            // Als dit endpoint bedrijfsinformatie retourneert, stoppen we
+            // met proberen — dit is het beste endpoint.
+            if (hasCompanyInfo) break;
+          } else {
+            // Lege response is ook een geldig endpoint (bedrijf heeft geen
+            // contacten).
+            workingEndpoints.push({ vi, items: [], hasCompanyInfo: false });
+            break;
           }
         } catch (bErr: any) {
           const rl = isInserveRateLimitError(bErr);
@@ -1545,8 +1546,28 @@ export async function listClientsForCompanyIds(
           // ignore: try next endpoint
         }
       }
-      if (!found) {
+      if (workingEndpoints.length === 0) {
         throw new Error('Strategy B: all per-company endpoints returned non-array on first company.');
+      }
+      // Kies het eerste endpoint met bedrijfsinformatie, anders de laatste.
+      const bestEp = workingEndpoints.find((e) => e.hasCompanyInfo) ?? workingEndpoints[workingEndpoints.length - 1];
+      workingEp = bestEp.vi;
+      const pageItems = bestEp.items;
+      console.info(`[Inserve] Strategy B gebruikt endpoint variant ${workingEp} (bedrijfsinformatie=${bestEp.hasCompanyInfo}).`);
+      if (pageItems.length > 0) {
+        const filtered = pageItems.filter((c) => {
+          const ids = getContactCompanyIds(c);
+          if (ids.length === 0) {
+            // Geen bedrijfsinformatie: label met het opgevraagde bedrijf.
+            (c as any).companies = [firstId];
+            return true;
+          }
+          return ids.includes(firstId);
+        });
+        console.info(
+          `[Inserve] Strategy B filter: ${filtered.length}/${pageItems.length} contacten behoren tot bedrijf #${firstId}.`
+        );
+        allContacts.push(...filtered);
       }
     }
 
