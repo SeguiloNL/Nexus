@@ -1490,6 +1490,7 @@ export async function listClientsForCompanyIds(
     const builderWithClients = encodeURIComponent('[{"with":["clients"]}]');
     const builderWithContacts = encodeURIComponent('[{"with":["contacts"]}]');
     const builderWithCompanies = encodeURIComponent('[{"with":["companies"]}]');
+    const builderWithCompany = encodeURIComponent('[{"with":["company"]}]');
     const endpoints: Array<(id: number) => string> = [
       // Builder-gebaseerd: laad contacten via het company endpoint
       (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}?builder=${builderWithClients}`,
@@ -1502,9 +1503,12 @@ export async function listClientsForCompanyIds(
       (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}/contacts`,
       // Clients endpoint met `with` in builder voor bedrijfsinformatie
       (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&builder=${builderWithCompanies}`,
+      (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&builder=${builderWithCompany}`,
       // Clients endpoint met `with` query-parameter
       (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&with%5B%5D=companies`,
+      (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&with%5B%5D=company`,
       (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&with=companies`,
+      (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&with=company`,
       // Laatste fallback: clients endpoint zonder filter
       (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}`,
     ];
