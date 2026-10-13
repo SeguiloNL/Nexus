@@ -1510,15 +1510,34 @@ export async function listClientsForCompanyIds(
           workingEp = vi;
           found = true;
           if (pageItems.length > 0) {
-            // Fallback: label contacten met het bedrijf-ID waarvoor ze
-            // zijn opgehaald, wanneer de API geen bedrijfsrelatie
-            // retourneert.
-            for (const c of pageItems) {
-              if (getContactCompanyIds(c).length === 0) {
+            // Diagnose: log de structuur van het eerste contact om te
+            // bepalen of de API een company_id veld retourneert.
+            const sample = pageItems[0] as Record<string, unknown>;
+            const sampleKeys = Object.keys(sample);
+            const sampleCompanyId = sample.company_id ?? sample.companyId ?? (sample.company as any)?.id ?? null;
+            console.info(
+              `[Inserve] Strategy B endpoint variant ${vi} voor bedrijf #${firstId}: ` +
+              `${pageItems.length} contacten. Sample keys=[${sampleKeys.join(",")}] ` +
+              `company_id=${JSON.stringify(sampleCompanyId)} ` +
+              `naam=${JSON.stringify(sample.firstName ?? sample.first_name ?? sample.fullName ?? sample.name ?? null)}`
+            );
+            // Filter: alleen contacten die werkelijk bij dit bedrijf horen.
+            // De `company_id` query-filter werkt mogelijk niet bij Inserve,
+            // dus filteren we client-side op het company_id veld.
+            const filtered = pageItems.filter((c) => {
+              const ids = getContactCompanyIds(c);
+              // Als het contact geen company_id heeft, labelen we het met
+              // het opgevraagde bedrijf (fallback).
+              if (ids.length === 0) {
                 (c as any).companies = [firstId];
+                return true;
               }
-            }
-            allContacts.push(...pageItems);
+              return ids.includes(firstId);
+            });
+            console.info(
+              `[Inserve] Strategy B filter: ${filtered.length}/${pageItems.length} contacten behoren tot bedrijf #${firstId}.`
+            );
+            allContacts.push(...filtered);
           }
         } catch (bErr: any) {
           const rl = isInserveRateLimitError(bErr);
@@ -1548,15 +1567,18 @@ export async function listClientsForCompanyIds(
               else if (Array.isArray(rAny.rows)) pageItems = rAny.rows as InserveContact[];
               else if (Array.isArray(rAny.result)) pageItems = rAny.result as InserveContact[];
             }
-            // Fallback: label contacten met het bedrijf-ID waarvoor ze
-            // zijn opgehaald, wanneer de API geen bedrijfsrelatie
-            // retourneert.
-            for (const c of pageItems) {
-              if (getContactCompanyIds(c).length === 0) {
+            // Filter: alleen contacten die werkelijk bij dit bedrijf horen.
+            // De `company_id` query-filter werkt mogelijk niet bij Inserve,
+            // dus filteren we client-side op het company_id veld.
+            const filtered = pageItems.filter((c) => {
+              const ids = getContactCompanyIds(c);
+              if (ids.length === 0) {
                 (c as any).companies = [id];
+                return true;
               }
-            }
-            return { ok: true, items: pageItems };
+              return ids.includes(id);
+            });
+            return { ok: true, items: filtered };
           } catch (bErr: any) {
             const rl = isInserveRateLimitError(bErr);
             if (rl) return { ok: false, rateLimit: rl, items: [] };
