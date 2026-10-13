@@ -473,32 +473,114 @@ export async function runUsageAlertNotificationCycle(
   for (const row of users) {
     if (processedUsers++ >= limitUsers) break;
 
-    const u = row.user;
-    const toEmail =
-      row.notificationEmail && row.notificationEmail.trim() !== ""
-        ? row.notificationEmail.trim()
-        : u.email;
-    if (!toEmail) continue;
+    // Per-user isolation: een fout voor één gebruiker mag de rest van de cyclus
+    // niet blokkeren. Vang alle onverwachte fouten af en rapporteer ze per gebruiker.
+    try {
+      const u = row.user;
+      const toEmail =
+        row.notificationEmail && row.notificationEmail.trim() !== ""
+          ? row.notificationEmail.trim()
+          : u.email;
+      if (!toEmail) {
+        console.info(
+          `[usage-alert] Gebruiker ${u.id} overgeslagen: geen e-mailadres (notificationEmail en user.email zijn leeg).`
+        );
+        continue;
+      }
 
-    const userLevels = opts.thresholdPercentOverride
-      ? [percentToThresholdLevel(opts.thresholdPercentOverride) ?? AlertThresholdLevel.WARNING_80]
-      : resolveUserThresholdLevels(row);
-    const userLevelPercents = userLevels.map((l) => thresholdLevelToPercent(l));
-    const userInterval = resolveUserCheckIntervalMinutes(row);
-    const roleScope = u.roleScope;
-    const isInternal = roleScope === "INTERNAL";
-    const useAllSims = isInternal && !!row.notifyAllSims;
+      const userLevels = opts.thresholdPercentOverride
+        ? [percentToThresholdLevel(opts.thresholdPercentOverride) ?? AlertThresholdLevel.WARNING_80]
+        : resolveUserThresholdLevels(row);
+      const userLevelPercents = userLevels.map((l) => thresholdLevelToPercent(l));
+      const userInterval = resolveUserCheckIntervalMinutes(row);
+      const roleScope = u.roleScope;
+      const isInternal = roleScope === "INTERNAL";
+      const useAllSims = isInternal && !!row.notifyAllSims;
 
-    const lastAt = row.lastNotificationAt;
-    if (
-      !opts.dryRunForce &&
-      !opts.thresholdPercentOverride &&
-      lastAt
-    ) {
-      const diffMs = nowCycle.getTime() - lastAt.getTime();
-      const diffMin = diffMs / (1000 * 60);
-      if (diffMin < userInterval) {
-        report.usersSkippedInterval++;
+      const lastAt = row.lastNotificationAt;
+      if (
+        !opts.dryRunForce &&
+        !opts.thresholdPercentOverride &&
+        lastAt
+      ) {
+        const diffMs = nowCycle.getTime() - lastAt.getTime();
+        const diffMin = diffMs / (1000 * 60);
+        if (diffMin < userInterval) {
+          report.usersSkippedInterval++;
+          console.info(
+            `[usage-alert] Gebruiker ${u.id} (${toEmail}) overgeslagen: laatste notificatie ${Math.round(
+              diffMin
+            )} min geleden (interval ${userInterval} min).`
+          );
+          report.details.push({
+            userId: u.id,
+            email: toEmail,
+            name: u.name,
+            notifyAllSims: !!row.notifyAllSims,
+            roleScope,
+            checkIntervalMinutes: userInterval,
+            thresholdLevels: userLevels.map((l) => String(l)),
+            simsTotalInScopeAtThreshold: 0,
+            simsToReport: 0,
+            simsPreviouslyAlerted: 0,
+            emailResult: null,
+            errorMessage: `Overgeslagen: laatste notificatie was ${Math.round(
+              diffMin
+            )} min geleden (interval: ${userInterval} min).`,
+          });
+          continue;
+        }
+      }
+
+      let scopeCustomerIds: Set<string> | null = null;
+      if (!useAllSims) {
+        const ids = await collectUserCustomerIds(u.id).catch(() => [] as string[]);
+        scopeCustomerIds = new Set(ids);
+        if (scopeCustomerIds.size === 0) {
+          const filteredByStatus = allAtAnyThreshold.filter((s) => {
+            if (!userLevelPercents.some((p) => isDataAboveThreshold(s, p)))
+              return false;
+            return true;
+          });
+          report.simsSkippedScope += filteredByStatus.length;
+          console.info(
+            `[usage-alert] Gebruiker ${u.id} (${toEmail}) overgeslagen: lege customer scope (${filteredByStatus.length} SIM(s) buiten bereik).`
+          );
+          report.details.push({
+            userId: u.id,
+            email: toEmail,
+            name: u.name,
+            notifyAllSims: !!row.notifyAllSims,
+            roleScope,
+            checkIntervalMinutes: userInterval,
+            thresholdLevels: userLevels.map((l) => String(l)),
+            simsTotalInScopeAtThreshold: 0,
+            simsToReport: 0,
+            simsPreviouslyAlerted: 0,
+            emailResult: null,
+            errorMessage:
+              "Lege customer scope — geen SIMs om over te rapporteren (en 'Alle SIMs' staat uit).",
+          });
+          continue;
+        }
+      }
+
+      const simsInScope: SimWithCustomerAndUsage[] = [];
+      for (const sim of allAtAnyThreshold) {
+        if (!userLevelPercents.some((p) => isDataAboveThreshold(sim, p))) continue;
+        if (useAllSims) {
+          simsInScope.push(sim);
+        } else if (sim.customerId && scopeCustomerIds!.has(sim.customerId)) {
+          simsInScope.push(sim);
+        } else {
+          report.simsSkippedScope++;
+        }
+      }
+
+      if (simsInScope.length === 0) {
+        console.info(
+          `[usage-alert] Gebruiker ${u.id} (${toEmail}) overgeslagen: geen SIMs in scope boven drempel.`
+        );
         report.details.push({
           userId: u.id,
           email: toEmail,
@@ -511,25 +593,46 @@ export async function runUsageAlertNotificationCycle(
           simsToReport: 0,
           simsPreviouslyAlerted: 0,
           emailResult: null,
-          errorMessage: `Overgeslagen: laatste notificatie was ${Math.round(
-            diffMin
-          )} min geleden (interval: ${userInterval} min).`,
         });
         continue;
       }
-    }
 
-    let scopeCustomerIds: Set<string> | null = null;
-    if (!useAllSims) {
-      const ids = await collectUserCustomerIds(u.id).catch(() => [] as string[]);
-      scopeCustomerIds = new Set(ids);
-      if (scopeCustomerIds.size === 0) {
-        const filteredByStatus = allAtAnyThreshold.filter((s) => {
-          if (!userLevelPercents.some((p) => isDataAboveThreshold(s, p)))
-            return false;
-          return true;
-        });
-        report.simsSkippedScope += filteredByStatus.length;
+      type SimWithAlertInfo = SimWithCustomerAndUsage & {
+        highestPercent: number;
+        alertLevel: AlertThresholdLevel;
+      };
+
+      const simsWithLevels: SimWithAlertInfo[] = simsInScope
+        .map((s) => {
+          const highestPct = highestLevelPercentForSim(s, userLevels);
+          const level = levelForSimAndPercent(highestPct);
+          if (!level || highestPct === 0) return null;
+          return { ...s, highestPercent: highestPct, alertLevel: level };
+        })
+        .filter((x): x is SimWithAlertInfo => x !== null);
+
+      const simsToReport: SimWithAlertInfo[] = [];
+      let alreadyAlertedCount = 0;
+      for (const sim of simsWithLevels) {
+        const k = alertKeyOf(
+          u.id,
+          sim.id,
+          sim.alertLevel,
+          buildPeriodKey(sim.usagePeriodStart)
+        );
+        if (alreadySent.has(k)) {
+          alreadyAlertedCount++;
+          report.simsSkippedAlreadySent++;
+        } else {
+          simsToReport.push(sim);
+        }
+      }
+
+      report.usersWithAlerts++;
+      if (simsToReport.length === 0) {
+        console.info(
+          `[usage-alert] Gebruiker ${u.id} (${toEmail}) overgeslagen: alle ${alreadyAlertedCount} SIM(s) in scope werden reeds gerapporteerd (anti-spam guard).`
+        );
         report.details.push({
           userId: u.id,
           email: toEmail,
@@ -538,79 +641,145 @@ export async function runUsageAlertNotificationCycle(
           roleScope,
           checkIntervalMinutes: userInterval,
           thresholdLevels: userLevels.map((l) => String(l)),
-          simsTotalInScopeAtThreshold: 0,
+          simsTotalInScopeAtThreshold: simsInScope.length,
           simsToReport: 0,
-          simsPreviouslyAlerted: 0,
+          simsPreviouslyAlerted: alreadyAlertedCount,
           emailResult: null,
           errorMessage:
-            "Lege customer scope — geen SIMs om over te rapporteren (en 'Alle SIMs' staat uit).",
+            "Alle SIMs in scope werden reeds gerapporteerd in deze periode (anti-spam guard).",
         });
         continue;
       }
-    }
 
-    const simsInScope: SimWithCustomerAndUsage[] = [];
-    for (const sim of allAtAnyThreshold) {
-      if (!userLevelPercents.some((p) => isDataAboveThreshold(sim, p))) continue;
-      if (useAllSims) {
-        simsInScope.push(sim);
-      } else if (sim.customerId && scopeCustomerIds!.has(sim.customerId)) {
-        simsInScope.push(sim);
-      } else {
-        report.simsSkippedScope++;
-      }
-    }
+      const items: SimUsageThresholdEmailItem[] = simsToReport.map((s) => ({
+        simId: s.id,
+        simName: s.simName,
+        iccid: s.iccid,
+        msisdn: s.msisdn,
+        customerName: s.customerName,
+        dataUsedBytes: s.dataUsedBytes ?? 0n,
+        dataLimitBytes: getEffectiveDataLimit(s) ?? 0n,
+        thresholdPercent: s.highestPercent,
+        thresholdLevel: s.alertLevel,
+        detailUrl: SIM_DETAIL_PATH(s.id),
+      }));
 
-    if (simsInScope.length === 0) {
-      report.details.push({
-        userId: u.id,
-        email: toEmail,
-        name: u.name,
-        notifyAllSims: !!row.notifyAllSims,
-        roleScope,
-        checkIntervalMinutes: userInterval,
-        thresholdLevels: userLevels.map((l) => String(l)),
-        simsTotalInScopeAtThreshold: 0,
-        simsToReport: 0,
-        simsPreviouslyAlerted: 0,
-        emailResult: null,
-      });
-      continue;
-    }
-
-    type SimWithAlertInfo = SimWithCustomerAndUsage & {
-      highestPercent: number;
-      alertLevel: AlertThresholdLevel;
-    };
-
-    const simsWithLevels: SimWithAlertInfo[] = simsInScope
-      .map((s) => {
-        const highestPct = highestLevelPercentForSim(s, userLevels);
-        const level = levelForSimAndPercent(highestPct);
-        if (!level || highestPct === 0) return null;
-        return { ...s, highestPercent: highestPct, alertLevel: level };
-      })
-      .filter((x): x is SimWithAlertInfo => x !== null);
-
-    const simsToReport: SimWithAlertInfo[] = [];
-    let alreadyAlertedCount = 0;
-    for (const sim of simsWithLevels) {
-      const k = alertKeyOf(
-        u.id,
-        sim.id,
-        sim.alertLevel,
-        buildPeriodKey(sim.usagePeriodStart)
+      const overallThreshold = Math.max(
+        ...items.map((i) => i.thresholdPercent)
       );
-      if (alreadySent.has(k)) {
-        alreadyAlertedCount++;
-        report.simsSkippedAlreadySent++;
-      } else {
-        simsToReport.push(sim);
-      }
-    }
 
-    report.usersWithAlerts++;
-    if (simsToReport.length === 0) {
+      let emailResult: EmailSendResult;
+      if (opts.dryRunForce) {
+        emailResult = {
+          dryRun: true,
+          accepted: [],
+          rejected: [],
+          error: "Geforceerde dry-run via optie.",
+        };
+      } else {
+        try {
+          emailResult = await sendSimUsageThresholdEmail({
+            toEmail: toEmail,
+            toName: u.name || "Gebruiker",
+            thresholdPercent: overallThreshold,
+            items,
+          });
+        } catch (e: any) {
+          emailResult = {
+            dryRun: false,
+            accepted: [],
+            rejected: [toEmail],
+            error: e?.message ?? String(e),
+          };
+        }
+      }
+
+      if (emailResult.dryRun) {
+        report.usersNotifiedDryRun++;
+        console.info(
+          `[usage-alert] Gebruiker ${u.id} (${toEmail}): dry-run — ${simsToReport.length} SIM(s) zouden gerapporteerd worden.`
+        );
+      } else if (
+        emailResult.accepted.length > 0 &&
+        !emailResult.rejected.includes(toEmail) &&
+        !emailResult.error
+      ) {
+        report.usersNotified++;
+        console.info(
+          `[usage-alert] Gebruiker ${u.id} (${toEmail}): notificatie succesvol verzonden (${simsToReport.length} SIM(s), messageId=${emailResult.messageId ?? "?"}).`
+        );
+      } else {
+        report.userSendFailures++;
+        console.error(
+          `[usage-alert] Gebruiker ${u.id} (${toEmail}): notificatie NIET verzonden — ${emailResult.error ?? `afgewezen: ${emailResult.rejected.join(", ")}`}`
+        );
+      }
+
+      let alertsCreatedForUser = 0;
+      const actuallySent =
+        !emailResult.dryRun &&
+        emailResult.accepted.length > 0 &&
+        !emailResult.rejected.includes(toEmail) &&
+        !emailResult.error;
+
+      if (actuallySent && !opts.dryRunForce) {
+        const now = new Date();
+        const createData = simsToReport.map((s) => ({
+          userId: u.id,
+          simId: s.id,
+          thresholdLevel: s.alertLevel,
+          dataUsedBytes: s.dataUsedBytes ?? 0n,
+          dataLimitBytes: getEffectiveDataLimit(s) ?? 0n,
+          usagePeriodStart: s.usagePeriodStart,
+          channel: NotificationChannel.EMAIL,
+          sentAt: now,
+        }));
+
+        for (const d of createData) {
+          try {
+            await prisma.simUsageAlert.create({ data: d });
+            alertsCreatedForUser++;
+            report.alertsCreated++;
+            alreadySent.add(
+              alertKeyOf(u.id, d.simId, d.thresholdLevel, d.usagePeriodStart)
+            );
+          } catch (e) {
+            if (
+              e instanceof Error &&
+              /unique|duplicate/i.test((e as any)?.code ?? (e as any)?.message ?? "")
+            ) {
+              report.simsSkippedAlreadySent++;
+            }
+          }
+        }
+
+        const storedLevels =
+          Array.isArray(row.thresholdLevels) && row.thresholdLevels.length > 0
+            ? { set: row.thresholdLevels }
+            : undefined;
+
+        await prisma.userNotificationSettings
+          .upsert({
+            where: { userId: u.id },
+            create: {
+              userId: u.id,
+              enabledEmail: row.enabledEmail,
+              notificationEmail: row.notificationEmail ?? null,
+              enabledDataThresholdAlert: row.enabledDataThresholdAlert,
+              dataThresholdPercent: row.dataThresholdPercent ?? 80,
+              thresholdLevels: storedLevels?.set ?? DEFAULT_THRESHOLD_LEVELS,
+              usageAlertCheckIntervalMinutes: userInterval,
+              notifyAllSims: row.notifyAllSims,
+              channels: { set: [NotificationChannel.EMAIL] },
+              lastNotificationAt: now,
+            },
+            update: { lastNotificationAt: now },
+          })
+          .catch(() => null);
+      }
+
+      report.simsReportedEmails += simsToReport.length;
+
       report.details.push({
         userId: u.id,
         email: toEmail,
@@ -620,153 +789,44 @@ export async function runUsageAlertNotificationCycle(
         checkIntervalMinutes: userInterval,
         thresholdLevels: userLevels.map((l) => String(l)),
         simsTotalInScopeAtThreshold: simsInScope.length,
-        simsToReport: 0,
+        simsToReport: simsToReport.length,
         simsPreviouslyAlerted: alreadyAlertedCount,
-        emailResult: null,
+        emailResult,
         errorMessage:
-          "Alle SIMs in scope werden reeds gerapporteerd in deze periode (anti-spam guard).",
+          emailResult.error ??
+          (emailResult.rejected.length > 0
+            ? `Niet geaccepteerd: ${emailResult.rejected.join(", ")}`
+            : undefined),
       });
-      continue;
-    }
-
-    const items: SimUsageThresholdEmailItem[] = simsToReport.map((s) => ({
-      simId: s.id,
-      simName: s.simName,
-      iccid: s.iccid,
-      msisdn: s.msisdn,
-      customerName: s.customerName,
-      dataUsedBytes: s.dataUsedBytes ?? 0n,
-      dataLimitBytes: getEffectiveDataLimit(s) ?? 0n,
-      thresholdPercent: s.highestPercent,
-      thresholdLevel: s.alertLevel,
-      detailUrl: SIM_DETAIL_PATH(s.id),
-    }));
-
-    const overallThreshold = Math.max(
-      ...items.map((i) => i.thresholdPercent)
-    );
-
-    let emailResult: EmailSendResult;
-    if (opts.dryRunForce) {
-      emailResult = {
-        dryRun: true,
-        accepted: [],
-        rejected: [],
-        error: "Geforceerde dry-run via optie.",
-      };
-    } else {
-      try {
-        emailResult = await sendSimUsageThresholdEmail({
-          toEmail: toEmail,
-          toName: u.name || "Gebruiker",
-          thresholdPercent: overallThreshold,
-          items,
-        });
-      } catch (e: any) {
-        emailResult = {
-          dryRun: false,
-          accepted: [],
-          rejected: [toEmail],
-          error: e?.message ?? String(e),
-        };
-      }
-    }
-
-    if (emailResult.dryRun) {
-      report.usersNotifiedDryRun++;
-    } else if (
-      emailResult.accepted.length > 0 &&
-      !emailResult.rejected.includes(toEmail) &&
-      !emailResult.error
-    ) {
-      report.usersNotified++;
-    } else {
+    } catch (userErr: any) {
+      // Per-user foutafhandeling: log de fout en ga door met de volgende gebruiker.
+      const uid = (row as any)?.user?.id ?? "onbekend";
+      const uemail =
+        (row as any)?.notificationEmail || (row as any)?.user?.email || "onbekend";
+      const errMsg = userErr?.message ?? String(userErr);
       report.userSendFailures++;
+      console.error(
+        `[usage-alert] Onverwachte fout bij verwerken gebruiker ${uid} (${uemail}): ${errMsg}`,
+        userErr
+      );
+      report.details.push({
+        userId: uid,
+        email: uemail,
+        name: (row as any)?.user?.name ?? "Onbekend",
+        notifyAllSims: !!(row as any)?.notifyAllSims,
+        roleScope: (row as any)?.user?.roleScope ?? null,
+        checkIntervalMinutes:
+          (row as any)?.usageAlertCheckIntervalMinutes ?? 60,
+        thresholdLevels: Array.isArray((row as any)?.thresholdLevels)
+          ? (row as any).thresholdLevels.map(String)
+          : [],
+        simsTotalInScopeAtThreshold: 0,
+        simsToReport: 0,
+        simsPreviouslyAlerted: 0,
+        emailResult: null,
+        errorMessage: `Onverwachte fout: ${errMsg}`,
+      });
     }
-
-    let alertsCreatedForUser = 0;
-    const actuallySent =
-      !emailResult.dryRun &&
-      emailResult.accepted.length > 0 &&
-      !emailResult.rejected.includes(toEmail) &&
-      !emailResult.error;
-
-    if (actuallySent && !opts.dryRunForce) {
-      const now = new Date();
-      const createData = simsToReport.map((s) => ({
-        userId: u.id,
-        simId: s.id,
-        thresholdLevel: s.alertLevel,
-        dataUsedBytes: s.dataUsedBytes ?? 0n,
-        dataLimitBytes: getEffectiveDataLimit(s) ?? 0n,
-        usagePeriodStart: s.usagePeriodStart,
-        channel: NotificationChannel.EMAIL,
-        sentAt: now,
-      }));
-
-      for (const d of createData) {
-        try {
-          await prisma.simUsageAlert.create({ data: d });
-          alertsCreatedForUser++;
-          report.alertsCreated++;
-          alreadySent.add(
-            alertKeyOf(u.id, d.simId, d.thresholdLevel, d.usagePeriodStart)
-          );
-        } catch (e) {
-          if (
-            e instanceof Error &&
-            /unique|duplicate/i.test((e as any)?.code ?? (e as any)?.message ?? "")
-          ) {
-            report.simsSkippedAlreadySent++;
-          }
-        }
-      }
-
-      const storedLevels =
-        Array.isArray(row.thresholdLevels) && row.thresholdLevels.length > 0
-          ? { set: row.thresholdLevels }
-          : undefined;
-
-      await prisma.userNotificationSettings
-        .upsert({
-          where: { userId: u.id },
-          create: {
-            userId: u.id,
-            enabledEmail: row.enabledEmail,
-            notificationEmail: row.notificationEmail ?? null,
-            enabledDataThresholdAlert: row.enabledDataThresholdAlert,
-            dataThresholdPercent: row.dataThresholdPercent ?? 80,
-            thresholdLevels: storedLevels?.set ?? DEFAULT_THRESHOLD_LEVELS,
-            usageAlertCheckIntervalMinutes: userInterval,
-            notifyAllSims: row.notifyAllSims,
-            channels: { set: [NotificationChannel.EMAIL] },
-            lastNotificationAt: now,
-          },
-          update: { lastNotificationAt: now },
-        })
-        .catch(() => null);
-    }
-
-    report.simsReportedEmails += simsToReport.length;
-
-    report.details.push({
-      userId: u.id,
-      email: toEmail,
-      name: u.name,
-      notifyAllSims: !!row.notifyAllSims,
-      roleScope,
-      checkIntervalMinutes: userInterval,
-      thresholdLevels: userLevels.map((l) => String(l)),
-      simsTotalInScopeAtThreshold: simsInScope.length,
-      simsToReport: simsToReport.length,
-      simsPreviouslyAlerted: alreadyAlertedCount,
-      emailResult,
-      errorMessage:
-        emailResult.error ??
-        (emailResult.rejected.length > 0
-          ? `Niet geaccepteerd: ${emailResult.rejected.join(", ")}`
-          : undefined),
-    });
   }
 
   return report;
