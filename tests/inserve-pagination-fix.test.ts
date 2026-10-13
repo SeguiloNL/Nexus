@@ -22,6 +22,7 @@ function makeCompany(id: number, overrides: Partial<InserveCompany> = {}): Inser
     postal_code: "1234AB",
     city: "Amsterdam",
     country: "Nederland",
+    customValues: [],
     ...overrides,
   } as InserveCompany;
 }

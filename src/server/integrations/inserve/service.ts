@@ -649,6 +649,12 @@ export async function listAllCompanies(
     perPage?: number;
     nestedBuilderIndexFromOne?: boolean;
     separateLimitPage?: boolean;
+    /** Indien true: deze strategie verwacht inline custom fields. Als geen
+     *  enkel bedrijf customValues/custom_values heeft, wordt de strategie
+     *  afgewezen en vallen we terug naar de volgende. Dit voorkomt dat
+     *  `enrichCompanyWithCustomFields` per bedrijf een detail-API-call moet
+     *  maken (N calls → zeer traag + rate limit risico). */
+    requireInlineFields?: boolean;
   };
   const strategies: Strat[] = [
     {
@@ -657,6 +663,7 @@ export async function listAllCompanies(
       enrichLater: false,
       useBuilder: false,
       perPage: 50,
+      requireInlineFields: true,
       extraQueryParams: {
         // Gebruik standaard page/per_page query params voor paginering
         // (Inserve herkent builder[2][limit] / builder[3][page] NIET als
@@ -671,12 +678,14 @@ export async function listAllCompanies(
       label: '1-customValues-nested-builder',
       withRelations: ['customValues'],
       enrichLater: false,
+      requireInlineFields: true,
       builderParamsStyle: 'nested',
     },
     {
       label: '1-customValues-json-builder',
       withRelations: ['customValues'],
       enrichLater: false,
+      requireInlineFields: true,
       builderParamsStyle: 'json',
     },
     {
@@ -684,6 +693,7 @@ export async function listAllCompanies(
       withRelations: [],
       enrichLater: false,
       useBuilder: false,
+      requireInlineFields: true,
       extraQueryParams: { 'with[]': 'customValues' },
     },
     { label: 'kale-bedrijven', withRelations: [], enrichLater: true },
@@ -859,6 +869,25 @@ export async function listAllCompanies(
         }
       }
 
+      // Validatie: als deze strategie inline custom fields verwacht
+      // (requireInlineFields) maar GEEN enkel bedrijf customValues of
+      // custom_values heeft, dan werkte de `with`-relatie niet. Val terug
+      // naar de volgende strategie in plaats van per bedrijf een
+      // detail-API-call te moeten maken (N calls → zeer traag + rate limit).
+      if (strat.requireInlineFields && result.items.length > 0) {
+        const anyHasInlineFields = result.items.some(
+          (c) =>
+            Array.isArray((c as any).customValues) ||
+            Array.isArray((c as any).custom_values)
+        );
+        if (!anyHasInlineFields) {
+          throw new Error(
+            `[${strat.label}] Geen bedrijf heeft inline customValues/custom_values; ` +
+            `de 'with'-relatie lijkt niet te werken. Val terug naar volgende strategie.`
+          );
+        }
+      }
+
       if (strat.enrichLater && result.items.length > 0) {
         const enriched: InserveCompany[] = [];
         let sampleIdx = 0;
@@ -888,6 +917,27 @@ export async function listAllCompanies(
         }
         result.items = enriched;
       }
+
+      // Dedupliceer bedrijven op id. Als de API hetzelfde bedrijf op
+      // meerdere pagina's retourneert (bv. door inconsistente sortering),
+      // wordt het maar één keer verwerkt. Dit voorkomt "herhaling" in de
+      // import-logging en onnodige DB-operaties.
+      if (result.items.length > 1) {
+        const seenIds = new Set<number | string>();
+        const deduped: InserveCompany[] = [];
+        for (const c of result.items) {
+          if (c?.id == null) {
+            deduped.push(c);
+            continue;
+          }
+          if (!seenIds.has(c.id)) {
+            seenIds.add(c.id);
+            deduped.push(c);
+          }
+        }
+        result.items = deduped;
+      }
+
       return {
         items: result.items,
         totalFetched: result.totalFetched,
@@ -899,7 +949,13 @@ export async function listAllCompanies(
       const is5xx =
         (e instanceof InserveApiError && e.statusCode >= 500 && e.statusCode < 600) ||
         !!(e as any)?.statusCode?.toString?.().startsWith('5');
-      if (!is5xx) break;
+      // Onze validatie-error (requireInlineFields faalde) betekent dat de
+      // `with`-relatie niet werkte voor deze strategie. Probeer de volgende
+      // strategie in plaats van volledig te stoppen.
+      const isStrategyFallback =
+        e instanceof Error && e.message.includes("Val terug naar volgende strategie");
+      if (is5xx || isStrategyFallback) continue;
+      break;
     }
   }
 

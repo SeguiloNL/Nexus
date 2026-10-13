@@ -1392,6 +1392,10 @@ export async function runInserveCustomerImport(
     const totalRec = fetchedCompanies.length;
     const SUB_EVERY_PCT = Math.max(1, subStep); // every 5% by default
     let lastReportedSub = -1;
+    // Reset de sample-teller voor Nexus-diagnose logging (globalThis wordt
+    // hergebruikt over meerdere imports heen; begin schoon per run).
+    (globalThis as any).__nexusNonActiveSampleCount = 0;
+
     for (let i = 0; i < totalRec; i++) {
       const rawCompany = fetchedCompanies[i];
       // Emit sub-percent event (capped by bucket granularity = max 20 per run).
@@ -1436,11 +1440,20 @@ export async function runInserveCustomerImport(
         };
       }
 
-      // DIAGNOSTISCH: log de Nexus-resolutie voor de eerste 25 bedrijven en
-      // voor alle bedrijven die niet als 'active' worden herkend. Dit helpt
+      // DIAGNOSTISCH: log de Nexus-resolutie voor de eerste 25 bedrijven EN
+      // een beperkte sample van niet-actieve bedrijven (max 25). Dit helpt
       // bij het diagnosticeren waarom bedrijven met Nexus=Actief in Inserve
-      // niet worden geïmporteerd (bv. afwijkende veldnaam of waarde-structuur).
-      if (i < 25 || nexus.status !== "active") {
+      // niet worden geïmporteerd, ZONDER de logs te overspoelen met duizenden
+      // regels voor alle niet-actieve bedrijven.
+      const isFirstBatch = i < 25;
+      const isSampleNonActive =
+        nexus.status !== "active" &&
+        (globalThis as any).__nexusNonActiveSampleCount < 25;
+      if (isSampleNonActive) {
+        (globalThis as any).__nexusNonActiveSampleCount =
+          ((globalThis as any).__nexusNonActiveSampleCount ?? 0) + 1;
+      }
+      if (isFirstBatch || isSampleNonActive) {
         const allFields = [
           ...(Array.isArray((company as any).customValues) ? (company as any).customValues : []),
           ...(Array.isArray((company as any).custom_values) ? (company as any).custom_values : []),
