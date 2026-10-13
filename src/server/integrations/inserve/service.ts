@@ -1484,16 +1484,28 @@ export async function listClientsForCompanyIds(
     const allContacts: InserveContact[] = [];
     // Endpoint variants per company, try sequentially first company → remember.
     // Het `company_id` query-filter werkt niet bij Inserve (retourneert alle
-    // contacten), en de contacten bevatten geen bedrijfsinformatie. Daarom
-    // proberen we ook het company endpoint met `with[]=clients` om de
-    // contacten direct aan het bedrijf gekoppeld te krijgen.
+    // contacten), en de contacten bevatten geen bedrijfsinformatie. We weten
+    // wel dat `with` in de builder werkt voor `/companies` (customValues).
+    // Daarom proberen we eerst builder-gebaseerde varianten.
+    const builderWithClients = encodeURIComponent('[{"with":["clients"]}]');
+    const builderWithContacts = encodeURIComponent('[{"with":["contacts"]}]');
+    const builderWithCompanies = encodeURIComponent('[{"with":["companies"]}]');
     const endpoints: Array<(id: number) => string> = [
+      // Builder-gebaseerd: laad contacten via het company endpoint
+      (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}?builder=${builderWithClients}`,
+      (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}?builder=${builderWithContacts}`,
+      // Query-gebaseerd `with` (minder waarschijnlijk, maar probeer het)
       (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}?with%5B%5D=clients`,
       (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}?with%5B%5D=contacts`,
+      // Relatie endpoints (404 bij Inserve, maar probeer ze)
       (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}/clients`,
       (id: number) => `${INSERVE_COMPANY_ENDPOINT}/${id}/contacts`,
+      // Clients endpoint met `with` in builder voor bedrijfsinformatie
+      (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&builder=${builderWithCompanies}`,
+      // Clients endpoint met `with` query-parameter
       (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&with%5B%5D=companies`,
       (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}&with=companies`,
+      // Laatste fallback: clients endpoint zonder filter
       (id: number) => `${INSERVE_CLIENT_ENDPOINT}?company_id=${id}`,
     ];
     // Helper om contacten uit een response te halen. De response kan een
