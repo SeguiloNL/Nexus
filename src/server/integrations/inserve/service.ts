@@ -1268,7 +1268,7 @@ export async function listClientsForCompanyIds(
   if (!client) {
     throw new Error('[Inserve] Client not configured. Configure via Instellingen or set INSERVE_* env vars.');
   }
-  const { maxPages, perPage = 50, withRelations = [], extraQueryParams } = opts;
+  const { maxPages, perPage = 50, extraQueryParams } = opts;
   const uniqueIds = Array.from(new Set(companyIds.filter((n) => Number.isFinite(n) && Number.isInteger(n) && n > 0)));
   if (uniqueIds.length === 0) {
     return {
@@ -1333,21 +1333,12 @@ export async function listClientsForCompanyIds(
         const variantQuery = VARIANTS[vi](idChunk);
         const effectiveMax = maxPages ?? 20;
         for (let page = 1; page <= effectiveMax; page++) {
-          // Vraag de companies-relatie op zodat getContactCompanyIds de
-          // contacten correct aan bedrijven kan koppelen. Zonder deze
-          // `with` retourneert Inserve contacten zonder bedrijfsrelatie,
-          // waardoor groupContactsByCompanyId een lege map oplevert en
-          // er 0 contacten worden verwerkt.
-          //
-          // BELANGRIJK: Gebruik de builder voor de `with`-relatie EN de
-          // paginering. Inserve's `paginate` in de builder is een getal
-          // (per_page count); de pagina-selectie gebeurt via de `page`
-          // query param.
-          const withRels = (withRelations && withRelations.length > 0)
-            ? withRelations
-            : ['companies'];
+          // Gebruik de builder ALLEEN voor paginering. De `with: ["companies"]`
+          // relatie in de builder geeft een 500 error bij Inserve.
+          // De API retourneert standaard `company_id` op contacten, dus we
+          // hebben de `with` niet nodig om contacten aan bedrijven te koppelen.
+          // Als `company_id` ontbreekt, vallen we terug op Strategy B.
           const clientBuilder: unknown[] = [
-            { with: withRels },
             { paginate: perPage },
           ];
           try {
@@ -1480,6 +1471,7 @@ export async function listClientsForCompanyIds(
   }
 
   // ---- Strategy B: GET companies/:id/clients (per-company) ------------------
+  console.info(`[Inserve] Strategy B (per-company) start voor ${uniqueIds.length} bedrijven.`);
   try {
     const MAX_CONCURRENCY = 5;
     let totalCalls = 0;
@@ -1583,6 +1575,7 @@ export async function listClientsForCompanyIds(
     const seen = new Map<number | string, InserveContact>();
     for (const c of allContacts) if (c?.id != null) seen.set(c.id, c);
     const dedup = Array.from(seen.values());
+    console.info(`[Inserve] Strategy B (per-company) klaar: ${dedup.length} contacten opgehaald voor ${uniqueIds.length} bedrijven (endpoint variant ${workingEp}).`);
     return {
       items: dedup,
       totalFetched: dedup.length,
@@ -1599,6 +1592,7 @@ export async function listClientsForCompanyIds(
   }
 
   // ---- Strategy C (last resort): original listAllClients -------------------
+  console.info(`[Inserve] Strategy C (listAllClients) start als laatste fallback.`);
   const c = await listAllClients(opts);
   const dedup = c.items.filter((x) => {
     const ids = getContactCompanyIds(x);
