@@ -1443,14 +1443,20 @@ export async function listClientsForCompanyIds(
     const relevantRatio = fetchedWithCompany.length > 0 ? filtered.length / fetchedWithCompany.length : 0;
     const filterLikelyBroken = dedup.length > 0 && fetchedWithCompany.length > 0 && relevantRatio < 0.5;
 
-    if (filterLikelyBroken) {
-      // De filter werkte niet naar behoren. Val terug naar Strategy B
-      // (per-company endpoints) zodat we zeker weten dat we alleen de
-      // contacten van de geselecteerde bedrijven ophalen.
-      console.debug(
-        `[Inserve] Strategy A filter lijkt niet te werken (${filtered.length}/${fetchedWithCompany.length} contacten relevant). Val terug naar Strategy B (per-company).`
+    // BELANGRIJK: Als Strategy A totaal geen contacten kon ophalen (alle
+    // variants faalden met 500/4xx), moeten we terugvallen op Strategy B.
+    // Zonder deze check zouden we `items: []` retourneren en zou Strategy B
+    // nooit geprobeerd worden, wat resulteert in 0 contacten.
+    const strategyATotallyFailed = dedup.length === 0 && totalPages === 0;
+
+    if (filterLikelyBroken || strategyATotallyFailed) {
+      // De filter werkte niet naar behoren (of Strategy A faalde volledig).
+      // Val terug naar Strategy B (per-company endpoints) zodat we zeker
+      // weten dat we de contacten van de geselecteerde bedrijven ophalen.
+      console.info(
+        `[Inserve] Strategy A ${strategyATotallyFailed ? 'faalde volledig (geen contacten opgehaald)' : `filter lijkt niet te werken (${filtered.length}/${fetchedWithCompany.length} contacten relevant)`}. Val terug naar Strategy B (per-company).`
       );
-      throw new Error('STRATEGY_A_FILTER_BROKEN');
+      throw new Error(strategyATotallyFailed ? 'STRATEGY_A_TOTALLY_FAILED' : 'STRATEGY_A_FILTER_BROKEN');
     }
 
     // Return alleen de contacten die bij de gevraagde companies horen.
