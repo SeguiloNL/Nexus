@@ -66,10 +66,18 @@ async function resolveRoleForUser(
           dbRole.isSystem ||
           legacyRoleValues.includes(dbRole.name);
 
+        // Gebruik de rolnaam uit de database voor systeemrollen,
+        // zodat de juiste legacy rechten worden toegekend (ook als
+        // het legacy `role`-veld op de gebruiker niet klopt).
+        const effectiveLegacyRole: UserRoleEnum =
+          isLegacySystemRole && legacyRoleValues.includes(dbRole.name)
+            ? (dbRole.name as UserRoleEnum)
+            : legacyRole;
+
         const effectivePermissions =
           isLegacySystemRole || !permissionsMeaningful(loadedPermissions)
             ? buildLegacyPermissionsForRole(
-                legacyRole,
+                effectiveLegacyRole,
                 (dbRole.scope as RoleScope) ?? RoleScope.INTERNAL
               )
             : loadedPermissions;

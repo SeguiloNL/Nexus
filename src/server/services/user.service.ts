@@ -268,9 +268,9 @@ function legacyRoleForSystemRole(name: string): UserRole | null {
       return enumKey as UserRole;
     }
   }
-  if (name === "Beheerder") return UserRole.ADMIN;
-  if (name === "Medewerker") return UserRole.EMPLOYEE;
-  if (name === "Alleen-lezen" || name === "Alleen lezen") return UserRole.VIEWER;
+  if (name === "Beheerder" || name === "ADMIN") return UserRole.ADMIN;
+  if (name === "Medewerker" || name === "EMPLOYEE") return UserRole.EMPLOYEE;
+  if (name === "Alleen-lezen" || name === "Alleen lezen" || name === "VIEWER") return UserRole.VIEWER;
   return null;
 }
 
