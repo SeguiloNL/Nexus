@@ -41,6 +41,13 @@ export async function logAudit(
       ? rawUserId
       : null;
 
+  // Bepaal of we binnen een transactie draaien. Als db het hoofdonkkoppeling
+  // (prisma) is, draaien we buiten een transactie en mogen we fouten afvangen
+  // (best-effort). Als db een transactie-client is, mogen we fouten NIET afvangen,
+  // want dat zou de PostgreSQL-transactie in een afgebroken staat achterlaten
+  // (foutcode 25P02: "current transaction is aborted").
+  const isInTransaction = db !== prisma;
+
   try {
     return await db.auditLog.create({
       data: {
@@ -65,6 +72,12 @@ export async function logAudit(
         "): " +
         (auditErr?.message ?? String(auditErr))
     );
+    if (isInTransaction) {
+      // Gooi de fout door zodat de transactie correct wordt teruggedraaid.
+      // Als we de fout hier afvangen, blijft de transactie in een afgebroken
+      // staat achter en geven alle volgende queries een 25P02-fout.
+      throw auditErr;
+    }
     return null;
   }
 }

@@ -759,35 +759,33 @@ export async function deleteUser(id: string, ctx: Ctx): Promise<User> {
     "user"
   );
 
-  return prisma.$transaction(async (tx) => {
-    if (id === ctx.userId) {
-      throw new Error("Je kunt je eigen account niet verwijderen.");
+  const existing = await prisma.user.findUniqueOrThrow({ where: { id } });
+
+  if (id === ctx.userId) {
+    throw new Error("Je kunt je eigen account niet verwijderen.");
+  }
+
+  if (ctx.customerScope && ctx.customerScope.length > 0) {
+    if (!existing.customerId || !ctx.customerScope.includes(existing.customerId)) {
+      throw new Error(
+        "Je bent niet bevoegd deze gebruiker te verwijderen."
+      );
     }
-    const existing = await tx.user.findUniqueOrThrow({ where: { id } });
+  }
 
-    if (ctx.customerScope && ctx.customerScope.length > 0) {
-      if (!existing.customerId || !ctx.customerScope.includes(existing.customerId)) {
-        throw new Error(
-          "Je bent niet bevoegd deze gebruiker te verwijderen."
-        );
-      }
-    }
+  // Audit-log wordt BUITEN de transactie geschreven (best-effort).
+  // Als we het binnen de transactie doen en de audit-write faalt, blijft de
+  // transactie in een afgebroken staat achter (PostgreSQL fout 25P02).
+  const auditOldValues = {
+    id: existing.id,
+    email: existing.email,
+    name: existing.name,
+    role: existing.role,
+    roleId: existing.roleId,
+    customerId: existing.customerId,
+  };
 
-    await logAudit(tx, {
-      entityType: "user",
-      entityId: id,
-      action: "DELETE",
-      userId: ctx.userId,
-      oldValues: {
-        id: existing.id,
-        email: existing.email,
-        name: existing.name,
-        role: existing.role,
-        roleId: existing.roleId,
-        customerId: existing.customerId,
-      } as any,
-    });
-
+  const deleted = await prisma.$transaction(async (tx) => {
     await tx.auditLog.deleteMany({ where: { userId: id } });
     await tx.trackerAssignment.updateMany({
       where: { createdById: id },
@@ -802,9 +800,21 @@ export async function deleteUser(id: string, ctx: Ctx): Promise<User> {
       data: { createdById: null as any },
     });
 
-    const deleted = await tx.user.delete({ where: { id } });
-    return deleted;
+    return tx.user.delete({ where: { id } });
   });
+
+  // Best-effort audit log buiten de transactie.
+  await logAudit(prisma, {
+    entityType: "user",
+    entityId: id,
+    action: "DELETE",
+    userId: ctx.userId,
+    oldValues: auditOldValues as any,
+  }).catch(() => {
+    // Audit log is best-effort; negeer fouten buiten de transactie.
+  });
+
+  return deleted;
 }
 
 export async function updateLastLogin(userId: string): Promise<void> {
