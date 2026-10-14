@@ -48,20 +48,54 @@ export async function logAudit(
   // (foutcode 25P02: "current transaction is aborted").
   const isInTransaction = db !== prisma;
 
-  try {
-    return await db.auditLog.create({
+  // Helper om een audit-log aan te maken. Als de FK op userId faalt (b.v. de
+  // sessiegebruiker bestaat niet meer in de database na een reset), dan proberen
+  // we het opnieuw met userId: null. De FK-constraint heeft ON DELETE SET NULL,
+  // dus null is geldig.
+  const createAuditLog = async (
+    userId: string | null
+  ): Promise<PrismaAuditLog> => {
+    return db.auditLog.create({
       data: {
         entityType: input.entityType,
         entityId: input.entityId,
         action: input.action as Prisma.AuditLogUncheckedCreateInput["action"],
-        userId: normalizedUserId,
+        userId,
         oldValues: input.oldValues as Prisma.InputJsonValue | undefined,
         newValues: input.newValues as Prisma.InputJsonValue | undefined,
         metadata: enrichedMetadata as Prisma.InputJsonValue | undefined,
         timestamp: effectiveTimestamp,
       },
     });
+  };
+
+  try {
+    return await createAuditLog(normalizedUserId);
   } catch (auditErr: any) {
+    // Als de FK-constraint op userId faalt (Prisma foutcode P2003), probeer
+    // het opnieuw met userId: null. Dit kan gebeuren als de sessie een
+    // verouderde gebruikers-ID bevat (b.v. na een database-reset).
+    const isFkViolation =
+      auditErr?.code === "P2003" &&
+      typeof auditErr?.message === "string" &&
+      auditErr.message.includes("userId");
+    if (isFkViolation && normalizedUserId !== null) {
+      console.warn(
+        "[audit-faal] FK violation op userId (gebruiker bestaat niet); audit-log wordt geschreven met userId=null. Actie: " +
+          input.action
+      );
+      try {
+        return await createAuditLog(null);
+      } catch (retryErr: any) {
+        console.error(
+          "[audit-faal] Audit log kon ook met userId=null niet geschreven worden: " +
+            (retryErr?.message ?? String(retryErr))
+        );
+        if (isInTransaction) throw retryErr;
+        return null;
+      }
+    }
+
     console.error(
       "[audit-faal] Audit log kon niet geschreven worden (actie: " +
         input.action +

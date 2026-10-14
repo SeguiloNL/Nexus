@@ -319,7 +319,12 @@ export const authConfig: NextAuthConfig = {
             updatedAt: true,
           },
         });
-        if (!dbUser) return token;
+        if (!dbUser) {
+          // Gebruiker bestaat niet meer in de database (b.v. na een reset).
+          // Maak de sessie ongeldig zodat de gebruiker opnieuw moet inloggen.
+          // Dit voorkomt FK-constraint fouten bij audit logging.
+          return null as any;
+        }
 
         if (dbUser.isActive === false) {
           token.isActive = false;

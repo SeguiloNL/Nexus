@@ -1036,20 +1036,26 @@ export async function toggleUserActive(
   }
 
   const updated = await prisma.$transaction(async (tx) => {
-    const up = await tx.user.update({
+    return tx.user.update({
       where: { id: userId },
       data: { isActive },
     });
-    await logAudit(tx as any, {
-      entityType: "user",
-      entityId: userId,
-      action: AuditAction.TOGGLE_USER_ACTIVE,
-      userId: ctx.userId,
-      oldValues: { isActive: existing.isActive },
-      newValues: { isActive },
-      metadata: { wasActive: existing.isActive, nowActive: isActive },
-    } as any);
-    return up;
+  });
+
+  // Audit-log wordt BUITEN de transactie geschreven (best-effort).
+  // Als we het binnen de transactie doen en de audit-write faalt (b.v. FK
+  // violation door een verouderde sessie-gebruiker), blijft de transactie
+  // in een afgebroken staat achter (PostgreSQL fout 25P02).
+  await logAudit(prisma, {
+    entityType: "user",
+    entityId: userId,
+    action: AuditAction.TOGGLE_USER_ACTIVE,
+    userId: ctx.userId,
+    oldValues: { isActive: existing.isActive },
+    newValues: { isActive },
+    metadata: { wasActive: existing.isActive, nowActive: isActive },
+  } as any).catch(() => {
+    // Audit log is best-effort; negeer fouten buiten de transactie.
   });
 
   if (!isActive) {
