@@ -7,6 +7,215 @@ import type { PermissionBits } from "@/types/next-auth";
 import type { Prisma, DataPlan as PrismaDataPlan } from "@prisma/client";
 import { DataUnit } from "@/types/enums";
 
+// ---------------------------------------------------------------------------
+// Pure availability-logica (geen Prisma) t.b.v. unit tests en hergebruik in de
+// activatie-order service. Bepaalt of een dataplan gekozen mag worden voor een
+// specifieke klant (klanttype + regio) op een gegeven moment.
+// ---------------------------------------------------------------------------
+
+export type DataPlanAvailabilityPlan = {
+  isActive: boolean;
+  simOnlyAvailable: boolean;
+  availableUntil?: Date | string | null;
+  targetRegions?: string[] | null;
+  targetCustomerTypes?: string[] | null;
+  productId?: string | null;
+  product?: { isActive: boolean } | null;
+};
+
+export type DataPlanAvailabilityContext = {
+  /** Referentietijdstip (default: nu). */
+  now?: Date;
+  /** Klanttype van de klant (DIRECT/RESELLER/PARTNER). */
+  customerType?: string | null;
+  /** Regio (bv. landcode) van de klant. */
+  region?: string | null;
+  /** Of een koppeling met een actief product verplicht is (default true). */
+  requireProductLink?: boolean;
+};
+
+export type DataPlanAvailabilityResult = {
+  available: boolean;
+  reasons: string[];
+};
+
+function normalizeToken(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const v = String(value).trim().toUpperCase();
+  return v === "" ? null : v;
+}
+
+function normalizeTokenArray(values: string[] | null | undefined): string[] {
+  if (!Array.isArray(values)) return [];
+  return values
+    .map((v) => normalizeToken(v))
+    .filter((v): v is string => v !== null);
+}
+
+/**
+ * Bepaalt of een dataplan beschikbaar is voor een klant-context.
+ * Lege targeting-arrays betekenen "beschikbaar voor alles".
+ */
+export function isDataPlanAvailableFor(
+  plan: DataPlanAvailabilityPlan,
+  ctx: DataPlanAvailabilityContext = {},
+): DataPlanAvailabilityResult {
+  const reasons: string[] = [];
+  const now = ctx.now ?? new Date();
+  const requireProductLink = ctx.requireProductLink !== false;
+
+  if (!plan.isActive) reasons.push("dataplan is inactief");
+  if (!plan.simOnlyAvailable) reasons.push("dataplan is niet beschikbaar voor Sim-only");
+
+  if (plan.availableUntil) {
+    const until = plan.availableUntil instanceof Date ? plan.availableUntil : new Date(plan.availableUntil);
+    if (!Number.isNaN(until.getTime()) && until.getTime() < now.getTime()) {
+      reasons.push("dataplan is vervallen");
+    }
+  }
+
+  if (requireProductLink) {
+    if (!plan.productId) {
+      reasons.push("geen factureerbaar product gekoppeld");
+    } else if (plan.product && !plan.product.isActive) {
+      reasons.push("gekoppeld product is inactief");
+    }
+  }
+
+  const targetTypes = normalizeTokenArray(plan.targetCustomerTypes);
+  const customerType = normalizeToken(ctx.customerType);
+  if (targetTypes.length > 0) {
+    if (!customerType || !targetTypes.includes(customerType)) {
+      reasons.push(
+        customerType
+          ? `niet beschikbaar voor klanttype ${customerType}`
+          : "klanttype onbekend (plan is klanttype-specifiek)",
+      );
+    }
+  }
+
+  const targetRegions = normalizeTokenArray(plan.targetRegions);
+  const region = normalizeToken(ctx.region);
+  if (targetRegions.length > 0) {
+    if (!region || !targetRegions.includes(region)) {
+      reasons.push(
+        region ? `niet beschikbaar voor regio ${region}` : "regio onbekend (plan is regio-specifiek)",
+      );
+    }
+  }
+
+  return { available: reasons.length === 0, reasons };
+}
+
+export type AvailableDataPlanOption = {
+  id: string;
+  name: string;
+  dataAmountBytes: bigint | null;
+  dataAmountDisplayUnit: string | null;
+  monthlyPrice: unknown;
+  currency: string;
+  validityDays: number | null;
+  validityBillingCycle: string | null;
+  provider: string | null;
+  productId: string;
+  productName: string | null;
+  targetRegions: string[];
+  targetCustomerTypes: string[];
+  availableUntil: Date | null;
+};
+
+/**
+ * Haalt de actieve, niet-vervallen Sim-only dataplannen op die voor de opgegeven
+ * klant beschikbaar zijn (klanttype + regio) EN gekoppeld zijn aan een actief
+ * factureerbaar product. Eén geïndexeerde query voor snelheid (<200ms).
+ */
+export async function listAvailableDataPlansForCustomer(params: {
+  customerId: string;
+  now?: Date;
+}): Promise<{
+  customerType: string | null;
+  region: string | null;
+  plans: AvailableDataPlanOption[];
+}> {
+  const now = params.now ?? new Date();
+
+  const customer = await prisma.customer.findFirst({
+    where: { id: params.customerId, deletedAt: null },
+    select: { id: true, type: true, country: true },
+  });
+  if (!customer) {
+    throw new Error("Klant niet gevonden of verwijderd.");
+  }
+
+  const region = normalizeToken(customer.country);
+  const customerType = normalizeToken(customer.type);
+
+  const rows = await prisma.dataPlan.findMany({
+    where: {
+      isActive: true,
+      simOnlyAvailable: true,
+      productId: { not: null },
+      product: { isActive: true },
+      AND: [
+        { OR: [{ availableUntil: null }, { availableUntil: { gte: now } }] },
+        {
+          OR: [
+            { targetCustomerTypes: { isEmpty: true } },
+            ...(customer.type ? [{ targetCustomerTypes: { has: customer.type } }] : []),
+          ],
+        },
+        region
+          ? {
+              OR: [
+                { targetRegions: { isEmpty: true } },
+                { targetRegions: { has: region } },
+              ],
+            }
+          : { targetRegions: { isEmpty: true } },
+      ],
+    },
+    select: {
+      id: true,
+      name: true,
+      dataAmountBytes: true,
+      dataAmountDisplayUnit: true,
+      monthlyPrice: true,
+      currency: true,
+      validityDays: true,
+      validityBillingCycle: true,
+      provider: true,
+      productId: true,
+      product: { select: { name: true } },
+      targetRegions: true,
+      targetCustomerTypes: true,
+      availableUntil: true,
+    },
+    orderBy: { name: "asc" },
+  });
+
+  return {
+    customerType: customer.type ?? null,
+    region,
+    plans: rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      dataAmountBytes: r.dataAmountBytes,
+      dataAmountDisplayUnit: r.dataAmountDisplayUnit,
+      monthlyPrice: r.monthlyPrice,
+      currency: r.currency,
+      validityDays: r.validityDays,
+      validityBillingCycle: r.validityBillingCycle,
+      provider: r.provider,
+      productId: r.productId as string,
+      productName: r.product?.name ?? null,
+      targetRegions: r.targetRegions,
+      targetCustomerTypes: r.targetCustomerTypes,
+      availableUntil: r.availableUntil,
+    })),
+  };
+}
+
+
 type Ctx = {
   userId: string;
   userRole: UserRole;
@@ -102,6 +311,7 @@ export async function findDataPlanById(id: string) {
   return prisma.dataPlan.findUnique({
     where: { id },
     include: {
+      product: { select: { id: true, name: true, productCode: true, isActive: true } },
       _count: {
         select: {
           activationOrders: true,
@@ -113,6 +323,45 @@ export async function findDataPlanById(id: string) {
   });
 }
 
+/**
+ * Valideert een 1-op-1 productkoppeling: het product moet bestaan, actief zijn en
+ * nog niet aan een ander dataplan gekoppeld zijn. Wordt zowel bij create als
+ * update afgedwongen (database heeft daarnaast een unieke constraint).
+ */
+async function assertProductLinkable(
+  tx: Prisma.TransactionClient,
+  productId: string | null | undefined,
+  currentDataPlanId: string | null,
+): Promise<void> {
+  if (!productId) return;
+
+  const product = await tx.product.findUnique({
+    where: { id: productId },
+    select: { id: true, name: true, isActive: true },
+  });
+  if (!product) {
+    throw new Error(`Product "${productId}" bestaat niet en kan niet gekoppeld worden.`);
+  }
+  if (!product.isActive) {
+    throw new Error(
+      `Product "${product.name}" is niet actief (niet factureerbaar) en kan niet gekoppeld worden.`,
+    );
+  }
+
+  const existingLink = await tx.dataPlan.findFirst({
+    where: {
+      productId,
+      ...(currentDataPlanId ? { id: { not: currentDataPlanId } } : {}),
+    },
+    select: { id: true, name: true },
+  });
+  if (existingLink) {
+    throw new Error(
+      `Product "${product.name}" is al gekoppeld aan dataplan "${existingLink.name}". Een product kan maar aan één dataplan gekoppeld zijn.`,
+    );
+  }
+}
+
 export async function createDataPlan(
   input: CreateDataPlanInput,
   ctx: Ctx
@@ -120,7 +369,7 @@ export async function createDataPlan(
   await requirePermission(pickAuth(ctx), "create", "data_plan");
 
   return prisma.$transaction(async (tx) => {
-    const data: Prisma.DataPlanCreateInput = {
+    const data: Prisma.DataPlanUncheckedCreateInput = {
       name: input.name.trim(),
     };
     if (input.description !== undefined) data.description = input.description ?? null;
@@ -136,6 +385,14 @@ export async function createDataPlan(
     if (input.providerOfferRef !== undefined) data.providerOfferRef = input.providerOfferRef ?? null;
     if (input.isActive !== undefined) data.isActive = input.isActive;
     if (input.simOnlyAvailable !== undefined) data.simOnlyAvailable = input.simOnlyAvailable;
+    if (input.productId !== undefined) data.productId = input.productId ?? null;
+    if (input.targetRegions !== undefined) data.targetRegions = input.targetRegions ?? [];
+    if (input.targetCustomerTypes !== undefined) {
+      data.targetCustomerTypes = (input.targetCustomerTypes as any) ?? [];
+    }
+    if (input.availableUntil !== undefined) data.availableUntil = input.availableUntil ?? null;
+
+    await assertProductLinkable(tx, data.productId as string | null | undefined, null);
 
     const created = await tx.dataPlan.create({ data });
 
@@ -168,6 +425,11 @@ export async function updateDataPlan(
     }
     if (typeof data.name === "string") data.name = data.name.trim();
     if (typeof data.description === "string" && data.description) data.description = (data.description as string).trim();
+
+    // Valideer de productkoppeling (1-op-1, actief product) vóór de update.
+    if ("productId" in input) {
+      await assertProductLinkable(tx, (data as any).productId ?? null, id);
+    }
 
     const updated = await tx.dataPlan.update({ where: { id }, data });
 

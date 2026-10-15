@@ -409,6 +409,7 @@ model Product {
 
   subscriptions    Subscription[]
   activationOrders ActivationOrder[]
+  dataPlan         DataPlan?
 
   @@map("products")
 }
@@ -429,6 +430,15 @@ model DataPlan {
   providerOfferRef      String?             @db.VarChar(200)
   isActive              Boolean             @default(true)
   simOnlyAvailable      Boolean             @default(true)
+  // 1-op-1 koppeling naar het factureerbare product (bron voor Inserve-artikel).
+  // Uniek: één product kan maar aan één dataplan gekoppeld zijn.
+  productId             String?             @unique
+  product               Product?            @relation(fields: [productId], references: [id], onDelete: SetNull)
+  // Targeting: leeg = beschikbaar voor alle regio's / klanttypes.
+  targetRegions         String[]            @default([])
+  targetCustomerTypes   CustomerType[]      @default([])
+  // Optionele vervaldatum: null = geen vervaldatum.
+  availableUntil        DateTime?
   createdAt             DateTime            @default(now())
   updatedAt             DateTime            @updatedAt
 
@@ -440,6 +450,8 @@ model DataPlan {
   @@index([isActive])
   @@index([simOnlyAvailable])
   @@index([provider])
+  @@index([productId])
+  @@index([availableUntil])
   @@map("data_plans")
 }
 

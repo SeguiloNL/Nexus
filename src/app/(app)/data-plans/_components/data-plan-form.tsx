@@ -24,7 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DataUnit, BillingCycle } from "@/types/enums";
+import { DataUnit, BillingCycle, CustomerType } from "@/types/enums";
 import type { DataPlanActionState } from "../actions";
 
 type DataPlanFormProps = {
@@ -44,7 +44,17 @@ type DataPlanFormProps = {
     providerOfferRef: string | null;
     isActive: boolean;
     simOnlyAvailable: boolean;
+    productId: string | null;
+    targetRegions: string[] | null;
+    targetCustomerTypes: CustomerType[] | string[] | null;
+    availableUntil: Date | string | null;
   }>;
+  productOptions?: {
+    id: string;
+    name: string;
+    productCode: string;
+    isActive: boolean;
+  }[];
   action: (
     prev: DataPlanActionState,
     formData: FormData
@@ -70,6 +80,7 @@ function bytesToDisplayUnitAmount(bytes: bigint | number | null | undefined, uni
 export function DataPlanForm({
   mode,
   initial,
+  productOptions,
   action,
   dataPlanId,
 }: DataPlanFormProps) {
@@ -411,6 +422,115 @@ export function DataPlanForm({
                   </div>
                 </div>
               </label>
+            </CardContent>
+          </Card>
+
+          <Card className="lg:col-span-3">
+            <CardHeader>
+              <CardTitle>Facturatie &amp; beschikbaarheid</CardTitle>
+              <CardDescription>
+                Koppel dit dataplan aan één factureerbaar product en beperk de
+                beschikbaarheid per klanttype, regio en einddatum. Een leeg
+                targeting-veld betekent: beschikbaar voor alle klanten.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <input type="hidden" name="targetCustomerTypesPresent" value="1" />
+
+              <div className="space-y-2">
+                <Label htmlFor="productId">Factureerbaar product (1-op-1)</Label>
+                <Select
+                  name="productId"
+                  defaultValue={initial?.productId ?? "__none__"}
+                >
+                  <SelectTrigger id="productId">
+                    <SelectValue placeholder="Kies een product" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">
+                      — Geen product (niet factureerbaar) —
+                    </SelectItem>
+                    {(productOptions ?? []).map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name} · {p.productCode}
+                        {p.isActive ? "" : " (inactief)"}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-slate-500">
+                  Een product kan maar aan één dataplan gekoppeld zijn. Alleen
+                  actieve producten zijn koppelbaar (factureerbaar).
+                </p>
+                {state?.errors?.productId ? (
+                  <p className="text-xs text-red-600">
+                    {state.errors.productId.join(", ")}
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="targetRegions">Beschikbaar voor regio&apos;s</Label>
+                  <Input
+                    id="targetRegions"
+                    name="targetRegions"
+                    placeholder="bv. NL, BE (leeg = alle regio's)"
+                    defaultValue={(initial?.targetRegions ?? []).join(", ")}
+                  />
+                  <p className="text-xs text-slate-500">
+                    Komma-gescheiden landcodes. Leeg = beschikbaar voor alle regio&apos;s.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="availableUntil">Beschikbaar tot (optioneel)</Label>
+                  <Input
+                    id="availableUntil"
+                    name="availableUntil"
+                    type="date"
+                    defaultValue={
+                      initial?.availableUntil
+                        ? String(initial.availableUntil).slice(0, 10)
+                        : ""
+                    }
+                  />
+                  <p className="text-xs text-slate-500">
+                    Na deze datum wordt het plan niet meer getoond in de wizard.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Beschikbaar voor klanttype</Label>
+                <div className="flex flex-wrap gap-4">
+                  {[CustomerType.DIRECT, CustomerType.RESELLER, CustomerType.PARTNER].map(
+                    (ct) => (
+                      <label
+                        key={ct}
+                        className="flex items-center gap-2 text-sm cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          name="targetCustomerTypes"
+                          value={ct}
+                          defaultChecked={(initial?.targetCustomerTypes ?? []).includes(
+                            ct
+                          )}
+                        />
+                        {ct.charAt(0) + ct.slice(1).toLowerCase()}
+                      </label>
+                    )
+                  )}
+                </div>
+                <p className="text-xs text-slate-500">
+                  Laat alle vinkjes uit voor &quot;beschikbaar voor alle klanttypes&quot;.
+                </p>
+                {state?.errors?.targetCustomerTypes ? (
+                  <p className="text-xs text-red-600">
+                    {state.errors.targetCustomerTypes.join(", ")}
+                  </p>
+                ) : null}
+              </div>
             </CardContent>
           </Card>
         </div>

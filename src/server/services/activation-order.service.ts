@@ -9,6 +9,7 @@ import {
   assignTracker,
 } from "./assignments.service";
 import { enqueueInserveSubscriptionSync } from "./subscription.service";
+import { isDataPlanAvailableFor } from "./data-plan.service";
 import type {
   CreateActivationOrderInput,
   UpdateActivationOrderInput,
@@ -198,6 +199,58 @@ export async function findActivationOrderById(id: string, customerScope?: string
   });
 }
 
+/**
+ * Valideert dat een Sim-only dataplan actief, niet-vervallen en beschikbaar is
+ * voor de klant (klanttype + regio), gekoppeld is aan een actief factureerbaar
+ * product én dat dit product overeenkomt met het product van de bestelling.
+ * Retourneert het geladen dataplan (incl. product) voor hergebruik.
+ */
+async function assertSimOnlyDataPlanValid(
+  tx: Prisma.TransactionClient,
+  params: {
+    dataPlanId: string | null | undefined;
+    productId: string | null | undefined;
+    customerId: string;
+  }
+): Promise<DataPlan & { product: { id: string; isActive: boolean } | null }> {
+  if (!params.dataPlanId) {
+    throw new Error("Sim-only bestelling vereist een dataplan.");
+  }
+  const plan = await tx.dataPlan.findUnique({
+    where: { id: params.dataPlanId },
+    include: { product: { select: { id: true, isActive: true } } },
+  });
+  if (!plan) {
+    throw new Error("Gekozen dataplan bestaat niet.");
+  }
+
+  const customer = await tx.customer.findFirst({
+    where: { id: params.customerId, deletedAt: null },
+    select: { type: true, country: true },
+  });
+  if (!customer) {
+    throw new Error("Klant niet gevonden of verwijderd.");
+  }
+
+  const availability = isDataPlanAvailableFor(plan, {
+    customerType: customer.type,
+    region: customer.country,
+  });
+  if (!availability.available) {
+    throw new Error(
+      `Dataplan is niet beschikbaar voor deze klant: ${availability.reasons.join(", ")}.`
+    );
+  }
+
+  if (params.productId && plan.productId !== params.productId) {
+    throw new Error(
+      "Gekozen product komt niet overeen met het factureerbare product van het dataplan."
+    );
+  }
+
+  return plan;
+}
+
 export async function createDraftOrder(
   input: CreateActivationOrderInput,
   ctx: Ctx
@@ -221,26 +274,40 @@ export async function createDraftOrder(
   }
 
   return prisma.$transaction(async (tx) => {
-    let snapshotData: any = null;
-    if (input.dataPlanId) {
-      const plan: DataPlan | null = await tx.dataPlan.findUnique({
-        where: { id: input.dataPlanId },
+    let plan: (DataPlan & { product: { id: string; isActive: boolean } | null }) | null =
+      null;
+
+    if (orderType === ActivationOrderProductType.SIM_ONLY_DATA) {
+      // Strikte backend-validatie: dataplan moet beschikbaar zijn voor de klant
+      // en gekoppeld zijn aan het gekozen factureerbare product.
+      plan = await assertSimOnlyDataPlanValid(tx, {
+        dataPlanId: input.dataPlanId,
+        productId: input.productId,
+        customerId: input.customerId,
       });
-      if (plan) {
-        snapshotData = {
-          id: plan.id,
-          name: plan.name,
-          dataAmountBytes: plan.dataAmountBytes ? plan.dataAmountBytes.toString() : null,
-          dataAmountDisplayUnit: plan.dataAmountDisplayUnit,
-          monthlyPrice: plan.monthlyPrice ? plan.monthlyPrice.toString() : null,
-          currency: plan.currency,
-          provider: plan.provider,
-          providerPlanRef: plan.providerPlanRef,
-          providerOfferRef: plan.providerOfferRef,
-          isActive: plan.isActive,
-          simOnlyAvailable: plan.simOnlyAvailable,
-        };
-      }
+    } else if (input.dataPlanId) {
+      plan = await tx.dataPlan.findUnique({
+        where: { id: input.dataPlanId },
+        include: { product: { select: { id: true, isActive: true } } },
+      });
+    }
+
+    let snapshotData: any = null;
+    if (plan) {
+      snapshotData = {
+        id: plan.id,
+        name: plan.name,
+        dataAmountBytes: plan.dataAmountBytes ? plan.dataAmountBytes.toString() : null,
+        dataAmountDisplayUnit: plan.dataAmountDisplayUnit,
+        monthlyPrice: plan.monthlyPrice ? plan.monthlyPrice.toString() : null,
+        currency: plan.currency,
+        provider: plan.provider,
+        providerPlanRef: plan.providerPlanRef,
+        providerOfferRef: plan.providerOfferRef,
+        isActive: plan.isActive,
+        simOnlyAvailable: plan.simOnlyAvailable,
+        productId: plan.productId,
+      };
     }
 
     const orderNumber = await generateOrderNumber();
@@ -340,7 +407,7 @@ export async function markReady(id: string, ctx: Ctx): Promise<ActivationOrder> 
         sim: true,
         customer: true,
         product: true,
-        dataPlan: true,
+        dataPlan: { include: { product: { select: { id: true, isActive: true } } } },
       },
     });
 
@@ -378,10 +445,23 @@ export async function markReady(id: string, ctx: Ctx): Promise<ActivationOrder> 
     }
 
     if (isSimOnly) {
-      if (!existing.dataPlan) missing.push("dataplan");
-      else {
-        if (!existing.dataPlan.isActive) missing.push("dataplan is inactief");
-        if (!existing.dataPlan.simOnlyAvailable) missing.push("dataplan is niet beschikbaar voor Sim-only bestellingen");
+      if (!existing.dataPlan) {
+        missing.push("dataplan");
+      } else {
+        const availability = isDataPlanAvailableFor(existing.dataPlan, {
+          customerType: existing.customer?.type,
+          region: existing.customer?.country,
+        });
+        for (const reason of availability.reasons) {
+          missing.push(`dataplan: ${reason}`);
+        }
+        if (
+          existing.productId &&
+          existing.dataPlan.productId &&
+          existing.dataPlan.productId !== existing.productId
+        ) {
+          missing.push("product komt niet overeen met het dataplan");
+        }
       }
     }
 

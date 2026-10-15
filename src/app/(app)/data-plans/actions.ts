@@ -92,6 +92,36 @@ function formDataToCreateDataPlan(formData: FormData): Partial<CreateDataPlanInp
   if (simOnlyAvailable !== null) {
     data.simOnlyAvailable = simOnlyAvailable === "on" || simOnlyAvailable === "true";
   }
+
+  // Factureerbaar product (1-op-1 koppeling). De UI stuurt "__none__" als er
+  // geen product gekozen is; dat mappen we naar null (geen koppeling).
+  const productId = formData.get("productId") as string | null;
+  if (productId !== null) {
+    data.productId = productId === "__none__" ? null : productId;
+  }
+
+  // Targeting: komma-gescheiden regio's (bv. "NL, BE").
+  const targetRegionsRaw = formData.get("targetRegions") as string | null;
+  if (targetRegionsRaw !== null) {
+    data.targetRegions = targetRegionsRaw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  // Targeting: klanttypes (meerdere checkbox-waarden). Leeg = alle klanttypes.
+  const targetCustomerTypesRaw = formData.getAll("targetCustomerTypes");
+  if (targetCustomerTypesRaw.length > 0 || formData.has("targetCustomerTypesPresent")) {
+    data.targetCustomerTypes = targetCustomerTypesRaw
+      .map((v) => String(v))
+      .filter(Boolean);
+  }
+
+  const availableUntilRaw = formData.get("availableUntil") as string | null;
+  if (availableUntilRaw !== null) {
+    data.availableUntil = availableUntilRaw ? availableUntilRaw : null;
+  }
+
   return data;
 }
 

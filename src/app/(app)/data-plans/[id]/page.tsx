@@ -29,6 +29,7 @@ import { formatDate, formatCurrency } from "@/lib/formatters";
 import { formatDataBundle } from "@/server/services/data-plan.service";
 import { findDataPlanById } from "@/server/services/data-plan.service";
 import { updateDataPlanAction } from "../actions";
+import { prisma } from "@/lib/prisma";
 
 // Client component for the delete action with confirmation.
 import { DeleteDataPlanButton } from "../_components/delete-data-plan-button";
@@ -68,6 +69,13 @@ export default async function DataPlanDetailPage({
 
   const canEdit = canUserRole(user.permissions, "edit", "data_plan");
   const canDelete = canUserRole(user.permissions, "delete", "data_plan");
+
+  const products = canEdit
+    ? await prisma.product.findMany({
+        select: { id: true, name: true, productCode: true, isActive: true },
+        orderBy: { name: "asc" },
+      })
+    : [];
 
   const planForForm = {
     ...plan,
@@ -248,6 +256,7 @@ export default async function DataPlanDetailPage({
               mode="edit"
               dataPlanId={plan.id}
               initial={planForForm as any}
+              productOptions={products}
               action={updateAction}
             />
           </TabsContent>

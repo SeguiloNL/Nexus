@@ -113,6 +113,7 @@ export default async function ActivationWizardPage({
           validityDays: true,
           validityBillingCycle: true,
           provider: true,
+          productId: true,
         },
         orderBy: { name: "asc" },
       }),
@@ -160,6 +161,7 @@ export default async function ActivationWizardPage({
     validityDays: dp.validityDays,
     validityBillingCycle: dp.validityBillingCycle,
     provider: dp.provider,
+    productId: dp.productId ?? null,
   }));
 
   const canSimOnly = canUserRole(user.permissions, "sim_only_order", "activation_order");

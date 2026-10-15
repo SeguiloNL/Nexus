@@ -118,6 +118,7 @@ type DataPlanOption = {
   validityDays: number | null;
   validityBillingCycle: BillingCycle | string | null;
   provider: string | null;
+  productId: string | null;
 };
 
 interface Props {
@@ -235,6 +236,48 @@ export function ActivationWizard({
 
   const isSimOnly = form.orderType === _OrderType.SIM_ONLY_DATA;
 
+  // Event-driven dataplanweergave: zodra Sim-only wordt gekozen (of de klant
+  // wijzigt) laden we de voor deze klant beschikbare, actieve dataplannen.
+  const [availableDataPlans, setAvailableDataPlans] =
+    useState<DataPlanOption[]>(dataPlanOptions);
+  const [dataPlansLoading, setDataPlansLoading] = useState(false);
+  const [dataPlansError, setDataPlansError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isSimOnly || !form.customerId) return;
+    let cancelled = false;
+    setDataPlansLoading(true);
+    setDataPlansError(null);
+    fetch(
+      `/api/data-plans/available?customerId=${encodeURIComponent(form.customerId)}`,
+      { cache: "no-store" }
+    )
+      .then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (cancelled) return;
+        if (!res.ok || !data?.ok) {
+          setDataPlansError(
+            data?.error ?? "Kon dataplannen niet laden. Probeer het opnieuw."
+          );
+          return;
+        }
+        setAvailableDataPlans((data.plans ?? []) as DataPlanOption[]);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDataPlansError(
+            "Kon dataplannen niet laden. Controleer je verbinding en probeer het opnieuw."
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDataPlansLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isSimOnly, form.customerId]);
+
   useEffect(() => {
     const p = productOptions.find((x) => x.id === form.productId);
     if (p && !form.monthlyPrice) {
@@ -255,7 +298,7 @@ export function ActivationWizard({
     (t) => t.id === form.trackerId
   );
   const selectedSim = simStock.find((s) => s.id === form.simId);
-  const selectedDataPlan = dataPlanOptions.find(
+  const selectedDataPlan = availableDataPlans.find(
     (dp) => dp.id === form.dataPlanId
   );
   const vehiclesOfCustomer = form.customerId
@@ -502,7 +545,9 @@ export function ActivationWizard({
             <StepDataPlan
               form={form}
               setForm={setForm}
-              options={dataPlanOptions}
+              options={availableDataPlans}
+              loading={dataPlansLoading}
+              error={dataPlansError}
             />
           ) : (
             <StepTracker
@@ -938,27 +983,48 @@ function StepDataPlan({
   form,
   setForm,
   options,
+  loading,
+  error,
 }: {
   form: any;
   setForm: (v: any) => void;
   options: DataPlanOption[];
+  loading?: boolean;
+  error?: string | null;
 }) {
   return (
     <Card>
       <CardHeader>
         <CardTitle>Stap 3 — Dataplan (Sim-only)</CardTitle>
         <CardDescription>
-          Kies het dataplan dat aan deze Sim-only SIM-kaart gekoppeld wordt. Alleen actieve, voor Sim-only beschikbare plannen worden getoond.
+          Kies het dataplan dat aan deze Sim-only SIM-kaart gekoppeld wordt. Alleen actieve, niet-vervallen plannen die beschikbaar zijn voor de regio en het klanttype van deze klant worden getoond.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {options.length === 0 ? (
+      <CardContent className="space-y-4" aria-busy={loading || undefined}>
+        {loading ? (
+          <div
+            className="flex items-center gap-2 text-sm text-slate-500"
+            role="status"
+            aria-live="polite"
+          >
+            <RefreshCw className="h-4 w-4 animate-spin" />
+            Dataplannen laden...
+          </div>
+        ) : error ? (
+          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 flex items-start gap-2">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>{error}</div>
+          </div>
+        ) : options.length === 0 ? (
           <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 flex items-start gap-2">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <div>
               <strong>Geen dataplannen beschikbaar.</strong>
               <br />
-              Een beheerder moet eerst actieve, voor Sim-only beschikbare dataplannen aanmaken onder Beheer → Dataplannen.
+              Er zijn geen actieve, voor Sim-only beschikbare dataplannen die
+              aansluiten bij het klanttype en de regio van deze klant. Een
+              beheerder moet eerst (passende) dataplannen aanmaken onder Beheer
+              → Dataplannen.
             </div>
           </div>
         ) : (
@@ -980,7 +1046,16 @@ function StepDataPlan({
                     className="sr-only"
                     checked={selected}
                     onChange={() =>
-                      setForm({ ...form, dataPlanId: dp.id })
+                      setForm({
+                        ...form,
+                        dataPlanId: dp.id,
+                        // Het factureerbare product wordt afgeleid van het dataplan.
+                        productId: dp.productId ?? form.productId,
+                        monthlyPrice:
+                          dp.monthlyPrice != null
+                            ? String(dp.monthlyPrice)
+                            : form.monthlyPrice,
+                      })
                     }
                   />
                   <div className="flex flex-col gap-2">

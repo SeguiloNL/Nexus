@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DataUnit } from "@/types/enums";
+import { DataUnit, CustomerType } from "@/types/enums";
 
 export const CreateDataPlanSchema = z.object({
   name: z.string().trim().min(1, "Naam is verplicht"),
@@ -41,6 +41,22 @@ export const CreateDataPlanSchema = z.object({
   providerOfferRef: z.string().trim().max(200, "Provider offer-ref maximaal 200 tekens").nullable().optional(),
   isActive: z.boolean().optional(),
   simOnlyAvailable: z.boolean().optional(),
+  // Factureerbare productkoppeling (1-op-1). Leeg laten = nog niet factureerbaar.
+  productId: z
+    .union([z.string().trim().min(1), z.literal(""), z.null()])
+    .optional()
+    .transform((v) => (v === "" ? null : v)),
+  // Targeting: leeg = beschikbaar voor alle regio's / klanttypes.
+  targetRegions: z.array(z.string().trim().min(1)).optional(),
+  targetCustomerTypes: z.array(z.nativeEnum(CustomerType)).optional(),
+  // Optionele vervaldatum (null = geen vervaldatum). Let op: z.null() moet
+  // vóór z.coerce.date() staan, anders wordt null gecoerced naar epoch (1970).
+  availableUntil: z
+    .preprocess(
+      (v) => (v === "" ? null : v),
+      z.union([z.null(), z.coerce.date()])
+    )
+    .optional(),
 });
 
 export const UpdateDataPlanSchema = CreateDataPlanSchema.partial();
