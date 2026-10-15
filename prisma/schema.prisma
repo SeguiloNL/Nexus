@@ -369,14 +369,12 @@ model ContactPerson {
   phone            String?
   mobile           String?
   functionTitle    String?
-  inserveContactId Int?     @unique
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
   deletedAt        DateTime?
 
   customerLinks    CustomerContactPerson[]
 
-  @@index([inserveContactId])
   @@index([lastName])
   @@map("contact_persons")
 }

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
-import type { Customer, ContactPerson } from "@prisma/client";
-import type { InserveCompany, InserveContact } from "../integrations/inserve/types";
+import type { Customer } from "@prisma/client";
+import type { InserveCompany } from "../integrations/inserve/types";
 import {
   inserveClient,
   InserveApiError,
@@ -9,27 +9,9 @@ import {
 } from "../integrations/inserve/client";
 import {
   listAllCompanies,
-  listAllClients,
-  listClientsForCompanyIds,
   resolveNexusFieldFromCompany,
   listCompanyCustomFields,
-  groupContactsByCompanyId,
-  getContactCompanyIds,
-  resolveContactName,
-  resolveContactEmail,
-  resolveContactPhoneLandline,
-  resolveContactPhoneMobile,
-  resolveContactFunction,
 } from "../integrations/inserve/service";
-import {
-  findContactByInserveId,
-  findSimilarContactsByCustomer,
-  createContactService,
-  updateContactService,
-  linkContactToCustomer,
-  getCustomerIdsForContact,
-  upsertContactForImport,
-} from "./contact.service";
 import { logAudit, diffObject } from "./audit.service";
 import { generateCustomerNumber } from "@/lib/identifiers";
 import { runInserveSimAssetLink, EMPTY_SIM_LINK_SUMMARY, type SimLinkSummary } from "./inserve-sim-link.service";
@@ -91,14 +73,6 @@ export interface ImportSummary {
   unchanged: number;
   customersReactivated: number;
   customersDeactivated: number;
-  contacts: {
-    fetched: number;
-    created: number;
-    updated: number;
-    skipped: number;
-    failed: number;
-    rateLimitBreached?: boolean;
-  };
   skipped: {
     inactive_or_missing_nexus_field: number;
     missing_required_fields: number;
@@ -108,9 +82,7 @@ export interface ImportSummary {
   failed: number;
   errorMessage?: string | null;
   pagesProcessed: number;
-  clientsPagesProcessed: number;
   totalExpected: number;
-  clientsTotalExpected: number;
   inserveCredentials: {
     configured: boolean;
     source: "db" | "env" | "none";
@@ -125,10 +97,8 @@ export interface ImportSummary {
     createConfigAndRun: number;
     inserveInit: number;
     fetchCompanies: number;
-    fetchClients: number;
     fetchPreExisting: number;
     processRecords: number;
-    syncContacts: number;
     linkSimAssets: number;
     findMatches: number;
     finalize: number;
@@ -142,15 +112,6 @@ export interface ImportSummary {
     nexusCustomerId?: string | null;
     nexusCompanyName?: string | null;
     reason: "kvk" | "email" | "name_postcode";
-  }>;
-  possibleContactMatches?: Array<{
-    inserveContactId: number;
-    inserveCompanyId: number;
-    customerId: string;
-    inserveFullName?: string | null;
-    inserveEmail?: string | null;
-    existingContactIds: string[];
-    reason: "name_email" | "email_only" | "name_only";
   }>;
   previouslyActiveNowInactive?: Array<{
     customerId: string;
@@ -170,12 +131,6 @@ export interface ImportSummary {
   failedDetails?: Array<{
     companyId?: number | null;
     companyName?: string | null;
-    error: string;
-  }>;
-  contactFailedDetails?: Array<{
-    companyId?: number | null;
-    inserveContactId?: number | null;
-    inserveFullName?: string | null;
     error: string;
   }>;
   /**
@@ -199,17 +154,6 @@ export interface PlannedChanges {
     update: number;
     deactivate: number;
     reactivate: number;
-    unchanged: number;
-  };
-  contacts: {
-    create: number;
-    update: number;
-    unchanged: number;
-    skipped: number;
-  };
-  relations: {
-    link: number;
-    unlink: number;
     unchanged: number;
   };
 }
@@ -438,10 +382,8 @@ const ZERO_TIMING: ImportSummary["timingMs"] = {
   createConfigAndRun: 0,
   inserveInit: 0,
   fetchCompanies: 0,
-  fetchClients: 0,
   fetchPreExisting: 0,
   processRecords: 0,
-  syncContacts: 0,
   linkSimAssets: 0,
   findMatches: 0,
   finalize: 0,
@@ -452,14 +394,6 @@ const ZERO_SKIPPED: ImportSummary["skipped"] = {
   missing_required_fields: 0,
   fetch_error_nexus: 0,
   other: 0,
-};
-
-const ZERO_CONTACTS: ImportSummary["contacts"] = {
-  fetched: 0,
-  created: 0,
-  updated: 0,
-  skipped: 0,
-  failed: 0,
 };
 
 const DEFAULT_UNCONFIGURED_CREDS: ImportSummary["inserveCredentials"] = {
@@ -575,23 +509,18 @@ export async function runInserveCustomerImport(
         unchanged: 0,
         customersReactivated: 0,
         customersDeactivated: 0,
-        contacts: { ...ZERO_CONTACTS },
         skipped: { ...ZERO_SKIPPED },
         failed: 0,
         pagesProcessed: 0,
-        clientsPagesProcessed: 0,
         totalExpected: 0,
-        clientsTotalExpected: 0,
         errorMessage:
           `Er is reeds een import bezig (status: ${globalExisting.status}, leeftijd: ${ageSec}s). Wacht tot de vorige is afgerond, of probeer het over 10 minuten opnieuw.`,
         timingMs: { ...ZERO_TIMING, total: Date.now() - t0, mutexCheck: Date.now() - t0 },
         possibleUnlinkedMatches: [],
-        possibleContactMatches: [],
         previouslyActiveNowInactive: [],
         previouslyInactiveNowActive: [],
         skippedDetails: [],
         failedDetails: [],
-        contactFailedDetails: [],
         dryRun,
         simLink: { ...EMPTY_SIM_LINK_SUMMARY, dryRun: false },
         inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
@@ -813,23 +742,18 @@ export async function runInserveCustomerImport(
         unchanged: 0,
         customersReactivated: 0,
         customersDeactivated: 0,
-        contacts: { ...ZERO_CONTACTS },
         skipped: { ...ZERO_SKIPPED },
         failed: 0,
         pagesProcessed: 0,
-        clientsPagesProcessed: 0,
         totalExpected: 0,
-        clientsTotalExpected: 0,
         errorMessage:
           `Er is reeds een import bezig (status: ${existing.status}, leeftijd: ${ageSec}s). Wacht tot de vorige is afgerond, of probeer het over 10 minuten opnieuw.`,
         timingMs: { ...timing, total: timing.total },
         possibleUnlinkedMatches: [],
-        possibleContactMatches: [],
         previouslyActiveNowInactive: [],
         previouslyInactiveNowActive: [],
         skippedDetails: [],
         failedDetails: [],
-        contactFailedDetails: [],
         dryRun: !!opts.dryRun,
         simLink: { ...EMPTY_SIM_LINK_SUMMARY, dryRun: false },
         inserveCredentials: credsInfo,
@@ -909,28 +833,21 @@ export async function runInserveCustomerImport(
     unchanged: 0,
     customersReactivated: 0,
     customersDeactivated: 0,
-    contacts: { ...ZERO_CONTACTS },
     skipped: { ...ZERO_SKIPPED },
     failed: 0,
     pagesProcessed: 0,
-    clientsPagesProcessed: 0,
     totalExpected: 0,
-    clientsTotalExpected: 0,
     inserveCredentials: credsInfo,
     timingMs: { ...ZERO_TIMING },
     skippedDetails: [],
     failedDetails: [],
     possibleUnlinkedMatches: [],
-    possibleContactMatches: [],
     previouslyActiveNowInactive: [],
     previouslyInactiveNowActive: [],
-    contactFailedDetails: [],
     dryRun: !!opts.dryRun,
     plannedChanges: opts.dryRun
       ? {
           companies: { create: 0, update: 0, deactivate: 0, reactivate: 0, unchanged: 0 },
-          contacts: { create: 0, update: 0, unchanged: 0, skipped: 0 },
-          relations: { link: 0, unlink: 0, unchanged: 0 },
         }
       : undefined,
     simLink: { ...EMPTY_SIM_LINK_SUMMARY, dryRun: !!opts.simLinkDryRun },
@@ -951,11 +868,10 @@ export async function runInserveCustomerImport(
           if (entry?.status === "ACTIVE") return i;
         }
         // Guess: step-specific markers in the message
-        if (/SIM[- ]?koppel/i.test(msg)) return 10;
-        if (/contactpersoon|clients endpoint|rate limit.*contact/i.test(msg)) return 6;
-        if (/bedrijven|custom fields|Nexus.*verwerk/i.test(msg)) return 8;
-        if (/match/i.test(msg)) return 9;
-        if (/import mislukt/i.test(msg)) return 11;
+        if (/SIM[- ]?koppel/i.test(msg)) return 8;
+        if (/bedrijven|custom fields|Nexus.*verwerk/i.test(msg)) return 6;
+        if (/match/i.test(msg)) return 7;
+        if (/import mislukt/i.test(msg)) return 9;
         return -1;
       })();
       if (activeIdx >= 0) setStepFailed(runId, activeIdx, msg);
@@ -978,12 +894,12 @@ export async function runInserveCustomerImport(
     timing.total = Math.max(timing.total, Date.now() - t0);
     finished.timingMs = { ...timing };
     try {
-      // STEP 11: finalize already implicitly started at doFinalize call site,
+      // STEP 9: finalize already implicitly started at doFinalize call site,
       // mark done before writing progress final state.
       if (progressEnabled && runId) {
         const cur = getCurrentState(runId);
-        if (cur && cur.steps[11]?.status !== "DONE" && cur.steps[11]?.status !== "FAILED") {
-          setStepDone(runId, 11, { finalStatus: sStatus });
+        if (cur && cur.steps[9]?.status !== "DONE" && cur.steps[9]?.status !== "FAILED") {
+          setStepDone(runId, 9, { finalStatus: sStatus });
         }
         const finalProgStatus =
           sStatus === "SUCCESS" ? "SUCCESS" as const
@@ -998,9 +914,8 @@ export async function runInserveCustomerImport(
     } catch { /* noop */ }
     try {
       const statStr = (sStatus === "SUCCESS") ? "SUCCES" : (sStatus === "PARTIAL_SUCCESS") ? "GESLAAGD (partieel)" : (sStatus === "SKIPPED") ? "OVERGESLAGEN" : "MISLUKT";
-      const cSum = finished.contacts.created + finished.contacts.updated + Number((finished.contacts as any).unchanged ?? 0);
       console.info(
-        `[Inserve] Import ${statStr}. Ophaalde=${finished.fetched} filterpass=${finished.activeFilterPassed} aangemaakt=${finished.created} bijgewerkt=${finished.updated} ongewijzigd=${finished.unchanged} overgeslagen=${finished.skipped.other + finished.skipped.inactive_or_missing_nexus_field + finished.skipped.fetch_error_nexus + finished.skipped.missing_required_fields} mislukt=${finished.failed} | contacten: OK=${cSum} nieuw=${finished.contacts.created} falen=${finished.contacts.failed} | duur=${finished.timingMs.total}ms (API-bedrijven:${finished.pagesProcessed}p, contacten:${finished.clientsPagesProcessed}p)`
+        `[Inserve] Import ${statStr}. Ophaalde=${finished.fetched} filterpass=${finished.activeFilterPassed} aangemaakt=${finished.created} bijgewerkt=${finished.updated} ongewijzigd=${finished.unchanged} overgeslagen=${finished.skipped.other + finished.skipped.inactive_or_missing_nexus_field + finished.skipped.fetch_error_nexus + finished.skipped.missing_required_fields} mislukt=${finished.failed} | duur=${finished.timingMs.total}ms (API-bedrijven:${finished.pagesProcessed}p)`
       );
       if (finished.errorMessage) {
         const lvl = (sStatus === "SUCCESS" || sStatus === "PARTIAL_SUCCESS" || sStatus === "SKIPPED") ? console.warn : console.error;
@@ -1022,10 +937,10 @@ export async function runInserveCustomerImport(
     }
 
     // STEP 4: fetchCompanies
-    // Full-read-guard: bronlezing is alleen "compleet" wanneer zowel bedrijven
-    // ALS contacten succesvol zijn opgehaald. Zolang deze vlag false is, worden
-    // er geen klanten gedeactiveerd (voorkomt massadeactivatie bij een
-    // mislukte/onvolledige bronlezing).
+    // Full-read-guard: bronlezing is alleen "compleet" wanneer de bedrijven
+    // succesvol zijn opgehaald. Zolang deze vlag false is, worden er geen
+    // klanten gedeactiveerd (voorkomt massadeactivatie bij een mislukte of
+    // onvolledige bronlezing).
     let sourceReadComplete = false;
     try { doSetStepActive(4); } catch { /* noop */ }
     let fetchedCompanies: InserveCompany[] = [];
@@ -1051,6 +966,10 @@ export async function runInserveCustomerImport(
         markPartialFailed(
           `Inserve API gaf 0 bedrijven terug (pagina's verwerkt: ${res.pagesProcessed}, verwachte totaal volgens API: ${res.totalExpected ?? 0}). Controleer of de API-key leesrechten heeft op bedrijven, of dat het juiste endpoint en builder-parameter worden gebruikt.`
         );
+      } else {
+        // Bedrijven-lezing geslaagd → bronmomentopname compleet; deactivering
+        // van niet-meer-voorkomende klanten is nu veilig.
+        sourceReadComplete = true;
       }
     } catch (e: any) {
       timing.fetchCompanies = Math.max(timing.fetchCompanies, Date.now() - t4);
@@ -1070,8 +989,8 @@ export async function runInserveCustomerImport(
       return doFinalize();
     }
 
-    // Stap-order in de code: (1) loadPreExisting (step 7), (2) PRE-SCAN nexus (step 5), (3) fetchContacts (step 6)
-    try { doSetStepActive(7); } catch { /* noop */ }
+    // Stap 5: bestaande Nexus-klanten en Inserve-koppelingen inladen.
+    try { doSetStepActive(5); } catch { /* noop */ }
     const t5 = Date.now();
     const previouslyLinkedIds = new Map<number, { id: string; companyName: string; deletedAt: Date | null; status?: CustomerStatus | string | null }>();
     const preExistingLinked = await prisma.customer.findMany({
@@ -1090,33 +1009,16 @@ export async function runInserveCustomerImport(
       }
     }
     const nowProcessedLinked = new Map<number, string>();
-    try { doSetStepDone(7, { previouslyLinked: previouslyLinkedIds.size }); } catch { /* noop */ }
+    try { doSetStepDone(5, { previouslyLinked: previouslyLinkedIds.size }); } catch { /* noop */ }
 
-    // STEP 5: PRE-SCAN Nexus
-    try { doSetStepActive(5); } catch { /* noop */ }
-
-    // -------------------------------------------------------------------------
-    // [PRE-SCAN] Determine WHICH companies actually need their contacts synced.
-    // Runs AFTER previouslyLinkedIds load.
-    // Performs the same Nexus-resolution logic as main loop but WITHOUT side
-    // effects (no DB writes, no summary finalStatus changes). Custom-field
-    // enrichment is cached internally by enrichCompanyWithCustomFields so the
-    // second resolve below costs ~0 extra API calls.
-    //
-    // Why? Previously listAllClients fetched ALL 2000 companies' contacts =
-    // ~80 pages of /clients → ALWAYS hit Inserve's 80-calls/10-min rate limit
-    // (PARTIAL_SUCCESS every run). Now only the ~160 Nexus=active companies
-    // make contact calls → 80-90% fewer API calls.
-    // -------------------------------------------------------------------------
-    const contactRelevantCompanyIds: Set<number> = new Set();
-    // Cache van verrijkte bedrijven (met custom fields) zodat de hoofdloop
-    // geen dubbele API-calls hoeft te doen. Bij 2000 bedrijven zonder inline
-    // velden zou dit anders 4000 calls worden → rate limit.
+    // [PRE-SCAN] Bouw een cache van verrijkte bedrijven (met custom fields)
+    // zodat de hoofdloop geen dubbele API-calls hoeft te doen. Bij 2000
+    // bedrijven zonder inline velden zou dit anders 4000 calls worden →
+    // rate limit.
     const enrichedCompaniesCache: Map<number, InserveCompany> = new Map();
     try {
       for (const rawCompany of fetchedCompanies) {
         const companyId = rawCompany.id;
-        let nexus: NexusFieldResolution;
         try {
           const hasFieldsInline =
             Array.isArray(rawCompany.custom_fields) ||
@@ -1138,256 +1040,14 @@ export async function runInserveCustomerImport(
           if (!customFetchErr) {
             enrichedCompaniesCache.set(companyId, company);
           }
-          nexus = resolveNexusFieldValue(company, customFetchErr);
         } catch {
-          nexus = { status: "fetch_error", errorMessage: "" };
-        }
-        if (nexus.status === "active") {
-          contactRelevantCompanyIds.add(companyId);
+          // Nooit afbreken; de hoofdloop handelt fouten per bedrijf af.
         }
       }
-    } catch {
-      // Never abort; worst-case empty set skips contacts.
-    }
-    try { doSetStepDone(5, { activeCompanies: contactRelevantCompanyIds.size, total: fetchedCompanies.length }); } catch { /* noop */ }
+    } catch { /* noop */ }
 
-    // STEP 6: fetch contacts
-    try { doSetStepActive(6); } catch { /* noop */ }
-    let fetchedContacts: InserveContact[] = [];
-    let contactsByCompanyId: Record<number, InserveContact[]> = {};
-    let tClients = Date.now();
-    try {
-      tClients = Date.now();
-      const relevantIds = Array.from(contactRelevantCompanyIds);
-      if (relevantIds.length > 0) {
-        console.debug(`[Inserve] Pre-scan: ${relevantIds.length}/${fetchedCompanies.length} bedrijven markeren contacten-sync relevant → listClientsForCompanyIds().`);
-        const cRes = await listClientsForCompanyIds(relevantIds, { perPage: 50 });
-        timing.fetchClients = Date.now() - tClients;
-        fetchedContacts = cRes.items;
-        summary.contacts.fetched = cRes.totalFetched;
-        summary.clientsPagesProcessed = cRes.pagesProcessed;
-        summary.clientsTotalExpected = cRes.totalExpected;
-        (summary as any).contactsFetchStrategy = cRes.strategyUsed;
-        contactsByCompanyId = groupContactsByCompanyId(fetchedContacts);
-      } else {
-        timing.fetchClients = Date.now() - tClients;
-        console.info(`[Inserve] Pre-scan: 0/${fetchedCompanies.length} bedrijven relevant voor contacten → client-fetch overgeslagen.`);
-        fetchedContacts = [];
-        summary.contacts.fetched = 0;
-        summary.clientsPagesProcessed = 0;
-        summary.clientsTotalExpected = 0;
-        contactsByCompanyId = {};
-      }
-      try { doSetStepDone(6, { relevantCompanies: contactRelevantCompanyIds.size, fetched: summary.contacts.fetched, pages: summary.clientsPagesProcessed }); } catch { /* noop */ }
-      // Zowel bedrijven- als contacten-lezing geslaagd → bronmomentopname compleet.
-      sourceReadComplete = true;
-    } catch (ce: any) {
-      timing.fetchClients = Math.max(timing.fetchClients, Date.now() - tClients);
-      const rl = isInserveRateLimitError(ce);
-      summary.contacts.rateLimitBreached = !!rl;
-      try { doSetStepFailed(6, rl ? `Rate limit (${rl.usedCount}/${rl.maxCount})` : `Contacten ophalen mislukt: ${(ce?.message ?? String(ce)).slice(0, 200)}`, { rateLimit: !!rl, remainingMs: rl?.remainingMs ?? null }); } catch { /* noop */ }
-      if (rl) {
-        summary.contactFailedDetails!.push({
-          error: `Rate limit bereikt (${rl.usedCount}/${rl.maxCount} calls, wacht ${Math.ceil(rl.remainingMs / 1000)}s). Contactpersonen overgeslagen.`,
-        });
-        markPartialFailed(
-          `Rate limit bereikt tijdens contactpersonen-import (${rl.usedCount}/${rl.maxCount}). Bedrijven zijn wel verwerkt; contacten SIM-koppeling later proberen.`,
-          { source: "contacts_rate_limit", remainingMs: rl.remainingMs, usedCount: rl.usedCount, maxCount: rl.maxCount },
-          true
-        );
-      } else {
-        summary.contactFailedDetails!.push({
-          error: `Ophalen contactpersonen mislukt: ${(ce?.message ?? String(ce)).slice(0, 400)}`,
-        });
-        markPartialFailed(
-          `Contactpersonen konden niet worden opgehaald: ${(ce?.message ?? String(ce)).slice(0, 200)}. Bedrijven worden wel verwerkt.`,
-          undefined,
-          true
-        );
-      }
-    }
-
-    async function syncContactsForCustomer(
-      customerId: string,
-      companyId: number
-    ): Promise<void> {
-      const tSync0 = Date.now();
-      try {
-        const contactsForCo = contactsByCompanyId[companyId] ?? [];
-        if (contactsForCo.length === 0) {
-          timing.syncContacts += (Date.now() - tSync0);
-          return;
-        }
-        for (const insContact of contactsForCo) {
-          try {
-            const insId = insContact.id;
-            const name = resolveContactName(insContact);
-            const firstName = name.firstName;
-            const rawLastName = name.lastName;
-            const lastName = rawLastName ?? "Onbekend";
-            const email = resolveContactEmail(insContact);
-            const phone = resolveContactPhoneLandline(insContact);
-            const mobile = resolveContactPhoneMobile(insContact);
-            const functionTitle = resolveContactFunction(insContact);
-
-            // Zoek ook soft-gedeleted contacten: een eerder verwijderd contact
-            // met dezelfde inserveContactId mag worden hersteld, niet leiden
-            // tot een unique-constraint fout.
-            const existingByInserve = await findContactByInserveId(insId, { includeDeleted: true });
-
-            if (existingByInserve) {
-              // Many-to-many: een contactpersoon kan bij meerdere bedrijven
-              // horen. Controleer of het contact al aan deze klant is
-              // gekoppeld; zo niet, leg de relatie.
-              const linkedCustomerIds = await getCustomerIdsForContact(existingByInserve.id);
-              const alreadyLinked = linkedCustomerIds.includes(customerId);
-              if (!alreadyLinked) {
-                if (!dryRun) {
-                  try {
-                    await linkContactToCustomer(existingByInserve.id, customerId, ctx.userId ?? undefined);
-                  } catch {
-                    summary.contacts.failed++;
-                    summary.contactFailedDetails!.push({
-                      companyId, inserveContactId: insId,
-                      inserveFullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
-                      error: `Koppeling contact aan klant mislukt`,
-                    });
-                    continue;
-                  }
-                }
-                if (summary.plannedChanges) summary.plannedChanges.relations.link++;
-              }
-              const oldRec = existingByInserve as any;
-              const newVals: any = {};
-              if (firstName !== null && oldRec.firstName !== firstName) newVals.firstName = firstName;
-              if (oldRec.lastName !== lastName) newVals.lastName = lastName;
-              const emailComp = (email ?? null) ?? null;
-              const oldEmailComp = oldRec.email ?? null;
-              if (emailComp !== oldEmailComp) newVals.email = emailComp;
-              const phoneComp = (phone ?? null) ?? null;
-              const oldPhoneComp = oldRec.phone ?? null;
-              if (phoneComp !== oldPhoneComp) newVals.phone = phoneComp;
-              const mobileComp = (mobile ?? null) ?? null;
-              const oldMobileComp = oldRec.mobile ?? null;
-              if (mobileComp !== oldMobileComp) newVals.mobile = mobileComp;
-              const fnComp = (functionTitle ?? null) ?? null;
-              const oldFnComp = oldRec.functionTitle ?? null;
-              if (fnComp !== oldFnComp) newVals.functionTitle = fnComp;
-              const wasDeleted = oldRec.deletedAt != null;
-              if (Object.keys(newVals).length === 0 && !wasDeleted) {
-                summary.contacts.skipped++;
-                if (dryRun && summary.plannedChanges) summary.plannedChanges.contacts.unchanged++;
-                continue;
-              }
-              if (dryRun) {
-                summary.contacts.updated++;
-                if (summary.plannedChanges) summary.plannedChanges.contacts.update++;
-                continue;
-              }
-              // Gebruik atomische upsert: herstelt soft-deleted contacten
-              // (deletedAt = null) en update velden in één operatie.
-              try {
-                await upsertContactForImport({
-                  inserveContactId: insId,
-                  firstName: firstName ?? null,
-                  lastName,
-                  email: email ?? null,
-                  phone: phone ?? null,
-                  mobile: mobile ?? null,
-                  functionTitle: functionTitle ?? null,
-                });
-                summary.contacts.updated++;
-              } catch {
-                summary.contacts.failed++;
-                summary.contactFailedDetails!.push({
-                  companyId, inserveContactId: insId,
-                  inserveFullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
-                  error: `Update/herstel contact mislukt`,
-                });
-              }
-            } else {
-              const similar = await findSimilarContactsByCustomer(customerId, {
-                firstName: firstName ?? undefined,
-                lastName,
-                email: email ?? undefined,
-              });
-              if (similar && similar.length > 0) {
-                summary.possibleContactMatches!.push({
-                  inserveContactId: insId,
-                  inserveCompanyId: companyId,
-                  customerId,
-                  inserveFullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
-                  inserveEmail: email ?? undefined,
-                  existingContactIds: similar.map((c: any) => c.id),
-                  reason:
-                    firstName && email ? "name_email" : email ? "email_only" : "name_only",
-                });
-              }
-              if (!rawLastName || rawLastName.trim() === "") {
-                summary.contacts.skipped++;
-                continue;
-              }
-              if (dryRun) {
-                summary.contacts.created++;
-                if (summary.plannedChanges) summary.plannedChanges.contacts.create++;
-                continue;
-              }
-              // Atomische upsert: voorkomt race-condition tussen concurrerende
-              // imports die beide hetzelfde contact proberen aan te maken.
-              try {
-                const upsertRes = await upsertContactForImport({
-                  inserveContactId: insId,
-                  firstName: firstName ?? null,
-                  lastName,
-                  email: email ?? null,
-                  phone: phone ?? null,
-                  mobile: mobile ?? null,
-                  functionTitle: functionTitle ?? null,
-                });
-                // Zorg dat het contact aan deze klant is gekoppeld.
-                try {
-                  await linkContactToCustomer(upsertRes.contact.id, customerId, ctx.userId ?? undefined);
-                } catch {
-                  summary.contacts.failed++;
-                  summary.contactFailedDetails!.push({
-                    companyId, inserveContactId: insId,
-                    inserveFullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
-                    error: `Koppeling nieuw contact aan klant mislukt`,
-                  });
-                  continue;
-                }
-                summary.contacts.created++;
-              } catch {
-                summary.contacts.failed++;
-                summary.contactFailedDetails!.push({
-                  companyId, inserveContactId: insId,
-                  inserveFullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
-                  error: `Create contact mislukt (duplicaat of ongeldige data)`,
-                });
-              }
-            }
-          } catch (cErr: any) {
-            summary.contacts.failed++;
-            const nameObj = resolveContactName(insContact);
-            const insFullName = nameObj
-              ? ([nameObj.firstName, nameObj.lastName]
-                  .filter(Boolean).join(" ").trim() || undefined)
-              : undefined;
-            summary.contactFailedDetails!.push({
-              companyId,
-              inserveContactId: (insContact as any).id ?? undefined,
-              inserveFullName: insFullName,
-              error: (cErr?.message ?? String(cErr)).slice(0, 400),
-            });
-          }
-        }
-      } finally {
-        timing.syncContacts += (Date.now() - tSync0);
-      }
-    }
-
-    // STEP 8: processRecords (met sub-percentages per 5%)
-    try { doSetStepActive(8, { totalCompanies: fetchedCompanies.length }); } catch { /* noop */ }
+    // STEP 6: processRecords (met sub-percentages per 5%)
+    try { doSetStepActive(6, { totalCompanies: fetchedCompanies.length }); } catch { /* noop */ }
     const tProcess = Date.now();
     const totalRec = fetchedCompanies.length;
     const SUB_EVERY_PCT = Math.max(1, subStep); // every 5% by default
@@ -1405,7 +1065,7 @@ export async function runInserveCustomerImport(
         if (bucket > lastReportedSub) {
           lastReportedSub = bucket;
           const sub = Math.min(1, pctDone / 100);
-          try { doSetStepSub(sub, 8); } catch { /* noop */ }
+          try { doSetStepSub(sub, 6); } catch { /* noop */ }
         }
       }
       const companyId = rawCompany.id;
@@ -1509,8 +1169,8 @@ export async function runInserveCustomerImport(
         continue;
       }
       if (nexus.status === "inactive") {
-        // Full-read-guard: als de bronlezing (bedrijven + contacten) niet
-        // volledig geslaagd is, mogen we geen klanten deactiveren. Een
+        // Full-read-guard: als de bronlezing (bedrijven) niet volledig
+        // geslaagd is, mogen we geen klanten deactiveren. Een
         // mislukte pagina of time-out mag nooit leiden tot massale
         // deactivatie. Sla de klant ongemoeid en registreer de reden.
         if (!sourceReadComplete) {
@@ -1634,7 +1294,6 @@ export async function runInserveCustomerImport(
 
       try {
         const mapped = mapCompanyToCustomerFields(company);
-        let currentCustomerId: string | null = null;
         let existingCustomer: Customer | null = previouslyLinkedIds.has(companyId)
           ? await prisma.customer.findUnique({
               where: { id: previouslyLinkedIds.get(companyId)!.id },
@@ -1670,7 +1329,6 @@ export async function runInserveCustomerImport(
           const hasAnyChanges = Object.keys(finalDiff).length > 0;
           if (!hasAnyChanges) {
             summary.unchanged++;
-            currentCustomerId = existingCustomer.id;
             if (dryRun && summary.plannedChanges) summary.plannedChanges.companies.unchanged++;
           } else if (dryRun) {
             // Dry-run: geen schrijven, wel de wijziging registreren.
@@ -1684,7 +1342,6 @@ export async function runInserveCustomerImport(
               if (summary.plannedChanges) summary.plannedChanges.companies.reactivate++;
             }
             summary.updated++;
-            currentCustomerId = existingCustomer.id;
             if (summary.plannedChanges) summary.plannedChanges.companies.update++;
           } else {
             await prisma.$transaction(async (tx) => {
@@ -1716,19 +1373,16 @@ export async function runInserveCustomerImport(
               });
             }
             summary.updated++;
-            currentCustomerId = existingCustomer.id;
           }
         } else {
           let created: Customer;
           if (dryRun) {
-            // Dry-run: geen klant aanmaken. Gebruik een synthetisch ID zodat
-            // syncContactsForCustomer zijn diff nog kan berekenen (die ook
-            // dry-run is en niets schrijft).
+            // Dry-run: geen klant aanmaken. Registreer alleen de berekende
+            // wijziging en een synthetisch ID voor de koppeling-administratie.
             const syntheticId = `dryrun-cust-${companyId}`;
             summary.created++;
             if (summary.plannedChanges) summary.plannedChanges.companies.create++;
             nowProcessedLinked.set(companyId, syntheticId);
-            currentCustomerId = syntheticId;
           } else {
             try {
             created = await prisma.$transaction(async (tx) => {
@@ -1836,18 +1490,12 @@ export async function runInserveCustomerImport(
             } else {
               summary.unchanged++;
             }
-            currentCustomerId = existingViaUnique.id;
-            if (currentCustomerId) await syncContactsForCustomer(currentCustomerId, companyId);
             continue;
           }
           nowProcessedLinked.set(companyId, created.id);
           summary.created++;
-          currentCustomerId = created.id;
         }
         } // end else (geen bestaande klant)
-        if (currentCustomerId) {
-          await syncContactsForCustomer(currentCustomerId, companyId);
-        }
       } catch (recordErr: any) {
         summary.failed++;
         markPartialFailed(
@@ -1860,9 +1508,9 @@ export async function runInserveCustomerImport(
         });
       }
     }
-    try { doSetStepSub(1, 8); } catch { /* noop */ }
+    try { doSetStepSub(1, 6); } catch { /* noop */ }
     timing.processRecords = Date.now() - tProcess;
-    try { doSetStepDone(8, { processed: totalRec, created: summary.created, updated: summary.updated, unchanged: summary.unchanged, failed: summary.failed }); } catch { /* noop */ }
+    try { doSetStepDone(6, { processed: totalRec, created: summary.created, updated: summary.updated, unchanged: summary.unchanged, failed: summary.failed }); } catch { /* noop */ }
 
     if (!dryRun) {
     try {
@@ -1875,15 +1523,11 @@ export async function runInserveCustomerImport(
           unchanged: summary.unchanged,
           customersReactivated: summary.customersReactivated,
           customersDeactivated: summary.customersDeactivated,
-          contacts: summary.contacts,
           skipped: summary.skipped,
           failed: summary.failed,
           pagesProcessed: summary.pagesProcessed,
-          clientsPagesProcessed: summary.clientsPagesProcessed,
           totalExpected: summary.totalExpected,
-          clientsTotalExpected: summary.clientsTotalExpected,
           possibleUnlinkedMatches: summary.possibleUnlinkedMatches?.length ?? 0,
-          possibleContactMatches: summary.possibleContactMatches?.length ?? 0,
           previouslyActiveNowInactive: summary.previouslyActiveNowInactive?.length ?? 0,
           previouslyInactiveNowActive: summary.previouslyInactiveNowActive?.length ?? 0,
         };
@@ -1919,23 +1563,23 @@ export async function runInserveCustomerImport(
     } // end if (!dryRun)
 
     try {
-      // STEP 9: findMatches
-      try { doSetStepActive(9); } catch { /* noop */ }
+      // STEP 7: findMatches
+      try { doSetStepActive(7); } catch { /* noop */ }
       const tFind = Date.now();
       summary.possibleUnlinkedMatches = await findPossibleUnlinkedMatches(
         fetchedCompanies,
         nowProcessedLinked
       );
       timing.findMatches = Date.now() - tFind;
-      try { doSetStepDone(9, { matches: summary.possibleUnlinkedMatches.length }); } catch { /* noop */ }
+      try { doSetStepDone(7, { matches: summary.possibleUnlinkedMatches.length }); } catch { /* noop */ }
     } catch (_) {
       summary.possibleUnlinkedMatches = [];
-      try { doSetStepDone(9, { matches: 0, failed: true }); } catch { /* noop */ }
+      try { doSetStepDone(7, { matches: 0, failed: true }); } catch { /* noop */ }
     }
 
     try {
-      // STEP 10: simAssetLink
-      try { doSetStepActive(10); } catch { /* noop */ }
+      // STEP 8: simAssetLink
+      try { doSetStepActive(8); } catch { /* noop */ }
       const tSimLink = Date.now();
       const simLinkResult = await runInserveSimAssetLink({
         dryRun: !!opts.simLinkDryRun,
@@ -1945,7 +1589,7 @@ export async function runInserveCustomerImport(
       });
       summary.simLink = simLinkResult;
       timing.linkSimAssets = Date.now() - tSimLink;
-      try { doSetStepDone(10, { newlyLinked: simLinkResult.newlyLinked, errors: simLinkResult.errors, dryRun: simLinkResult.dryRun }); } catch { /* noop */ }
+      try { doSetStepDone(8, { newlyLinked: simLinkResult.newlyLinked, errors: simLinkResult.errors, dryRun: simLinkResult.dryRun }); } catch { /* noop */ }
       if (simLinkResult.errors > 0 && (finalStatus === SyncJobStatus.SUCCESS || finalErrorMessage == null)) {
         markPartialFailed(
           `SIM-koppelingsfase bevat ${simLinkResult.errors} fout(en). Zie simLink.errorMessages.`,
@@ -1961,7 +1605,7 @@ export async function runInserveCustomerImport(
         errorMessages: [`SIM-link top-level error: ${simErr?.message ?? String(simErr)}`.slice(0, 400)],
       };
       timing.linkSimAssets = 0;
-      try { doSetStepFailed(10, `SIM-link mislukt: ${simErr?.message ?? String(simErr)}`.slice(0, 300)); } catch { /* noop */ }
+      try { doSetStepFailed(8, `SIM-link mislukt: ${simErr?.message ?? String(simErr)}`.slice(0, 300)); } catch { /* noop */ }
       markPartialFailed(
         `SIM-koppelingsfase onverwachts mislukt: ${simErr?.message ?? String(simErr)}`,
         { source: "sim_link" },
@@ -2012,20 +1656,13 @@ function finalizeSummary(
     unchanged: summary.unchanged,
     customersReactivated: summary.customersReactivated,
     customersDeactivated: summary.customersDeactivated,
-    contacts: summary.contacts,
     skipped: summary.skipped,
     failed: summary.failed,
     pagesProcessed: summary.pagesProcessed,
-    clientsPagesProcessed: summary.clientsPagesProcessed,
     totalExpected: summary.totalExpected,
-    clientsTotalExpected: summary.clientsTotalExpected,
     ...(summary.possibleUnlinkedMatches &&
     summary.possibleUnlinkedMatches.length > 0
       ? { possibleMatches: summary.possibleUnlinkedMatches.length }
-      : {}),
-    ...(summary.possibleContactMatches &&
-    summary.possibleContactMatches.length > 0
-      ? { possibleContactMatches: summary.possibleContactMatches.length }
       : {}),
     ...(summary.previouslyActiveNowInactive &&
     summary.previouslyActiveNowInactive.length > 0
@@ -2037,7 +1674,6 @@ function finalizeSummary(
       : {}),
     skippedSample: summary.skippedDetails?.slice(0, 20),
     failedSample: summary.failedDetails?.slice(0, 20),
-    contactFailedSample: summary.contactFailedDetails?.slice(0, 40),
     simLink: summary.simLink
       ? {
           totalAssetsExamined: summary.simLink.totalAssetsExamined,
@@ -2100,23 +1736,18 @@ function makeFailedSummary(
     unchanged: 0,
     customersReactivated: 0,
     customersDeactivated: 0,
-    contacts: { ...ZERO_CONTACTS },
     skipped: { ...ZERO_SKIPPED },
     failed: 0,
     errorMessage: message,
     pagesProcessed: 0,
-    clientsPagesProcessed: 0,
     totalExpected: 0,
-    clientsTotalExpected: 0,
     inserveCredentials: DEFAULT_UNCONFIGURED_CREDS,
     timingMs: { ...ZERO_TIMING, total: durationMs },
     possibleUnlinkedMatches: [],
-    possibleContactMatches: [],
     previouslyActiveNowInactive: [],
     previouslyInactiveNowActive: [],
     skippedDetails: [],
     failedDetails: [],
-    contactFailedDetails: [],
     dryRun: !!extra?.dryRun,
     simLink: { ...EMPTY_SIM_LINK_SUMMARY, dryRun: !!extra?.simLinkDryRun },
   };

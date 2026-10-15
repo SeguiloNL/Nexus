@@ -50,13 +50,6 @@ export const CreateContactSchema = z.object({
     .nullable()
     .optional()
     .transform((v) => (v === "" ? null : v)),
-  inserveContactId: z.coerce
-    .number()
-    .int()
-    .positive()
-    .nullable()
-    .optional()
-    .or(z.literal("").transform(() => null)),
 });
 
 export const UpdateContactSchema = CreateContactSchema.partial()

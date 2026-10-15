@@ -3,7 +3,7 @@
  *
  * Design goals:
  *  - Zero DB writes for intermediate progress (no migration needed).
- *  - Max ~32 progress events per Inserve import run (12 step boundaries +
+ *  - Max ~30 progress events per Inserve import run (10 step boundaries +
  *    max 20 sub-percent updates for processRecords) → tiny network cost.
  *  - Automatic cleanup (TTL + size cap) so it never leaks memory across runs.
  *  - Safe to import from both server (route handlers, services) and client
@@ -79,7 +79,7 @@ export interface SyncProgressState {
   finalSummary?: ImportSummary;
 }
 
-/** Human-readable 12-step plan for the Inserve customer import sync. */
+/** Human-readable 10-step plan for the Inserve customer import sync. */
 export const STEPS_INSERVE_CUSTOMER_IMPORT: ReadonlyArray<Omit<SyncProgressStep, "status">> = Object.freeze([
   {
     idx: 0,
@@ -108,36 +108,26 @@ export const STEPS_INSERVE_CUSTOMER_IMPORT: ReadonlyArray<Omit<SyncProgressStep,
   },
   {
     idx: 5,
-    title: "Pre-scan Nexus-vrij veld",
-    description: "Per bedrijf bepalen of het in scope valt voor Nexus-import (Nexus=Actief) en of contactpersonen opgehaald moeten worden.",
-  },
-  {
-    idx: 6,
-    title: "Contactpersonen ophalen",
-    description: "Alleen voor Nexus=Actief bedrijven de bijbehorende contactpersonen uit Inserve laden (rate limit beveiligd).",
-  },
-  {
-    idx: 7,
     title: "Bestaande Nexus-klanten inladen",
     description: "Reeds gekoppelde Nexus-klanten en Inserve-koppelingen inladen zodat updates plaatsvinden in plaats van duplicaten.",
   },
   {
-    idx: 8,
+    idx: 6,
     title: "Bedrijven verwerken (CRUD)",
-    description: "Alle bedrijven doorlopen: aanmaken, bijwerken, ongewijzigd, deactiveren of heractiveren inclusief bijbehorende contactpersonen.",
+    description: "Alle bedrijven doorlopen: aanmaken, bijwerken, ongewijzigd, deactiveren of heractiveren.",
   },
   {
-    idx: 9,
+    idx: 7,
     title: "Mogelijke ongekppelde matches zoeken",
     description: "Na de CRUD-pass zoeken naar potentiele matches die niet automatisch gekoppeld konden worden (handmatige beoordeling).",
   },
   {
-    idx: 10,
+    idx: 8,
     title: "SIM-actief-klant koppeling",
     description: "Inserve SIM-actief-asset-koppeling uitvoeren indien ingeschakeld.",
   },
   {
-    idx: 11,
+    idx: 9,
     title: "Afronden en samenstellen rapport",
     description: "Auditlog schrijven, SyncJobRun status afwerken en het eindrapport samenstellen.",
   },
@@ -380,7 +370,7 @@ function recalcPercent(state: SyncProgressState) {
   }
   const completedFullSteps = Math.max(0, state.currentStepIdx);
   const base = (completedFullSteps / total) * 100;
-  // Step 8 (processRecords) and step 4/6 (big API loops) may report a
+  // Step 6 (processRecords) and step 4 (big API loop) may report a
   // sub-percent via setStepSubPercent → stored on the step as
   // `detail._subPercent`. Others are assumed 100% complete when DONE.
   const active = state.steps[state.currentStepIdx];

@@ -1,14 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as inserveSvc from "@/server/integrations/inserve/service";
 import { inserveClient, InserveClient } from "@/server/integrations/inserve/client";
-import type { InserveCompany, InserveContact } from "@/server/integrations/inserve/types";
+import type { InserveCompany } from "@/server/integrations/inserve/types";
 
 /**
  * Tests voor de Inserve synchronisatie fixes:
  *  - Multi-page paginering met top-level last_page/total
  *  - Nexus filtering (actief / inactief / ontbrekend)
- *  - Contactpersonen filteren op geselecteerde bedrijven
- *  - Bedrijf zonder contactpersonen
  *  - Idempotentie (geen duplicaten bij herhaalde sync)
  *  - Fout bij het ophalen van een volgende pagina
  */
@@ -25,17 +23,6 @@ function makeCompany(id: number, overrides: Partial<InserveCompany> = {}): Inser
     customValues: [],
     ...overrides,
   } as InserveCompany;
-}
-
-function makeContact(id: number, companyId: number, overrides: Partial<InserveContact> = {}): InserveContact {
-  return {
-    id,
-    company_id: companyId,
-    first_name: `Contact${id}`,
-    last_name: "Persoon",
-    email_address: `contact${id}@bedrijf.nl`,
-    ...overrides,
-  } as InserveContact;
 }
 
 // Bouw een Inserve-achtige response met top-level paginering
@@ -169,78 +156,4 @@ describe("Inserve paginering fix", () => {
     await expect(inserveSvc.listAllCompanies({ perPage: 25 })).rejects.toThrow("Netwerkfout op pagina 2");
   });
 
-  it("listClientsForCompanyIds Strategy A filtert contacten op gevraagde company IDs", async () => {
-    // Company 1001 en 1002 zijn gevraagd; company 9999 niet
-    const allContacts = [
-      makeContact(5001, 1001),
-      makeContact(5002, 1001),
-      makeContact(5003, 1002),
-      makeContact(5004, 9999), // behoort NIET tot gevraagde companies
-    ];
-
-    mockRequest.mockImplementation(async (path: string, opts: any) => {
-      // Simuleer dat de API de company_id[] filter NEGEERT en alle contacten teruggeeft
-      const { page, perPage } = getPagination(opts);
-      const start = (page - 1) * perPage;
-      const slice = allContacts.slice(start, start + perPage);
-      return pageResponse(slice, page, perPage, allContacts.length);
-    });
-
-    const result = await inserveSvc.listClientsForCompanyIds([1001, 1002], { perPage: 50 });
-
-    // Alleen contacten van company 1001 en 1002 mogen worden teruggegeven
-    const returnedIds = new Set(result.items.map((c) => c.id));
-    expect(returnedIds.has(5001)).toBe(true);
-    expect(returnedIds.has(5002)).toBe(true);
-    expect(returnedIds.has(5003)).toBe(true);
-    expect(returnedIds.has(5004)).toBe(false);
-  });
-
-  it("listClientsForCompanyIds: bedrijf zonder contactpersonen geeft lege lijst", async () => {
-    mockRequest.mockImplementation(async (_path: string, _opts: any) => {
-      return pageResponse([], 1, 50, 0);
-    });
-
-    const result = await inserveSvc.listClientsForCompanyIds([1001], { perPage: 50 });
-
-    expect(result.items.length).toBe(0);
-  });
-
-  it("listClientsForCompanyIds: filter fallback naar per-company wanneer server-filter niet werkt", async () => {
-    // Veel contacten van niet-gevraagde companies → filter werkt niet → fallback
-    const allContacts = [
-      makeContact(5001, 9999), // niet gevraagd
-      makeContact(5002, 8888), // niet gevraagd
-      makeContact(5003, 1001), // wel gevraagd
-    ];
-
-    let clientListCalls = 0;
-    let perCompanyCalls = 0;
-
-    mockRequest.mockImplementation(async (path: string, _opts: any) => {
-      if (path.startsWith("clients")) {
-        clientListCalls++;
-        // Geef alle contacten terug (filter werkt niet)
-        return pageResponse(allContacts, 1, 50, allContacts.length);
-      }
-      if (path.includes("/clients")) {
-        perCompanyCalls++;
-        // Per-company endpoint geeft alleen de contacten van dat bedrijf
-        const parts = path.split("/");
-        const companyId = parseInt(parts[1]);
-        const companyContacts = allContacts.filter((c) => c.company_id === companyId);
-        return companyContacts;
-      }
-      return pageResponse([], 1, 50, 0);
-    });
-
-    const result = await inserveSvc.listClientsForCompanyIds([1001], { perPage: 50 });
-
-    // Strategy A werd geprobeerd (clientListCalls > 0)
-    expect(clientListCalls).toBeGreaterThan(0);
-    // Uiteindelijk alleen contact van company 1001
-    const returnedIds = new Set(result.items.map((c) => c.id));
-    expect(returnedIds.has(5003)).toBe(true);
-    expect(returnedIds.size).toBe(1);
-  });
 });

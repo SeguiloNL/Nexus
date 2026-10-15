@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit, diffObject } from "./audit.service";
 import { generateInvoiceNumber } from "@/lib/identifiers";
-import { pickAuth, requirePermission, PermissionError, hasMinRole } from "@/lib/rbac";
+import { pickAuth, requirePermission, PermissionError } from "@/lib/rbac";
 import type { PaginatedResult } from "@/types/domain";
 import type { InvoiceStatus, RoleScope } from "@/types/enums";
 import { CustomerType, UserRole } from "@/types/enums";
@@ -564,11 +564,6 @@ export async function softDeleteInvoice(id: string, ctx: Ctx): Promise<PrismaInv
 
 export async function hardDeleteInvoice(id: string, ctx: Ctx): Promise<PrismaInvoice> {
   await requirePermission(pickAuth(ctx), "delete", "invoice");
-  if (!hasMinRole(ctx.userRole, UserRole.ADMIN)) {
-    throw new PermissionError(
-      "Onvoldoende rechten: alleen ADMIN mag facturen definitief verwijderen uit het systeem."
-    );
-  }
   return prisma.$transaction(async (tx) => {
     const existing = await tx.invoice.findUniqueOrThrow({ where: { id } });
     if (ctx.customerScope && ctx.customerScope.length > 0) {
@@ -726,11 +721,6 @@ export async function bulkHardDeleteInvoices(
   ctx: Ctx
 ): Promise<{ count: number; ids: string[] }> {
   await requirePermission(pickAuth(ctx), "delete", "invoice");
-  if (!hasMinRole(ctx.userRole, UserRole.ADMIN)) {
-    throw new PermissionError(
-      "Onvoldoende rechten: alleen ADMIN mag facturen definitief verwijderen uit het systeem."
-    );
-  }
   if (!ids.length) return { count: 0, ids: [] };
   return prisma.$transaction(async (tx) => {
     const rows = await tx.invoice.findMany({

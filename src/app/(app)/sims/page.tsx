@@ -2,8 +2,7 @@ import { Suspense } from "react";
 import { requireUser, canUserRole, redirectForbidden } from "@/lib/auth/session";
 import { findManySims } from "@/server/services/sim.service";
 import { SimListWithImport } from "./_components/sim-list-with-import";
-import { hasMinRole } from "@/lib/rbac";
-import { RoleScope, UserRole } from "@/types/enums";
+import { RoleScope } from "@/types/enums";
 
 export default async function SimsPage() {
   const user = await requireUser();
@@ -28,7 +27,7 @@ export default async function SimsPage() {
   const canExport = canUserRole(user.permissions, "export", "sim");
   const canSyncUsage =
     user.roleScope === RoleScope.INTERNAL &&
-    hasMinRole(user.role, UserRole.ADMIN);
+    canUserRole(user.permissions, "edit", "sim");
 
   return (
     <Suspense fallback={<div className="p-4 text-sm text-slate-500">Laden…</div>}>

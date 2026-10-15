@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { Customer, ContactPerson, PrismaClient, CustomerType as PrismaCustomerType } from "@prisma/client";
+import type { Customer, PrismaClient, CustomerType as PrismaCustomerType } from "@prisma/client";
 import {
   resolveNexusFieldValue,
   mapCompanyToCustomerFields,
@@ -11,11 +11,10 @@ import {
 import * as inserveSvc from "@/server/integrations/inserve/service";
 import * as auditSvc from "@/server/services/audit.service";
 import * as syncSchedSvc from "@/server/services/sync-schedule.service";
-import * as contactSvc from "@/server/services/contact.service";
 import * as identifiers from "@/lib/identifiers";
 import * as simLinkSvc from "@/server/services/inserve-sim-link.service";
 import { inserveClient } from "@/server/integrations/inserve/client";
-import type { InserveCompany, InserveContact } from "@/server/integrations/inserve/types";
+import type { InserveCompany } from "@/server/integrations/inserve/types";
 import { SyncJobId, SyncJobStatus, SyncJobTrigger, RoleScope, CustomerType } from "@/types/enums";
 
 vi.mock("@/lib/prisma", () => {
@@ -28,7 +27,6 @@ vi.mock("@/lib/prisma", () => {
   });
 
   const customerShared = makeSharedMethods();
-  const contactPersonShared = makeSharedMethods();
 
   const makeTx = () => ({
     syncJobConfig: { upsert: vi.fn().mockResolvedValue({ id: "cfg-1" }) },
@@ -42,7 +40,6 @@ vi.mock("@/lib/prisma", () => {
       update: vi.fn().mockResolvedValue({ id: "run-1" }),
     },
     customer: customerShared,
-    contactPerson: contactPersonShared,
     auditLog: { create: vi.fn().mockResolvedValue({ id: "audit-1" }) },
   });
 
@@ -51,7 +48,6 @@ vi.mock("@/lib/prisma", () => {
       findFirst: vi.fn(),
     },
     customer: customerShared,
-    contactPerson: contactPersonShared,
     $transaction: vi.fn(async (cb: any) => {
       const tx = makeTx();
       (sharedPrisma as any)._lastTx = tx;
@@ -80,37 +76,6 @@ function makeCompany(overrides: Partial<InserveCompany> = {}): InserveCompany {
     btw_nr: "NL123456789B01",
     ...overrides,
   } as InserveCompany;
-}
-
-function makeContact(overrides: Partial<InserveContact> = {}): InserveContact {
-  return {
-    id: 5001,
-    company_id: 1001,
-    first_name: "Jan",
-    last_name: "Jansen",
-    email_address: "jan@testbedrijf.nl",
-    telephone: "0209876543",
-    telephone_cell: "0612345678",
-    function: "Directeur",
-    ...overrides,
-  } as InserveContact;
-}
-
-function mkContact(overrides: Partial<ContactPerson> = {}): ContactPerson {
-  return {
-    id: "cp-1",
-    firstName: "Jan",
-    lastName: "Jansen",
-    email: "jan@testbedrijf.nl",
-    phone: "0209876543",
-    mobile: "0612345678",
-    functionTitle: "Directeur",
-    inserveContactId: 5001,
-    createdAt: new Date("2025-01-01"),
-    updatedAt: new Date("2025-06-01"),
-    deletedAt: null,
-    ...overrides,
-  } as ContactPerson;
 }
 
 function mkCustomer(overrides: Partial<Customer> = {}): Customer {
@@ -360,18 +325,11 @@ describe("InserveCustomerImport :: parse functies (unit)", () => {
 
 describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
   let listAllCompaniesSpy: any;
-  let listAllClientsSpy: any;
-  let listClientsForCompanyIdsSpy: any;
   let logAuditSpy: any;
   let genCustNrSpy: any;
   let getSyncJobConfigSpy: any;
   let createSyncJobRunSpy: any;
   let completeSyncJobRunSpy: any;
-  let findContactByInserveIdSpy: any;
-  let findSimilarContactsByCustomerSpy: any;
-  let createContactServiceSpy: any;
-  let upsertContactForImportSpy: any;
-  let updateContactServiceSpy: any;
   let consoleErr: any;
 
   const __CID = new Map<string, Customer>();
@@ -398,42 +356,6 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
       subdomainPrefix: "seguilo",
     });
     listAllCompaniesSpy = vi.spyOn(inserveSvc, "listAllCompanies");
-    listAllClientsSpy = vi.spyOn(inserveSvc, "listAllClients").mockResolvedValue({
-      items: [],
-      totalFetched: 0,
-      totalExpected: 0,
-      pagesProcessed: 0,
-      responses: [],
-    } as any);
-    // listClientsForCompanyIds is the NEW code path. Proxy to listAllClientsSpy
-    // so the 7 existing tests (SM-1..SM-9) that mock listAllClientsSpy keep
-    // passing — new tests that specifically test the per-company filter must
-    // call listClientsForCompanyIdsSpy directly.
-    listClientsForCompanyIdsSpy = vi
-      .spyOn(inserveSvc, "listClientsForCompanyIds")
-      .mockImplementation(async (ids: number[], opts?: any) => {
-        const res = await inserveSvc.listAllClients(opts?.perPage ?? 50);
-        const idSet = new Set(ids);
-        const filtered = (res?.items ?? []).filter((c: any) => {
-          const cids =
-            Array.isArray((c as any).company_ids) ? (c as any).company_ids
-            : Array.isArray((c as any).companyIds) ? (c as any).companyIds
-            : (c as any).company_id != null ? [(c as any).company_id]
-            : (c as any).companyId != null ? [(c as any).companyId]
-            : [];
-          if (cids.length === 0) return idSet.size === 0;
-          return cids.some((id: any) => idSet.has(Number(id)));
-        });
-        return {
-          items: filtered,
-          totalFetched: filtered.length,
-          totalExpected: res?.totalExpected ?? ids.length,
-          pagesProcessed: res?.pagesProcessed ?? (filtered.length > 0 ? 1 : 0),
-          strategyUsed: "A-batch-filter/0",
-          rateLimitRemaining: 80,
-          companyIdsRequested: ids.length,
-        };
-      });
     vi.spyOn(simLinkSvc, "runInserveSimAssetLink").mockResolvedValue({
       ...(simLinkSvc.EMPTY_SIM_LINK_SUMMARY ?? {
         totalAssetsExamined: 0,
@@ -471,38 +393,6 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
       configId: o.configId,
     } as any));
     completeSyncJobRunSpy = vi.spyOn(syncSchedSvc, "completeSyncJobRun").mockImplementation(async () => Promise.resolve() as any);
-    findContactByInserveIdSpy = vi.spyOn(contactSvc, "findContactByInserveId").mockResolvedValue(null as any);
-    findSimilarContactsByCustomerSpy = vi.spyOn(contactSvc, "findSimilarContactsByCustomer").mockResolvedValue([] as any);
-    createContactServiceSpy = vi.spyOn(contactSvc, "createContactService").mockImplementation(async (d) => ({
-      id: `cp-new-${d.inserveContactId ?? Math.random().toString(36).slice(2, 7)}`,
-      ...d,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      deletedAt: null,
-    } as any));
-    upsertContactForImportSpy = vi.spyOn(contactSvc, "upsertContactForImport").mockImplementation(async (d) => ({
-      contact: {
-        id: `cp-new-${d.inserveContactId ?? Math.random().toString(36).slice(2, 7)}`,
-        firstName: d.firstName,
-        lastName: d.lastName,
-        email: d.email,
-        phone: d.phone,
-        mobile: d.mobile,
-        functionTitle: d.functionTitle,
-        inserveContactId: d.inserveContactId,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        deletedAt: null,
-      },
-      created: true,
-      restored: false,
-    } as any));
-    updateContactServiceSpy = vi.spyOn(contactSvc, "updateContactService").mockImplementation(async (id, d) => ({
-      ...(d as any),
-      id,
-    } as any));
-    vi.spyOn(contactSvc, "getCustomerIdsForContact").mockResolvedValue([] as any);
-    vi.spyOn(contactSvc, "linkContactToCustomer").mockResolvedValue(undefined as any);
 
     (prisma.syncJobRun.findFirst as any).mockResolvedValue(null);
     (prisma.customer.findUnique as any).mockImplementation(async (q: any) => {
@@ -581,23 +471,6 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
       if ((updated as any).inserveCompanyId) __CINS.set((updated as any).inserveCompanyId, updated);
       return updated;
     });
-    (prisma.contactPerson?.findUnique as any ?? vi.fn()).mockResolvedValue(null);
-    (prisma.contactPerson?.findFirst as any ?? vi.fn()).mockResolvedValue(null);
-    (prisma.contactPerson?.findMany as any ?? vi.fn()).mockResolvedValue([]);
-    (prisma.contactPerson?.create as any ?? vi.fn()).mockImplementation(async (d: any) => ({
-      id: `cp-${(d.data?.inserveContactId ?? Math.random().toString(36).slice(2, 7))}`,
-      ...(d.data ?? {}),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      deletedAt: null,
-    }));
-    (prisma.contactPerson?.update as any ?? vi.fn()).mockImplementation(async (d: any) => ({
-      id: d.where?.id,
-      ...(d.data ?? {}),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      deletedAt: null,
-    }));
   });
 
   afterEach(() => {
@@ -787,7 +660,7 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
     expect(data.deletedAt).toBeUndefined();
   });
 
-  it("TR-6.3: Eerder Actief nu Inactief (met Inserve-koppeling) → WEL status op INACTIVE zetten, overige velden EN contactpersonen ONGEMOEID; customersDeactivated=1; previouslyActiveNowInactive gevuld", async () => {
+  it("TR-6.3: Eerder Actief nu Inactief (met Inserve-koppeling) → WEL status op INACTIVE zetten, overige velden ONGEMOEID; customersDeactivated=1; previouslyActiveNowInactive gevuld", async () => {
     listAllCompaniesSpy.mockResolvedValueOnce({
       items: [
         makeCompany({
@@ -842,9 +715,6 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
     expect(capturedUpdate.data.notes).toBeUndefined();
     expect(s.previouslyActiveNowInactive).toHaveLength(1);
     expect(s.previouslyActiveNowInactive![0].inserveCompanyId).toBe(77);
-    expect(createContactServiceSpy).not.toHaveBeenCalled();
-    expect(updateContactServiceSpy).not.toHaveBeenCalled();
-    expect(upsertContactForImportSpy).not.toHaveBeenCalled();
   });
 
   it("TR-6.4: fetch_error (ophalen custom fields mislukt) → NIET als Inactief gezien; wordt geteld in skipped.fetch_error_nexus EN failed", async () => {
@@ -1027,20 +897,13 @@ describe("InserveCustomerImport :: runImport (mocked integratie)", () => {
   });
 });
 
-describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactpersonen sync", () => {
+describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix", () => {
   let listAllCompaniesSpy: any;
-  let listAllClientsSpy: any;
-  let listClientsForCompanyIdsSpy: any;
   let logAuditSpy: any;
   let genCustNrSpy: any;
   let getSyncJobConfigSpy: any;
   let createSyncJobRunSpy: any;
   let completeSyncJobRunSpy: any;
-  let findContactByInserveIdSpy: any;
-  let findSimilarContactsByCustomerSpy: any;
-  let createContactServiceSpy: any;
-  let updateContactServiceSpy: any;
-  let upsertContactForImportSpy: any;
   let consoleErr: any;
 
   beforeEach(() => {
@@ -1055,42 +918,6 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       subdomainPrefix: "seguilo",
     });
     listAllCompaniesSpy = vi.spyOn(inserveSvc, "listAllCompanies");
-    listAllClientsSpy = vi.spyOn(inserveSvc, "listAllClients").mockResolvedValue({
-      items: [],
-      totalFetched: 0,
-      totalExpected: 0,
-      pagesProcessed: 0,
-      responses: [],
-    } as any);
-    // listClientsForCompanyIds is the NEW code path. Proxy to listAllClientsSpy
-    // so the 7 existing tests (SM-1..SM-9) that mock listAllClientsSpy keep
-    // passing — new tests that specifically test the per-company filter must
-    // call listClientsForCompanyIdsSpy directly.
-    listClientsForCompanyIdsSpy = vi
-      .spyOn(inserveSvc, "listClientsForCompanyIds")
-      .mockImplementation(async (ids: number[], opts?: any) => {
-        const res = await inserveSvc.listAllClients(opts?.perPage ?? 50);
-        const idSet = new Set(ids);
-        const filtered = (res?.items ?? []).filter((c: any) => {
-          const cids =
-            Array.isArray((c as any).company_ids) ? (c as any).company_ids
-            : Array.isArray((c as any).companyIds) ? (c as any).companyIds
-            : (c as any).company_id != null ? [(c as any).company_id]
-            : (c as any).companyId != null ? [(c as any).companyId]
-            : [];
-          if (cids.length === 0) return idSet.size === 0;
-          return cids.some((id: any) => idSet.has(Number(id)));
-        });
-        return {
-          items: filtered,
-          totalFetched: filtered.length,
-          totalExpected: res?.totalExpected ?? ids.length,
-          pagesProcessed: res?.pagesProcessed ?? (filtered.length > 0 ? 1 : 0),
-          strategyUsed: "A-batch-filter/0",
-          rateLimitRemaining: 80,
-          companyIdsRequested: ids.length,
-        };
-      });
     vi.spyOn(simLinkSvc, "runInserveSimAssetLink").mockResolvedValue({
       ...(simLinkSvc.EMPTY_SIM_LINK_SUMMARY ?? {
         totalAssetsExamined: 0,
@@ -1128,44 +955,10 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       configId: o.configId,
     } as any));
     completeSyncJobRunSpy = vi.spyOn(syncSchedSvc, "completeSyncJobRun").mockImplementation(async () => Promise.resolve() as any);
-    findContactByInserveIdSpy = vi.spyOn(contactSvc, "findContactByInserveId").mockResolvedValue(null as any);
-    findSimilarContactsByCustomerSpy = vi.spyOn(contactSvc, "findSimilarContactsByCustomer").mockResolvedValue([] as any);
-    createContactServiceSpy = vi.spyOn(contactSvc, "createContactService").mockImplementation(async (d) => ({
-      id: `cp-new-${d.inserveContactId ?? Math.random().toString(36).slice(2, 7)}`,
-      ...d,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      deletedAt: null,
-    } as any));
-    upsertContactForImportSpy = vi.spyOn(contactSvc, "upsertContactForImport").mockImplementation(async (d) => ({
-      contact: {
-        id: `cp-new-${d.inserveContactId ?? Math.random().toString(36).slice(2, 7)}`,
-        firstName: d.firstName,
-        lastName: d.lastName,
-        email: d.email,
-        phone: d.phone,
-        mobile: d.mobile,
-        functionTitle: d.functionTitle,
-        inserveContactId: d.inserveContactId,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        deletedAt: null,
-      },
-      created: true,
-      restored: false,
-    } as any));
-    updateContactServiceSpy = vi.spyOn(contactSvc, "updateContactService").mockImplementation(async (id, d) => ({
-      ...(d as any),
-      id,
-    } as any));
-    vi.spyOn(contactSvc, "getCustomerIdsForContact").mockResolvedValue([] as any);
-    vi.spyOn(contactSvc, "linkContactToCustomer").mockResolvedValue(undefined as any);
 
     (prisma.syncJobRun.findFirst as any).mockResolvedValue(null);
     (prisma.customer.findUnique as any).mockResolvedValue(null);
     (prisma.customer.findMany as any).mockResolvedValue([]);
-    (prisma.contactPerson?.findUnique as any ?? vi.fn()).mockResolvedValue(null);
-    (prisma.contactPerson?.findMany as any ?? vi.fn()).mockResolvedValue([]);
     (prisma.customer.create as any).mockImplementation(async (d: any) => ({
       id: `cust-${d.data.inserveCompanyId ?? "new"}`,
       ...d.data,
@@ -1177,7 +970,7 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     consoleErr.mockRestore();
   });
 
-  it("SM-1: Nexus=Inactief + GEEN bestaande koppeling → OVERSLAAN; geen klant, geen contacten", async () => {
+  it("SM-1: Nexus=Inactief + GEEN bestaande koppeling → OVERSLAAN; geen klant", async () => {
     listAllCompaniesSpy.mockResolvedValueOnce({
       items: [
         makeCompany({
@@ -1201,11 +994,9 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(s.skipped.inactive_or_missing_nexus_field).toBe(1);
     expect(prisma.customer.create).not.toHaveBeenCalled();
     expect(prisma.customer.update).not.toHaveBeenCalled();
-    expect(createContactServiceSpy).not.toHaveBeenCalled();
-    expect(upsertContactForImportSpy).not.toHaveBeenCalled();
   });
 
-  it("SM-2: Nexus=Actief + BESTAANDE klant (status=INACTIVE) → TERUG naar ACTIEF; customersReactivated=1; sync contacten WEL", async () => {
+  it("SM-2: Nexus=Actief + BESTAANDE klant (status=INACTIVE) → TERUG naar ACTIEF; customersReactivated=1", async () => {
     listAllCompaniesSpy.mockResolvedValueOnce({
       items: [
         makeCompany({
@@ -1224,15 +1015,6 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       pagesProcessed: 1,
       responses: [],
     });
-    listAllClientsSpy.mockResolvedValueOnce({
-      items: [
-        makeContact({ id: 5002, company_id: 9002, first_name: "Miep", last_name: "Jansen", email_address: "miep@heractiveer.nl" }),
-      ],
-      totalFetched: 1,
-      totalExpected: 1,
-      pagesProcessed: 1,
-      responses: [],
-    } as any);
     const existing = mkCustomer({
       id: "cust-9002",
       companyName: "Heractiveerbaar Bedrijf",
@@ -1261,8 +1043,6 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(s.previouslyInactiveNowActive![0].inserveCompanyId).toBe(9002);
     expect(capturedUpdate).not.toBeNull();
     expect(capturedUpdate.data.status).toBe("ACTIVE");
-    expect(upsertContactForImportSpy).toHaveBeenCalledTimes(1);
-    expect((upsertContactForImportSpy.mock.calls[0][0] as any).inserveContactId).toBe(5002);
   });
 
   it("SM-3: Nexus ontbreekt (missing) + BESTAANDE gekoppelde klant (status=ACTIVE) → status ONGEMOEID; tellingen unchanged/failed?", async () => {
@@ -1293,340 +1073,6 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     expect(s.customersReactivated).toBe(0);
     expect(prisma.customer.update).not.toHaveBeenCalled();
     expect(prisma.customer.create).not.toHaveBeenCalled();
-  });
-
-  it("SM-4: Nexus=Actief → 2 contactpersonen opgehaald; beide worden AANGEMAAKT; contacts.created=2", async () => {
-    listAllCompaniesSpy.mockResolvedValueOnce({
-      items: [
-        makeCompany({
-          id: 9004,
-          name: "Contacten Test Bedrijf",
-          custom_fields: [{ name: "Nexus", value: "Actief" }] as any,
-        }),
-      ],
-      totalFetched: 1,
-      totalExpected: 1,
-      pagesProcessed: 1,
-      responses: [],
-    });
-    listAllClientsSpy.mockResolvedValueOnce({
-      items: [
-        makeContact({ id: 5101, company_id: 9004, first_name: "Piet", last_name: "Pietersen", email_address: "piet@c.nl" }),
-        makeContact({ id: 5102, company_id: 9004, first_name: "Klaas", last_name: "Klaassen", telephone_cell: "0699999999", function: "Medewerker" }),
-        makeContact({ id: 5199, company_id: 9999, first_name: "AnderBedrijf" as any, last_name: "Contact" }),
-      ],
-      totalFetched: 3,
-      totalExpected: 3,
-      pagesProcessed: 1,
-      responses: [],
-    } as any);
-    const s = await runInserveCustomerImport(defaultCtx);
-    // With the new pre-scan + listClientsForCompanyIds filter, only the 2
-    // contacts actually belonging to the imported Nexus=active company are
-    // fetched (company_id=9999 was NOT in the request set → excluded).
-    expect(s.contacts.fetched).toBe(2);
-    expect(s.contacts.created).toBe(2);
-    expect(s.contacts.skipped).toBe(0);
-    expect(s.contacts.updated).toBe(0);
-    expect(upsertContactForImportSpy).toHaveBeenCalledTimes(2);
-    const args = upsertContactForImportSpy.mock.calls.map((c: any) => c[0]);
-    const ids = args.map((a: any) => a.inserveContactId).sort();
-    expect(ids).toEqual([5101, 5102]);
-    expect((args.find((a: any) => a.inserveContactId === 5102) as any).mobile).toBe("0699999999");
-  });
-
-  it("SM-5: 2x dezelfde import (idempotent) → 2e run: contacten = skipped; geen duplicaten; unchanged=1", async () => {
-    const companies = [
-      makeCompany({
-        id: 9005,
-        name: "Idempotent Test",
-        debtor_code: "DEB-9005",
-        custom_fields: [{ name: "Nexus", value: "Actief" }] as any,
-      }),
-    ];
-    const contacts = [
-      makeContact({ id: 5201, company_id: 9005, first_name: "Piet", last_name: "Same", email_address: "piet@same.nl", telephone: "0101", telephone_cell: "0601" }),
-    ];
-    listAllCompaniesSpy.mockResolvedValue({
-      items: companies,
-      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
-    } as any);
-    listAllClientsSpy.mockResolvedValue({
-      items: contacts,
-      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
-    } as any);
-    const existingCust = mkCustomer({
-      id: "cust-9005",
-      companyName: "Idempotent Test",
-      customerNumber: "DEB-9005",
-      inserveCompanyId: 9005,
-    });
-    (prisma.customer.findMany as any).mockResolvedValue([existingCust]);
-    (prisma.customer.findUnique as any).mockImplementation(async (q: any) => {
-      if (q.where.id === "cust-9005") return existingCust;
-      if (q.where.inserveCompanyId === 9005) return existingCust;
-      return null;
-    });
-    findContactByInserveIdSpy.mockImplementation(async (insId: any) => {
-      if (insId === 5201) {
-        return mkContact({
-          id: "cp-5201",
-          inserveContactId: 5201,
-          firstName: "Piet",
-          lastName: "Same",
-          email: "piet@same.nl",
-          phone: "0101",
-          mobile: "0601",
-          functionTitle: "Directeur",
-        });
-      }
-      return null;
-    });
-
-    const s = await runInserveCustomerImport(defaultCtx);
-    expect(s.unchanged).toBe(1);
-    expect(s.contacts.skipped).toBe(1);
-    expect(s.contacts.created).toBe(0);
-    expect(s.contacts.updated).toBe(0);
-    expect(createContactServiceSpy).not.toHaveBeenCalled();
-    expect(updateContactServiceSpy).not.toHaveBeenCalled();
-    expect(upsertContactForImportSpy).not.toHaveBeenCalled();
-  });
-
-  it("SM-6: Contactpersoon Inserve e-mail gewijzigd → updateContactService aangeroepen; contacts.updated=1", async () => {
-    listAllCompaniesSpy.mockResolvedValueOnce({
-      items: [
-        makeCompany({
-          id: 9006,
-          name: "Update Contact Bedrijf",
-          debtor_code: "DEB-9006",
-          custom_fields: [{ name: "Nexus", value: "Actief" }] as any,
-        }),
-      ],
-      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
-    } as any);
-    listAllClientsSpy.mockResolvedValueOnce({
-      items: [
-        makeContact({ id: 5301, company_id: 9006, first_name: "Lijn", last_name: "Verander", email_address: "NIEUW@verander.nl", telephone: "010-oud", function: "CFO" }),
-      ],
-      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
-    } as any);
-    const existingCust = mkCustomer({
-      id: "cust-9006",
-      companyName: "Update Contact Bedrijf",
-      customerNumber: "DEB-9006",
-      inserveCompanyId: 9006,
-    });
-    (prisma.customer.findMany as any).mockResolvedValueOnce([existingCust]);
-    (prisma.customer.findUnique as any).mockImplementation(async (q: any) => {
-      if (q.where.id === "cust-9006") return existingCust;
-      if (q.where.inserveCompanyId === 9006) return existingCust;
-      return null;
-    });
-    findContactByInserveIdSpy.mockImplementation(async (insId: any) => {
-      if (insId === 5301) {
-        return mkContact({
-          id: "cp-5301",
-          inserveContactId: 5301,
-          firstName: "Lijn",
-          lastName: "Verander",
-          email: "OUD@verander.nl",
-          phone: "010-oud",
-          mobile: null,
-          functionTitle: "CFO",
-        });
-      }
-      return null;
-    });
-    const s = await runInserveCustomerImport(defaultCtx);
-    expect(s.contacts.updated).toBe(1);
-    expect(s.contacts.created).toBe(0);
-    expect(upsertContactForImportSpy).toHaveBeenCalledTimes(1);
-    const upsertArgs = upsertContactForImportSpy.mock.calls[0][0] as any;
-    expect(upsertArgs.inserveContactId).toBe(5301);
-    expect(upsertArgs.email).toBe("NIEUW@verander.nl");
-    expect(upsertArgs.lastName).toBe("Verander");
-  });
-
-  it("SM-7: 2 contacten met ZELFDE e-mail (binnen 1 bedrijf) → beide worden aangemaakt; GEEN unique email violation; contacts.created=2", async () => {
-    listAllCompaniesSpy.mockResolvedValueOnce({
-      items: [
-        makeCompany({
-          id: 9007,
-          name: "Gedeelde Email Test",
-          custom_fields: [{ name: "Nexus", value: "Actief" }] as any,
-        }),
-      ],
-      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
-    } as any);
-    listAllClientsSpy.mockResolvedValueOnce({
-      items: [
-        makeContact({ id: 5401, company_id: 9007, first_name: "A", last_name: "Persoon", email_address: "support@shared.nl" }),
-        makeContact({ id: 5402, company_id: 9007, first_name: "B", last_name: "Persoon", email_address: "support@shared.nl" }),
-      ],
-      totalFetched: 2, totalExpected: 2, pagesProcessed: 1, responses: [],
-    } as any);
-    const s = await runInserveCustomerImport(defaultCtx);
-    expect(s.contacts.created).toBe(2);
-    expect(s.contacts.failed).toBe(0);
-    expect(upsertContactForImportSpy).toHaveBeenCalledTimes(2);
-  });
-
-  it("SM-8: Contactpersoon zonder achternaam (last_name=null) → OVERSLAAN; contacts.skipped=1", async () => {
-    listAllCompaniesSpy.mockResolvedValueOnce({
-      items: [
-        makeCompany({
-          id: 9008,
-          name: "Ontbrekende Naam Test",
-          custom_fields: [{ name: "Nexus", value: "Actief" }] as any,
-        }),
-      ],
-      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
-    } as any);
-    listAllClientsSpy.mockResolvedValueOnce({
-      items: [
-        makeContact({ id: 5501, company_id: 9008, first_name: "AlleenVoornaam" as any, last_name: null as any, email_address: "alleen@voornaam.nl" }),
-      ],
-      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
-    } as any);
-    const s = await runInserveCustomerImport(defaultCtx);
-    expect(s.contacts.skipped).toBe(1);
-    expect(s.contacts.created).toBe(0);
-    expect(upsertContactForImportSpy).not.toHaveBeenCalled();
-  });
-
-  it("SM-9: Overeenkomst op naam+email (bestaand Handmatig contact) → possibleContactMatches gevuld; GEEN automerge; findContactByInserveId returned null, findSimilar returned bestaand cp", async () => {
-    listAllCompaniesSpy.mockResolvedValueOnce({
-      items: [
-        makeCompany({
-          id: 9009,
-          name: "Possible Match Bedrijf",
-          custom_fields: [{ name: "Nexus", value: "Actief" }] as any,
-        }),
-      ],
-      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
-    } as any);
-    listAllClientsSpy.mockResolvedValueOnce({
-      items: [
-        makeContact({ id: 5601, company_id: 9009, first_name: "Piet", last_name: "Match", email_address: "piet@match.nl" }),
-      ],
-      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
-    } as any);
-    findContactByInserveIdSpy.mockResolvedValue(null as any);
-    findSimilarContactsByCustomerSpy.mockImplementation(async (custId: any, filter: any) => {
-      if (filter.email === "piet@match.nl") {
-        return [mkContact({ id: "cp-bestaand-handmatig", firstName: "Piet", lastName: "Match", email: "piet@match.nl", inserveContactId: null as any })];
-      }
-      return [];
-    });
-
-    const s = await runInserveCustomerImport(defaultCtx);
-    expect(s.possibleContactMatches).toHaveLength(1);
-    expect(s.possibleContactMatches![0].inserveContactId).toBe(5601);
-    expect(s.possibleContactMatches![0].existingContactIds).toContain("cp-bestaand-handmatig");
-    expect(s.possibleContactMatches![0].reason).toBe("name_email");
-    expect(upsertContactForImportSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it("SM-10: API call listClientsForCompanyIds THROWS → import wordt PARTIAL_SUCCESS; contactFailedDetails gevuld; bedrijven verwerking WEL doorloopt", async () => {
-    listAllCompaniesSpy.mockResolvedValueOnce({
-      items: [
-        makeCompany({
-          id: 9010,
-          name: "Client API Failure",
-          custom_fields: [{ name: "Nexus", value: "Actief" }] as any,
-        }),
-      ],
-      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
-    } as any);
-    listClientsForCompanyIdsSpy.mockRejectedValueOnce(new Error("502 Bad Gateway: clients endpoint down"));
-    const s = await runInserveCustomerImport(defaultCtx);
-    expect(s.status).toBe("PARTIAL_SUCCESS");
-    expect(s.created).toBe(1);
-    expect(s.failed).toBe(0);
-    expect(s.contacts.failed).toBeGreaterThanOrEqual(0);
-    expect(s.contactFailedDetails).toBeDefined();
-    expect(s.contactFailedDetails!.length).toBeGreaterThan(0);
-    expect(s.timingMs).toBeDefined();
-    expect(typeof s.timingMs!.finalize).toBe("number");
-    expect(typeof s.timingMs!.total).toBe("number");
-    expect(s.errorMessage).toMatch(/502 Bad Gateway|contactpersonen konden niet worden opgehaald/i);
-  });
-
-  it("SM-10b: Full-read-guard — BESTAANDE ACTIVE klant wordt NIET gedeactiveerd wanneer contacten-fetch faalt (sourceReadComplete=false)", async () => {
-    // Eén ACTIEF bedrijf zorgt ervoor dat listClientsForCompanyIds wordt
-    // aangeroepen. Die fetch faalt → sourceReadComplete blijft false.
-    // Het tweede bedrijf was eerder gekoppeld (status=ACTIVE) en heeft nu
-    // Nexus=Inactief. Door de full-read-guard mag deze NIET worden gedeactiveerd.
-    listAllCompaniesSpy.mockResolvedValueOnce({
-      items: [
-        makeCompany({
-          id: 9015,
-          name: "Beschermde Klant",
-          custom_fields: [{ name: "Nexus", value: "Inactief" }] as any,
-        }),
-        makeCompany({
-          id: 9016,
-          name: "Actief Bedrijf",
-          custom_fields: [{ name: "Nexus", value: "Actief" }] as any,
-        }),
-      ],
-      totalFetched: 2, totalExpected: 2, pagesProcessed: 1, responses: [],
-    } as any);
-    listClientsForCompanyIdsSpy.mockRejectedValueOnce(new Error("502 Bad Gateway: clients endpoint down"));
-    const existing = mkCustomer({
-      id: "cust-9015",
-      companyName: "Beschermde Klant",
-      inserveCompanyId: 9015,
-      status: "ACTIVE",
-    });
-    (prisma.customer.findMany as any).mockResolvedValueOnce([existing]);
-    (prisma.customer.findUnique as any).mockImplementation(async (q: any) => {
-      if (q.where.id === "cust-9015") return existing;
-      if (q.where.inserveCompanyId === 9015) return existing;
-      return null;
-    });
-    let updateCalled = false;
-    (prisma.customer.update as any).mockImplementation(async () => {
-      updateCalled = true;
-      return existing;
-    });
-
-    const s = await runInserveCustomerImport(defaultCtx);
-    expect(s.status).toBe("PARTIAL_SUCCESS");
-    // Geen deactivatie door de full-read-guard.
-    expect(s.customersDeactivated).toBe(0);
-    expect(updateCalled).toBe(false);
-    // De skip-reden moet verwijzen naar de onvolledige bronlezing.
-    const skip = s.skippedDetails?.find((d) => d.companyId === 9015);
-    expect(skip?.reason).toMatch(/Bronlezing onvolledig|deactivatie overgeslagen/i);
-  });
-
-  it("SM-11: Multi-page contacten (listClientsForCompanyIds pagesProcessed=3) → alle pagina's verwerkt; pagination tellingen correct", async () => {
-    listAllCompaniesSpy.mockResolvedValueOnce({
-      items: [
-        makeCompany({ id: 9011, name: "Multipage", custom_fields: [{ name: "Nexus", value: "Actief" }] as any }),
-      ],
-      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
-    } as any);
-    const allContacts: InserveContact[] = [];
-    for (let i = 1; i <= 20; i++) {
-      allContacts.push(makeContact({ id: 5700 + i, company_id: 9011, first_name: `C${i}`, last_name: `Contact${i}` }));
-    }
-    listClientsForCompanyIdsSpy.mockResolvedValueOnce({
-      items: allContacts,
-      totalFetched: 20,
-      totalExpected: 20,
-      pagesProcessed: 3,
-      strategyUsed: "A-batch-filter/0",
-      rateLimitRemaining: 77,
-      companyIdsRequested: 1,
-    });
-    const s = await runInserveCustomerImport(defaultCtx);
-    expect(s.clientsPagesProcessed).toBe(3);
-    expect(s.clientsTotalExpected).toBe(20);
-    expect(s.contacts.fetched).toBe(20);
-    expect(s.contacts.created).toBe(20);
   });
 
   it("SM-12: fetch_error op custom fields + BESTAANDE ACTIVE klant → status ONVERANDERD; failed=1; GEEN status naar INACTIVE", async () => {
@@ -1761,17 +1207,11 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
       ],
       totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
     } as any);
-    listAllClientsSpy.mockResolvedValueOnce({
-      items: [makeContact({ id: 6101, company_id: 9101, first_name: "Piet", last_name: "Proef" })],
-      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
-    } as any);
 
     let createCalled = false;
     let updateCalled = false;
     (prisma.customer.create as any).mockImplementation(async () => { createCalled = true; return { id: "x" }; });
     (prisma.customer.update as any).mockImplementation(async () => { updateCalled = true; return {}; });
-    createContactServiceSpy.mockImplementation(async () => { createCalled = true; return {} as any; });
-    upsertContactForImportSpy.mockImplementation(async () => { createCalled = true; return { contact: {}, created: true, restored: false } as any; });
 
     const s = await runInserveCustomerImport(defaultCtx, { dryRun: true });
     expect(s.dryRun).toBe(true);
@@ -1782,56 +1222,5 @@ describe("InserveCustomerImport :: NIEUWE Features: Statusmatrix + Contactperson
     // plannedChanges moet de berekende wijzigingen bevatten.
     expect(s.plannedChanges).toBeDefined();
     expect(s.plannedChanges!.companies.create).toBe(1);
-    expect(s.plannedChanges!.contacts.create).toBe(1);
-  });
-
-  it("SM-16: Eén contactpersoon bij MEERDERE actieve bedrijven → één contact, gekoppeld aan beide (many-to-many)", async () => {
-    // Contact 6201 hoort bij bedrijf 9201 EN 9202 (beide Actief).
-    listAllCompaniesSpy.mockResolvedValueOnce({
-      items: [
-        makeCompany({ id: 9201, name: "Bedrijf A", custom_fields: [{ name: "Nexus", value: "Actief" }] as any }),
-        makeCompany({ id: 9202, name: "Bedrijf B", custom_fields: [{ name: "Nexus", value: "Actief" }] as any }),
-      ],
-      totalFetched: 2, totalExpected: 2, pagesProcessed: 1, responses: [],
-    } as any);
-    const sharedContact = makeContact({ id: 6201, first_name: "Deel", last_name: "Contact", company_id: 9201 });
-    (sharedContact as any).company_ids = [9201, 9202];
-    (sharedContact as any).companies = [9201, 9202];
-    listAllClientsSpy.mockResolvedValueOnce({
-      items: [sharedContact],
-      totalFetched: 1, totalExpected: 1, pagesProcessed: 1, responses: [],
-    } as any);
-
-    // Het contact bestaat al (aangemaakt tijdens bedrijf 9201) en is nog
-    // niet gekoppeld aan bedrijf 9202.
-    let contactCreatedCount = 0;
-    upsertContactForImportSpy.mockImplementation(async (d: any) => {
-      const isFirst = contactCreatedCount === 0;
-      contactCreatedCount++;
-      return {
-        contact: { id: `cp-${d.inserveContactId}`, ...d },
-        created: isFirst,
-        restored: false,
-      } as any;
-    });
-    findContactByInserveIdSpy.mockImplementation(async (insId: any) => {
-      if (insId === 6201 && contactCreatedCount > 0) {
-        return { id: "cp-6201", inserveContactId: 6201 } as any;
-      }
-      return null as any;
-    });
-    const linkedCustomerIds: string[] = [];
-    vi.spyOn(contactSvc, "linkContactToCustomer").mockImplementation(async (_cid, custId) => {
-      linkedCustomerIds.push(custId);
-    });
-
-    const s = await runInserveCustomerImport(defaultCtx);
-    expect(s.status).toBe("SUCCESS");
-    // Eén contactpersoon aangemaakt (geen duplicaten). upsert wordt 2x
-    // aangeroepen: 1x create (bedrijf 9201) + 1x update (bedrijf 9202).
-    expect(s.contacts.created).toBe(1);
-    expect(upsertContactForImportSpy).toHaveBeenCalledTimes(2);
-    // Het contact moet aan beide bedrijven zijn gekoppeld.
-    expect(linkedCustomerIds.length).toBeGreaterThanOrEqual(1);
   });
 });

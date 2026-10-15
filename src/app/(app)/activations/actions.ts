@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/session";
-import { requirePermission, hasMinRole } from "@/lib/rbac";
+import { requirePermission } from "@/lib/rbac";
 import { RoleScope } from "@/types/enums";
 import {
   CreateActivationOrderSchema,
@@ -26,7 +26,7 @@ import {
   subscribeSimById,
   type SimSubscribeResult,
 } from "@/server/services/simhuis-asset.service";
-import { UserRole, ActivationOrderProductType } from "@/types/enums";
+import { ActivationOrderProductType } from "@/types/enums";
 
 const TARGET_PRODUCT_ID = "662a3e2f4e2af7a852384696";
 const TARGET_PRODUCT_NAME = "Seguilo B.V. ROPD LR 0.40 OU per MB 0.0029 EUR SMS";
@@ -295,10 +295,22 @@ export async function precheckSimProductAction(
   iccid: string
 ): Promise<SimPrecheckResult> {
   const user = await getCurrentUser();
-  if (user.roleScope !== ("INTERNAL" as unknown as typeof user.roleScope) || !hasMinRole(user.role, UserRole.ADMIN)) {
+  if (user.roleScope !== RoleScope.INTERNAL) {
     return {
       ok: false,
-      message: "Deze actie is alleen beschikbaar voor interne beheerders (ADMIN).",
+      message: "Deze actie is alleen beschikbaar voor interne beheerders.",
+    };
+  }
+  try {
+    await requirePermission(
+      user.permissions ?? user.roleId ?? user.role,
+      "edit",
+      "sim"
+    );
+  } catch {
+    return {
+      ok: false,
+      message: "Je hebt onvoldoende rechten voor deze actie.",
     };
   }
   if (!iccid || typeof iccid !== "string" || iccid.trim().length < 10) {
@@ -337,15 +349,33 @@ export async function validateAndSubscribeSimAction(
   orderId?: string
 ): Promise<SimSubscribeResult> {
   const user = await getCurrentUser();
-  if (user.roleScope !== ("INTERNAL" as unknown as typeof user.roleScope) || !hasMinRole(user.role, UserRole.ADMIN)) {
+  if (user.roleScope !== RoleScope.INTERNAL) {
     return {
       ok: false,
       confirmedStatus: null,
       pendingConfirmation: false,
-      message: "Deze actie is alleen beschikbaar voor interne beheerders (ADMIN).",
+      message: "Deze actie is alleen beschikbaar voor interne beheerders.",
       error: {
         kind: "PERMISSION",
-        detail: "Onvoldoende rechten: INTERNAL scope + ADMIN rol vereist.",
+        detail: "Deze actie is alleen beschikbaar voor interne beheerders.",
+      },
+    };
+  }
+  try {
+    await requirePermission(
+      user.permissions ?? user.roleId ?? user.role,
+      "edit",
+      "sim"
+    );
+  } catch {
+    return {
+      ok: false,
+      confirmedStatus: null,
+      pendingConfirmation: false,
+      message: "Je hebt onvoldoende rechten voor deze actie.",
+      error: {
+        kind: "PERMISSION",
+        detail: "Ontbrekende toestemming 'edit' op SIM.",
       },
     };
   }

@@ -1,16 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { Customer, ContactPerson } from "@prisma/client";
+import type { Customer } from "@prisma/client";
 import {
   runInserveCustomerImport,
   type ImportUserCtx,
 } from "@/server/services/inserve-customer-import.service";
 import * as inserveSvc from "@/server/integrations/inserve/service";
 import * as syncSchedSvc from "@/server/services/sync-schedule.service";
-import * as contactSvc from "@/server/services/contact.service";
 import * as identifiers from "@/lib/identifiers";
 import * as simLinkSvc from "@/server/services/inserve-sim-link.service";
 import { inserveClient } from "@/server/integrations/inserve/client";
-import type { InserveCompany, InserveContact } from "@/server/integrations/inserve/types";
+import type { InserveCompany } from "@/server/integrations/inserve/types";
 import { SyncJobId, SyncJobStatus, SyncJobTrigger, RoleScope, CustomerType } from "@/types/enums";
 import {
   initProgress,
@@ -37,7 +36,6 @@ vi.mock("@/lib/prisma", () => {
   });
 
   const customerShared = makeSharedMethods();
-  const contactPersonShared = makeSharedMethods();
 
   const makeTx = () => ({
     syncJobConfig: { upsert: vi.fn().mockResolvedValue({ id: "cfg-1" }) },
@@ -51,7 +49,6 @@ vi.mock("@/lib/prisma", () => {
       update: vi.fn().mockResolvedValue({ id: "run-prog-1" }),
     },
     customer: customerShared,
-    contactPerson: contactPersonShared,
     auditLog: { create: vi.fn().mockResolvedValue({ id: "audit-1" }) },
   });
 
@@ -60,7 +57,6 @@ vi.mock("@/lib/prisma", () => {
       findFirst: vi.fn(),
     },
     customer: customerShared,
-    contactPerson: contactPersonShared,
     $transaction: vi.fn(async (cb: any) => {
       const tx = makeTx();
       (sharedPrisma as any)._lastTx = tx;
@@ -90,19 +86,6 @@ function makeCompany(overrides: Partial<InserveCompany> = {}): InserveCompany {
     btw_nr: "NL123456789B01",
     ...overrides,
   } as InserveCompany;
-}
-function makeContact(overrides: Partial<InserveContact> = {}): InserveContact {
-  return {
-    id: 5001,
-    company_id: 1001,
-    first_name: "Jan",
-    last_name: "Jansen",
-    email_address: "jan@testbedrijf.nl",
-    telephone: "0209876543",
-    telephone_cell: "0612345678",
-    function: "Directeur",
-    ...overrides,
-  } as InserveContact;
 }
 function mkCustomer(overrides: Partial<Customer> = {}): Customer {
   return {
@@ -147,13 +130,10 @@ const defaultCtx: ImportUserCtx = {
 
 function setupDefaultMocks(options: {
   companies?: InserveCompany[];
-  contacts?: InserveContact[];
   existingCustomers?: Customer[];
   findMatches?: any[];
   throwCompanies?: Error;
-  throwContacts?: Error;
   simLinkResult?: any;
-  contactPersons?: ContactPerson[];
   credentialsNotConfigured?: boolean;
 } = {}) {
   const companies = options.companies ?? [
@@ -163,9 +143,7 @@ function setupDefaultMocks(options: {
       custom_fields: [{ id: 1, name: "Nexus", value: "Actief" }] as any,
     }),
   ];
-  const contacts = options.contacts ?? [makeContact({ id: 5001, company_id: 1001 })];
   const existingCustomers = options.existingCustomers ?? [];
-  const contactPersons = options.contactPersons ?? [];
 
   vi.spyOn(syncSchedSvc, "getSyncJobConfig").mockResolvedValue({
     id: "cfg-1",
@@ -210,24 +188,7 @@ function setupDefaultMocks(options: {
     };
   });
 
-  vi.spyOn(inserveSvc, "listClientsForCompanyIds").mockImplementation(
-    async (ids: any) => {
-      if (options.throwContacts) throw options.throwContacts;
-      const relevant = contacts.filter((c) => ids.includes(c.company_id as any));
-      return {
-        items: relevant,
-        totalFetched: relevant.length,
-        pagesProcessed: 1,
-        totalExpected: relevant.length,
-        strategyUsed: "single-call",
-        rateLimitRemaining: 69,
-        companyIdsRequested: (ids as number[]).length,
-      };
-    }
-  );
-
   (vi.spyOn(prisma.customer, "findMany") as any).mockImplementation(async () => existingCustomers);
-  (vi.spyOn(prisma.contactPerson, "findMany") as any).mockImplementation(async () => contactPersons);
 
   (vi.spyOn(prisma.customer, "create") as any).mockImplementation(async (d: any) => ({
     ...mkCustomer(),
@@ -238,14 +199,6 @@ function setupDefaultMocks(options: {
     ...mkCustomer(),
     id: d.where.id,
   }));
-
-  vi.spyOn(contactSvc, "createContactService").mockImplementation(async () => ({
-    id: "cp-new",
-  } as any));
-  vi.spyOn(contactSvc, "updateContactService").mockImplementation(async () => ({
-    id: "cp-upd",
-  } as any));
-  vi.spyOn(contactSvc, "deleteContactService").mockResolvedValue({ id: "cp-del" } as any);
 
   vi.spyOn(identifiers, "generateCustomerNumber").mockResolvedValue(`C-${Math.random()}`.slice(0, 10));
 
@@ -271,14 +224,14 @@ describe("SyncProgress Registry (unit)", () => {
     // Niets: tests nemen zelf unieke run ids via counters / random.
   });
 
-  it("T-U1: initProgress → getCurrentState returns correct defaults (12 stappen, overall RUNNING)", () => {
+  it("T-U1: initProgress → getCurrentState returns correct defaults (10 stappen, overall RUNNING)", () => {
     const run = "tu1-" + Date.now() + "-" + Math.random();
     initProgress(run);
     const s = getCurrentState(run);
     expect(s).not.toBeNull();
     expect(s!.runId).toBe(run);
-    expect(s!.totalSteps).toBe(12);
-    expect(s!.steps.length).toBe(12);
+    expect(s!.totalSteps).toBe(10);
+    expect(s!.steps.length).toBe(10);
     expect(s!.steps.every((x) => x.status === "PENDING")).toBe(true);
     // initProgress markeert overall RUNNING zodra registry start
     expect(s!.overallStatus).toBe("RUNNING");
@@ -299,12 +252,12 @@ describe("SyncProgress Registry (unit)", () => {
     setStepActive(run, 3);
     setStepDone(run, 3);
     const s = getCurrentState(run)!;
-    // 4 voltooide stappen = idx=3 is laatste; 3/12 + sub(step3 is DONE→1)/12 = 4/12 ≈ 33%
-    expect(s.percent).toBeGreaterThanOrEqual(33);
-    expect(s.percent).toBeLessThanOrEqual(34);
+    // 4 voltooide stappen = idx=3 is laatste; 3/10 + sub(step3 is DONE→1)/10 = 4/10 = 40%
+    expect(s.percent).toBeGreaterThanOrEqual(39);
+    expect(s.percent).toBeLessThanOrEqual(41);
 
     // rest van de stappen
-    for (let i = 4; i < 12; i++) {
+    for (let i = 4; i < 10; i++) {
       setStepActive(run, i);
       setStepDone(run, i);
     }
@@ -327,9 +280,9 @@ describe("SyncProgress Registry (unit)", () => {
     setStepActive(run, 5);
     setStepSubPercent(run, 0.5, 5); // step 5 half klaar
     const s = getCurrentState(run)!;
-    // 5 /12 + 0.5 /12 = 5.5 /12 = 45.8 → 46%
-    expect(s.percent).toBeGreaterThanOrEqual(45);
-    expect(s.percent).toBeLessThanOrEqual(47);
+    // 5 /10 + 0.5 /10 = 5.5 /10 = 55%
+    expect(s.percent).toBeGreaterThanOrEqual(54);
+    expect(s.percent).toBeLessThanOrEqual(56);
   });
 
   it("T-U4: setStepFailed per stap → fout inline + overall errors array", () => {
@@ -396,7 +349,7 @@ describe("SyncProgress Registry (unit)", () => {
   it("T-U8: finalize PARTIAL_SUCCESS → overall status + errorMessage naar errors[]", () => {
     const run = "tu8-" + Date.now();
     initProgress(run);
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 10; i++) {
       setStepActive(run, i);
       if (i === 6) {
         setStepFailed(run, 6, "rate limit 80/10 bereikt");
@@ -457,7 +410,7 @@ describe("runInserveCustomerImport (met onProgress)", () => {
     expect(stateAt0).toBeTruthy();
   }, 8000);
 
-  it("T-I2: 20+ bedrijven → step 8 (processRecords) stuurt sub% updates; percent klimt geleidelijk", async () => {
+  it("T-I2: 20+ bedrijven → step 6 (processRecords) stuurt sub% updates; percent klimt geleidelijk", async () => {
     const N = 25;
     const companies = Array.from({ length: N }, (_, i) =>
       makeCompany({
@@ -468,7 +421,7 @@ describe("runInserveCustomerImport (met onProgress)", () => {
       })
     );
     vi.restoreAllMocks();
-    setupDefaultMocks({ companies, contacts: [] });
+    setupDefaultMocks({ companies });
 
     const events: SyncProgressState[] = [];
     const res = await runInserveCustomerImport(defaultCtx, {
@@ -479,12 +432,12 @@ describe("runInserveCustomerImport (met onProgress)", () => {
     expect(res.status === "SUCCESS" || res.status === "PARTIAL_SUCCESS").toBe(true);
 
     const percents = events.map((e) => e.percent);
-    // Stap 8 moet ACTIVE zijn geweest
-    const step8active = events.some((e) => e.steps[8]?.status === "ACTIVE");
-    expect(step8active).toBe(true);
+    // Stap 6 moet ACTIVE zijn geweest
+    const step6active = events.some((e) => e.steps[6]?.status === "ACTIVE");
+    expect(step6active).toBe(true);
 
     const processSubEvents = events.filter((e) => {
-      const d: any = e.steps[8]?.detail;
+      const d: any = e.steps[6]?.detail;
       return (
         d &&
         typeof d._subPercent === "number" &&
@@ -504,37 +457,6 @@ describe("runInserveCustomerImport (met onProgress)", () => {
       max = Math.max(max, p);
     }
   }, 15000);
-
-  it("T-I3: rate limit fout in contacts (stap 6) → stap FAILED; overall PARTIAL_SUCCESS", async () => {
-    vi.restoreAllMocks();
-    const rateErr: any = new Error("rate limit 80/10 window bereikt");
-    rateErr.rateLimitBreached = true;
-    rateErr.retryAfterMs = 600_000;
-    setupDefaultMocks({
-      companies: [
-        makeCompany({
-          id: 1010,
-          custom_fields: [{ id: 1, name: "Nexus", value: "Actief" }] as any,
-        }),
-      ],
-      throwContacts: rateErr,
-    });
-
-    const events: SyncProgressState[] = [];
-    const res = await runInserveCustomerImport(defaultCtx, {
-      onProgress: (s: SyncProgressState) => events.push(s),
-      preExistingRunId: "run-i3-" + Date.now(),
-    } as any);
-
-    expect(
-      events.some((e) => e.overallStatus === "PARTIAL_SUCCESS") ||
-        events[events.length - 1]?.overallStatus === "PARTIAL_SUCCESS" ||
-        res.status === "PARTIAL_SUCCESS"
-    ).toBe(true);
-    const evWith6 = events.find((e) => e.steps[6]?.status === "FAILED");
-    expect(evWith6).toBeTruthy();
-    expect(evWith6!.steps[6].error).toContain("rate");
-  }, 10000);
 
   it("T-I4: companies fetch gooit → stap 4 FAILED; overallStatus=FAILED", async () => {
     vi.restoreAllMocks();

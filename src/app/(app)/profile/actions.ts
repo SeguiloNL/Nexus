@@ -1,14 +1,14 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { requireUser } from "@/lib/auth/session";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { SaveNotificationSettingsSchema } from "@/server/validators/user";
 import {
   AlertThresholdLevel,
   NotificationChannel,
   type AlertThresholdLevel as AlertThresholdLevelType,
 } from "@prisma/client";
-import { PermissionError, hasMinRole } from "@/lib/rbac";
+import { PermissionError } from "@/lib/rbac";
 import {
   sendTestEmail,
   formatSmtpErrorForUser,
@@ -20,7 +20,6 @@ import {
   resolveUserThresholdLevels,
   resolveUserCheckIntervalMinutes,
 } from "@/server/services/sim-usage-alert.service";
-import { UserRole } from "@/types/enums";
 
 export async function getMyNotificationSettingsAction() {
   const user = await requireUser();
@@ -39,7 +38,7 @@ export async function getMyNotificationSettingsAction() {
       thresholdLevels: levels,
       usageAlertCheckIntervalMinutes: interval,
       notifyAllSims:
-        roleScope === "INTERNAL" && hasMinRole(user.role, UserRole.ADMIN)
+        roleScope === "INTERNAL" && canUserRole(user.permissions, "edit", "setting")
           ? row.notifyAllSims
           : false,
       lastNotificationAt: row.lastNotificationAt ?? null,
@@ -107,7 +106,7 @@ export async function saveNotificationSettingsAction(form: FormData) {
   let finalNotifyAllSims = validated.notifyAllSims;
   if (
     finalNotifyAllSims &&
-    (roleScope !== "INTERNAL" || !hasMinRole(user.role, UserRole.ADMIN))
+    (roleScope !== "INTERNAL" || !canUserRole(user.permissions, "edit", "setting"))
   ) {
     throw new PermissionError(
       "notifyAllSims mag alleen ingeschakeld worden door beheerders."

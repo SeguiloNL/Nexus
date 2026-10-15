@@ -21,7 +21,7 @@ import {
 import type { SimhuisSimStatus } from "@/server/integrations/simhuis/types";
 import { findSimById } from "./sim.service";
 import { findActivationOrderById } from "./activation-order.service";
-import { pickAuth, requirePermission, hasMinRole } from "@/lib/rbac";
+import { pickAuth, requirePermission } from "@/lib/rbac";
 import { SimStatus, UserRole, RoleScope } from "@/types/enums";
 import type { PermissionBits } from "@/types/next-auth";
 
@@ -116,13 +116,7 @@ async function authorize(ctx: AuthContext): Promise<SimSuspendError | null> {
         detail: "Deze actie is alleen beschikbaar voor interne beheerders.",
       };
     }
-    if (!hasMinRole(ctx.userRole, UserRole.ADMIN)) {
-      return {
-        kind: "PERMISSION",
-        detail: "Deze actie is alleen beschikbaar voor beheerders (ADMIN).",
-      };
-    }
-    await requirePermission(pickAuth(ctx), "edit", "sim");
+    await requirePermission(pickAuth(ctx), "suspend_sim", "sim");
     return null;
   } catch (e: any) {
     return {
@@ -610,12 +604,6 @@ async function authorizeSubscribe(ctx: AuthContext): Promise<SimSubscribeError |
       return {
         kind: "PERMISSION",
         detail: "Deze actie is alleen beschikbaar voor interne beheerders.",
-      };
-    }
-    if (!hasMinRole(ctx.userRole, UserRole.ADMIN)) {
-      return {
-        kind: "PERMISSION",
-        detail: "Deze actie is alleen beschikbaar voor beheerders (ADMIN).",
       };
     }
     await requirePermission(pickAuth(ctx), "edit", "sim");

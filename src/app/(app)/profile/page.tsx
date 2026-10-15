@@ -1,4 +1,4 @@
-import { requireUser } from "@/lib/auth/session";
+import { requireUser, canUserRole } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import {
   Card,
@@ -16,7 +16,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { formatDateLong } from "@/lib/formatters";
-import { collectUserCustomerIds, hasMinRole } from "@/lib/rbac";
+import { collectUserCustomerIds } from "@/lib/rbac";
 import { getMyNotificationSettingsAction } from "./actions";
 import { NotificationSettingsForm } from "./_components/notification-settings-form";
 import {
@@ -27,7 +27,7 @@ import {
   Clock,
   BellRing,
 } from "lucide-react";
-import { RoleScope, UserRole } from "@/types/enums";
+import { RoleScope } from "@/types/enums";
 
 const ROLE_VARIANT: Record<string, "default" | "secondary" | "outline" | "destructive"> = {
   ADMIN: "default",
@@ -231,8 +231,7 @@ export default async function ProfilePage() {
             initialSettings={notifySettings}
             isAdmin={
               (scopeName as RoleScope) === "INTERNAL" &&
-              (userDb.roleObj?.isSystem === true ||
-                hasMinRole(userDb.role as UserRole | null, UserRole.ADMIN))
+              canUserRole(user.permissions, "edit", "setting")
             }
             customerCount={customers.length}
           />

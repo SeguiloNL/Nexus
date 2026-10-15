@@ -34,8 +34,7 @@ import {
 } from "@/server/services/simhuis-asset.service";
 import { getDiagnosticByIccid } from "@/server/integrations/simhuis/service";
 import type { SimhuisDiagnosticResult } from "@/server/integrations/simhuis/types";
-import { hasMinRole } from "@/lib/rbac";
-import { UserRole, RoleScope, SyncJobTrigger } from "@/types/enums";
+import { SyncJobTrigger, RoleScope } from "@/types/enums";
 import { assertNoProviderNameLeak } from "@/lib/providers/provider-leak-guard";
 
 export type SimActionState = {
@@ -387,14 +386,12 @@ export async function syncUsageSimsAction(
   _formData: FormData
 ): Promise<BulkActionState> {
   const user = await getCurrentUser();
-  if (
-    user.roleScope !== RoleScope.INTERNAL ||
-    !hasMinRole(user.role, UserRole.ADMIN)
-  ) {
+  if (user.roleScope !== RoleScope.INTERNAL) {
     throw new PermissionError(
-      "Onvoldoende rechten: alleen interne beheerders (ADMIN) mogen een verbruikssync uitvoeren."
+      "Onvoldoende rechten: alleen interne medewerkers mogen een verbruikssync uitvoeren."
     );
   }
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "edit", "sim");
   const ctx = {
     userId: user.id,
     userRole: user.role,

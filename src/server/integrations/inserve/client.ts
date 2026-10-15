@@ -306,7 +306,7 @@ export class InserveClient {
     }
 
     let attempt = 0;
-    // Get-methods met discovery-fasen (listAllClients/Assets) lopen veel
+    // Get-methods met discovery-fasen (listAllCompanies/Assets) lopen veel
     // strategieën af. Een 500 is vaak een "endpoint bestaat niet onder
     // deze params / niet in dit tenant-model". 2x retry per call ×
     // ~39 strategieën = onnodig veel belasting én extra budgetverbruik.

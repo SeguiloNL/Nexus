@@ -4,13 +4,12 @@ import * as React from "react";
 import { useFormState } from "react-dom";
 import { useEffect } from "react";
 import { toast } from "sonner";
-import { Plus, Pencil, Trash2, UserRound, Mail, Phone, Smartphone, Briefcase, Link2Off, Link2 } from "lucide-react";
+import { Plus, Pencil, Trash2, UserRound, Mail, Phone, Smartphone, Briefcase } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/data-table/data-table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -48,13 +47,6 @@ function formStr(formData: FormData, key: string): string | undefined {
   if (v === null || v === undefined || typeof v !== "string") return undefined;
   const s = v.trim();
   return s.length > 0 ? s : undefined;
-}
-
-function formNum(formData: FormData, key: string): number | undefined {
-  const s = formStr(formData, key);
-  if (!s) return undefined;
-  const n = Number(s);
-  return Number.isFinite(n) && Number.isInteger(n) ? n : undefined;
 }
 
 export function CustomerContactsTable({ customerId, initialContacts, role }: Props) {
@@ -140,25 +132,6 @@ export function CustomerContactsTable({ customerId, initialContacts, role }: Pro
           );
         },
       },
-      {
-        accessorKey: "inserveContactId",
-        header: "Inserve",
-        cell: ({ getValue }) => {
-          const v = getValue<number | null>();
-          if (!v) {
-            return (
-              <Badge variant="outline" className="text-slate-500 border-slate-200 flex w-fit gap-1 items-center">
-                <Link2Off className="h-3 w-3" aria-hidden /> Handmatig
-              </Badge>
-            );
-          }
-          return (
-            <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 flex w-fit gap-1 items-center">
-              <Link2 className="h-3 w-3" aria-hidden /> #{v}
-            </Badge>
-          );
-        },
-      },
       ...(canEdit || canDelete
         ? [
             {
@@ -205,7 +178,7 @@ export function CustomerContactsTable({ customerId, initialContacts, role }: Pro
         <div>
           <h3 className="text-base font-semibold">Contactpersonen</h3>
           <p className="text-sm text-slate-500">
-            Contactpersonen van deze klant. Wijzigingen van Inserve-kant worden bij de eerstvolgende sync overgenomen.
+            Contactpersonen van deze klant.
           </p>
         </div>
         {canCreate ? (
@@ -219,7 +192,7 @@ export function CustomerContactsTable({ customerId, initialContacts, role }: Pro
               <DialogHeader>
                 <DialogTitle>Contactpersoon toevoegen</DialogTitle>
                 <DialogDescription>
-                  Voeg een contactpersoon toe aan deze klant. Inserve-contactpersonen hebben een groene badge.
+                  Voeg een contactpersoon toe aan deze klant.
                 </DialogDescription>
               </DialogHeader>
               <ContactForm
@@ -356,8 +329,6 @@ function ContactForm({
               phone: formStr(formData, "phone") || null,
               mobile: formStr(formData, "mobile") || null,
               functionTitle: formStr(formData, "functionTitle") || null,
-              inserveContactId:
-                formNum(formData, "inserveContactId") ?? contact?.inserveContactId ?? null,
               createdAt: new Date(),
               updatedAt: new Date(),
               deletedAt: null,
@@ -450,29 +421,6 @@ function ContactForm({
             <p className="text-xs text-rose-600">{state.errors.mobile.join(" ")}</p>
           ) : null}
         </div>
-        {mode === "create" || (contact && contact.inserveContactId != null) ? (
-          <div className="space-y-2 sm:col-span-2">
-            <Label htmlFor={`inserveContactId-${mode}-${contact?.id ?? ""}`}>Inserve ID (optioneel)</Label>
-            <Input
-              id={`inserveContactId-${mode}-${contact?.id ?? ""}`}
-              name="inserveContactId"
-              type="number"
-              step={1}
-              min={1}
-              defaultValue={contact?.inserveContactId ?? ""}
-              placeholder="Alleen voor gekoppelde Inserve-contactpersonen"
-              disabled={mode === "edit" && contact?.inserveContactId != null}
-            />
-            {contact?.inserveContactId != null ? (
-              <p className="text-xs text-slate-500">
-                Dit contact is gekoppeld aan Inserve ID {contact.inserveContactId}; ID kan niet handmatig worden gewijzigd.
-              </p>
-            ) : null}
-            {state?.errors?.inserveContactId ? (
-              <p className="text-xs text-rose-600">{state.errors.inserveContactId.join(" ")}</p>
-            ) : null}
-          </div>
-        ) : null}
       </div>
 
       <DialogFooter className="flex items-center justify-end gap-2">

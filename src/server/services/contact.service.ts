@@ -120,7 +120,6 @@ export async function createContactService(
       phone: parsed.phone ?? null,
       mobile: parsed.mobile ?? null,
       functionTitle: parsed.functionTitle ?? null,
-      inserveContactId: parsed.inserveContactId ?? null,
       customerLinks: {
         create: {
           customerId: parsed.customerId,
@@ -168,7 +167,6 @@ export async function updateContactService(
   if (parsed.phone !== undefined) newValues.phone = parsed.phone ?? null;
   if (parsed.mobile !== undefined) newValues.mobile = parsed.mobile ?? null;
   if (parsed.functionTitle !== undefined) newValues.functionTitle = parsed.functionTitle ?? null;
-  if (parsed.inserveContactId !== undefined) newValues.inserveContactId = parsed.inserveContactId ?? null;
 
   const updated = await prisma.contactPerson.update({
     where: { id: parsed.id },
@@ -234,111 +232,6 @@ export async function deleteContactService(
   return result;
 }
 
-export async function findContactByInserveId(
-  inserveContactId: number,
-  opts: { includeDeleted?: boolean } = {}
-): Promise<PrismaContactPerson | null> {
-  const where: Prisma.ContactPersonWhereInput = {
-    inserveContactId,
-  };
-  if (!opts.includeDeleted) where.deletedAt = null;
-  return prisma.contactPerson.findFirst({ where });
-}
-
-export interface UpsertContactForImportInput {
-  inserveContactId: number;
-  firstName: string | null;
-  lastName: string;
-  email: string | null;
-  phone: string | null;
-  mobile: string | null;
-  functionTitle: string | null;
-}
-
-export interface UpsertContactForImportResult {
-  contact: PrismaContactPerson;
-  created: boolean;
-  restored: boolean;
-}
-
-/**
- * Atomisch aanmaken of bijwerken van een contactpersoon op basis van
- * inserveContactId (voor de Inserve-import). Gebruikt Prisma upsert zodat:
- *  - soft-gedeleted contacten met dezelfde inserveContactId worden hersteld
- *    (deletedAt = null) in plaats van een unique-constraint fout te geven;
- *  - concurrerende imports niet kunnen crashen op een race-condition tussen
- *    findContactByInserveId en createContactService.
- *
- * Geeft ook aan of het contact nieuw is aangemaakt of hersteld uit soft-delete.
- */
-export async function upsertContactForImport(
-  input: UpsertContactForImportInput
-): Promise<UpsertContactForImportResult> {
-  const data: Prisma.ContactPersonCreateInput = {
-    firstName: input.firstName,
-    lastName: input.lastName,
-    email: input.email,
-    phone: input.phone,
-    mobile: input.mobile,
-    functionTitle: input.functionTitle,
-    inserveContactId: input.inserveContactId,
-  };
-
-  const existing = await prisma.contactPerson.findUnique({
-    where: { inserveContactId: input.inserveContactId },
-    select: { id: true, deletedAt: true },
-  });
-
-  const result = await prisma.contactPerson.upsert({
-    where: { inserveContactId: input.inserveContactId },
-    create: data,
-    update: {
-      firstName: input.firstName,
-      lastName: input.lastName,
-      email: input.email,
-      phone: input.phone,
-      mobile: input.mobile,
-      functionTitle: input.functionTitle,
-      deletedAt: null,
-    },
-  });
-
-  return {
-    contact: result,
-    created: !existing,
-    restored: existing?.deletedAt != null,
-  };
-}
-
-export async function findSimilarContactsByCustomer(
-  customerId: string,
-  predicate: { firstName?: string | null; lastName?: string | null; email?: string | null }
-): Promise<PrismaContactPerson[]> {
-  const { firstName, lastName, email } = predicate;
-  const whereOr: Prisma.ContactPersonWhereInput["OR"] = [];
-  const baseFilter: Prisma.ContactPersonWhereInput = {
-    deletedAt: null,
-    customerLinks: { some: { customerId } },
-  };
-  if (firstName && lastName) {
-    whereOr.push({
-      AND: [
-        { firstName: { equals: firstName, mode: "insensitive" } },
-        { lastName: { equals: lastName, mode: "insensitive" } },
-      ],
-      ...baseFilter,
-    });
-  }
-  if (email) {
-    whereOr.push({
-      email: { equals: email, mode: "insensitive" },
-      ...baseFilter,
-    });
-  }
-  if (whereOr.length === 0) return [];
-  return prisma.contactPerson.findMany({ where: { OR: whereOr } });
-}
-
 /**
  * Koppelt een bestaande contactpersoon aan een klant (many-to-many).
  * Idempotent: als de koppeling al bestaat, gebeurt er niets.
@@ -368,13 +261,3 @@ export async function unlinkContactFromCustomer(
   });
 }
 
-/**
- * Geeft alle klant-ID's waaraan een contactpersoon is gekoppeld.
- */
-export async function getCustomerIdsForContact(contactId: string): Promise<string[]> {
-  const links = await prisma.customerContactPerson.findMany({
-    where: { contactPersonId: contactId },
-    select: { customerId: true },
-  });
-  return links.map((l) => l.customerId);
-}

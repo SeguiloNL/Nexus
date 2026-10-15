@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { findSimById } from "@/server/services/sim.service";
 import { findManyAuditLogs } from "@/server/services/audit.service";
 import { SimDetail } from "../_components/sim-detail";
-import { hasMinRole, isInternalScope } from "@/lib/rbac";
+import { isInternalScope } from "@/lib/rbac";
 import {
   deleteSimAction,
   updateSimAction,
@@ -14,7 +14,7 @@ import {
   runDiagnosticForSingleSimAction,
   purgeSimNetworkAction,
 } from "../actions";
-import { RoleScope, UserRole } from "@/types/enums";
+import { RoleScope } from "@/types/enums";
 
 export default async function SimDetailPage({
   params,
@@ -58,7 +58,7 @@ export default async function SimDetailPage({
 
   const isAdmin =
     user.roleScope === RoleScope.INTERNAL &&
-    hasMinRole(user.role, UserRole.ADMIN);
+    canUserRole(user.permissions, "edit", "setting");
 
   const canEdit = canUserRole(user.permissions, "edit", "sim");
   const canDelete = canUserRole(user.permissions, "delete", "sim");

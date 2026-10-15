@@ -29,11 +29,7 @@ import type {
   UpdateContactInput,
 } from "@/server/validators/contact";
 import { CreateContactSchema, UpdateContactSchema, DeleteContactSchema } from "@/server/validators/contact";
-import { runInserveCustomerImport } from "@/server/services/inserve-customer-import.service";
-import type { ImportSummary } from "@/server/services/inserve-customer-import.service";
 import { pickAuth } from "@/lib/rbac";
-import { RoleScope, SyncJobId, SyncJobStatus, SyncJobTrigger } from "@/types/enums";
-import { getSyncJobConfig, createSyncJobRun } from "@/server/services/sync-schedule.service";
 
 export type CustomerActionState = {
   errors?: Partial<Record<keyof CreateCustomerInput, string[]>>;
@@ -396,133 +392,6 @@ function splitCsvLine(line: string): string[] {
   return out;
 }
 
-export async function startInserveCustomerImportAction(): Promise<{
-  ok: boolean;
-  error?: string;
-  summary?: ImportSummary;
-}> {
-  const user = await getCurrentUser();
-  await requirePermission(pickAuth(user), "import_from_inserve", "customer");
-
-  const scope = (user.roleScope ?? "") as unknown as RoleScope;
-  if (user.roleScope && scope !== RoleScope.INTERNAL) {
-    return { ok: false, error: "Alleen interne gebruikers kunnen deze import starten." };
-  }
-
-  try {
-    const summary = await runInserveCustomerImport({
-      userId: user.id,
-      userRole: (user as any).role,
-      roleId: user.roleId,
-      roleScope: user.roleScope as any,
-      permissions: user.permissions as any,
-      customerIds: user.customerIds as any,
-    });
-    if (summary.status === "FAILED" || summary.status === "SKIPPED") {
-      return {
-        ok: false,
-        error: summary.errorMessage ?? (summary.status === "SKIPPED" ? "Import is overgeslagen." : "Import is gedeeltelijk mislukt."),
-        summary,
-      };
-    }
-    revalidatePath("/customers");
-    revalidatePath("/customers/import");
-    return { ok: true, summary };
-  } catch (e: any) {
-    return { ok: false, error: e?.message ?? String(e) };
-  }
-}
-
-export async function startInserveCustomerImportWithProgressAction(): Promise<{
-  ok: boolean;
-  error?: string;
-  runId?: string;
-  initialStatus?: "SKIPPED";
-  skipMessage?: string;
-}> {
-  const user = await getCurrentUser();
-  await requirePermission(pickAuth(user), "import_from_inserve", "customer");
-  const scope = (user.roleScope ?? "") as unknown as RoleScope;
-  if (user.roleScope && scope !== RoleScope.INTERNAL) {
-    return { ok: false, error: "Alleen interne gebruikers kunnen deze import starten." };
-  }
-  try {
-    const syncJobConfig = await getSyncJobConfig(SyncJobId.INSERVE_CUSTOMER_IMPORT);
-    const MUTEX_STALE_MS = 10 * 60 * 1000;
-    const staleCutoff = new Date(Date.now() - MUTEX_STALE_MS);
-    const bestaande = await prisma.syncJobRun.findFirst({
-      where: {
-        jobId: SyncJobId.INSERVE_CUSTOMER_IMPORT,
-        status: { in: [SyncJobStatus.QUEUED, SyncJobStatus.RUNNING] },
-        startedAt: { gt: staleCutoff },
-      },
-      select: { id: true, startedAt: true, status: true },
-    });
-    if (bestaande) {
-      const ageSec = Math.max(0, Math.round((Date.now() - bestaande.startedAt.getTime()) / 1000));
-      return {
-        ok: true,
-        runId: bestaande.id,
-        initialStatus: "SKIPPED",
-        skipMessage: `Er is reeds een import bezig (status: ${bestaande.status}, leeftijd: ${ageSec}s).`,
-      };
-    }
-    const created = await createSyncJobRun(prisma, {
-      configId: syncJobConfig.id,
-      jobId: SyncJobId.INSERVE_CUSTOMER_IMPORT,
-      triggeredBy: SyncJobTrigger.MANUAL_ADMIN,
-      userId: user.id ?? undefined,
-      status: SyncJobStatus.RUNNING,
-    });
-    const runId = created.id;
-    // Fire-and-forget de import zodat UI direct runId krijgt en op SSE kan subscriben.
-    // Gebruik Promise.resolve().then() zodat de HTTP response eerst geschreven wordt.
-    Promise.resolve()
-      .then(async () => {
-        try {
-          await runInserveCustomerImport(
-            {
-              userId: user.id,
-              userRole: (user as any).role,
-              roleId: (user as any).roleId,
-              roleScope: (user as any).roleScope,
-              permissions: (user as any).permissions,
-              customerIds: (user as any).customerIds,
-              triggeredBy: SyncJobTrigger.MANUAL_ADMIN,
-            } as any,
-            {
-              skipRunManagement: true,
-              preExistingRunId: runId,
-              progressSubPercentStep: 5,
-            }
-          );
-        } catch (topE: any) {
-          // Bovenstaande try/catch binnen service zou moeten finalizen; hier als final safeguard ook.
-          try {
-            const { initProgress, finalizeProgress } = await import(
-              "@/lib/progress/sync-progress-registry"
-            );
-            initProgress(runId);
-            finalizeProgress(runId, "FAILED", {
-              errorMessage: (topE as Error)?.message ?? String(topE),
-            });
-          } catch {
-            /* noop */
-          }
-        }
-      })
-      .catch(() => {
-        /* swallow */
-      });
-    revalidatePath("/customers");
-    revalidatePath("/customers/import");
-    return { ok: true, runId };
-  } catch (e: any) {
-    return { ok: false, error: e?.message ?? String(e) };
-  }
-}
-
-
 // ---------------- Contactpersonen actions ----------------
 
 export type ContactActionState = {
@@ -538,13 +407,6 @@ function formStr(formData: FormData, key: string): string | undefined {
   return s.length > 0 ? s : undefined;
 }
 
-function formNum(formData: FormData, key: string): number | undefined {
-  const s = formStr(formData, key);
-  if (!s) return undefined;
-  const n = Number(s);
-  return Number.isFinite(n) && Number.isInteger(n) ? n : undefined;
-}
-
 function readContactForm(
   formData: FormData,
   overrides: Partial<Record<string, unknown>> = {}
@@ -558,8 +420,6 @@ function readContactForm(
     phone: formStr(formData, "phone"),
     mobile: formStr(formData, "mobile"),
     functionTitle: formStr(formData, "functionTitle"),
-    inserveContactId:
-      (overrides.inserveContactId as number | undefined) ?? formNum(formData, "inserveContactId"),
   };
 }
 

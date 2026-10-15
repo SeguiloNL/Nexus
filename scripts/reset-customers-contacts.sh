@@ -134,4 +134,4 @@ if [ "${C_USER_AFTER}" = "0" ]; then
   log "[hint] Herstel een admin via: cd ${WORKDIR} && npx prisma db seed"
 fi
 
-log "[ok] Reset voltooid. Je kunt de Inserve-import nu opnieuw draaien."
+log "[ok] Reset voltooid. Je kunt de Inserve-klantimport opnieuw draaien."
