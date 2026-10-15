@@ -17,6 +17,14 @@ import { nl } from "date-fns/locale";
 import AdminMonthlyUsageChart, {
   type AdminTopSimUsage,
 } from "@/components/admin-monthly-usage-chart";
+import AdminUsageHistoryChart from "@/components/admin-usage-history-chart";
+import {
+  getUsageHistory,
+  getUsageHistoryForMonth,
+  formatMonthKey,
+  USAGE_HISTORY_MONTHS,
+  type UsageHistoryMonth,
+} from "@/server/services/sim-usage-history.service";
 import {
   Activity,
   AlertTriangle,
@@ -323,7 +331,19 @@ function canViewResource(user: SessionUser, resource: ResourceType): boolean {
   return canUserRole(user.role ?? null, "view", resource);
 }
 
-export default async function DashboardPage() {
+/** Valideert de `?maand=YYYY-MM` query-param; ongeldige waarden → null. */
+function parseMonthParam(value: string | string[] | undefined): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (!raw) return null;
+  const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(raw);
+  return match ? raw : null;
+}
+
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams?: { maand?: string | string[] };
+}) {
   const user = await requireUser();
 
   const meaningful = localPermissionsMeaningful(user.permissions);
@@ -420,68 +440,109 @@ export default async function DashboardPage() {
     }
   }
 
-  let adminUsage: {
+  type UsageDetail = {
     totalUsed: bigint;
     totalLimit: bigint | null;
     activeCount: number;
     topSims: AdminTopSimUsage[];
     monthLabel: string;
-  } | null = null;
+  };
+
+  let adminUsage: UsageDetail | null = null;
+  let usageHistoryPoints: Array<{
+    monthKey: string;
+    label: string;
+    totalUsedBytes: number | null;
+    simCount: number;
+  }> = [];
+  let selectedMonthKey: string | null = null;
 
   if (canViewAllSimUsage) {
-    const now = new Date();
-    const monthLabel = format(now, "MMMM yyyy", { locale: nl });
+    const liveMonthKey = formatMonthKey(new Date());
+    const history: UsageHistoryMonth[] = await getUsageHistory(
+      USAGE_HISTORY_MONTHS
+    );
 
-    const [agg, activeCount, topRows] = await Promise.all([
-      prisma.sIM.aggregate({
-        where: { deletedAt: null, status: "ACTIVE" as unknown as undefined },
-        _sum: { dataUsedBytes: true, dataLimitBytes: true },
-      }),
-      prisma.sIM.count({
-        where: { deletedAt: null, status: "ACTIVE" as unknown as undefined },
-      }),
-      prisma.sIM.findMany({
-        where: {
-          deletedAt: null,
-          status: "ACTIVE" as unknown as undefined,
-          dataUsedBytes: { not: null },
-        },
-        orderBy: { dataUsedBytes: "desc" as unknown as undefined },
-        take: 10,
-        select: {
-          simName: true,
-          msisdn: true,
-          iccid: true,
-          dataUsedBytes: true,
-        },
-      }),
-    ]);
+    usageHistoryPoints = history.map((m) => ({
+      monthKey: m.monthKey,
+      label: m.label,
+      totalUsedBytes:
+        m.totalUsedBytes === null ? null : Number(m.totalUsedBytes),
+      simCount: m.simCount,
+    }));
 
-    const totalUsed = (agg._sum?.dataUsedBytes as bigint | null) ?? 0n;
-    const totalLimit = (agg._sum?.dataLimitBytes as bigint | null) ?? null;
+    const requested = parseMonthParam(searchParams?.maand);
+    const windowKeys = new Set(history.map((m) => m.monthKey));
+    selectedMonthKey =
+      requested && windowKeys.has(requested) ? requested : liveMonthKey;
 
-    const topSims: AdminTopSimUsage[] = topRows
-      .map((r: any) => {
-        const rawBytes: bigint | null = r.dataUsedBytes;
-        if (rawBytes === null || rawBytes === undefined) return null;
-        const numBytes = Number(rawBytes);
-        if (!Number.isFinite(numBytes) || numBytes <= 0) return null;
-        const label: string =
-          (r.simName && r.simName.trim()) ||
-          (r.msisdn && r.msisdn.trim()) ||
-          (r.iccid && r.iccid.slice(-10)) ||
-          "Onbekend";
-        return { name: label, usedBytes: numBytes };
-      })
-      .filter((v): v is AdminTopSimUsage => v !== null);
+    if (selectedMonthKey === liveMonthKey) {
+      // Huidige maand: live-aggregatie rechtstreeks uit de SIM-records.
+      const monthLabel = format(new Date(), "MMMM yyyy", { locale: nl });
 
-    adminUsage = {
-      totalUsed,
-      totalLimit,
-      activeCount,
-      topSims,
-      monthLabel,
-    };
+      const [agg, activeCount, topRows] = await Promise.all([
+        prisma.sIM.aggregate({
+          where: { deletedAt: null, status: "ACTIVE" as unknown as undefined },
+          _sum: { dataUsedBytes: true, dataLimitBytes: true },
+        }),
+        prisma.sIM.count({
+          where: { deletedAt: null, status: "ACTIVE" as unknown as undefined },
+        }),
+        prisma.sIM.findMany({
+          where: {
+            deletedAt: null,
+            status: "ACTIVE" as unknown as undefined,
+            dataUsedBytes: { not: null },
+          },
+          orderBy: { dataUsedBytes: "desc" as unknown as undefined },
+          take: 10,
+          select: {
+            simName: true,
+            msisdn: true,
+            iccid: true,
+            dataUsedBytes: true,
+          },
+        }),
+      ]);
+
+      const totalUsed = (agg._sum?.dataUsedBytes as bigint | null) ?? 0n;
+      const totalLimit = (agg._sum?.dataLimitBytes as bigint | null) ?? null;
+
+      const topSims: AdminTopSimUsage[] = topRows
+        .map((r: any) => {
+          const rawBytes: bigint | null = r.dataUsedBytes;
+          if (rawBytes === null || rawBytes === undefined) return null;
+          const numBytes = Number(rawBytes);
+          if (!Number.isFinite(numBytes) || numBytes <= 0) return null;
+          const label: string =
+            (r.simName && r.simName.trim()) ||
+            (r.msisdn && r.msisdn.trim()) ||
+            (r.iccid && r.iccid.slice(-10)) ||
+            "Onbekend";
+          return { name: label, usedBytes: numBytes };
+        })
+        .filter((v): v is AdminTopSimUsage => v !== null);
+
+      adminUsage = {
+        totalUsed,
+        totalLimit,
+        activeCount,
+        topSims,
+        monthLabel,
+      };
+    } else {
+      // Eerdere maand: detail uit de opgeslagen maandsnapshots.
+      const detail = await getUsageHistoryForMonth(selectedMonthKey);
+      if (detail) {
+        adminUsage = {
+          totalUsed: detail.totalUsedBytes,
+          totalLimit: detail.totalLimitBytes,
+          activeCount: detail.simCount,
+          topSims: detail.topSims,
+          monthLabel: detail.label,
+        };
+      }
+    }
   }
 
   const canViewActivations = canViewResource(user, "activation_order");
@@ -555,8 +616,8 @@ export default async function DashboardPage() {
         </Card>
       )}
 
-      {adminUsage ? (
-        <section aria-labelledby="admin-usage-heading">
+      {canViewAllSimUsage ? (
+        <section aria-labelledby="admin-usage-heading" className="space-y-4">
           <div className="flex items-center justify-between mb-2">
             <h2 id="admin-usage-heading" className="text-lg font-semibold">
               Dataverbruik alle SIMs
@@ -568,13 +629,27 @@ export default async function DashboardPage() {
               Alle actieve SIMs →
             </Link>
           </div>
-          <AdminMonthlyUsageChart
-            totalUsedBytes={adminUsage.totalUsed}
-            totalLimitBytes={adminUsage.totalLimit}
-            activeSimCount={adminUsage.activeCount}
-            topSims={adminUsage.topSims}
-            monthLabel={adminUsage.monthLabel}
+
+          <AdminUsageHistoryChart
+            months={usageHistoryPoints}
+            selectedMonthKey={selectedMonthKey}
           />
+
+          {adminUsage ? (
+            <AdminMonthlyUsageChart
+              totalUsedBytes={adminUsage.totalUsed}
+              totalLimitBytes={adminUsage.totalLimit}
+              activeSimCount={adminUsage.activeCount}
+              topSims={adminUsage.topSims}
+              monthLabel={adminUsage.monthLabel}
+            />
+          ) : (
+            <Card>
+              <CardContent className="p-6 text-center text-sm text-slate-500">
+                Voor deze maand zijn nog geen gegevens beschikbaar.
+              </CardContent>
+            </Card>
+          )}
         </section>
       ) : null}
 

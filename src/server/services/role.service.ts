@@ -33,6 +33,8 @@ export function registerRoleCacheInvalidator(fn: RoleCacheInvalidator) {
   cacheInvalidator = fn;
 }
 
+const LEGACY_ROLE_NAMES = new Set(["ADMIN", "EMPLOYEE", "VIEWER"]);
+
 function invalidatePermissionCache() {
   try {
     cacheInvalidator?.();
@@ -190,10 +192,21 @@ export async function findRoleById(id: string): Promise<RoleDetail | null> {
   });
   if (!role) return null;
 
-  const permsBase = defaultPermissionsForScope(role.scope as RoleScope);
-  for (const p of role.permissions) {
-    if (p.resource in permsBase) {
-      permsBase[p.resource as ResourceType] = { read: p.read, write: p.write };
+  const isLegacySystemRole =
+    role.isSystem && LEGACY_ROLE_NAMES.has(role.name);
+
+  const permsBase = isLegacySystemRole
+    ? (buildLegacyPermissionsForRole(
+        role.name as UserRole,
+        (role.scope as RoleScope) ?? RoleScope.INTERNAL
+      ) as Record<ResourceType, { read: boolean; write: boolean }>)
+    : defaultPermissionsForScope(role.scope as RoleScope);
+
+  if (!isLegacySystemRole) {
+    for (const p of role.permissions) {
+      if (p.resource in permsBase) {
+        permsBase[p.resource as ResourceType] = { read: p.read, write: p.write };
+      }
     }
   }
 
@@ -222,8 +235,6 @@ export async function findRoleById(id: string): Promise<RoleDetail | null> {
     actionOverrides,
   };
 }
-
-const LEGACY_ROLE_NAMES = new Set(["ADMIN", "EMPLOYEE", "VIEWER"]);
 
 export async function getPermissionsByRoleId(
   roleId: string

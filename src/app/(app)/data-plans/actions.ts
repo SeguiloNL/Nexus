@@ -130,7 +130,7 @@ export async function createDataPlanAction(
   formData: FormData
 ): Promise<DataPlanActionState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "create", "data_plan");
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "create", "data_plan");
 
   const data = formDataToCreateDataPlan(formData);
   const validated = CreateDataPlanSchema.safeParse(data);
@@ -162,7 +162,7 @@ export async function updateDataPlanAction(
   formData: FormData
 ): Promise<DataPlanActionState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "edit", "data_plan");
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "edit", "data_plan");
 
   const data = formDataToCreateDataPlan(formData);
   const validated = UpdateDataPlanSchema.safeParse(data);
@@ -216,7 +216,7 @@ export async function bulkActivateDataPlansAction(
   formData: FormData
 ): Promise<BulkActionState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "edit", "data_plan");
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "edit", "data_plan");
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen dataplannen geselecteerd." };
   const ctx = {
@@ -246,7 +246,7 @@ export async function bulkDeactivateDataPlansAction(
   formData: FormData
 ): Promise<BulkActionState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "edit", "data_plan");
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "edit", "data_plan");
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen dataplannen geselecteerd." };
   const ctx = {
@@ -273,7 +273,7 @@ export async function bulkDeactivateDataPlansAction(
 
 export async function deleteDataPlanAction(dataPlanId: string): Promise<BulkActionState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "delete", "data_plan");
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "delete", "data_plan");
   const ctx = {
     userId: user.id,
     userRole: user.role,
@@ -297,7 +297,7 @@ export async function bulkDeleteDataPlansAction(
   formData: FormData
 ): Promise<BulkActionState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "delete", "data_plan");
+  await requirePermission(user.permissions ?? user.roleId ?? user.role, "delete", "data_plan");
   const ids = parseIdsFormData(formData);
   if (!ids.length) return { ok: false, error: "Geen dataplannen geselecteerd." };
   const ctx = {

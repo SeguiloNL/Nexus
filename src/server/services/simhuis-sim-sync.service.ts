@@ -20,6 +20,10 @@ import {
   type UsageAlertCycleReport,
 } from "./sim-usage-alert.service";
 import {
+  captureUsageSnapshots,
+  type UsageSnapshotInput,
+} from "./sim-usage-history.service";
+import {
   getSyncJobConfig,
   shouldRunNow,
   createSyncJobRun,
@@ -515,6 +519,29 @@ function mapSimhuisStatusToNexus(
   return { status: SimStatus.IN_STOCK, skipIfLocked: true };
 }
 
+/**
+ * Schrijft maandsnapshots weg (historie voor het 12-maandenoverzicht).
+ * Defensief: een fout mag de hoofd-sync nooit blokkeren.
+ */
+async function captureUsageHistorySafely(
+  entries: UsageSnapshotInput[],
+  context: string
+): Promise<void> {
+  if (entries.length === 0) return;
+  try {
+    const result = await captureUsageSnapshots(entries);
+    if (result.captured > 0 || result.skipped > 0) {
+      console.info(
+        `[simhuis-usage-history] 📅 ${context}: ${result.captured} maandsnapshots bijgewerkt, ${result.skipped} overgeslagen.`
+      );
+    }
+  } catch (e: any) {
+    console.error(
+      `[simhuis-usage-history] ⚠️ ${context}: maandsnapshot mislukt (niet-blokkerend): ${e?.message ?? e}`
+    );
+  }
+}
+
 export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<SimhuisSyncResult> {
   await initializeProviderRegistry();
   const configured = await providerRegistry.isConfigured("simhuis");
@@ -770,6 +797,8 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
   const upsertPromises: Promise<unknown>[] = [];
   let auditCreatedEntries: Array<{ iccid: string; msisdn?: string | null; imsi?: string | null }> = [];
   let auditUpdatedEntries: Array<{ iccid: string; old: any; new: any }> = [];
+  // Maandsnapshots (historie) voor de SIMs die in deze run gewijzigd zijn.
+  const snapshotEntries: UsageSnapshotInput[] = [];
 
   for (const simhuis of eligible) {
     const rawIccid = simhuis.iccid;
@@ -1017,6 +1046,16 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
               auditUpdatedEntries.push({ iccid, old: oldData, new: newData });
               updated++;
             }
+            snapshotEntries.push({
+              simId: existing.id,
+              iccid,
+              usageSource: newData.usageSource ?? null,
+              periodStart: newData.usagePeriodStart ?? null,
+              periodEnd: newData.usagePeriodEnd ?? null,
+              dataUsedBytes: newData.dataUsedBytes ?? null,
+              dataLimitBytes: newData.dataLimitBytes ?? null,
+              smsUsedCount: newData.smsUsedCount ?? null,
+            });
           })
           .catch((err) => {
             errorCount++;
@@ -1070,9 +1109,19 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
               subscriptionDate: usageFields.subscriptionDate,
             },
           })
-          .then(() => {
+          .then((createdSim) => {
             auditCreatedEntries.push({ iccid, msisdn: msisdnVal, imsi: imsiVal });
             created++;
+            snapshotEntries.push({
+              simId: createdSim.id,
+              iccid,
+              usageSource: usageFields.usageSource,
+              periodStart: usageFields.usagePeriodStart,
+              periodEnd: usageFields.usagePeriodEnd,
+              dataUsedBytes: dataUsedBytesVal,
+              dataLimitBytes: dataLimitBytesVal,
+              smsUsedCount: smsUsedCountVal,
+            });
           })
           .catch((err) => {
             errorCount++;
@@ -1087,6 +1136,8 @@ export async function syncAvailableSimsFromSimhuis(ctx: Ctx = {}): Promise<Simhu
   }
 
   await Promise.all(upsertPromises);
+
+  await captureUsageHistorySafely(snapshotEntries, "sims-sync");
 
   // ============================================================
   // FINAL SUMMARY LOGGING (zichtbaar in server logs én audit log).
@@ -1465,6 +1516,8 @@ export async function syncActiveSimsUsageFromSimhuis(
     old: any;
     new: any;
   }> = [];
+  // Maandsnapshots (historie) voor de SIMs die in deze run gewijzigd zijn.
+  const snapshotEntries: UsageSnapshotInput[] = [];
 
   for (const { iccid, simhuis } of matchedFromSimhuis) {
     try {
@@ -1619,6 +1672,16 @@ export async function syncActiveSimsUsageFromSimhuis(
         .then(() => {
           auditUsageUpdates.push({ iccid, old: oldData, new: newData });
           updated++;
+          snapshotEntries.push({
+            simId: existing.id,
+            iccid,
+            usageSource: newData.usageSource ?? null,
+            periodStart: newData.usagePeriodStart ?? null,
+            periodEnd: newData.usagePeriodEnd ?? null,
+            dataUsedBytes: newData.dataUsedBytes ?? null,
+            dataLimitBytes: newData.dataLimitBytes ?? null,
+            smsUsedCount: newData.smsUsedCount ?? null,
+          });
         })
         .catch((err) => {
           errorCount++;
@@ -1634,6 +1697,8 @@ export async function syncActiveSimsUsageFromSimhuis(
   }
 
   await Promise.all(updatePromises);
+
+  await captureUsageHistorySafely(snapshotEntries, "usage-sync");
 
   let notificationReport: UsageAlertCycleReport | null = null;
   try {
@@ -2081,6 +2146,23 @@ export async function syncUsageForSingleSim(
         subscriptionDate: (applyUsage.newData as any).subscriptionDate,
       },
     });
+
+    await captureUsageHistorySafely(
+      [
+        {
+          simId: sim.id,
+          iccid: normalizedIccid,
+          usageSource: (applyUsage.newData as any).usageSource ?? null,
+          periodStart: (applyUsage.newData as any).usagePeriodStart ?? null,
+          periodEnd: (applyUsage.newData as any).usagePeriodEnd ?? null,
+          dataUsedBytes: applyUsage.newData.dataUsedBytes ?? null,
+          dataLimitBytes: applyUsage.newData.dataLimitBytes ?? null,
+          smsUsedCount: applyUsage.newData.smsUsedCount ?? null,
+        },
+      ],
+      "single-sim-sync"
+    );
+
     try {
       await logAudit(prisma, {
         entityType: "SIM",

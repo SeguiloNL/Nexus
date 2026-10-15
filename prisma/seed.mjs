@@ -35,6 +35,7 @@ const ALL_RESOURCES = [
   "setting",
   "dashboard",
   "role",
+  "data_plan",
 ];
 
 const INTERNAL_READ_ALL_WRITE = [
@@ -46,6 +47,7 @@ const INTERNAL_READ_ALL_WRITE = [
   "product",
   "activation_order",
   "invoice",
+  "data_plan",
 ];
 
 const CUSTOMER_BASE_READ = [

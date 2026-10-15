@@ -453,6 +453,8 @@ describe("Legacy ADMIN Beheerder safety-net (role.permissions leeg / isSystem â†
     expect(can(effectivePermissions, "delete", "user")).toBe(true);
     expect(can(effectivePermissions, "edit",   "setting")).toBe(true);
     expect(can(effectivePermissions, "view", "audit_log")).toBe(true);
+    expect(can(effectivePermissions, "view", "data_plan")).toBe(true);
+    expect(can(effectivePermissions, "edit", "data_plan")).toBe(true);
   });
 
   it("Niet-legacy dynamic role (SIM-only) met meaningful permissions: fallback activeert NIET (handhaaft restrictie)", () => {

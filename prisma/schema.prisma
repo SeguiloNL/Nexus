@@ -608,6 +608,7 @@ model SIM {
   assignments       SimAssignment[]
   activationOrders  ActivationOrder[]
   usageAlerts       SimUsageAlert[]
+  monthlyUsage      SimMonthlyUsage[]
 
   @@index([status])
   @@index([provider])
@@ -616,6 +617,34 @@ model SIM {
   @@index([providerKey])
   @@index([providerKey, subscriberId])
   @@map("sims")
+}
+
+/// Historisch dataverbruik per SIM per maand.
+/// Wordt gevuld tijdens de usage-sync met een monotone max-guard per
+/// (simId, monthKey): binnen een maand wordt de teller alleen verhoogd,
+/// waardoor de rij na een periode-reset automatisch op zijn eindwaarde blijft.
+model SimMonthlyUsage {
+  id              String    @id @default(cuid())
+  simId           String
+  sim             SIM       @relation(fields: [simId], references: [id], onDelete: Cascade)
+  iccid           String    @db.VarChar(40)
+  monthKey        String    @db.VarChar(7) // 'YYYY-MM'
+  periodStart     DateTime? @db.Timestamptz
+  periodEnd       DateTime? @db.Timestamptz
+  dataUsedBytes   BigInt?
+  dataLimitBytes  BigInt?
+  smsUsedCount    Int?
+  usageSource     String?   @db.VarChar(30)
+  firstCapturedAt DateTime  @db.Timestamptz @default(now())
+  lastCapturedAt  DateTime  @db.Timestamptz
+  isFinal         Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([simId, monthKey])
+  @@index([monthKey])
+  @@index([monthKey, dataUsedBytes(sort: Desc)])
+  @@map("sim_monthly_usage")
 }
 
 model Vehicle {

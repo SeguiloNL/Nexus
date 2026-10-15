@@ -879,7 +879,7 @@ FROM   roles r
 CROSS JOIN (VALUES
   ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),
   ('product'),('activation_order'),('invoice'),('user'),
-  ('audit_log'),('setting'),('dashboard'),('role')
+  ('audit_log'),('setting'),('dashboard'),('role'),('data_plan')
 ) AS res(resource)
 WHERE  r.name IN ('ADMIN')
 ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = true;
@@ -891,7 +891,7 @@ FROM   roles r
 CROSS JOIN (VALUES
   ('customer', true),('tracker', true),('sim', true),('vehicle', true),
   ('subscription', true),('product', true),('activation_order', true),('invoice', true),
-  ('audit_log', false),('setting', false),('dashboard', true)
+  ('audit_log', false),('setting', false),('dashboard', true),('data_plan', true)
 ) AS s(resource, write)
 WHERE  r.name IN ('EMPLOYEE')
 ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = EXCLUDED.write;
@@ -903,7 +903,7 @@ FROM   roles r
 CROSS JOIN (VALUES
   ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),
   ('product'),('activation_order'),('invoice'),('audit_log'),
-  ('setting'),('dashboard')
+  ('setting'),('dashboard'),('data_plan')
 ) AS res(resource)
 WHERE  r.name IN ('VIEWER')
 ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = false;
@@ -2609,7 +2609,7 @@ FROM   roles r
 CROSS JOIN (VALUES
   ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),
   ('product'),('activation_order'),('invoice'),('user'),
-  ('audit_log'),('setting'),('dashboard'),('role')
+  ('audit_log'),('setting'),('dashboard'),('role'),('data_plan')
 ) AS res(resource)
 WHERE  r.name IN ('ADMIN')
 ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = true;
@@ -2621,7 +2621,7 @@ FROM   roles r
 CROSS JOIN (VALUES
   ('customer', true),('tracker', true),('sim', true),('vehicle', true),
   ('subscription', true),('product', true),('activation_order', true),('invoice', true),
-  ('audit_log', false),('setting', false),('dashboard', true)
+  ('audit_log', false),('setting', false),('dashboard', true),('data_plan', true)
 ) AS s(resource, write)
 WHERE  r.name IN ('EMPLOYEE')
 ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = EXCLUDED.write;
@@ -2633,7 +2633,7 @@ FROM   roles r
 CROSS JOIN (VALUES
   ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),
   ('product'),('activation_order'),('invoice'),('audit_log'),
-  ('setting'),('dashboard')
+  ('setting'),('dashboard'),('data_plan')
 ) AS res(resource)
 WHERE  r.name IN ('VIEWER')
 ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = false;
@@ -4245,7 +4245,7 @@ FROM   roles r
 CROSS JOIN (VALUES
   ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),
   ('product'),('activation_order'),('invoice'),('user'),
-  ('audit_log'),('setting'),('dashboard'),('role')
+  ('audit_log'),('setting'),('dashboard'),('role'),('data_plan')
 ) AS res(resource)
 WHERE  r.name IN ('ADMIN')
 ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = true;
@@ -4257,7 +4257,7 @@ FROM   roles r
 CROSS JOIN (VALUES
   ('customer', true),('tracker', true),('sim', true),('vehicle', true),
   ('subscription', true),('product', true),('activation_order', true),('invoice', true),
-  ('audit_log', false),('setting', false),('dashboard', true)
+  ('audit_log', false),('setting', false),('dashboard', true),('data_plan', true)
 ) AS s(resource, write)
 WHERE  r.name IN ('EMPLOYEE')
 ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = EXCLUDED.write;
@@ -4269,7 +4269,7 @@ FROM   roles r
 CROSS JOIN (VALUES
   ('customer'),('tracker'),('sim'),('vehicle'),('subscription'),
   ('product'),('activation_order'),('invoice'),('audit_log'),
-  ('setting'),('dashboard')
+  ('setting'),('dashboard'),('data_plan')
 ) AS res(resource)
 WHERE  r.name IN ('VIEWER')
 ON CONFLICT ("roleId", resource) DO UPDATE SET read = true, write = false;
