@@ -26,17 +26,12 @@ export default async function ProductDetailPage({
         : null,
   };
 
-  const updateAction: any = async (
-    prev: any,
-    formData: FormData
-  ) => updateProductAction(params.id, prev, formData);
-
   return (
     <ProductDetail
       product={product as any}
       initialProduct={productForForm as any}
       role={user.role}
-      updateAction={updateAction}
+      updateAction={updateProductAction}
       productId={params.id}
     />
   );
