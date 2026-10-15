@@ -12,6 +12,25 @@ type AuditLogDb =
   | Prisma.TransactionClient
   | typeof prisma;
 
+/**
+ * BigInt is niet JSON-serialiseerbaar: `JSON.stringify` gooit
+ * "Do not know how to serialize a BigInt" en Prisma accepteert BigInt ook niet
+ * in Json-kolommen. Voor audit-logs en diffs zetten we BigInt daarom om naar
+ * een string, zodat een audit-stap nooit de hoofdtransactie laat klappen.
+ */
+function bigintSafeReplacer(_key: string, value: unknown): unknown {
+  return typeof value === "bigint" ? value.toString() : value;
+}
+
+/**
+ * Maakt een waarde JSON-veilig voor opslag in een Json-kolom (BigInt → string,
+ * ook genest). Retourneert `null`/`undefined` ongewijzigd.
+ */
+function toJsonSafeValue<T>(value: T | null | undefined): T | null | undefined {
+  if (value === null || value === undefined) return value;
+  return JSON.parse(JSON.stringify(value, bigintSafeReplacer)) as T;
+}
+
 export interface LogAuditInput {
   entityType: string;
   entityId: string;
@@ -61,9 +80,15 @@ export async function logAudit(
         entityId: input.entityId,
         action: input.action as Prisma.AuditLogUncheckedCreateInput["action"],
         userId,
-        oldValues: input.oldValues as Prisma.InputJsonValue | undefined,
-        newValues: input.newValues as Prisma.InputJsonValue | undefined,
-        metadata: enrichedMetadata as Prisma.InputJsonValue | undefined,
+        oldValues: toJsonSafeValue(input.oldValues) as
+          | Prisma.InputJsonValue
+          | undefined,
+        newValues: toJsonSafeValue(input.newValues) as
+          | Prisma.InputJsonValue
+          | undefined,
+        metadata: toJsonSafeValue(enrichedMetadata) as
+          | Prisma.InputJsonValue
+          | undefined,
         timestamp: effectiveTimestamp,
       },
     });
@@ -231,7 +256,10 @@ export function diffObject<T extends Record<string, unknown>>(
   for (const key of keys) {
     const a = oldObj?.[key];
     const b = newObj?.[key];
-    if (JSON.stringify(a) !== JSON.stringify(b)) {
+    if (
+      JSON.stringify(a, bigintSafeReplacer) !==
+      JSON.stringify(b, bigintSafeReplacer)
+    ) {
       oldValues[key] = a;
       newValues[key] = b;
     }
