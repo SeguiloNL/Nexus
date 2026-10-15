@@ -56,8 +56,10 @@ function formatValidity(plan: {
 
 export default async function DataPlanDetailPage({
   params,
+  searchParams,
 }: {
   params: { id: string };
+  searchParams?: { tab?: string };
 }) {
   const user = await requireUser();
   if (!canUserRole(user.permissions, "view", "data_plan")) {
@@ -78,19 +80,33 @@ export default async function DataPlanDetailPage({
     : [];
 
   const planForForm = {
-    ...plan,
-    monthlyPrice: plan.monthlyPrice != null ? Number(plan.monthlyPrice) : null,
-    btwPercentage: plan.btwPercentage != null ? Number(plan.btwPercentage) : null,
+    name: plan.name,
+    description: plan.description,
     dataAmountBytes: plan.dataAmountBytes,
+    dataAmountDisplayUnit: plan.dataAmountDisplayUnit,
+    validityDays: plan.validityDays,
+    validityBillingCycle: plan.validityBillingCycle,
+    monthlyPrice: plan.monthlyPrice != null ? Number(plan.monthlyPrice) : null,
+    currency: plan.currency,
+    btwPercentage: plan.btwPercentage != null ? Number(plan.btwPercentage) : null,
+    provider: plan.provider,
+    providerPlanRef: plan.providerPlanRef,
+    providerOfferRef: plan.providerOfferRef,
+    isActive: plan.isActive,
+    simOnlyAvailable: plan.simOnlyAvailable,
+    productId: plan.productId,
+    targetRegions: plan.targetRegions,
+    targetCustomerTypes: plan.targetCustomerTypes,
+    availableUntil: plan.availableUntil,
   };
 
-  const updateAction: any = async (prev: any, formData: FormData) =>
-    updateDataPlanAction(params.id, prev, formData);
+  const updateAction = updateDataPlanAction.bind(null, params.id);
 
   const countAo = plan._count?.activationOrders ?? 0;
   const countSub = plan._count?.subscriptions ?? 0;
   const countSim = plan._count?.sims ?? 0;
   const hasLinks = countAo > 0 || countSub > 0 || countSim > 0;
+  const activeTab = searchParams?.tab === "edit" && canEdit ? "edit" : "overview";
 
   return (
     <div className="space-y-6">
@@ -153,7 +169,7 @@ export default async function DataPlanDetailPage({
         </div>
       </div>
 
-      <Tabs defaultValue="overview">
+      <Tabs defaultValue={activeTab}>
         <TabsList>
           <TabsTrigger value="overview">
             <Info className="mr-1.5 h-4 w-4" /> Overzicht
