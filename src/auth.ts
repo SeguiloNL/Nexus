@@ -15,6 +15,7 @@ import {
   collectUserCustomerIds,
   permissionsMeaningful,
 } from "@/lib/rbac";
+import { resolveEffectiveLegacyRole } from "@/lib/auth/effective-role";
 
 type LegacyRoleName = "ADMIN" | "EMPLOYEE" | "VIEWER";
 
@@ -28,6 +29,7 @@ async function resolveRoleForUser(
     customerId: string | null;
   }
 ): Promise<{
+  legacyRole: UserRoleEnum;
   roleId: string;
   roleScope: RoleScope;
   roleName: string;
@@ -66,13 +68,15 @@ async function resolveRoleForUser(
           dbRole.isSystem ||
           legacyRoleValues.includes(dbRole.name);
 
-        // Gebruik de rolnaam uit de database voor systeemrollen,
-        // zodat de juiste legacy rechten worden toegekend (ook als
-        // het legacy `role`-veld op de gebruiker niet klopt).
-        const effectiveLegacyRole: UserRoleEnum =
-          isLegacySystemRole && legacyRoleValues.includes(dbRole.name)
-            ? (dbRole.name as UserRoleEnum)
-            : legacyRole;
+        // Gebruik de systeemrol als bron van waarheid wanneer `roleId`
+        // aan een legacy systeemrol hangt. Dat herstelt sessies waarin
+        // het oude `user.role`-veld achterloopt op de echte rolkoppeling.
+        const effectiveLegacyRole = resolveEffectiveLegacyRole({
+          assignedRole: legacyRole,
+          roleName: dbRole.name,
+          roleScope: dbRole.scope as RoleScope,
+          isSystemRole: isLegacySystemRole,
+        });
 
         const effectivePermissions =
           isLegacySystemRole || !permissionsMeaningful(loadedPermissions)
@@ -90,7 +94,19 @@ async function resolveRoleForUser(
             ? dbRole.name
             : dbRole.name || legacyRole;
 
+        if (user.role !== effectiveLegacyRole) {
+          try {
+            await prisma.user.update({
+              where: { id: user.id },
+              data: { role: effectiveLegacyRole },
+            });
+          } catch (_e) {
+            /* noop – sessie gebruikt alsnog de juiste effectieve rol */
+          }
+        }
+
         return {
+          legacyRole: effectiveLegacyRole,
           roleId: dbRole.id,
           roleScope: effectiveScope,
           roleName: effectiveRoleName,
@@ -161,6 +177,7 @@ async function resolveRoleForUser(
   }
 
   return {
+    legacyRole,
     roleId,
     roleScope: scope,
     roleName,
@@ -242,7 +259,7 @@ export const authConfig: NextAuthConfig = {
             email: user.email,
             name: user.name,
             isActive: user.isActive,
-            role: user.role as unknown as UserRoleEnum,
+            role: roleInfo.legacyRole,
             roleId: roleInfo.roleId,
             roleScope: roleInfo.roleScope,
             roleName: roleInfo.roleName,
@@ -284,6 +301,16 @@ export const authConfig: NextAuthConfig = {
         tokenRoleName.length > 0 &&
         tokenRoleName !== "UNKNOWN" &&
         legacyRoleValues.includes(tokenRoleName);
+
+      const effectiveTokenRole = resolveEffectiveLegacyRole({
+        assignedRole: (token as any).role,
+        roleName: tokenRoleName,
+        roleScope: (token as any).roleScope,
+        isSystemRole: hasValidRoleName,
+      });
+      if ((token as any).role !== effectiveTokenRole) {
+        token.role = effectiveTokenRole;
+      }
 
       const hasFullFields = Boolean(
         token &&
@@ -342,7 +369,7 @@ export const authConfig: NextAuthConfig = {
         token.id = dbUser.id;
         token.email = dbUser.email;
         token.name = dbUser.name;
-        token.role = dbUser.role as any;
+        token.role = roleInfo.legacyRole;
         token.roleId = roleInfo.roleId;
         token.roleScope = roleInfo.roleScope;
         token.roleName = roleInfo.roleName;

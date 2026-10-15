@@ -28,6 +28,7 @@ import {
   BellRing,
 } from "lucide-react";
 import { RoleScope } from "@/types/enums";
+import { isLegacyRoleValue } from "@/lib/auth/effective-role";
 
 const ROLE_VARIANT: Record<string, "default" | "secondary" | "outline" | "destructive"> = {
   ADMIN: "default",
@@ -40,15 +41,20 @@ function resolveRoleDisplay(
   roleName: string | null | undefined,
   scopeName: string | null | undefined
 ): string {
-  if (roleName) {
-    return scopeName ? `${roleName} (${scopeName.toLowerCase()})` : roleName;
-  }
-  if (!legacyRole) return "Gebruiker";
   const map: Record<string, string> = {
     ADMIN: "Beheerder",
     EMPLOYEE: "Medewerker",
     VIEWER: "Alleen-lezen",
   };
+  if (roleName) {
+    const displayRoleName = isLegacyRoleValue(roleName)
+      ? (map[roleName] ?? roleName)
+      : roleName;
+    return scopeName
+      ? `${displayRoleName} (${scopeName.toLowerCase()})`
+      : displayRoleName;
+  }
+  if (!legacyRole) return "Gebruiker";
   return map[legacyRole] ?? legacyRole;
 }
 

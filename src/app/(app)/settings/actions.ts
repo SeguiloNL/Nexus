@@ -91,7 +91,8 @@ const formStr = (v: FormDataEntryValue | null): string =>
 
 export async function getInserveSettingsAction(): Promise<InserveSettingsMasked | null> {
   const user = await getCurrentUser();
-  if (!canUserRole(user.role, "view", "setting")) {
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  if (!canUserRole(authz, "view", "setting")) {
     return null;
   }
   return getInserveSettingsMasked();
@@ -102,7 +103,8 @@ export async function saveInserveSettingsAction(
   formData: FormData
 ): Promise<InserveSettingsActionState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "edit", "setting");
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  await requirePermission(authz, "edit", "setting");
 
   const rawSubdomain = formData.get("subdomain");
   const rawApiKey = formData.get("apiKey");
@@ -145,7 +147,8 @@ export async function saveInserveSettingsAction(
 
 export async function getNavixySettingsAction(): Promise<NavixySettingsMasked | null> {
   const user = await getCurrentUser();
-  if (!canUserRole(user.role, "view", "setting")) return null;
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  if (!canUserRole(authz, "view", "setting")) return null;
   return getNavixySettingsMasked();
 }
 
@@ -154,7 +157,8 @@ export async function saveNavixySettingsAction(
   formData: FormData
 ): Promise<NavixySettingsActionState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "edit", "setting");
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  await requirePermission(authz, "edit", "setting");
 
   const data: NavixySettingsInput = {
     baseUrl: formStr(formData.get("baseUrl")),
@@ -223,7 +227,8 @@ export interface ConnectionTestResult {
 
 export async function testInserveConnectionAction(): Promise<ConnectionTestResult> {
   const user = await getCurrentUser();
-  if (!canUserRole(user.role, "view", "setting")) {
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  if (!canUserRole(authz, "view", "setting")) {
     return { ok: false, error: "Onvoldoende rechten." };
   }
   const res = await inserveClient.testConnection();
@@ -237,7 +242,8 @@ export async function testInserveConnectionAction(): Promise<ConnectionTestResul
 
 export async function testNavixyConnectionAction(): Promise<ConnectionTestResult> {
   const user = await getCurrentUser();
-  if (!canUserRole(user.role, "view", "setting")) {
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  if (!canUserRole(authz, "view", "setting")) {
     return { ok: false, error: "Onvoldoende rechten." };
   }
   const res = await navixyClient.testConnection();
@@ -253,7 +259,8 @@ export async function testNavixyConnectionAction(): Promise<ConnectionTestResult
 
 export async function getSmtpSettingsAction(): Promise<SmtpSettingsMasked | null> {
   const user = await getCurrentUser();
-  if (!canUserRole(user.role, "view", "setting")) return null;
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  if (!canUserRole(authz, "view", "setting")) return null;
   return getSmtpSettingsMasked();
 }
 
@@ -262,7 +269,8 @@ export async function saveSmtpSettingsAction(
   formData: FormData
 ): Promise<SmtpSettingsActionState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "edit", "setting");
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  await requirePermission(authz, "edit", "setting");
 
   const rawHost = formStr(formData.get("host")).trim();
   const rawPort = formStr(formData.get("port")).trim();
@@ -327,7 +335,8 @@ export async function saveSmtpSettingsAction(
 
 export async function testSmtpSendAction(): Promise<ConnectionTestResult> {
   const user = await getCurrentUser();
-  if (!canUserRole(user.role, "edit", "setting")) {
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  if (!canUserRole(authz, "edit", "setting")) {
     return { ok: false, message: "Onvoldoende rechten." };
   }
   // lazy import om cirkelvormige afhankelijkheden te vermijden
@@ -418,11 +427,12 @@ function requireInternalWriteGuard() {
 
 export async function getSyncSchedulesAction(): Promise<SchedulerFullState | null> {
   const user = await getCurrentUser();
-  if (!user || !canUserRole(user.role, "view", "setting")) {
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  if (!user || !canUserRole(authz, "view", "setting")) {
     return null;
   }
   const canEdit = Boolean(
-    canUserRole(user.role, "edit", "setting") && (user.roleScope as RoleScope) === "INTERNAL"
+    canUserRole(authz, "edit", "setting") && (user.roleScope as RoleScope) === "INTERNAL"
   );
   const [configs, health, runs] = await Promise.all([
     listSyncJobConfigs(),
@@ -443,7 +453,8 @@ export async function saveSyncScheduleAction(
   formData: FormData
 ): Promise<SyncScheduleSaveState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "edit", "setting");
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  await requirePermission(authz, "edit", "setting");
   if ((user.roleScope as RoleScope) !== "INTERNAL") {
     return {
       success: false,
@@ -504,7 +515,8 @@ export async function resetSyncScheduleAction(
   formData: FormData
 ): Promise<SyncScheduleResetState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "edit", "setting");
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  await requirePermission(authz, "edit", "setting");
   if ((user.roleScope as RoleScope) !== "INTERNAL") {
     return {
       success: false,
@@ -538,7 +550,8 @@ export async function triggerSyncJobAction(
   formData: FormData
 ): Promise<SyncScheduleTriggerState> {
   const user = await getCurrentUser();
-  await requirePermission(user.role, "edit", "setting");
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  await requirePermission(authz, "edit", "setting");
   if ((user.roleScope as RoleScope) !== "INTERNAL") {
     return {
       success: false,
@@ -829,7 +842,8 @@ export async function triggerSyncJobAction(
 
 export async function getSchedulerHealthAction() {
   const user = await getCurrentUser();
-  if (!user || !canUserRole(user.role, "view", "setting")) {
+  const authz = user.permissions ?? user.roleId ?? user.role;
+  if (!user || !canUserRole(authz, "view", "setting")) {
     return null;
   }
   return getSchedulerHealth();
