@@ -10,6 +10,11 @@ import {
 } from "./assignments.service";
 import { enqueueInserveSubscriptionSync } from "./subscription.service";
 import { isDataPlanAvailableFor } from "./data-plan.service";
+import {
+  isProductAvailableForTrack,
+  productTrackMismatchMessage,
+  type ProductTrackTarget,
+} from "@/lib/product-track";
 import type {
   CreateActivationOrderInput,
   UpdateActivationOrderInput,
@@ -200,6 +205,25 @@ export async function findActivationOrderById(id: string, customerScope?: string
 }
 
 /**
+ * Blokkeert server-side dat een product wordt gebruikt in een traject waarvoor
+ * het niet is vrijgegeven (voorkomt omzeiling via directe URL/API).
+ */
+async function assertProductCompatibleWithTrack(
+  tx: Prisma.TransactionClient,
+  productId: string | null | undefined,
+  target: ProductTrackTarget
+): Promise<void> {
+  if (!productId) return;
+  const product = await tx.product.findUnique({
+    where: { id: productId },
+    select: { track: true },
+  });
+  if (product && !isProductAvailableForTrack(product.track, target)) {
+    throw new Error(productTrackMismatchMessage(target));
+  }
+}
+
+/**
  * Valideert dat een Sim-only dataplan actief, niet-vervallen en beschikbaar is
  * voor de klant (klanttype + regio), gekoppeld is aan een actief factureerbaar
  * product én dat dit product overeenkomt met het product van de bestelling.
@@ -212,13 +236,13 @@ async function assertSimOnlyDataPlanValid(
     productId: string | null | undefined;
     customerId: string;
   }
-): Promise<DataPlan & { product: { id: string; isActive: boolean } | null }> {
+): Promise<DataPlan & { product: { id: string; isActive: boolean; track: string } | null }> {
   if (!params.dataPlanId) {
     throw new Error("Sim-only bestelling vereist een dataplan.");
   }
   const plan = await tx.dataPlan.findUnique({
     where: { id: params.dataPlanId },
-    include: { product: { select: { id: true, isActive: true } } },
+    include: { product: { select: { id: true, isActive: true, track: true } } },
   });
   if (!plan) {
     throw new Error("Gekozen dataplan bestaat niet.");
@@ -274,7 +298,7 @@ export async function createDraftOrder(
   }
 
   return prisma.$transaction(async (tx) => {
-    let plan: (DataPlan & { product: { id: string; isActive: boolean } | null }) | null =
+    let plan: (DataPlan & { product: { id: string; isActive: boolean; track: string } | null }) | null =
       null;
 
     if (orderType === ActivationOrderProductType.SIM_ONLY_DATA) {
@@ -285,11 +309,16 @@ export async function createDraftOrder(
         productId: input.productId,
         customerId: input.customerId,
       });
-    } else if (input.dataPlanId) {
-      plan = await tx.dataPlan.findUnique({
-        where: { id: input.dataPlanId },
-        include: { product: { select: { id: true, isActive: true } } },
-      });
+    } else {
+      // Tracker-traject: blokkeer producten die alleen voor Sim-only zijn
+      // vrijgegeven (ook bij directe URL/API-toegang).
+      await assertProductCompatibleWithTrack(tx, input.productId, "TRACKER");
+      if (input.dataPlanId) {
+        plan = await tx.dataPlan.findUnique({
+          where: { id: input.dataPlanId },
+          include: { product: { select: { id: true, isActive: true, track: true } } },
+        });
+      }
     }
 
     let snapshotData: any = null;
@@ -373,6 +402,24 @@ export async function updateOrder(
         `Alleen DRAFT orders kunnen bewerkt worden (huidige status: ${existing.status}).`
       );
     }
+
+    // Trajectcompatibiliteit: ook bij het wijzigen van product of orderType mag
+    // een product niet in een ongeschikt traject belanden.
+    const effectiveOrderType = (input.orderType ??
+      existing.orderType ??
+      ActivationOrderProductType.TRACKER_WITH_SIM) as ActivationOrderProductType;
+    const effectiveProductId = (input.productId ?? existing.productId) as
+      | string
+      | null
+      | undefined;
+    await assertProductCompatibleWithTrack(
+      tx,
+      effectiveProductId,
+      effectiveOrderType === ActivationOrderProductType.SIM_ONLY_DATA
+        ? "SIM_ONLY"
+        : "TRACKER"
+    );
+
     const data: Prisma.ActivationOrderUpdateInput = {};
     for (const [k, v] of Object.entries(input)) {
       if (v !== undefined) (data as any)[k] = v;
@@ -407,7 +454,7 @@ export async function markReady(id: string, ctx: Ctx): Promise<ActivationOrder> 
         sim: true,
         customer: true,
         product: true,
-        dataPlan: { include: { product: { select: { id: true, isActive: true } } } },
+        dataPlan: { include: { product: { select: { id: true, isActive: true, track: true } } } },
       },
     });
 
@@ -431,6 +478,14 @@ export async function markReady(id: string, ctx: Ctx): Promise<ActivationOrder> 
     const missing: string[] = [];
     if (!existing.customer) missing.push("klant");
     if (!existing.product) missing.push("product");
+    else if (
+      !isProductAvailableForTrack(
+        existing.product.track,
+        isSimOnly ? "SIM_ONLY" : "TRACKER"
+      )
+    ) {
+      missing.push("product is niet vrijgegeven voor dit traject");
+    }
 
     if (!isSimOnly) {
       if (!existing.tracker) missing.push("tracker");

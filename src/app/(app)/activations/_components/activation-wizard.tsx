@@ -71,6 +71,7 @@ import type { OrderActionState } from "../actions";
 import { UserRole, BillingCycle, ActivationOrderProductType, DataUnit } from "@/types/enums";
 import { ActivationOrderProductType as _OrderType } from "@/types/enums";
 import { canUserRole } from "@/lib/auth/session";
+import { isProductAvailableForTrack } from "@/lib/product-track";
 import { SIM_PROVIDER_REGISTRY } from "@/lib/providers/provider-registry";
 import {
   stepsForTrack,
@@ -95,6 +96,8 @@ type ProductOption = {
   name: string;
   monthlyPrice: number;
   description: string | null;
+  /** Trajectgeschiktheid: BOTH | SIM_ONLY | TRACKER. */
+  track: string;
 };
 type TrackerOption = {
   id: string;
@@ -274,6 +277,19 @@ export function ActivationWizard({
 
   const isSimOnly = track === "SIM_ONLY";
 
+  // Alleen producten die geschikt zijn voor het gekozen traject (of algemeen
+  // "Beide trajecten") worden getoond. Zonder gekozen traject is er nog geen
+  // productkeuze.
+  const productsForTrack = useMemo(
+    () =>
+      track === null
+        ? []
+        : productOptions.filter((p) =>
+            isProductAvailableForTrack(p.track, track),
+          ),
+    [productOptions, track],
+  );
+
   // Event-driven dataplanweergave: zodra Sim-only wordt gekozen (of de klant
   // wijzigt) laden we de voor deze klant beschikbare, actieve dataplannen.
   const [availableDataPlans, setAvailableDataPlans] =
@@ -445,7 +461,7 @@ export function ActivationWizard({
           <StepProduct
             form={form}
             setForm={setForm}
-            productOptions={productOptions}
+            productOptions={productsForTrack}
             priceEditable={canEditPrice}
           />
         );

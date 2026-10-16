@@ -7,6 +7,7 @@ import type {
   UpdateProductInput,
 } from "@/types/domain";
 import type { UserRole } from "@/types/enums";
+import { ProductTrack } from "@/types/enums";
 import type { Prisma, Product as PrismaProduct } from "@prisma/client";
 
 type Ctx = { userId: string; userRole: UserRole };
@@ -115,6 +116,7 @@ export async function createProduct(
         monthlyPrice: input.monthlyPrice,
         currency: input.currency ?? "EUR",
         isActive: input.isActive ?? true,
+        track: (input.track ?? ProductTrack.BOTH) as any,
       },
     });
 

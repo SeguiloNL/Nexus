@@ -44,6 +44,9 @@ export async function createProductAction(
       : undefined,
     inserveArticleId: formData.get("inserveArticleId") || null,
     isActive: isActive === "on" || isActive === "true",
+    // Bewust niet `|| undefined`: een lege selectie moet door de validatie
+    // worden geweigerd i.p.v. stil op "Beide trajecten" te vallen.
+    track: formData.get("track") ?? undefined,
   };
 
   const validated = CreateProductSchema.safeParse(data);
@@ -84,6 +87,7 @@ export async function updateProductAction(
       : undefined,
     inserveArticleId: formData.get("inserveArticleId") || null,
     isActive: isActive !== null ? isActive === "on" || isActive === "true" : undefined,
+    track: formData.get("track") ?? undefined,
   };
 
   const validated = UpdateProductSchema.safeParse(data);

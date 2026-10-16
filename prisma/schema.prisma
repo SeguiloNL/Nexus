@@ -227,6 +227,13 @@ enum ActivationOrderProductType {
   SIM_ONLY_DATA
 }
 
+// Trajectgeschiktheid van een factureerbaar product.
+enum ProductTrack {
+  BOTH
+  SIM_ONLY
+  TRACKER
+}
+
 enum DataUnit {
   MB
   GB
@@ -403,6 +410,10 @@ model Product {
   currency        String         @default("EUR") @db.VarChar(3)
   btwPercentage   Decimal?       @db.Decimal(4, 2) @default(21)
   isActive        Boolean        @default(true)
+  // Trajectgeschiktheid: in welk(e) activatie-traject(en) dit product gekozen
+  // mag worden. Verplicht veld met beperkte waarden; default BOTH zodat
+  // bestaande producten in beide trajecten zichtbaar blijven.
+  track           ProductTrack   @default(BOTH)
   inserveArticleId Int?          @unique
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt

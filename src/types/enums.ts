@@ -182,6 +182,19 @@ export enum ActivationOrderProductType {
   SIM_ONLY_DATA = "SIM_ONLY_DATA",
 }
 
+/**
+ * Trajectgeschiktheid van een factureerbaar product. Bepaalt in welk(e)
+ * activatie-wizardtraject(en) een product gekozen mag worden.
+ * - BOTH:      zichtbaar in beide trajecten (standaard).
+ * - SIM_ONLY:  alleen in het "Sim-only datasimkaart"-traject.
+ * - TRACKER:   alleen in het "Nieuwe tracker met simkaart"-traject.
+ */
+export enum ProductTrack {
+  BOTH = "BOTH",
+  SIM_ONLY = "SIM_ONLY",
+  TRACKER = "TRACKER",
+}
+
 export enum DataUnit {
   MB = "MB",
   GB = "GB",

@@ -10,7 +10,7 @@ import {
   validateAndSubscribeSimAction,
 } from "../actions";
 import { findActivationOrderById } from "@/server/services/activation-order.service";
-import { ActivationOrderProductType } from "@/types/enums";
+import { ActivationOrderProductType, ProductTrack } from "@/types/enums";
 
 type WizardPageProps = {
   searchParams?: { orderId?: string; step?: string };
@@ -55,6 +55,7 @@ export default async function ActivationWizardPage({
           name: true,
           monthlyPrice: true,
           description: true,
+          track: true,
         },
       }),
       prisma.tracker.findMany({
@@ -102,7 +103,16 @@ export default async function ActivationWizardPage({
         },
       }),
       prisma.dataPlan.findMany({
-        where: { isActive: true, simOnlyAvailable: true },
+        where: {
+          isActive: true,
+          simOnlyAvailable: true,
+          // Alleen dataplannen waarvan het factureerbare product geschikt is
+          // voor het Sim-only datasimkaart-traject.
+          product: {
+            isActive: true,
+            track: { in: [ProductTrack.BOTH, ProductTrack.SIM_ONLY] },
+          },
+        },
         select: {
           id: true,
           name: true,
@@ -149,6 +159,7 @@ export default async function ActivationWizardPage({
     name: p.name,
     monthlyPrice: Number(p.monthlyPrice),
     description: p.description,
+    track: p.track,
   }));
 
   const dataPlanOptions = dataPlans.map((dp: any) => ({

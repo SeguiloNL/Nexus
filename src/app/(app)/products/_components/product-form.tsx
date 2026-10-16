@@ -10,12 +10,21 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { ProductTrack } from "@/types/enums";
+import { PRODUCT_TRACK_OPTIONS } from "@/lib/product-track";
 import type { ProductActionState } from "../actions";
 
 type ProductFormProps = {
@@ -29,6 +38,7 @@ type ProductFormProps = {
     btwPercentage: number | null;
     inserveArticleId: number | null;
     isActive: boolean;
+    track: ProductTrack | string;
   }>;
   action: (
     prev: ProductActionState,
@@ -83,7 +93,9 @@ export function ProductForm({
           <Card className="lg:col-span-2">
             <CardHeader>
               <CardTitle>Algemeen</CardTitle>
-              <CardDescription>Naam en omschrijving.</CardDescription>
+              <CardDescription>
+                Naam, omschrijving en trajectbeschikbaarheid.
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -130,6 +142,38 @@ export function ProductForm({
                   rows={5}
                   defaultValue={initial?.description ?? ""}
                 />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="track">
+                  Beschikbaar in traject <span className="text-red-600">*</span>
+                </Label>
+                <Select
+                  name="track"
+                  required
+                  defaultValue={(initial?.track as string) ?? ProductTrack.BOTH}
+                >
+                  <SelectTrigger id="track">
+                    <SelectValue placeholder="Kies een traject" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PRODUCT_TRACK_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-slate-500">
+                  Bepaalt in welk activatie-traject dit product gekozen kan
+                  worden. Kies &quot;Beide trajecten&quot; als het product in
+                  beide trajecten beschikbaar moet zijn.
+                </p>
+                {state?.errors?.track ? (
+                  <p className="text-xs text-red-600">
+                    {state.errors.track.join(", ")}
+                  </p>
+                ) : null}
               </div>
             </CardContent>
           </Card>

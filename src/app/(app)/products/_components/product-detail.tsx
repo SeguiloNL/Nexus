@@ -23,7 +23,8 @@ import { Badge } from "@/components/ui/badge";
 import { ProductForm } from "./product-form";
 import { formatDate, formatCurrency } from "@/lib/formatters";
 import { canUserRole } from "@/lib/auth/session";
-import type { UserRole } from "@/types/enums";
+import { productTrackLabel } from "@/lib/product-track";
+import type { UserRole, ProductTrack } from "@/types/enums";
 import type { Product } from "@prisma/client";
 import type { SubscriptionStatus } from "@prisma/client";
 
@@ -51,6 +52,7 @@ type ProductDetailProps = {
     monthlyPrice: number;
     currency: string;
     isActive: boolean;
+    track: ProductTrack;
   }>;
   role: UserRole;
   updateAction: (
@@ -155,6 +157,12 @@ export function ProductDetail({
                 <CardDescription>Metadata</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Traject</span>
+                  <span className="font-medium">
+                    {productTrackLabel(product.track)}
+                  </span>
+                </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500">BTW %</span>
                   <span className="tabular-nums font-medium">

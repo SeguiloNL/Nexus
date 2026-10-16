@@ -12,6 +12,7 @@ import type {
   AuditAction,
   ResourceType,
   ActionOverrides,
+  ProductTrack,
 } from "./enums";
 
 // ------------------------------
@@ -249,6 +250,7 @@ export interface CreateProductInput {
   monthlyPrice: number;
   currency?: string;
   isActive?: boolean;
+  track?: ProductTrack;
 }
 
 export interface UpdateProductInput {
@@ -258,6 +260,7 @@ export interface UpdateProductInput {
   monthlyPrice?: number;
   currency?: string;
   isActive?: boolean;
+  track?: ProductTrack;
 }
 
 // ------------------------------

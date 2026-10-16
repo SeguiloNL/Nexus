@@ -5,7 +5,8 @@ import type { CreateDataPlanInput, UpdateDataPlanInput } from "@/server/validato
 import type { UserRole, RoleScope } from "@/types/enums";
 import type { PermissionBits } from "@/types/next-auth";
 import type { Prisma, DataPlan as PrismaDataPlan } from "@prisma/client";
-import { DataUnit } from "@/types/enums";
+import { DataUnit, ProductTrack } from "@/types/enums";
+import { isProductAvailableForTrack } from "@/lib/product-track";
 
 // ---------------------------------------------------------------------------
 // Pure availability-logica (geen Prisma) t.b.v. unit tests en hergebruik in de
@@ -20,7 +21,7 @@ export type DataPlanAvailabilityPlan = {
   targetRegions?: string[] | null;
   targetCustomerTypes?: string[] | null;
   productId?: string | null;
-  product?: { isActive: boolean } | null;
+  product?: { isActive: boolean; track?: string | null } | null;
 };
 
 export type DataPlanAvailabilityContext = {
@@ -79,6 +80,11 @@ export function isDataPlanAvailableFor(
       reasons.push("geen factureerbaar product gekoppeld");
     } else if (plan.product && !plan.product.isActive) {
       reasons.push("gekoppeld product is inactief");
+    } else if (
+      plan.product &&
+      !isProductAvailableForTrack(plan.product.track, "SIM_ONLY")
+    ) {
+      reasons.push("gekoppeld product is niet vrijgegeven voor Sim-only");
     }
   }
 
@@ -155,7 +161,12 @@ export async function listAvailableDataPlansForCustomer(params: {
       isActive: true,
       simOnlyAvailable: true,
       productId: { not: null },
-      product: { isActive: true },
+      product: {
+        isActive: true,
+        // Alleen producten die voor het Sim-only datasimkaart-traject zijn
+        // vrijgegeven (of algemeen "beide trajecten").
+        track: { in: [ProductTrack.BOTH, ProductTrack.SIM_ONLY] },
+      },
       AND: [
         { OR: [{ availableUntil: null }, { availableUntil: { gte: now } }] },
         {
