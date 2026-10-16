@@ -25,7 +25,11 @@ import {
 } from "@/components/ui/select";
 import { ArrowLeftRight, Plus, Edit3, Trash2, Eye, Check, ChevronDown, ChevronUp, Copy } from "lucide-react";
 import type { AuditLog } from "@prisma/client";
-import { formatDate } from "@/lib/formatters";
+import { formatDateTimeSeconds } from "@/lib/formatters";
+import {
+  AUDIT_ENTITY_TYPE_LABELS,
+  matchesAuditLogSearch,
+} from "@/lib/audit-log-search";
 
 type AuditLogWithUser = AuditLog & {
   user?: { name: string | null; email: string };
@@ -99,19 +103,9 @@ const ALL_ACTIONS = [
   "BULK_UPDATE_ROLE",
 ];
 
-const ALL_ENTITY_TYPES = [
-  { value: "customer", label: "Klant" },
-  { value: "tracker", label: "Tracker" },
-  { value: "sim", label: "SIM" },
-  { value: "vehicle", label: "Voertuig" },
-  { value: "product", label: "Product" },
-  { value: "subscription", label: "Abonnement" },
-  { value: "activation_order", label: "Activatie" },
-  { value: "user", label: "Gebruiker" },
-  { value: "role", label: "Rol" },
-  { value: "setting", label: "Instelling" },
-  { value: "audit_log", label: "Auditlog" },
-];
+const ALL_ENTITY_TYPES = Object.entries(AUDIT_ENTITY_TYPE_LABELS).map(
+  ([value, label]) => ({ value, label })
+);
 
 const ENTITY_LINKS: Record<string, (id: string) => string> = {
   customer: (id) => `/customers/${id}`,
@@ -133,10 +127,13 @@ export function AuditLogList({ logs, totalCount, viewerRole, filters }: Props) {
       header: "Tijd",
       size: 180,
       cell: ({ row }) => {
-        const t = row.original.timestamp;
+        const t = new Date(row.original.timestamp);
         return (
-          <span className="whitespace-nowrap text-xs text-slate-600">
-            {formatDate(new Date(t))}
+          <span
+            className="whitespace-nowrap text-xs text-slate-600"
+            title={Number.isFinite(t.getTime()) ? t.toISOString() : undefined}
+          >
+            {formatDateTimeSeconds(t)}
           </span>
         );
       },
@@ -163,19 +160,11 @@ export function AuditLogList({ logs, totalCount, viewerRole, filters }: Props) {
       size: 140,
       cell: ({ row }) => {
         const et = row.getValue<string>("entityType");
-        const labels: Record<string, string> = {
-          customer: "Klant",
-          tracker: "Tracker",
-          sim: "SIM",
-          vehicle: "Voertuig",
-          product: "Product",
-          subscription: "Abonnement",
-          activation_order: "Activatie",
-          user: "Gebruiker",
-          setting: "Instelling",
-          audit_log: "Auditlog",
-        };
-        return <span className="font-medium">{labels[et] ?? et}</span>;
+        return (
+          <span className="font-medium">
+            {AUDIT_ENTITY_TYPE_LABELS[et] ?? et}
+          </span>
+        );
       },
     },
     {
@@ -346,7 +335,10 @@ export function AuditLogList({ logs, totalCount, viewerRole, filters }: Props) {
             columns={columns}
             data={logs}
             totalCount={totalCount}
-            searchPlaceholder="Zoeken op type, object, gebruiker..."
+            searchPlaceholder="Zoeken op datum/tijd, actie, type, object of gebruiker..."
+            globalFilterFn={(row, term) =>
+              matchesAuditLogSearch(row.original, term)
+            }
           />
         </CardContent>
       </Card>
@@ -367,7 +359,8 @@ export function AuditLogList({ logs, totalCount, viewerRole, filters }: Props) {
                     </Badge>
                   </CardTitle>
                   <CardDescription>
-                    {log.action} op {log.entityType} – {formatDate(new Date(log.timestamp))}
+                    {log.action} op {log.entityType} –{" "}
+                    {formatDateTimeSeconds(new Date(log.timestamp))}
                     {log.user ? ` door ${log.user.name ?? log.user.email}` : ""}
                   </CardDescription>
                 </CardHeader>

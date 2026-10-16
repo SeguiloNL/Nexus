@@ -42,6 +42,23 @@ export function formatDateTimeFull(
   }
 }
 
+/**
+ * Compacte datum + tijd met seconden, b.v. 16-10-2026 15:04:05.
+ * Geschikt voor kolommen waar de volledige tijdsaanduiding zichtbaar moet zijn.
+ */
+export function formatDateTimeSeconds(
+  date: Date | string | null | undefined
+): string {
+  if (!date) return "-";
+  try {
+    const d = typeof date === "string" ? new Date(date) : date;
+    if (!d || !Number.isFinite(d.getTime())) return "-";
+    return format(d, "dd-MM-yyyy HH:mm:ss", { locale: nl });
+  } catch {
+    return "-";
+  }
+}
+
 export function formatDateLong(
   date: Date | string | null | undefined
 ): string {

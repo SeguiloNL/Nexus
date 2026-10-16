@@ -42,13 +42,29 @@ export interface LogAuditInput {
   timestamp?: Date | string | null;
 }
 
+/**
+ * Normaliseert een optionele timestamp naar een geldige `Date` met de volledige
+ * datum + tijd (uur, minuut, seconde). Ontbrekende of ongeldige waarden vallen
+ * terug op het huidige tijdstip, zodat een audit-entry NOOIT een onvolledige of
+ * ongeldige tijdsaanduiding krijgt.
+ */
+export function resolveAuditTimestamp(
+  timestamp: Date | string | null | undefined
+): Date {
+  if (timestamp instanceof Date) {
+    if (Number.isFinite(timestamp.getTime())) return timestamp;
+  } else if (typeof timestamp === "string" && timestamp.trim() !== "") {
+    const parsed = new Date(timestamp);
+    if (Number.isFinite(parsed.getTime())) return parsed;
+  }
+  return new Date();
+}
+
 export async function logAudit(
   db: AuditLogDb,
   input: LogAuditInput
 ): Promise<PrismaAuditLog | null> {
-  const effectiveTimestamp = input.timestamp
-    ? (typeof input.timestamp === "string" ? new Date(input.timestamp) : input.timestamp)
-    : new Date();
+  const effectiveTimestamp = resolveAuditTimestamp(input.timestamp);
 
   const enrichedMetadata = input.metadata
     ? { ...input.metadata, timestamp: effectiveTimestamp.toISOString() }

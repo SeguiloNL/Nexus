@@ -14,10 +14,9 @@ import {
 } from "@/types/enums";
 import { format } from "date-fns";
 import { nl } from "date-fns/locale";
-import AdminMonthlyUsageChart, {
+import AdminSimUsageChart, {
   type AdminTopSimUsage,
-} from "@/components/admin-monthly-usage-chart";
-import AdminUsageHistoryChart from "@/components/admin-usage-history-chart";
+} from "@/components/admin-sim-usage-chart";
 import {
   getUsageHistory,
   getUsageHistoryForMonth,
@@ -617,7 +616,7 @@ export default async function DashboardPage({
       )}
 
       {canViewAllSimUsage ? (
-        <section aria-labelledby="admin-usage-heading" className="space-y-4">
+        <section aria-labelledby="admin-usage-heading">
           <div className="flex items-center justify-between mb-2">
             <h2 id="admin-usage-heading" className="text-lg font-semibold">
               Dataverbruik alle SIMs
@@ -630,13 +629,10 @@ export default async function DashboardPage({
             </Link>
           </div>
 
-          <AdminUsageHistoryChart
-            months={usageHistoryPoints}
-            selectedMonthKey={selectedMonthKey}
-          />
-
           {adminUsage ? (
-            <AdminMonthlyUsageChart
+            <AdminSimUsageChart
+              months={usageHistoryPoints}
+              selectedMonthKey={selectedMonthKey}
               totalUsedBytes={adminUsage.totalUsed}
               totalLimitBytes={adminUsage.totalLimit}
               activeSimCount={adminUsage.activeCount}

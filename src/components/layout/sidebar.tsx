@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   Users,
@@ -20,6 +20,7 @@ import {
   X,
   Database,
   Boxes,
+  ChevronDown,
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -51,112 +52,161 @@ type NavItem = {
     | "role";
 };
 
-const NAV_ITEMS: NavItem[] = [
+type NavGroup = {
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  items: NavItem[];
+};
+
+// Losse, altijd direct bereikbare hoofdentree (0 extra clicks).
+const DASHBOARD_ITEM: NavItem = {
+  label: "Dashboard",
+  href: "/dashboard",
+  icon: LayoutDashboard,
+  action: "view",
+  resource: "dashboard",
+};
+
+// Maximaal 6 sub-items per categorie; standaard ingeklapt weergegeven.
+const NAV_GROUPS: NavGroup[] = [
   {
-    label: "Dashboard",
-    href: "/dashboard",
-    icon: LayoutDashboard,
-    action: "view",
-    resource: "dashboard",
-  },
-  {
-    label: "Klanten",
-    href: "/customers",
+    id: "klantbeheer",
+    label: "Klantbeheer",
     icon: Users,
-    action: "view",
-    resource: "customer",
+    items: [
+      {
+        label: "Klanten",
+        href: "/customers",
+        icon: Users,
+        action: "view",
+        resource: "customer",
+      },
+      {
+        label: "Voertuigen",
+        href: "/vehicles",
+        icon: Car,
+        action: "view",
+        resource: "vehicle",
+      },
+      {
+        label: "Trackers",
+        href: "/trackers",
+        icon: Box,
+        action: "view",
+        resource: "tracker",
+      },
+    ],
   },
   {
-    label: "Trackers",
-    href: "/trackers",
-    icon: Box,
-    action: "view",
-    resource: "tracker",
-  },
-  {
-    label: "SIM-kaarten",
-    href: "/sims",
+    id: "sim-data",
+    label: "SIM & Data",
     icon: CreditCard,
-    action: "view",
-    resource: "sim",
+    items: [
+      {
+        label: "SIM-kaarten",
+        href: "/sims",
+        icon: CreditCard,
+        action: "view",
+        resource: "sim",
+      },
+      {
+        label: "Dataplannen",
+        href: "/data-plans",
+        icon: Database,
+        action: "view",
+        resource: "data_plan",
+      },
+      {
+        label: "Activaties",
+        href: "/activations",
+        icon: ClipboardList,
+        action: "view",
+        resource: "activation_order",
+      },
+    ],
   },
   {
-    label: "Voertuigen",
-    href: "/vehicles",
-    icon: Car,
-    action: "view",
-    resource: "vehicle",
-  },
-  {
-    label: "Producten",
-    href: "/products",
-    icon: FileKey2,
-    action: "view",
-    resource: "product",
-  },
-  {
-    label: "Dataplannen",
-    href: "/data-plans",
-    icon: Database,
-    action: "view",
-    resource: "data_plan",
-  },
-  {
-    label: "Abonnementen",
-    href: "/subscriptions",
+    id: "commercieel",
+    label: "Commercieel",
     icon: Receipt,
-    action: "view",
-    resource: "subscription",
+    items: [
+      {
+        label: "Producten",
+        href: "/products",
+        icon: FileKey2,
+        action: "view",
+        resource: "product",
+      },
+      {
+        label: "Abonnementen",
+        href: "/subscriptions",
+        icon: Receipt,
+        action: "view",
+        resource: "subscription",
+      },
+      {
+        label: "Facturen",
+        href: "/invoices",
+        icon: FileText,
+        action: "view",
+        resource: "invoice",
+      },
+    ],
   },
   {
-    label: "Facturen",
-    href: "/invoices",
-    icon: FileText,
-    action: "view",
-    resource: "invoice",
-  },
-  {
-    label: "Activaties",
-    href: "/activations",
-    icon: ClipboardList,
-    action: "view",
-    resource: "activation_order",
-  },
-  {
-    label: "Gebruikers",
-    href: "/users",
-    icon: Users,
-    action: "view",
-    resource: "user",
-  },
-  {
-    label: "Rollen",
-    href: "/roles",
+    id: "beheer",
+    label: "Beheer",
     icon: Shield,
-    action: "view",
-    resource: "role",
+    items: [
+      {
+        label: "Gebruikers",
+        href: "/users",
+        icon: Users,
+        action: "view",
+        resource: "user",
+      },
+      {
+        label: "Rollen",
+        href: "/roles",
+        icon: Shield,
+        action: "view",
+        resource: "role",
+      },
+      {
+        label: "Leveranciers",
+        href: "/admin/providers",
+        icon: Boxes,
+        action: "view",
+        resource: "setting",
+      },
+      {
+        label: "Instellingen",
+        href: "/settings",
+        icon: Settings,
+        action: "view",
+        resource: "setting",
+      },
+      {
+        label: "Auditlog",
+        href: "/audit-log",
+        icon: History,
+        action: "view",
+        resource: "audit_log",
+      },
+    ],
   },
-  {
-    label: "Auditlog",
-    href: "/audit-log",
-    icon: History,
-    action: "view",
-    resource: "audit_log",
-  },
-  {
-    label: "Leveranciers",
-    href: "/admin/providers",
-    icon: Boxes,
-    action: "view",
-    resource: "setting",
-  },
-  {
-    label: "Instellingen",
-    href: "/settings",
-    icon: Settings,
-    action: "view",
-    resource: "setting",
-  },
+];
+
+// Resources die een CUSTOMER-scope gebruiker mag zien.
+const CUSTOMER_ALLOWED_RESOURCES: ResourceType[] = [
+  "dashboard",
+  "customer",
+  "tracker",
+  "sim",
+  "vehicle",
+  "subscription",
+  "invoice",
 ];
 
 type SidebarProps = {
@@ -227,23 +277,47 @@ export function Sidebar({
     return canUserRole(userRole ?? null, "view", "dashboard");
   }
 
-  const visibleItems = NAV_ITEMS.filter((item) => {
+  function canViewItem(item: NavItem): boolean {
     if (roleScope === "CUSTOMER") {
-      if (
-        item.resource !== "dashboard" &&
-        item.resource !== "customer" &&
-        item.resource !== "tracker" &&
-        item.resource !== "sim" &&
-        item.resource !== "vehicle" &&
-        item.resource !== "subscription" &&
-        item.resource !== "invoice"
-      ) {
+      if (!CUSTOMER_ALLOWED_RESOURCES.includes(item.resource as ResourceType)) {
         return false;
       }
     }
     if (item.resource === "dashboard") return canAccessDashboard();
     return resolveCan(item.action, item.resource as ResourceType);
-  });
+  }
+
+  function isItemActive(href: string): boolean {
+    return href === "/dashboard" ? pathname === href : pathname.startsWith(href);
+  }
+
+  const showDashboard = canViewItem(DASHBOARD_ITEM);
+
+  // Lege categorieën (geen zichtbare items voor deze rol) worden volledig verborgen.
+  const visibleGroups = NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter(canViewItem),
+  })).filter((group) => group.items.length > 0);
+
+  const activeGroupId =
+    visibleGroups.find((group) => group.items.some((item) => isItemActive(item.href)))?.id ?? null;
+
+  // Categorieën starten ingeklapt; de categorie met de actieve pagina is geopend
+  // zodat de gebruiker direct ziet waar hij/zij zich bevindt.
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
+    activeGroupId ? { [activeGroupId]: true } : {}
+  );
+
+  useEffect(() => {
+    if (!activeGroupId) return;
+    setOpenGroups((prev) =>
+      prev[activeGroupId] ? prev : { ...prev, [activeGroupId]: true }
+    );
+  }, [activeGroupId]);
+
+  function toggleGroup(id: string) {
+    setOpenGroups((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
 
   const drawerBackdrop = onCloseMobile ? (
     <button
@@ -297,28 +371,98 @@ export function Sidebar({
             </Button>
           ) : null}
         </div>
-        <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4 pb-[var(--safe-bottom)]">
-          {visibleItems.map((item) => {
-            const Icon = item.icon;
-            const active =
-              item.href === "/dashboard"
-                ? pathname === item.href
-                : pathname.startsWith(item.href);
+        <nav
+          aria-label="Hoofdnavigatie"
+          className="flex-1 space-y-1 overflow-y-auto px-3 py-4 pb-[var(--safe-bottom)]"
+        >
+          {showDashboard ? (
+            <Link
+              href={DASHBOARD_ITEM.href}
+              onClick={onCloseMobile}
+              aria-current={isItemActive(DASHBOARD_ITEM.href) ? "page" : undefined}
+              className={cn(
+                "flex min-h-[48px] items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors active:bg-slate-100",
+                isItemActive(DASHBOARD_ITEM.href)
+                  ? "bg-slate-100 text-slate-900"
+                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+              )}
+            >
+              <LayoutDashboard className="h-5 w-5 md:h-4 md:w-4 shrink-0" />
+              <span className="flex-1">{DASHBOARD_ITEM.label}</span>
+            </Link>
+          ) : null}
+
+          {visibleGroups.map((group) => {
+            const GroupIcon = group.icon;
+            const open = !!openGroups[group.id];
+            const groupActive = group.items.some((item) => isItemActive(item.href));
+            const panelId = `nav-panel-${group.id}`;
+            const toggleId = `nav-toggle-${group.id}`;
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={onCloseMobile}
-                className={cn(
-                  "flex min-h-[48px] items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors active:bg-slate-100",
-                  active
-                    ? "bg-slate-100 text-slate-900"
-                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                )}
-              >
-                <Icon className="h-5 w-5 md:h-4 md:w-4 shrink-0" />
-                <span className="flex-1">{item.label}</span>
-              </Link>
+              <div key={group.id}>
+                <button
+                  type="button"
+                  id={toggleId}
+                  aria-expanded={open}
+                  aria-controls={panelId}
+                  onClick={() => toggleGroup(group.id)}
+                  className={cn(
+                    "flex min-h-[48px] w-full items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 active:bg-slate-100",
+                    groupActive ? "text-slate-900" : "text-slate-600"
+                  )}
+                >
+                  <GroupIcon className="h-5 w-5 md:h-4 md:w-4 shrink-0" />
+                  <span className="flex-1 text-left">{group.label}</span>
+                  <ChevronDown
+                    aria-hidden="true"
+                    className={cn(
+                      "h-4 w-4 shrink-0 transition-transform duration-200 ease-out",
+                      open ? "rotate-180" : "rotate-0"
+                    )}
+                  />
+                </button>
+                <div
+                  id={panelId}
+                  role="region"
+                  aria-labelledby={toggleId}
+                  className={cn(
+                    "grid transition-[grid-template-rows] duration-200 ease-out",
+                    open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "overflow-hidden transition-[visibility] duration-200",
+                      open ? "visible" : "invisible"
+                    )}
+                  >
+                    <ul className="mt-1 space-y-1">
+                      {group.items.map((item) => {
+                        const Icon = item.icon;
+                        const active = isItemActive(item.href);
+                        return (
+                          <li key={item.href}>
+                            <Link
+                              href={item.href}
+                              onClick={onCloseMobile}
+                              aria-current={active ? "page" : undefined}
+                              className={cn(
+                                "flex min-h-[48px] items-center gap-3 rounded-md py-0 pl-9 pr-3 text-sm font-medium transition-colors active:bg-slate-100",
+                                active
+                                  ? "bg-slate-100 text-slate-900"
+                                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                              )}
+                            >
+                              <Icon className="h-5 w-5 md:h-4 md:w-4 shrink-0" />
+                              <span className="flex-1">{item.label}</span>
+                            </Link>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                </div>
+              </div>
             );
           })}
         </nav>

@@ -52,6 +52,12 @@ export interface DataTableProps<TData, TValue> {
     selectedCount: number;
     clearSelection: () => void;
   }) => React.ReactNode;
+  /**
+   * Optionele aangepaste global-search. Wanneer opgegeven, bepaalt deze functie
+   * of een rij overeenkomt met de (genormaliseerde) zoekterm. Handig voor rijke
+   * zoekopdrachten over samengestelde velden (datums, geneste objecten, JSON).
+   */
+  globalFilterFn?: (row: Row<TData>, filterValue: string) => boolean;
 }
 
 /**
@@ -72,6 +78,7 @@ export function DataTable<TData, TValue>({
   getRowId,
   defaultSorting = [],
   bulkActions,
+  globalFilterFn: customGlobalFilterFn,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = React.useState<SortingState>(defaultSorting);
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([]);
@@ -144,6 +151,33 @@ export function DataTable<TData, TValue>({
     [enableRowSelection, selectCol, columns]
   );
 
+  // Global search:
+  // - met een expliciete `globalFilterFn` wordt die gebruikt (rijke zoekopdracht);
+  // - anders zoeken we over de opgegeven accessor-kolommen;
+  // - valt dat weg, dan doorzoeken we ALLE kolommen. (Voorheen gaf de zoekfunctie
+  //   in dat laatste geval altijd `true` terug, waardoor het zoekveld niets deed.)
+  const globalFilterFn = React.useCallback(
+    (row: Row<TData>, _columnId: string, filterValue: unknown) => {
+      const term = String(filterValue ?? "").trim().toLowerCase();
+      if (!term) return true;
+      if (customGlobalFilterFn) return customGlobalFilterFn(row, term);
+
+      const accessors =
+        searchColumnAccessors && searchColumnAccessors.length > 0
+          ? searchColumnAccessors
+          : searchColumnAccessor
+          ? [searchColumnAccessor]
+          : row.getAllCells().map((cell) => cell.column.id);
+
+      return accessors.some((accessor) => {
+        const value = row.getValue(accessor);
+        if (value == null) return false;
+        return String(value).toLowerCase().includes(term);
+      });
+    },
+    [customGlobalFilterFn, searchColumnAccessor, searchColumnAccessors]
+  );
+
   const table = useReactTable({
     data,
     columns: finalColumns,
@@ -158,21 +192,7 @@ export function DataTable<TData, TValue>({
     onRowSelectionChange: setRowSelection,
     onGlobalFilterChange: setGlobalFilter,
     onPaginationChange: setPagination,
-    globalFilterFn: (row, _columnId, filterValue) => {
-      const fv = String(filterValue).toLowerCase();
-      if (!searchColumnAccessor && !searchColumnAccessors) return true;
-      if (searchColumnAccessors && searchColumnAccessors.length > 0) {
-        return searchColumnAccessors.some((acc) => {
-          const v = row.getValue(acc);
-          if (v == null) return false;
-          return String(v).toLowerCase().includes(fv);
-        });
-      }
-      if (!searchColumnAccessor) return true;
-      const v = row.getValue(searchColumnAccessor);
-      if (v == null) return false;
-      return String(v).toLowerCase().includes(fv);
-    },
+    globalFilterFn,
     state: {
       sorting,
       columnFilters,
