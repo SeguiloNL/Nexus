@@ -5884,10 +5884,19 @@ async function _performSimhuisAssetAction(
     httpStatusPut: 0,
   };
 
+  // #region debug-point dp-early-fail
+  const logEarlyFail = (kind: string, detail: string): void => {
+    console.error(
+      `[simhuis:assetAction] ❌ EARLY-FAIL action=${action} iccidSuffix=${iccidSuffix} kind=${kind} detail=${detail}`,
+    );
+  };
+  // #endregion debug-point dp-early-fail
+
   let creds: { baseUrl: string; username: string; password: string; resellerId?: string | null } | null = null;
   try {
     creds = await getSimhuisCreds();
   } catch (e: any) {
+    logEarlyFail('NOT_CONFIGURED', String(e?.message ?? e ?? 'Simhuis niet geconfigureerd.'));
     return {
       ...emptyResult,
       error: { kind: 'NOT_CONFIGURED', detail: String(e?.message ?? e ?? 'Simhuis niet geconfigureerd.') },
@@ -5897,6 +5906,10 @@ async function _performSimhuisAssetAction(
   const base = creds.baseUrl;
   let token = await acquireBearerToken(creds);
   if (!token) {
+    logEarlyFail(
+      'AUTH_FAILED',
+      `baseUrl=${base} username=${creds.username ? 'gezet' : 'leeg'} login-endpoint mislukt; geen Bearer-token.`,
+    );
     return {
       ...emptyResult,
       error: { kind: 'AUTH_FAILED', detail: 'Bearer-token kon niet worden verkregen (Simhuis login mislukt).' },
@@ -5905,6 +5918,7 @@ async function _performSimhuisAssetAction(
 
   let accountId: string | null = getSimhuisAccountId();
   if (!accountId) {
+    logEarlyFail('INVALID_ACCOUNTID', 'accountId is niet beschikbaar in de Bearer-token cache.');
     return {
       ...emptyResult,
       error: { kind: 'INVALID_ACCOUNTID', detail: 'accountId is niet beschikbaar in de Bearer-token cache.' },
@@ -5950,6 +5964,52 @@ async function _performSimhuisAssetAction(
       retried401 = true;
     }
   }
+
+  // #region debug-point dp-put-fail
+  // Bij een mislukte asset-mutatie (subscribe/suspend/unsuspend) loggen we de
+  // volledige context zodat de exacte Simhuis-fout (endpoint, body, status én
+  // response-body) direct zichtbaar is. Secrets worden gemaskeerd.
+  if (put.tag !== 'ok') {
+    try {
+      const sanitize = (o: unknown): unknown => {
+        if (o === null || typeof o !== 'object') return o;
+        if (Array.isArray(o)) return o.map(sanitize);
+        const out: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+          if (/password|secret|token|authorization|api[-_]?key/i.test(k)) {
+            out[k] = '***';
+            continue;
+          }
+          out[k] = v && typeof v === 'object' ? sanitize(v) : v;
+        }
+        return out;
+      };
+      const reqBody: Record<string, unknown> =
+        action === 'subscribe'
+          ? { ...(extraBody ?? {}), accountId: accountId ?? null }
+          : { accountId: accountId ?? null };
+      let respSnippet: string;
+      try {
+        respSnippet = put.raw == null ? '(geen body)' : JSON.stringify(put.raw).slice(0, 1500);
+      } catch {
+        respSnippet = String(put.raw).slice(0, 1500);
+      }
+      console.error(
+        `[simhuis:assetAction] ❌ FAIL action=${action} iccidSuffix=${iccidSuffix} retried401=${retried401} ` +
+          `PUT ${makePerSimFullUrl(base, path, null)} ` +
+          `httpStatus=${put.statusCode} tag=${put.tag} ` +
+          `error=${put.error ? String(put.error).slice(0, 300) : '(geen)'} ` +
+          `requestBody=${JSON.stringify(sanitize(reqBody))} ` +
+          `responseBody=${respSnippet}`,
+      );
+    } catch (debugErr) {
+      console.warn(
+        `[simhuis:assetAction] dp-put-fail instrumentation error:`,
+        debugErr instanceof Error ? debugErr.message : debugErr,
+      );
+    }
+  }
+  // #endregion debug-point dp-put-fail
 
   const durPut = Date.now() - t0;
 

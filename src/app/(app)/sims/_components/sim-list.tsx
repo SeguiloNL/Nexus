@@ -360,6 +360,38 @@ export function SimList({
       ),
     },
     {
+      accessorKey: "simName",
+      header: "Sim naam",
+      enableSorting: true,
+      sortingFn: "alphanumeric",
+      cell: ({ row }) => {
+        const v = row.getValue<string | null>("simName");
+        return v ? (
+          <span className="block max-w-[18rem] truncate" title={v}>
+            {v}
+          </span>
+        ) : (
+          <span className="text-slate-400">—</span>
+        );
+      },
+    },
+    {
+      accessorKey: "simGroup",
+      header: "Groep",
+      enableSorting: true,
+      sortingFn: "alphanumeric",
+      cell: ({ row }) => {
+        const v = row.getValue<string | null>("simGroup");
+        return v ? (
+          <span className="block max-w-[18rem] truncate" title={v}>
+            {v}
+          </span>
+        ) : (
+          <span className="text-slate-400">—</span>
+        );
+      },
+    },
+    {
       accessorKey: "imsi",
       header: "IMSI",
       enableSorting: true,
@@ -650,8 +682,8 @@ export function SimList({
       <DataTable
         columns={columns}
         data={filteredSims}
-        searchColumnAccessors={["iccid", "msisdn", "imsi", "provider"]}
-        searchPlaceholder="Zoek SIM (ICCID, MSISDN, IMSI, provider…)"
+        searchColumnAccessors={["iccid", "msisdn", "imsi", "provider", "simName", "simGroup"]}
+        searchPlaceholder="Zoek SIM (ICCID, MSISDN, IMSI, provider, naam, groep…)"
         enableRowSelection={canDelete}
         defaultSorting={[{ id: "usage", desc: true }]}
         getRowId={(row) => (row as any).id}

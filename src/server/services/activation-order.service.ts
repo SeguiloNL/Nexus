@@ -23,7 +23,6 @@ import type { UserRole, RoleScope } from "@/types/enums";
 import type { PermissionBits } from "@/types/next-auth";
 
 import {
-  activateSim as simhuisActivateSim,
   getSimStatus as simhuisGetSimStatus,
   deactivateSim as simhuisDeactivateSim,
 } from "../integrations/simhuis/service";
@@ -833,14 +832,58 @@ export async function completeActivation(id: string, ctx: Ctx) {
           console.info(`[Activation] SIM ${initial.sim.iccid} reeds actief in ${adapter.providerKey} — overslaan`);
           rollbackCtx.simActivated = preStatus;
         } else {
-          const activated = await simhuisActivateSim({
-            iccid: initial.sim.iccid,
-            customerRef: initial.customer.customerNumber ?? `${initial.customer.id}`,
-            offerId: effectiveOfferId,
-            planId: effectivePlanId,
-            resellerId: resellerId,
+          // Gebruik de bewezen subscribe-flow (Bearer-auth) i.p.v. de legacy brute-force
+          // activateSim die met basic-auth 401 "InvalidCredentials" oplevert.
+          const subscribeToProduct = adapter.subscribeToProduct?.bind(adapter);
+          if (!adapter.capabilities.subscribeToProduct || !subscribeToProduct) {
+            throw new Error(
+              `Provider “${adapter.providerKey}” ondersteunt geen productabonnement (capability subscribeToProduct=false).`
+            );
+          }
+
+          // Product-id: eerst de aan het dataplan gekoppelde providerOfferRef, anders de Simhuis-default.
+          const productId = effectiveOfferId;
+          if (!productId) {
+            throw new Error(
+              `Geen product-id beschikbaar: koppel een providerOfferRef aan het dataplan of stel een Simhuis-default offer-id in.`
+            );
+          }
+
+          // Subscriber-account: sub-klant > hoofdklant > AppSetting-fallback.
+          let subscriberAccountId: string | null =
+            (initial as any).subCustomerId ?? initial.customerId ?? null;
+          if (subscriberAccountId && subscriberAccountId.trim().length === 0) {
+            subscriberAccountId = null;
+          }
+          if (!subscriberAccountId) {
+            const fallback = await prisma.appSetting.findFirst({
+              where: { key: "simhuis.defaultSubscriberAccountId" },
+              select: { value: true },
+            });
+            if (fallback?.value && typeof fallback.value === "string") {
+              subscriberAccountId = fallback.value;
+            }
+          }
+          if (!subscriberAccountId) {
+            throw new Error(
+              `Subscriber-account kon niet worden bepaald: koppel een klant aan de order of stel AppSetting 'simhuis.defaultSubscriberAccountId' in.`
+            );
+          }
+
+          console.info(
+            `[Activation] subscribe-flow: iccid=${initial.sim.iccid} productId=${productId} subscriberAccountId=${subscriberAccountId}`
+          );
+          const subscribed = await subscribeToProduct(initial.sim.iccid, {
+            productId,
+            subscriberAccountId,
           });
-          rollbackCtx.simActivated = activated;
+          if (!subscribed.ok) {
+            throw new Error(
+              subscribed.safeMessage ??
+                `subscribeToProduct gaf ok=false (HTTP ${subscribed.httpStatus ?? "?"}).`
+            );
+          }
+          rollbackCtx.simActivated = await simhuisGetSimStatus(initial.sim.iccid);
         }
       } catch (simErr: any) {
         const msg = `${adapter.providerKey} activatie mislukt voor SIM ${initial.sim.iccid}: ${simErr?.message ?? simErr}`;
