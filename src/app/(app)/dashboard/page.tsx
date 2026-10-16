@@ -26,13 +26,10 @@ import {
 } from "@/server/services/sim-usage-history.service";
 import {
   Activity,
-  AlertTriangle,
   Boxes,
   Cpu,
   CreditCard,
   LayoutDashboard,
-  PackageCheck,
-  PackageSearch,
   Server,
   ShieldAlert,
   Truck,
@@ -73,12 +70,11 @@ type DashboardTileExtra = (scope: ScopeContext) => Promise<React.ReactNode>;
  *
  * Tegel ↔ ResourceType mapping:
  *   subscription   -> Actieve abonnementen, Pending activation
- *   tracker        -> Trackers op voorraad, Actieve trackers, Defecte trackers
+ *   tracker        -> Actieve trackers
  *   sim            -> SIMs op voorraad, Actieve SIMs
- *   activation_order -> Openstaande activaties, Mislukte activaties vandaag
+ *   activation_order -> Openstaande activaties
  *   customer       -> Klanten
  *   vehicle        -> Voertuigen
- *   product        -> Actieve producten (alleen INTERNAL scope)
  */
 type DashboardTile = {
   key: string;
@@ -141,22 +137,6 @@ const DASHBOARD_TILES: DashboardTile[] = [
       }),
   },
   {
-    key: "trk_stock",
-    resource: "tracker",
-    title: "Trackers op voorraad",
-    icon: PackageCheck,
-    tone: "sky",
-    href: "/trackers?status=IN_STOCK",
-    countQuery: (s) =>
-      prisma.tracker.count({
-        where: {
-          deletedAt: null,
-          status: "IN_STOCK",
-          ...s.customerScopeAssignment,
-        },
-      }),
-  },
-  {
     key: "trk_active",
     resource: "tracker",
     title: "Actieve trackers",
@@ -168,22 +148,6 @@ const DASHBOARD_TILES: DashboardTile[] = [
         where: {
           deletedAt: null,
           status: "ACTIVE",
-          ...s.customerScopeAssignment,
-        },
-      }),
-  },
-  {
-    key: "trk_defect",
-    resource: "tracker",
-    title: "Defecte trackers",
-    icon: AlertTriangle,
-    tone: "red",
-    href: "/trackers?status=DEFECTIVE",
-    countQuery: (s) =>
-      prisma.tracker.count({
-        where: {
-          deletedAt: null,
-          status: "DEFECTIVE",
           ...s.customerScopeAssignment,
         },
       }),
@@ -236,22 +200,6 @@ const DASHBOARD_TILES: DashboardTile[] = [
       }),
   },
   {
-    key: "act_failed_today",
-    resource: "activation_order",
-    title: "Mislukte activaties vandaag",
-    icon: AlertTriangle,
-    tone: "red",
-    href: "/activations?status=FAILED",
-    countQuery: (s) =>
-      prisma.activationOrder.count({
-        where: {
-          status: "FAILED" as unknown as undefined,
-          failedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-          ...s.customerScopeActivation,
-        },
-      }),
-  },
-  {
     key: "cust_count",
     resource: "customer",
     title: "Klanten",
@@ -274,15 +222,6 @@ const DASHBOARD_TILES: DashboardTile[] = [
       prisma.vehicle.count({
         where: { deletedAt: null, ...s.customerScopeVehicle },
       }),
-  },
-  {
-    key: "prod_active",
-    resource: "product",
-    title: "Actieve producten",
-    icon: PackageSearch,
-    tone: "slate",
-    href: "/products",
-    countQuery: () => prisma.product.count({ where: { isActive: true } }),
   },
 ];
 
