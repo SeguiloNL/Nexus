@@ -19,8 +19,11 @@ import {
   PlayCircle,
   RefreshCw,
   AlertCircle,
+  AlertTriangle,
   CheckCircle,
   Database,
+  Lock,
+  type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -69,6 +72,15 @@ import { UserRole, BillingCycle, ActivationOrderProductType, DataUnit } from "@/
 import { ActivationOrderProductType as _OrderType } from "@/types/enums";
 import { canUserRole } from "@/lib/auth/session";
 import { SIM_PROVIDER_REGISTRY } from "@/lib/providers/provider-registry";
+import {
+  stepsForTrack,
+  trackFromOrderType,
+  trackSwitchPatch,
+  validateTrack,
+  type StepId,
+  type WizardStep,
+  type WizardTrack,
+} from "./activation-wizard-tracks";
 
 type CustomerOption = {
   id: string;
@@ -164,14 +176,20 @@ interface Props {
   ) => Promise<any>;
 }
 
-const STEP_NAMES = [
-  { icon: User, label: "Klant" },
-  { icon: CreditCard, label: "Product" },
-  { icon: Cpu, label: "Tracker" },
-  { icon: CreditCard, label: "SIM" },
-  { icon: Truck, label: "Voertuig" },
-  { icon: FileCheck2, label: "Controle" },
-];
+/**
+ * Iconen per stap. De trajectdefinities en traject-validatie staan bewust in
+ * een pure module (activation-wizard-tracks.ts) zodat trajecten los getest
+ * kunnen worden.
+ */
+const STEP_ICONS: Record<StepId, LucideIcon> = {
+  klant: User,
+  product: CreditCard,
+  dataplan: Database,
+  tracker: Cpu,
+  sim: CreditCard,
+  voertuig: Truck,
+  controle: FileCheck2,
+};
 
 export function ActivationWizard({
   role,
@@ -198,9 +216,29 @@ export function ActivationWizard({
 
   const isAdmin = canActivateSim;
 
-  const [step, setStep] = useState(
-    Number(sp?.get("step") ?? (initialOrder?.status === "READY" ? 6 : 1))
+  // Trajectkeuze. Bij het bewerken van een bestaande order ligt het traject al
+  // vast via het orderType; bij een nieuwe order kiest de gebruiker eerst.
+  const initialTrack: WizardTrack | null = trackFromOrderType(
+    initialOrder?.orderType,
   );
+
+  const [track, setTrack] = useState<WizardTrack | null>(initialTrack);
+
+  const steps = useMemo<WizardStep[]>(
+    () => stepsForTrack(track),
+    [track]
+  );
+  const totalSteps = steps.length;
+
+  const [step, setStep] = useState<number>(() => {
+    if (!initialTrack) return 0; // 0 = trajectkeuze-scherm
+    const ordered = stepsForTrack(initialTrack);
+    const requested = Number(sp?.get("step") ?? "");
+    if (Number.isFinite(requested) && requested >= 1) {
+      return Math.min(requested, ordered.length);
+    }
+    return initialOrder?.status === "READY" ? ordered.length : 1;
+  });
   const [form, setForm] = useState<{
     customerId: string;
     subCustomerId: string | null;
@@ -234,7 +272,7 @@ export function ActivationWizard({
     internalNotes: initialOrder?.internalNotes ?? "",
   }));
 
-  const isSimOnly = form.orderType === _OrderType.SIM_ONLY_DATA;
+  const isSimOnly = track === "SIM_ONLY";
 
   // Event-driven dataplanweergave: zodra Sim-only wordt gekozen (of de klant
   // wijzigt) laden we de voor deze klant beschikbare, actieve dataplannen.
@@ -317,32 +355,17 @@ export function ActivationWizard({
     [customerOptions, mainCustomerId]
   );
 
-  const stepErrors: Record<number, string[]> = {};
-  if (!form.customerId) stepErrors[1] = ["Kies een klant."];
+  // Traject-specifieke validatie: er worden geen eisen gesteld aan velden die
+  // niet bij het gekozen traject horen (geen kruisverbanden).
+  const { stepErrors, isReadyErrors } = validateTrack(form, track);
 
-  stepErrors[2] = [];
-  if (!form.productId) stepErrors[2].push("Kies product.");
-  if (!form.desiredStartDate) stepErrors[2].push("Gewenste startdatum ontbreekt.");
-  if (stepErrors[2].length === 0) delete stepErrors[2];
-
-  // Stap 3 is tracker of dataplan, afhankelijk van order type
-  if (!isSimOnly) {
-    if (!form.trackerId) stepErrors[3] = ["Kies tracker (IN_STOCK/RESERVED)."];
-  } else {
-    if (!form.dataPlanId) stepErrors[3] = ["Kies een actief dataplan voor Sim-only."];
+  // Onomkeerbare trajectkeuze: koppelt irrelevante velden los en zet het juiste
+  // orderType vast.
+  function chooseTrack(next: WizardTrack) {
+    setForm((f) => ({ ...f, ...trackSwitchPatch(next, f) }));
+    setTrack(next);
+    setStep(1);
   }
-  if (!form.simId) stepErrors[4] = ["Kies SIM (IN_STOCK/RESERVED)."];
-
-  const isReadyErrors: string[] = [];
-  if (!form.customerId) isReadyErrors.push("Klant ontbreekt.");
-  if (!form.productId) isReadyErrors.push("Product ontbreekt.");
-  if (!form.desiredStartDate) isReadyErrors.push("Gewenste startdatum ontbreekt.");
-  if (!isSimOnly) {
-    if (!form.trackerId) isReadyErrors.push("Tracker ontbreekt.");
-  } else {
-    if (!form.dataPlanId) isReadyErrors.push("Dataplan ontbreekt (Sim-only vereist).");
-  }
-  if (!form.simId) isReadyErrors.push("SIM ontbreekt.");
 
   async function persistAsDraft() {
     const fd = new FormData();
@@ -402,6 +425,88 @@ export function ActivationWizard({
 
   const busy = false;
 
+  // Rendert uitsluitend de stap van het actieve traject. Er bestaan geen
+  // gedeelde of van het andere traject overgenomen stappen.
+  function renderCurrentStep() {
+    const def = steps[step - 1];
+    if (!def) return null;
+    switch (def.id) {
+      case "klant":
+        return (
+          <StepCustomer
+            form={form}
+            setForm={setForm}
+            customerOptions={customerOptions}
+            subCustomers={subCustomers}
+          />
+        );
+      case "product":
+        return (
+          <StepProduct
+            form={form}
+            setForm={setForm}
+            productOptions={productOptions}
+            priceEditable={canEditPrice}
+          />
+        );
+      case "dataplan":
+        return (
+          <StepDataPlan
+            form={form}
+            setForm={setForm}
+            options={availableDataPlans}
+            loading={dataPlansLoading}
+            error={dataPlansError}
+          />
+        );
+      case "tracker":
+        return (
+          <StepTracker form={form} setForm={setForm} options={trackerStock} />
+        );
+      case "sim":
+        return (
+          <StepSim
+            form={form}
+            setForm={setForm}
+            options={simStock}
+            isAdmin={isAdmin}
+            orderId={openOrderId}
+            validateAndSubscribeSimAction={validateAndSubscribeSimAction}
+          />
+        );
+      case "voertuig":
+        return (
+          <StepVehicle
+            form={form}
+            setForm={setForm}
+            customerId={form.customerId}
+            options={vehiclesOfCustomer}
+          />
+        );
+      case "controle":
+        return (
+          <StepReview
+            form={form}
+            isSimOnly={isSimOnly}
+            customer={selectedCustomer ?? null}
+            sub={selectedSub ?? null}
+            product={selectedProduct ?? null}
+            dataPlan={selectedDataPlan ?? null}
+            tracker={selectedTracker ?? null}
+            sim={selectedSim ?? null}
+            vehicle={selectedVehicle ?? null}
+            isReadyErrors={isReadyErrors}
+            onActivate={async () => markReadyAndActivate(true)}
+            busy={busy}
+          />
+        );
+      default:
+        return null;
+    }
+  }
+
+  const currentStepDef = steps[step - 1] ?? null;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:flex-wrap sm:items-center">
@@ -425,212 +530,349 @@ export function ActivationWizard({
                     status={initialOrder!.status as any}
                   />
                 </>
+              ) : track === null ? (
+                "Kies eerst een traject: een nieuwe tracker of een losse datasimkaart."
+              ) : isSimOnly ? (
+                "Traject: losse Sim-only datasimkaart met dataplan."
               ) : (
-                "Klant, product en assets selecteren, dan activeren."
+                "Traject: nieuwe tracker met simkaart."
               )}
             </p>
           </div>
         </div>
-        <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
-          <Button
-            variant="outline"
-            type="button"
-            className="w-full sm:w-auto"
-            onClick={async () => {
-              await persistAsDraft();
-              toast.success("Opgeslagen als DRAFT.");
-              router.push("/activations");
-            }}
-          >
-            <RotateCcw className="h-5 w-5 mr-2 md:h-4 md:w-4" /> Opslaan als concept
-          </Button>
-        </div>
-      </div>
-
-      <Stepper step={step} setStep={setStep} errors={stepErrors} editable={!initialOrder || initialOrder.status === "DRAFT"} />
-
-      <div className="space-y-6">
-        {step === 1 && (
-          <StepCustomer
-            form={form}
-            setForm={setForm}
-            customerOptions={customerOptions}
-            subCustomers={subCustomers}
-          />
-        )}
-        {step === 2 && (
-          <div className="space-y-6">
-            {canSimOnly && (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Activatie-type</CardTitle>
-                  <CardDescription>
-                    Kies of je een tracker met SIM wilt activeren, of alleen een losse datasimkaart (Sim-only) met een dataplan.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <label
-                      className={`relative cursor-pointer rounded-lg border p-4 transition hover:border-slate-400 ${
-                        !isSimOnly
-                          ? "border-slate-900 bg-slate-900 text-white shadow"
-                          : "border-slate-200 bg-white"
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="orderType"
-                        className="sr-only"
-                        checked={!isSimOnly}
-                        onChange={() => {
-                          setForm((f) => ({
-                            ...f,
-                            orderType: _OrderType.TRACKER_WITH_SIM,
-                          }));
-                        }}
-                      />
-                      <div className="flex items-start gap-3">
-                        <Cpu className={`mt-0.5 h-5 w-5 ${!isSimOnly ? "text-white" : "text-slate-500"}`} />
-                        <div className="space-y-1">
-                          <div className="font-semibold">Tracker met simkaart</div>
-                          <p className={`text-sm ${!isSimOnly ? "text-slate-200" : "text-slate-500"}`}>
-                            Bestel en activeer een fysieke tracker inclusief SIM-kaart en abonnement (bestaande werking).
-                          </p>
-                        </div>
-                      </div>
-                    </label>
-                    <label
-                      className={`relative cursor-pointer rounded-lg border p-4 transition hover:border-slate-400 ${
-                        isSimOnly
-                          ? "border-slate-900 bg-slate-900 text-white shadow"
-                          : "border-slate-200 bg-white"
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="orderType"
-                        className="sr-only"
-                        checked={isSimOnly}
-                        onChange={() => {
-                          setForm((f) => ({
-                            ...f,
-                            orderType: _OrderType.SIM_ONLY_DATA,
-                          }));
-                        }}
-                      />
-                      <div className="flex items-start gap-3">
-                        <CreditCard className={`mt-0.5 h-5 w-5 ${isSimOnly ? "text-white" : "text-slate-500"}`} />
-                        <div className="space-y-1">
-                          <div className="font-semibold">Sim-only datasimkaart</div>
-                          <p className={`text-sm ${isSimOnly ? "text-slate-200" : "text-slate-500"}`}>
-                            Bestel en activeer een losse SIM-kaart met een specifiek dataplan, zonder tracker.
-                          </p>
-                        </div>
-                      </div>
-                    </label>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-            <StepProduct
-              form={form}
-              setForm={setForm}
-              productOptions={productOptions}
-              priceEditable={canEditPrice}
-            />
+        {track !== null && (
+          <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
+            <Button
+              variant="outline"
+              type="button"
+              className="w-full sm:w-auto"
+              onClick={async () => {
+                await persistAsDraft();
+                toast.success("Opgeslagen als DRAFT.");
+                router.push("/activations");
+              }}
+            >
+              <RotateCcw className="h-5 w-5 mr-2 md:h-4 md:w-4" /> Opslaan als concept
+            </Button>
           </div>
         )}
-        {step === 3 &&
-          (isSimOnly ? (
-            <StepDataPlan
-              form={form}
-              setForm={setForm}
-              options={availableDataPlans}
-              loading={dataPlansLoading}
-              error={dataPlansError}
-            />
-          ) : (
-            <StepTracker
-              form={form}
-              setForm={setForm}
-              options={trackerStock}
-            />
-          ))}
-        {step === 4 && (
-          <StepSim
-            form={form}
-            setForm={setForm}
-            options={simStock}
-            isAdmin={isAdmin}
-            orderId={openOrderId}
-            validateAndSubscribeSimAction={validateAndSubscribeSimAction}
-          />
-        )}
-        {step === 5 && (
-          <StepVehicle
-            form={form}
-            setForm={setForm}
-            customerId={form.customerId}
-            options={vehiclesOfCustomer}
-          />
-        )}
-        {step === 6 && (
-          <StepReview
-            form={form}
-            isSimOnly={isSimOnly}
-            customer={selectedCustomer ?? null}
-            sub={selectedSub ?? null}
-            product={selectedProduct ?? null}
-            dataPlan={selectedDataPlan ?? null}
-            tracker={selectedTracker ?? null}
-            sim={selectedSim ?? null}
-            vehicle={selectedVehicle ?? null}
-            isReadyErrors={isReadyErrors}
-            onActivate={async () => markReadyAndActivate(true)}
-            busy={busy}
-          />
-        )}
       </div>
 
-      <div className="flex flex-col items-stretch justify-between gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:items-center">
-        <Button
-          variant="outline"
-          disabled={step <= 1}
-          onClick={() => setStep((s) => Math.max(1, s - 1))}
-          className="w-full sm:w-auto order-2 sm:order-1"
-        >
-          Vorige
-        </Button>
-        <div className="text-center text-xs text-slate-500 order-1 sm:order-2">
-          Stap {step} van {STEP_NAMES.length}
-        </div>
-        {step < 6 ? (
-          <Button
-            onClick={() => setStep((s) => Math.min(STEP_NAMES.length, s + 1))}
-            className="w-full sm:w-auto order-3"
-          >
-            Volgende <ArrowRight className="ml-2 h-5 w-5 md:h-4 md:w-4" />
-          </Button>
-        ) : (
-          <Button
-            disabled={isReadyErrors.length > 0 || busy}
-            onClick={async () => markReadyAndActivate(true)}
-            className="w-full sm:w-auto order-3"
-          >
-            <Play className="h-5 w-5 mr-2 md:h-4 md:w-4" /> Activeer bevestigen
-          </Button>
-        )}
+      {track === null ? (
+        <TrackChoice canSimOnly={canSimOnly} onChoose={chooseTrack} />
+      ) : (
+        <>
+          <div className="space-y-4">
+            <Stepper
+              steps={steps}
+              step={step}
+              setStep={setStep}
+              errors={stepErrors}
+              editable={!initialOrder || initialOrder.status === "DRAFT"}
+            />
+            <WizardProgress step={step} total={totalSteps} />
+          </div>
+
+          <Separator />
+
+          <div className="space-y-6">
+            {currentStepDef && (
+              <StepIntro
+                stepNumber={step}
+                total={totalSteps}
+                label={currentStepDef.label}
+                description={currentStepDef.description}
+                trackLabel={
+                  isSimOnly ? "Sim-only datasimkaart" : "Tracker met simkaart"
+                }
+              />
+            )}
+            {renderCurrentStep()}
+          </div>
+
+          <div className="flex flex-col items-stretch justify-between gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:items-center">
+            <Button
+              variant="outline"
+              disabled={step <= 1}
+              onClick={() => setStep((s) => Math.max(1, s - 1))}
+              className="w-full sm:w-auto order-2 sm:order-1"
+            >
+              Vorige
+            </Button>
+            <div className="text-center text-xs text-slate-500 order-1 sm:order-2">
+              Stap {step} van {totalSteps} · nog {totalSteps - step}{" "}
+              {totalSteps - step === 1 ? "stap" : "stappen"}
+            </div>
+            {step < totalSteps ? (
+              <Button
+                onClick={() => setStep((s) => Math.min(totalSteps, s + 1))}
+                className="w-full sm:w-auto order-3"
+              >
+                Volgende <ArrowRight className="ml-2 h-5 w-5 md:h-4 md:w-4" />
+              </Button>
+            ) : (
+              <Button
+                disabled={isReadyErrors.length > 0 || busy}
+                onClick={async () => markReadyAndActivate(true)}
+                className="w-full sm:w-auto order-3"
+              >
+                <Play className="h-5 w-5 mr-2 md:h-4 md:w-4" /> Activeer bevestigen
+              </Button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function WizardProgress({ step, total }: { step: number; total: number }) {
+  if (total <= 0) return null;
+  const pct = Math.round((step / total) * 100);
+  return (
+    <div className="space-y-1.5">
+      <div
+        role="progressbar"
+        aria-valuenow={step}
+        aria-valuemin={1}
+        aria-valuemax={total}
+        aria-valuetext={`Stap ${step} van ${total}`}
+        aria-label="Voortgang van de wizard"
+        className="h-2 w-full overflow-hidden rounded-full bg-slate-100"
+      >
+        <div
+          className="h-full rounded-full bg-slate-900 transition-all"
+          style={{ width: `${pct}%` }}
+        />
       </div>
+      <p className="text-xs text-slate-500">
+        Nog {total - step} {total - step === 1 ? "stap" : "stappen"} te gaan in
+        dit traject.
+      </p>
+    </div>
+  );
+}
+
+function StepIntro({
+  stepNumber,
+  total,
+  label,
+  description,
+  trackLabel,
+}: {
+  stepNumber: number;
+  total: number;
+  label: string;
+  description: string;
+  trackLabel: string;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="secondary" className="gap-1.5">
+          <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+          {trackLabel}
+        </Badge>
+        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+          Stap {stepNumber} van {total}
+        </span>
+      </div>
+      <div className="space-y-1">
+        <h2 className="text-lg font-semibold tracking-tight sm:text-xl">
+          Stap {stepNumber} — {label}
+        </h2>
+        <p className="text-sm text-slate-500">{description}</p>
+      </div>
+      <Separator />
+    </div>
+  );
+}
+
+function TrackChoice({
+  canSimOnly,
+  onChoose,
+}: {
+  canSimOnly: boolean;
+  onChoose: (track: WizardTrack) => void;
+}) {
+  const [pending, setPending] = useState<WizardTrack | null>(null);
+
+  const options: {
+    track: WizardTrack;
+    icon: LucideIcon;
+    title: string;
+    description: string;
+    bullets: string[];
+    disabled: boolean;
+    disabledReason?: string;
+  }[] = [
+    {
+      track: "TRACKER",
+      icon: Cpu,
+      title: "Nieuwe tracker met simkaart",
+      description:
+        "Bestel en activeer een fysieke tracker, inclusief SIM-kaart en abonnement.",
+      bullets: [
+        "Klant en factureerbaar product",
+        "Fysieke tracker uit de voorraad",
+        "SIM-kaart voor de tracker",
+        "Optioneel een voertuig koppelen",
+      ],
+      disabled: false,
+    },
+    {
+      track: "SIM_ONLY",
+      icon: CreditCard,
+      title: "Sim-only datasimkaart",
+      description:
+        "Bestel en activeer een losse datasimkaart met een dataplan, zonder tracker.",
+      bullets: [
+        "Klant en Sim-only dataplan",
+        "Losse SIM-kaart uit de voorraad",
+        "Geen tracker of voertuig nodig",
+      ],
+      disabled: !canSimOnly,
+      disabledReason:
+        "Je hebt geen rechten voor Sim-only bestellingen. Neem contact op met een beheerder.",
+    },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">
+            Kies een traject
+          </CardTitle>
+          <CardDescription>
+            Deze keuze bepaalt de volledige inhoud van de wizard. Beide trajecten
+            zijn volledig gescheiden: je ziet alleen de stappen die bij jouw keuze
+            horen.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <div>
+              <strong>Let op:</strong> deze keuze kan niet meer worden gewijzigd
+              zodra je begint. Wil je later het andere traject, start dan een
+              nieuwe activatie.
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {options.map((opt) => {
+          const Icon = opt.icon;
+          return (
+            <Card
+              key={opt.track}
+              className={opt.disabled ? "opacity-60" : "border-slate-200"}
+            >
+              <CardHeader>
+                <div className="flex items-center gap-3">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-md bg-slate-900 text-white">
+                    <Icon className="h-5 w-5" aria-hidden="true" />
+                  </span>
+                  <CardTitle className="text-base">{opt.title}</CardTitle>
+                </div>
+                <CardDescription>{opt.description}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-1.5 text-sm text-slate-600">
+                  {opt.bullets.map((b) => (
+                    <li key={b} className="flex items-start gap-2">
+                      <CheckCircle2
+                        className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600"
+                        aria-hidden="true"
+                      />
+                      <span>{b}</span>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+              <CardFooter>
+                {opt.disabled ? (
+                  <p className="text-xs text-slate-500 italic">
+                    {opt.disabledReason}
+                  </p>
+                ) : (
+                  <Button
+                    type="button"
+                    className="w-full"
+                    onClick={() => setPending(opt.track)}
+                  >
+                    Kies dit traject
+                    <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
+                  </Button>
+                )}
+              </CardFooter>
+            </Card>
+          );
+        })}
+      </div>
+
+      <Dialog
+        open={pending !== null}
+        onOpenChange={(open) => {
+          if (!open) setPending(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Traject bevestigen?</DialogTitle>
+            <DialogDescription asChild>
+              <div className="space-y-3 text-sm">
+                <p>
+                  Je kiest voor{" "}
+                  <strong>
+                    {pending === "SIM_ONLY"
+                      ? "een losse Sim-only datasimkaart"
+                      : "een nieuwe tracker met simkaart"}
+                  </strong>
+                  .
+                </p>
+                <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-800">
+                  Deze keuze is onomkeerbaar binnen deze wizard. De stappen van
+                  het andere traject zijn hierna niet meer beschikbaar.
+                </p>
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:justify-end pt-2">
+            <DialogClose asChild>
+              <Button type="button" variant="outline">
+                Annuleren
+              </Button>
+            </DialogClose>
+            <Button
+              type="button"
+              onClick={() => {
+                if (pending) {
+                  const chosen = pending;
+                  setPending(null);
+                  onChoose(chosen);
+                }
+              }}
+            >
+              Ja, start dit traject
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 function Stepper({
+  steps,
   step,
   setStep,
   errors,
   editable,
 }: {
+  steps: WizardStep[];
   step: number;
   setStep: (n: number) => void;
   errors: Record<number, string[]>;
@@ -639,14 +881,14 @@ function Stepper({
   return (
     <nav aria-label="Stappen">
       <ol className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
-        {STEP_NAMES.map((s, i) => {
+        {steps.map((s, i) => {
           const n = i + 1;
           const completed = step > n;
           const active = step === n;
-          const Icon = s.icon;
+          const Icon = STEP_ICONS[s.id];
           const disabled = !editable;
           return (
-            <li key={n} className="flex items-center gap-2">
+            <li key={s.id} className="flex items-center gap-2">
               <button
                 type="button"
                 disabled={disabled}
@@ -680,7 +922,7 @@ function Stepper({
                   </span>
                 ) : null}
               </button>
-              {n < STEP_NAMES.length ? (
+              {n < steps.length ? (
                 <Separator className="hidden w-6 sm:block" orientation="horizontal" />
               ) : null}
             </li>
@@ -705,9 +947,10 @@ function StepCustomer({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Stap 1 — Klant</CardTitle>
+        <CardTitle>Klantgegevens</CardTitle>
         <CardDescription>
-          Kies een hoofdklant en optioneel een subklant.
+          Selecteer de hoofdklant. Een subklant is optioneel en alleen
+          beschikbaar als de klant subklanten heeft.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -778,6 +1021,85 @@ function StepCustomer({
   );
 }
 
+function BillingFields({
+  form,
+  setForm,
+  priceEditable,
+  priceNote,
+}: {
+  form: any;
+  setForm: (v: any) => void;
+  priceEditable: boolean;
+  priceNote?: string;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+      <div className="space-y-2">
+        <Label htmlFor="desiredStartDate">Gewenste startdatum *</Label>
+        <Input
+          id="desiredStartDate"
+          type="date"
+          value={form.desiredStartDate || ""}
+          onChange={(e) =>
+            setForm({ ...form, desiredStartDate: e.target.value })
+          }
+        />
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="monthlyPrice">
+          Maandprijs (EUR){priceEditable ? " *" : ""}
+        </Label>
+        <Input
+          id="monthlyPrice"
+          type="number"
+          step="0.01"
+          min="0"
+          disabled={!priceEditable}
+          value={form.monthlyPrice}
+          onChange={(e) =>
+            setForm({ ...form, monthlyPrice: e.target.value })
+          }
+        />
+        {!priceEditable ? (
+          <p className="text-xs text-slate-400">
+            {priceNote ?? "Prijs is vastgesteld (alleen ADMIN kan aanpassen)."}
+          </p>
+        ) : null}
+      </div>
+
+      <div className="space-y-2">
+        <Label>Facturatiecyclus</Label>
+        <Select
+          value={form.billingCycle}
+          onValueChange={(v) => setForm({ ...form, billingCycle: v })}
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="MONTHLY">Maandelijks</SelectItem>
+            <SelectItem value="QUARTERLY">Per kwartaal</SelectItem>
+            <SelectItem value="YEARLY">Per jaar</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="md:col-span-3 space-y-2">
+        <Label>Interne opmerkingen (optioneel)</Label>
+        <Textarea
+          rows={3}
+          value={form.internalNotes}
+          onChange={(e) =>
+            setForm({ ...form, internalNotes: e.target.value })
+          }
+          placeholder="Bijzonderheden m.b.t. deze activatie..."
+        />
+      </div>
+    </div>
+  );
+}
+
 function StepProduct({
   form,
   setForm,
@@ -792,13 +1114,15 @@ function StepProduct({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Stap 2 — Product en facturatie</CardTitle>
+        <CardTitle>Productkeuze en facturatie</CardTitle>
         <CardDescription>
-          Kies een actief product en startdatum. Alleen ADMIN kan prijs aanpassen.
+          Kies het factureerbare product voor deze tracker-activatie. De
+          startdatum, facturatiecyclus en maandprijs worden op de activatie
+          vastgelegd.
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <div className="space-y-2 md:col-span-2">
+      <CardContent className="space-y-6">
+        <div className="space-y-2">
           <Label>Product *</Label>
           <Select
             value={form.productId || ""}
@@ -831,67 +1155,14 @@ function StepProduct({
             </SelectContent>
           </Select>
         </div>
-        <div className="space-y-2">
-          <Label>Gewenste startdatum *</Label>
-          <Input
-            type="date"
-            value={form.desiredStartDate || ""}
-            onChange={(e) =>
-              setForm({ ...form, desiredStartDate: e.target.value })
-            }
-          />
-        </div>
 
-        <div className="space-y-2">
-          <Label htmlFor="monthlyPrice">
-            Maandprijs (EUR){priceEditable ? " *" : ""}
-          </Label>
-          <Input
-            id="monthlyPrice"
-            type="number"
-            step="0.01"
-            min="0"
-            disabled={!priceEditable}
-            value={form.monthlyPrice}
-            onChange={(e) =>
-              setForm({ ...form, monthlyPrice: e.target.value })
-            }
-          />
-          {!priceEditable ? (
-            <p className="text-xs text-slate-400">
-              Prijs is vastgesteld (alleen ADMIN kan aanpassen).
-            </p>
-          ) : null}
-        </div>
+        <Separator />
 
-        <div className="space-y-2">
-          <Label>Facturatiecyclus</Label>
-          <Select
-            value={form.billingCycle}
-            onValueChange={(v) => setForm({ ...form, billingCycle: v })}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="MONTHLY">Maandelijks</SelectItem>
-              <SelectItem value="QUARTERLY">Per kwartaal</SelectItem>
-              <SelectItem value="YEARLY">Per jaar</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="md:col-span-3 space-y-2">
-          <Label>Interne opmerkingen (optioneel)</Label>
-          <Textarea
-            rows={3}
-            value={form.internalNotes}
-            onChange={(e) =>
-              setForm({ ...form, internalNotes: e.target.value })
-            }
-            placeholder="Bijzonderheden m.b.t. deze activatie..."
-          />
-        </div>
+        <BillingFields
+          form={form}
+          setForm={setForm}
+          priceEditable={priceEditable}
+        />
       </CardContent>
     </Card>
   );
@@ -995,9 +1266,9 @@ function StepDataPlan({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Stap 3 — Dataplan (Sim-only)</CardTitle>
+        <CardTitle>Dataplan</CardTitle>
         <CardDescription>
-          Kies het dataplan dat aan deze Sim-only SIM-kaart gekoppeld wordt. Alleen actieve, niet-vervallen plannen die beschikbaar zijn voor de regio en het klanttype van deze klant worden getoond.
+          Alleen actieve, niet-vervallen Sim-only dataplannen die beschikbaar zijn voor de regio en het klanttype van deze klant worden getoond. Het factureerbare product en de maandprijs worden van het gekozen plan afgeleid.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4" aria-busy={loading || undefined}>
@@ -1103,6 +1374,27 @@ function StepDataPlan({
             </div>
           </div>
         )}
+
+        <Separator />
+
+        <div className="space-y-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900">
+              Facturatie
+            </h3>
+            <p className="text-xs text-slate-500">
+              De maandprijs wordt afgeleid van het gekozen dataplan; alleen
+              beheerders kunnen producten en prijzen beheren onder Beheer →
+              Dataplannen.
+            </p>
+          </div>
+          <BillingFields
+            form={form}
+            setForm={setForm}
+            priceEditable={false}
+            priceNote="Prijs is afgeleid van het gekozen dataplan en kan hier niet worden aangepast."
+          />
+        </div>
       </CardContent>
     </Card>
   );
@@ -1153,7 +1445,7 @@ function StepTracker({
   ];
   return (
     <PickTable<TrackerOption>
-      title="Stap 3 — Tracker"
+      title="Beschikbare trackers"
       description="Kies een tracker die IN_STOCK of RESERVED is. Al deze statussen komen in aanmerking voor activatie."
       columns={cols}
       rows={options}
@@ -1480,7 +1772,7 @@ function StepSim({
   return (
     <div className="space-y-4">
       <PickTable<SimOption>
-        title="Stap 4 — SIM-kaart"
+        title="Beschikbare SIM-kaarten"
         description={
           isAdmin
             ? `Kies een SIM (IN_STOCK of RESERVED). Indien nodig kun je de gekozen SIM direct activeren via de ${SIM_PROVIDER_REGISTRY.simhuis.displayNameForAdmins} API.`
@@ -1572,7 +1864,7 @@ function StepVehicle({
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Stap 5 — Voertuig (optioneel)</CardTitle>
+          <CardTitle>Voertuig (optioneel)</CardTitle>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-slate-500">
@@ -1627,7 +1919,7 @@ function StepVehicle({
 
   return (
     <PickTable<VehicleOption>
-      title="Stap 5 — Voertuig (optioneel)"
+      title="Voertuigen van de klant (optioneel)"
       description="Koppel optioneel een voertuig van de gekozen klant. Je kunt ook later toewijzen."
       columns={cols}
       rows={options}

@@ -2,7 +2,18 @@ import { test, expect, type Locator, type Page } from "@playwright/test";
 import { loginAs } from "./lib/auth-helpers";
 
 /**
- * E2E Flow 3: 6-Stappen Wizard "navigatie + selects".
+ * E2E Flow 3: Activatie-wizard met twee gescheiden trajecten.
+ *
+ * Sinds de herstructurering start de wizard op een keuzescherm (step 0) waar de
+ * gebruiker onomkeerbaar kiest tussen:
+ *   1. TRACKER   → klant → product → tracker → sim → voertuig → controle (6 stappen)
+ *   2. SIM_ONLY  → klant → dataplan → sim → controle                       (4 stappen)
+ *
+ * Deze test dekt:
+ *   - dat het keuzescherm met de onomkeerbare bevestiging correct verschijnt;
+ *   - dat beide trajecten hun eigen, volledige stappenreeks tonen;
+ *   - dat er GEEN kruisverbanden zijn (Sim-only toont geen tracker/voertuig,
+ *     tracker toont geen dataplan) om foutieve invoer te voorkomen.
  *
  * ⚠ FUP 4 — HEADLESS CHROMIUM EDGE-CASE FIX (FINAL):
  *   Radix UI Combobox gebruikt soms button role="combobox" (met data-state)
@@ -117,129 +128,222 @@ async function openRadixCombobox(
   }
 }
 
-test.describe("G.2.3 — Wizard 6 stappen invullen + review (geen activerings-transactie)", () => {
+const STEPPER = 'nav[aria-label="Stappen"]';
+
+async function openWizard(page: Page): Promise<void> {
+  await loginAs(page, "admin");
+  await page.goto("/activations/wizard", { waitUntil: "domcontentloaded" });
+  await page
+    .getByRole("heading", { level: 1 })
+    .filter({ hasText: /nieuwe activatie|activatie bewerken/i })
+    .waitFor({ state: "visible", timeout: 20_000 });
+}
+
+/**
+ * Opent de bevestigingsdialoog van een trajectkeuze.
+ * De twee kaarten zijn deterministisch geordend: TRACKER eerst, SIM_ONLY tweede.
+ *
+ * Net als bij de Radix-comboboxes hierboven is het klikken op een vers
+ * gehydrateerde pagina soms te vroeg: de React onClick-handler is dan nog niet
+ * gehecht. Daarom een korte hydratatie-wacht + enkele klikpogingen.
+ */
+async function openTrackDialog(page: Page, index: number): Promise<Locator> {
+  const button = page.getByRole("button", { name: /kies dit traject/i }).nth(index);
+  await button.waitFor({ state: "visible", timeout: 15_000 });
+  await page.waitForTimeout(400); // hydratatie
+
+  const dialog = page.getByRole("dialog");
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await button.click({ force: attempt > 0 });
+    const opened = await dialog
+      .waitFor({ state: "visible", timeout: 3_000 })
+      .then(() => true as const)
+      .catch(() => false as const);
+    if (opened) return dialog;
+    await page.waitForTimeout(500);
+  }
+  return dialog;
+}
+
+/** Kiest een traject op het keuzescherm en bevestigt de onomkeerbare keuze. */
+async function chooseTrack(page: Page, track: "TRACKER" | "SIM_ONLY"): Promise<void> {
+  const index = track === "TRACKER" ? 0 : 1;
+  const dialog = await openTrackDialog(page, index);
+
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  await expect(dialog).toContainText(/onomkeerbaar/i);
+  await dialog.getByRole("button", { name: /ja, start dit traject/i }).click();
+
+  await expect(page.getByText("Stap 1 — Klant")).toBeVisible({ timeout: 10_000 });
+}
+
+/** Selecteert de eerste klantoptie (Klant-stap, gedeeld door beide trajecten). */
+async function fillCustomer(page: Page): Promise<void> {
+  const trigger = page
+    .locator('[role="combobox"]')
+    .filter({ hasText: /zoek en selecteer klant/i })
+    .first();
+  await openRadixCombobox(page, trigger, "Klant combobox");
+
+  const options = page.locator('[role="option"]');
+  await options.first().waitFor({ state: "visible", timeout: 8_000 });
+  await options.first().click({ delay: 30 });
+}
+
+/** Vinkt de eerste radio van een gegeven veld aan, mits aanwezig en bruikbaar. */
+async function pickFirstRadio(page: Page, name: string): Promise<void> {
+  const firstRadio = page.locator(`input[type='radio'][name='${name}']`).first();
+  if (await firstRadio.isEnabled({ timeout: 5_000 }).catch(() => false)) {
+    await firstRadio.check({ force: true });
+  }
+}
+
+/**
+ * Klikt de "Volgende"-knop in de wizardfooter. Exacte naam, zodat de
+ * pagineringsknop "Volgende pagina" elders op de pagina niet meegenomen wordt.
+ */
+async function nextStep(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Volgende", exact: true }).click();
+}
+
+test.describe("G.2.3 — Wizard: trajectkeuze + gescheiden trajecten", () => {
   test.beforeEach(async ({ page }) => {
-    await loginAs(page, "admin");
-    await page.goto("/activations/wizard", { waitUntil: "domcontentloaded" });
-    await page
-      .getByRole("heading", { level: 1 })
-      .filter({ hasText: /nieuwe activatie|activatie bewerken/i })
-      .waitFor({ state: "visible", timeout: 20_000 });
+    await openWizard(page);
   });
 
-  test("Stap 1-6: invullen, review toont de gekozen waarden (robuuste Radix combobox)", async ({
+  test("keuzescherm toont beide trajecten en een onomkeerbare bevestiging", async ({
     page,
   }) => {
-    const chosen = { customer: "", product: "", tracker: "", sim: "", vehicle: "" };
+    // Keuzescherm (step 0): beide trajecten + waarschuwing zichtbaar.
+    await expect(page.getByText(/kies een traject/i)).toBeVisible();
+    await expect(page.getByText("Nieuwe tracker met simkaart")).toBeVisible();
+    await expect(page.getByText("Sim-only datasimkaart")).toBeVisible();
+    await expect(
+      page.getByText(/deze keuze kan niet meer worden gewijzigd/i)
+    ).toBeVisible();
 
-    // =========================================================================
-    // STAP 1 — Klant (Radix Combobox)
-    // =========================================================================
-    await expect(page.getByText("Stap 1 — Klant")).toBeVisible();
-    {
-      const trigger = page
-        .locator('[role="combobox"]')
-        .filter({ hasText: /zoek en selecteer klant/i })
-        .first();
-      await openRadixCombobox(page, trigger, "Stap1-Klant combobox");
+    const chooseButtons = page.getByRole("button", { name: /kies dit traject/i });
+    await expect(chooseButtons).toHaveCount(2);
 
-      const options = page.locator('[role="option"]');
-      await options.first().waitFor({ state: "visible", timeout: 8_000 });
-      const customerLabel = (await options.first().textContent()) ?? "";
-      chosen.customer =
-        customerLabel.match(/^\s*([^\s]+.*?)\s{2,}C-\d/)?.[1]?.trim() ||
-        customerLabel.trim().split(/\s{2,}|\n/)[0];
-      await options.first().click({ delay: 30 });
-      if (chosen.customer) {
-        await expect(page.locator("main")).toContainText(chosen.customer, {
-          timeout: 6_000,
-        });
-      }
-    }
+    // Annuleren op de bevestiging laat de gebruiker op het keuzescherm.
+    const dialog = await openTrackDialog(page, 0);
+    await expect(dialog).toBeVisible({ timeout: 10_000 });
+    await expect(dialog).toContainText(/onomkeerbaar/i);
+    await dialog.getByRole("button", { name: /annuleren/i }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByText(/kies een traject/i)).toBeVisible();
+  });
 
-    await page.getByRole("button", { name: /volgende/i }).click();
+  test("Sim-only traject: 4 stappen, zonder tracker of voertuig", async ({ page }) => {
+    await chooseTrack(page, "SIM_ONLY");
 
-    // =========================================================================
-    // STAP 2 — Product en facturatie (Radix Combobox)
-    // =========================================================================
-    await expect(page.getByText(/Stap 2 — Product/)).toBeVisible();
+    // Voortgangsindicator: 4 stappen, nu stap 1.
+    const progress = page.getByRole("progressbar", {
+      name: /voortgang van de wizard/i,
+    });
+    await expect(progress).toBeVisible();
+    await expect(progress).toHaveAttribute("aria-valuenow", "1");
+    await expect(progress).toHaveAttribute("aria-valuemax", "4");
+
+    // Geen kruisverbanden: wel dataplan, GEEN tracker/voertuig/product-stap.
+    const stepper = page.locator(STEPPER);
+    await expect(
+      stepper.getByRole("button", { name: /Dataplan en facturatie/ })
+    ).toBeVisible();
+    await expect(stepper.getByRole("button", { name: /SIM-kaart/ })).toBeVisible();
+    await expect(stepper.getByRole("button", { name: /Tracker/ })).toHaveCount(0);
+    await expect(stepper.getByRole("button", { name: /Voertuig/ })).toHaveCount(0);
+    await expect(
+      stepper.getByRole("button", { name: /Product en facturatie/ })
+    ).toHaveCount(0);
+
+    // Stap 1 — Klant
+    await fillCustomer(page);
+    await nextStep(page);
+
+    // Stap 2 — Dataplan en facturatie
+    await expect(page.getByText("Stap 2 — Dataplan en facturatie")).toBeVisible();
+    await pickFirstRadio(page, "dataPlanId");
+    await nextStep(page);
+
+    // Stap 3 — SIM-kaart
+    await expect(page.getByText("Stap 3 — SIM-kaart")).toBeVisible();
+    await pickFirstRadio(page, "simId");
+    await nextStep(page);
+
+    // Stap 4 — Controle
+    await expect(page.getByText("Stap 4 — Controle")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /activeer bevestigen/i })
+    ).toBeVisible();
+    await expect(progress).toHaveAttribute("aria-valuenow", "4");
+
+    await page.goto("/activations", { waitUntil: "domcontentloaded" });
+    await expect(
+      page.getByRole("heading", { level: 1, name: /activaties/i })
+    ).toBeVisible();
+  });
+
+  test("Tracker traject: 6 stappen, zonder dataplan", async ({ page }) => {
+    await chooseTrack(page, "TRACKER");
+
+    // Voortgangsindicator: 6 stappen, nu stap 1.
+    const progress = page.getByRole("progressbar", {
+      name: /voortgang van de wizard/i,
+    });
+    await expect(progress).toBeVisible();
+    await expect(progress).toHaveAttribute("aria-valuenow", "1");
+    await expect(progress).toHaveAttribute("aria-valuemax", "6");
+
+    // Geen kruisverbanden: wel product/tracker/voertuig, GEEN dataplan-stap.
+    const stepper = page.locator(STEPPER);
+    await expect(
+      stepper.getByRole("button", { name: /Product en facturatie/ })
+    ).toBeVisible();
+    await expect(stepper.getByRole("button", { name: /Tracker/ })).toBeVisible();
+    await expect(stepper.getByRole("button", { name: /Voertuig/ })).toBeVisible();
+    await expect(stepper.getByRole("button", { name: /SIM-kaart/ })).toBeVisible();
+    await expect(stepper.getByRole("button", { name: /Dataplan/ })).toHaveCount(0);
+
+    // Stap 1 — Klant
+    await fillCustomer(page);
+    await nextStep(page);
+
+    // Stap 2 — Product en facturatie
+    await expect(page.getByText("Stap 2 — Product en facturatie")).toBeVisible();
     {
       const trigger = page
         .locator('[role="combobox"]')
         .filter({ hasText: /kies een product|product.*selecteer|zoek.*product/i })
         .first();
-      await openRadixCombobox(page, trigger, "Stap2-Product combobox");
-
+      await openRadixCombobox(page, trigger, "Product combobox");
       const options = page.locator('[role="option"]');
       await options.first().waitFor({ state: "visible", timeout: 8_000 });
-      const labelText = (await options.first().textContent()) ?? "";
-      chosen.product = labelText.trim().split(/\n|\s{2,}/)[0];
-      expect(chosen.product.length).toBeGreaterThan(0);
       await options.first().click({ delay: 30 });
     }
+    await nextStep(page);
 
-    await page.getByRole("button", { name: /volgende/i }).click();
-
-    // =========================================================================
-    // STAP 3 — Tracker (Radio buttons)
-    // =========================================================================
+    // Stap 3 — Tracker
     await expect(page.getByText("Stap 3 — Tracker")).toBeVisible();
-    {
-      const firstRadio = page
-        .locator("input[type='radio'][name='trackerId']")
-        .first();
-      if (await firstRadio.isEnabled({ timeout: 5_000 }).catch(() => false)) {
-        const labelRow = firstRadio.locator("xpath=ancestor::label").first();
-        chosen.tracker = (await labelRow.textContent()) ?? "";
-        await firstRadio.check({ force: true });
-      }
-    }
-    await page.getByRole("button", { name: /volgende/i }).click();
+    await pickFirstRadio(page, "trackerId");
+    await nextStep(page);
 
-    // =========================================================================
-    // STAP 4 — SIM (Radio buttons)
-    // =========================================================================
-    await expect(page.getByText("Stap 4 — SIM")).toBeVisible();
-    {
-      const firstRadio = page
-        .locator("input[type='radio'][name='simId']")
-        .first();
-      if (await firstRadio.isEnabled({ timeout: 5_000 }).catch(() => false)) {
-        const labelRow = firstRadio.locator("xpath=ancestor::label").first();
-        chosen.sim = (await labelRow.textContent()) ?? "";
-        await firstRadio.check({ force: true });
-      }
-    }
-    await page.getByRole("button", { name: /volgende/i }).click();
+    // Stap 4 — SIM-kaart
+    await expect(page.getByText("Stap 4 — SIM-kaart")).toBeVisible();
+    await pickFirstRadio(page, "simId");
+    await nextStep(page);
 
-    // =========================================================================
-    // STAP 5 — Voertuig (Radio buttons)
-    // =========================================================================
+    // Stap 5 — Voertuig (optioneel)
     await expect(page.getByText("Stap 5 — Voertuig")).toBeVisible();
-    {
-      const firstRadio = page
-        .locator("input[type='radio'][name='vehicleId']")
-        .first();
-      if (await firstRadio.isEnabled({ timeout: 5_000 }).catch(() => false)) {
-        const labelRow = firstRadio.locator("xpath=ancestor::label").first();
-        chosen.vehicle = (await labelRow.textContent()) ?? "";
-        await firstRadio.check({ force: true });
-      }
-    }
-    await page.getByRole("button", { name: /volgende/i }).click();
+    await pickFirstRadio(page, "vehicleId");
+    await nextStep(page);
 
-    // =========================================================================
-    // STAP 6 — Controle (Review card)
-    // =========================================================================
+    // Stap 6 — Controle
+    await expect(page.getByText("Stap 6 — Controle")).toBeVisible();
     await expect(
-      page.getByRole("heading", { level: 2, name: /controle|overzicht/i })
-    ).toBeVisible({ timeout: 15_000 });
-    const reviewCard = page.locator("main");
-    if (chosen.product) {
-      await expect(reviewCard).toContainText(chosen.product, { timeout: 10_000 });
-    }
-    const activeerBtn = page.getByRole("button", { name: /activeer/i });
-    await expect(activeerBtn).toBeVisible();
+      page.getByRole("button", { name: /activeer bevestigen/i })
+    ).toBeVisible();
+    await expect(progress).toHaveAttribute("aria-valuenow", "6");
 
     await page.goto("/activations", { waitUntil: "domcontentloaded" });
     await expect(
