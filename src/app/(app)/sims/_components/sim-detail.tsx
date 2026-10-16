@@ -7,6 +7,8 @@ import {
   ArrowLeft,
   Edit,
   Info,
+  Copy,
+  Check,
   CreditCard,
   Phone,
   Calendar,
@@ -911,6 +913,129 @@ function DiagnosticResultDisplay({ result, checkedAt }: DiagnosticResultDisplayP
   );
 }
 
+async function copyIdentifierValue(rawValue: string): Promise<void> {
+  const normalizedValue = rawValue.replace(/\s+/g, "").trim();
+
+  if (!normalizedValue) {
+    throw new Error("Geen kopieerbare waarde beschikbaar.");
+  }
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(normalizedValue);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = normalizedValue;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+
+  if (!copied) {
+    throw new Error("Kopieren mislukt.");
+  }
+}
+
+function CopyIdentifierButton({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (resetTimerRef.current) {
+        clearTimeout(resetTimerRef.current);
+        resetTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  async function handleCopy() {
+    if (resetTimerRef.current) {
+      clearTimeout(resetTimerRef.current);
+      resetTimerRef.current = null;
+    }
+
+    try {
+      await copyIdentifierValue(value);
+      setCopyState("copied");
+    } catch (error) {
+      console.error(`[sim-detail] Kon ${label} niet kopieren.`, error);
+      setCopyState("error");
+    }
+
+    resetTimerRef.current = setTimeout(() => {
+      setCopyState("idle");
+      resetTimerRef.current = null;
+    }, 2000);
+  }
+
+  const title =
+    copyState === "copied"
+      ? `${label} gekopieerd`
+      : copyState === "error"
+        ? `Kopieren van ${label} mislukt`
+        : `Kopieer ${label} zonder spaties`;
+
+  return (
+    <>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        onClick={handleCopy}
+        className="h-6 w-6 shrink-0 text-slate-500 hover:text-slate-900"
+        aria-label={title}
+        title={title}
+      >
+        {copyState === "copied" ? (
+          <Check className="h-3.5 w-3.5" aria-hidden="true" />
+        ) : (
+          <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+        )}
+      </Button>
+      <span className="sr-only" aria-live="polite">
+        {copyState === "copied"
+          ? `${label} gekopieerd zonder spaties`
+          : copyState === "error"
+            ? `Kopieren van ${label} mislukt`
+            : ""}
+      </span>
+    </>
+  );
+}
+
+function IdentifierInline({
+  label,
+  displayValue,
+  copyValue,
+}: {
+  label: string;
+  displayValue: string;
+  copyValue: string;
+}) {
+  return (
+    <div className="inline-flex items-center gap-1.5">
+      <span>
+        {label}: {displayValue}
+      </span>
+      <CopyIdentifierButton label={label} value={copyValue} />
+    </div>
+  );
+}
+
 export function SimDetail({
   sim,
   role,
@@ -1562,9 +1687,19 @@ export function SimDetail({
                 ) : null}
               </div>
             </div>
-            <div className="text-sm text-slate-500 font-mono">
-              ICCID: {formatIccid(sim.iccid)}
-              {sim.msisdn ? <> · MSISDN: {formatMsisdn(sim.msisdn)}</> : null}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-500 font-mono">
+              <IdentifierInline
+                label="ICCID"
+                displayValue={formatIccid(sim.iccid)}
+                copyValue={sim.iccid}
+              />
+              {sim.msisdn ? (
+                <IdentifierInline
+                  label="MSISDN"
+                  displayValue={formatMsisdn(sim.msisdn)}
+                  copyValue={sim.msisdn}
+                />
+              ) : null}
             </div>
           </div>
         </div>
