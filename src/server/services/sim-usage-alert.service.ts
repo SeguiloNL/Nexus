@@ -314,13 +314,20 @@ async function getAllEligibleUsersWithDefaults(): Promise<
   UserNotificationSettingsWithUser[]
 > {
   const explicit = await getUsersEligibleForAlerts();
-  const explicitIds = new Set(explicit.map((r) => r.userId));
+
+  // Gebruikers met een instellingenrij zijn expliciet: hun keuze (aan of uit) is
+  // leidend. Alleen gebruikers ZONDER instellingenrij krijgen default-waarden, zodat
+  // een expliciete opt-out niet door de implicit-defaults wordt overschreven.
+  const settingsRows = await prisma.userNotificationSettings.findMany({
+    select: { userId: true },
+  });
+  const usersWithSettings = new Set(settingsRows.map((r) => r.userId));
 
   const implicitUsers: UserCoreWithRoleId[] = await prisma.user.findMany({
     where: {
       isActive: true,
       email: { not: "" },
-      NOT: { id: { in: Array.from(explicitIds) } },
+      NOT: { id: { in: Array.from(usersWithSettings) } },
     },
     select: {
       id: true,

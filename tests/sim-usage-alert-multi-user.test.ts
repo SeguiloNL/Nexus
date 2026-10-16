@@ -425,4 +425,47 @@ describe("sim-usage-alert multi-user notification", () => {
     )?.toEmail;
     expect(user1Email).toBe("notifications@user1.nl");
   });
+
+  it("respecteert een expliciete opt-out: uitgeschakelde gebruikers worden niet als impliciete default meegenomen", async () => {
+    // Eerste settings-query (include user): alleen user-1 is expliciet geactiveerd.
+    // Tweede settings-query (select userId): user-1 én user-2 hebben een rij, waarbij
+    // user-2 de datadrempel-alert expliciet heeft uitgeschakeld.
+    mockPrisma.userNotificationSettings.findMany.mockImplementation(
+      async (args: any) => {
+        if (args?.select?.userId) {
+          return [{ userId: "user-1" }, { userId: "user-2" }];
+        }
+        return [makeUserSettings("user-1", "user1@example.com", "Gebruiker 1")];
+      }
+    );
+
+    // user-3 heeft géén instellingenrij → telt als impliciete default (aan).
+    mockPrisma.user.findMany.mockResolvedValue([
+      {
+        id: "user-3",
+        name: "Gebruiker 3",
+        email: "user3@example.com",
+        isActive: true,
+        roleId: "role-customer",
+      },
+    ]);
+
+    const { runUsageAlertNotificationCycle } = await import(
+      "@/server/services/sim-usage-alert.service"
+    );
+
+    const report = await runUsageAlertNotificationCycle({ dryRunForce: false });
+
+    // Alleen user-1 (expliciet aan) en user-3 (impliciet) worden meegenomen.
+    expect(report.usersChecked).toBe(2);
+    expect(report.usersNotified).toBe(2);
+
+    const recipients = sentEmails.map((e) => e.toEmail).sort();
+    expect(recipients).toEqual(["user1@example.com", "user3@example.com"]);
+
+    // De opt-out-gebruiker (user-2) ontvangt niets.
+    expect(
+      sentEmails.find((e) => e.toEmail === "user2@example.com")
+    ).toBeUndefined();
+  });
 });
