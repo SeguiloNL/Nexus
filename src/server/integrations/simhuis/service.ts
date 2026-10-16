@@ -6283,6 +6283,26 @@ export async function precheckProductById(
     auth: { tag: 'bearer-token', token },
     timeoutMs: 6_000,
   });
+  // #region debug-point dp-precheck-product
+  try {
+    const payload = res.tag === 'ok' ? res.body : (res as { raw?: unknown }).raw;
+    let respSnippet: string;
+    try {
+      respSnippet = payload == null ? '(geen body)' : JSON.stringify(payload).slice(0, 1200);
+    } catch {
+      respSnippet = String(payload).slice(0, 1200);
+    }
+    console.error(
+      `[simhuis:precheckProductById] GET ${fullUrl} httpStatus=${res.statusCode} tag=${res.tag} ` +
+        `productId=${productId} expectedName="${expectedName}" responseBody=${respSnippet}`,
+    );
+  } catch (debugErr) {
+    console.warn(
+      '[simhuis:precheckProductById] dp-precheck-product instrumentation error:',
+      debugErr instanceof Error ? debugErr.message : debugErr,
+    );
+  }
+  // #endregion debug-point dp-precheck-product
   if (res.tag !== 'ok') {
     return {
       ok: false,
@@ -6335,6 +6355,26 @@ export async function precheckProductAvailability(
     timeoutMs: 6_000,
   });
   if (res.tag !== 'ok') {
+    // #region debug-point dp-precheck-availability
+    try {
+      const payload = (res as { raw?: unknown }).raw;
+      let respSnippet: string;
+      try {
+        respSnippet = payload == null ? '(geen body)' : JSON.stringify(payload).slice(0, 1200);
+      } catch {
+        respSnippet = String(payload).slice(0, 1200);
+      }
+      console.error(
+        `[simhuis:precheckProductAvailability] GET ${fullUrl} httpStatus=${res.statusCode} tag=${res.tag} ` +
+          `productId=${productId} iccidSuffix=${iccid.slice(-6)} responseBody=${respSnippet}`,
+      );
+    } catch (debugErr) {
+      console.warn(
+        '[simhuis:precheckProductAvailability] dp-precheck-availability instrumentation error:',
+        debugErr instanceof Error ? debugErr.message : debugErr,
+      );
+    }
+    // #endregion debug-point dp-precheck-availability
     return {
       ok: false,
       httpStatus: res.statusCode,
